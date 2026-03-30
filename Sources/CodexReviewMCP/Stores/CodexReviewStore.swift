@@ -813,7 +813,12 @@ private func resolvedHostCandidates(_ host: String) -> Set<String> {
                 NI_NUMERICHOST
             )
             if nameStatus == 0 {
-                candidates.insert(String(cString: hostBuffer))
+                let length = hostBuffer.firstIndex(of: 0) ?? hostBuffer.count
+                let numericHost = String(
+                    decoding: hostBuffer[..<length].map { UInt8(bitPattern: $0) },
+                    as: UTF8.self
+                )
+                candidates.insert(numericHost)
             }
         }
         cursor = entry.pointee.ai_next
