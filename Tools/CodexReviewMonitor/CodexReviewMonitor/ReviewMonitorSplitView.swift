@@ -1,14 +1,6 @@
 import AppKit
 import CodexReviewMCP
-import Observation
 import SwiftUI
-
-@MainActor
-struct ReviewMonitorViewState: Equatable {
-    var serverState: CodexReviewMonitorServerState
-    var endpointURL: URL?
-    var jobs: [CodexReviewMonitorJob]
-}
 
 @MainActor
 struct ReviewMonitorSplitViewRepresentable: NSViewControllerRepresentable {
@@ -40,6 +32,10 @@ final class ReviewMonitorSplitViewController: NSSplitViewController {
     private var onRestart: (() -> Void)?
     private var jobsByID: [String: CodexReviewMonitorJob] = [:]
     private var selectedJobID: String?
+    private var currentServerState: CodexReviewMonitorServerState = .stopped
+    private var currentEndpointURL: URL?
+    private var stateObservationTask: Task<Void, Never>?
+    private var jobObservationTask: Task<Void, Never>?
 
     var sidebarViewControllerForTesting: ReviewMonitorSidebarViewController {
         sidebarViewController
@@ -73,23 +69,44 @@ final class ReviewMonitorSplitViewController: NSSplitViewController {
         splitViewItems = [sidebarItem, contentItem, inspectorItem]
     }
 
+    deinit {
+        stateObservationTask?.cancel()
+        jobObservationTask?.cancel()
+    }
+
     func bind(store: CodexReviewMonitorStore, onRestart: @escaping () -> Void) {
         self.store = store
         self.onRestart = onRestart
-        observeStore()
+        currentServerState = store.serverState
+        currentEndpointURL = store.endpointURL
+        render(jobs: store.jobStore.jobs)
+        observeStateChanges()
+        observeJobChanges()
     }
 
-    func apply(state: ReviewMonitorViewState, onRestart: @escaping () -> Void) {
-        jobsByID = Dictionary(uniqueKeysWithValues: state.jobs.map { ($0.id, $0) })
-        let resolvedSelection = preferredSelectionJobID(in: state.jobs, current: selectedJobID)
+    func apply(
+        serverState: CodexReviewMonitorServerState,
+        endpointURL: URL?,
+        jobs: [CodexReviewMonitorJob],
+        onRestart: @escaping () -> Void
+    ) {
+        currentServerState = serverState
+        currentEndpointURL = endpointURL
+        self.onRestart = onRestart
+        render(jobs: jobs)
+    }
+
+    private func render(jobs: [CodexReviewMonitorJob]) {
+        jobsByID = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+        let resolvedSelection = preferredSelectionJobID(in: jobs, current: selectedJobID)
         selectedJobID = resolvedSelection
 
         sidebarViewController.apply(
-            serverState: state.serverState,
-            endpointURL: state.endpointURL,
-            jobs: state.jobs,
+            serverState: currentServerState,
+            endpointURL: currentEndpointURL,
+            jobs: jobs,
             selectedJobID: resolvedSelection,
-            onRestart: onRestart
+            onRestart: onRestart ?? {}
         )
 
         let selectedJob = resolvedSelection.flatMap { jobsByID[$0] }
@@ -104,21 +121,37 @@ final class ReviewMonitorSplitViewController: NSSplitViewController {
         reasoningViewController.display(selectedJob)
     }
 
-    private func observeStore() {
+    private func observeStateChanges() {
+        stateObservationTask?.cancel()
         guard let store else {
             return
         }
-        let onRestart = self.onRestart ?? {}
-        withObservationTracking {
-            let state = ReviewMonitorViewState(
-                serverState: store.serverState,
-                endpointURL: store.endpointURL,
-                jobs: store.jobs
-            )
-            apply(state: state, onRestart: onRestart)
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.observeStore()
+        stateObservationTask = Task { @MainActor [weak self] in
+            let changes = store.changes()
+            for await _ in changes {
+                guard let self, self.store === store else {
+                    return
+                }
+                self.currentServerState = store.serverState
+                self.currentEndpointURL = store.endpointURL
+                self.render(jobs: store.jobStore.jobs)
+            }
+        }
+    }
+
+    private func observeJobChanges() {
+        jobObservationTask?.cancel()
+        guard let store else {
+            return
+        }
+        let jobStore = store.jobStore
+        jobObservationTask = Task { @MainActor [weak self] in
+            let changes = jobStore.changes()
+            for await _ in changes {
+                guard let self, self.store === store else {
+                    return
+                }
+                self.render(jobs: jobStore.jobs)
             }
         }
     }
@@ -152,6 +185,21 @@ private enum ReviewMonitorJobSection: Int, Hashable, CaseIterable {
 
 @MainActor
 final class ReviewMonitorJobListViewController: NSViewController, NSTableViewDelegate {
+    private struct SectionedJobIDs: Equatable {
+        var active: [String]
+        var recent: [String]
+    }
+
+    private struct CellDisplayState: Equatable {
+        var title: String
+        var subtitle: String
+
+        init(job: CodexReviewMonitorJob) {
+            title = job.displayTitle
+            subtitle = "\(job.status.displayText) • \(job.sessionID) • \(job.cwd)"
+        }
+    }
+
     private enum Identifier {
         static let tableColumn = NSUserInterfaceItemIdentifier("ReviewMonitorJobs.Column")
         static let jobCell = NSUserInterfaceItemIdentifier("ReviewMonitorJobs.Cell")
@@ -170,6 +218,8 @@ final class ReviewMonitorJobListViewController: NSViewController, NSTableViewDel
     private lazy var dataSource = makeDataSource()
 
     private var jobsByID: [String: CodexReviewMonitorJob] = [:]
+    private var sectionedJobIDs = SectionedJobIDs(active: [], recent: [])
+    private var cellStatesByID: [String: CellDisplayState] = [:]
 
     var displayedSectionTitlesForTesting: [String] {
         dataSource.snapshot().sectionIdentifiers.map(\.title)
@@ -201,17 +251,42 @@ final class ReviewMonitorJobListViewController: NSViewController, NSTableViewDel
 
         let activeJobs = jobs.filter { $0.isTerminal == false }
         let recentJobs = jobs.filter(\.isTerminal)
+        let newSectionedJobIDs = SectionedJobIDs(
+            active: activeJobs.map(\.id),
+            recent: recentJobs.map(\.id)
+        )
+        let previousCellStates = cellStatesByID
+        cellStatesByID = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, CellDisplayState(job: $0)) })
 
-        var snapshot = NSDiffableDataSourceSnapshot<ReviewMonitorJobSection, String>()
-        if activeJobs.isEmpty == false {
-            snapshot.appendSections([.active])
-            snapshot.appendItems(activeJobs.map(\.id), toSection: .active)
+        if sectionedJobIDs != newSectionedJobIDs {
+            var snapshot = NSDiffableDataSourceSnapshot<ReviewMonitorJobSection, String>()
+            if activeJobs.isEmpty == false {
+                snapshot.appendSections([.active])
+                snapshot.appendItems(newSectionedJobIDs.active, toSection: .active)
+            }
+            if recentJobs.isEmpty == false {
+                snapshot.appendSections([.recent])
+                snapshot.appendItems(newSectionedJobIDs.recent, toSection: .recent)
+            }
+            dataSource.apply(snapshot, animatingDifferences: view.window != nil)
+            sectionedJobIDs = newSectionedJobIDs
+            tableView.reloadData()
+        } else {
+            let rowsToReload = IndexSet(
+                jobs.compactMap { job in
+                    guard previousCellStates[job.id] != CellDisplayState(job: job) else {
+                        return nil
+                    }
+                    return dataSource.row(forItemIdentifier: job.id)
+                }
+            )
+            if rowsToReload.isEmpty == false {
+                tableView.reloadData(
+                    forRowIndexes: rowsToReload,
+                    columnIndexes: IndexSet(integer: tableView.column(withIdentifier: Identifier.tableColumn))
+                )
+            }
         }
-        if recentJobs.isEmpty == false {
-            snapshot.appendSections([.recent])
-            snapshot.appendItems(recentJobs.map(\.id), toSection: .recent)
-        }
-        dataSource.apply(snapshot, animatingDifferences: view.window != nil)
         syncSelection(selectedJobID)
 
         let hasJobs = jobs.isEmpty == false

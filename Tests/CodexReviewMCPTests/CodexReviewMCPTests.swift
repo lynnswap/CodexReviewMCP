@@ -25,7 +25,7 @@ struct CodexReviewMCPTests {
         await firstStore.stop()
         #expect(firstStore.serverState == .stopped)
         #expect(firstStore.endpointURL == nil)
-        #expect(firstStore.jobs.isEmpty)
+        #expect(firstStore.jobStore.jobs.isEmpty)
 
         let secondStore = CodexReviewMonitorStore(
             configuration: .init(host: "127.0.0.1", port: secondPort, codexCommand: scriptURL.path)
@@ -71,16 +71,17 @@ struct CodexReviewMCPTests {
             #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
 
             try await waitUntil(timeout: .seconds(2)) {
-                let job = await MainActor.run { store.jobs.first }
-                guard let job else {
-                    return false
+                await MainActor.run {
+                    guard let job = store.jobStore.jobs.first else {
+                        return false
+                    }
+                    return job.status == .succeeded &&
+                        job.reviewLogText.isEmpty == false &&
+                        job.reasoningLogText.isEmpty == false
                 }
-                return job.status == .succeeded &&
-                    job.reviewLogText.isEmpty == false &&
-                    job.reasoningLogText.isEmpty == false
             }
 
-            let job = try #require(store.jobs.first)
+            let job = try #require(store.jobStore.jobs.first)
             #expect(job.status == .succeeded)
             #expect(job.reviewLogText.contains("$ git diff --stat"))
             #expect(job.reasoningLogText.contains("Inspecting current changes"))
@@ -138,15 +139,16 @@ struct CodexReviewMCPTests {
                 #expect(reviewThreadID.isEmpty == false)
 
                 try await waitUntil(timeout: .seconds(60), interval: .milliseconds(200)) {
-                    let job = await MainActor.run { store.jobs.first }
-                    guard let job else {
-                        return false
+                    await MainActor.run {
+                        guard let job = store.jobStore.jobs.first else {
+                            return false
+                        }
+                        return job.status == .succeeded &&
+                            (job.activityLogText.isEmpty == false || job.reasoningSummaryText.isEmpty == false)
                     }
-                    return job.status == .succeeded &&
-                        (job.activityLogText.isEmpty == false || job.reasoningSummaryText.isEmpty == false)
                 }
 
-                let job = try #require(store.jobs.first)
+                let job = try #require(store.jobStore.jobs.first)
                 #expect(job.status == .succeeded)
                 #expect(job.activityLogText.isEmpty == false || job.reasoningSummaryText.isEmpty == false)
                 let readResponse = try await client.callTool(
@@ -166,6 +168,72 @@ struct CodexReviewMCPTests {
         }
 
         await store.stop()
+    }
+
+    @Test func monitorJobStoreAppliesSnapshotsInPlace() throws {
+        let store = CodexReviewMonitorJobStore()
+        let queuedSnapshot = ReviewJobSnapshot(
+            jobID: "job-1",
+            sessionID: "session-1",
+            cwd: "/tmp/repo",
+            targetSummary: "Uncommitted changes",
+            model: "gpt-5",
+            state: .queued,
+            summary: "Queued."
+        )
+        let runningSnapshot = ReviewJobSnapshot(
+            jobID: "job-1",
+            sessionID: "session-1",
+            cwd: "/tmp/repo",
+            targetSummary: "Uncommitted changes",
+            model: "gpt-5",
+            state: .running,
+            threadID: "thread-1",
+            reviewLogText: "Running review\n",
+            reasoningLogText: "Inspecting diff\n",
+            startedAt: Date(timeIntervalSince1970: 123),
+            summary: "Running."
+        )
+        let requeuedSnapshot = ReviewJobSnapshot(
+            jobID: "job-1",
+            sessionID: "session-1",
+            cwd: "/tmp/repo",
+            targetSummary: "Uncommitted changes",
+            model: "gpt-5",
+            state: .queued,
+            summary: "Queued again."
+        )
+        let recentSnapshot = ReviewJobSnapshot(
+            jobID: "job-2",
+            sessionID: "session-1",
+            cwd: "/tmp/repo",
+            targetSummary: "Base branch: main",
+            model: nil,
+            state: .failed,
+            summary: "Failed."
+        )
+
+        store.apply(snapshots: [queuedSnapshot])
+        let firstJob = try #require(store.job(id: "job-1"))
+        #expect(store.activeJobs.map(\.id) == ["job-1"])
+        #expect(store.recentJobs.isEmpty)
+
+        store.apply(snapshots: [runningSnapshot, recentSnapshot])
+        let updatedJob = try #require(store.job(id: "job-1"))
+        #expect(updatedJob === firstJob)
+        #expect(updatedJob.status == .running)
+        #expect(updatedJob.threadID == "thread-1")
+        #expect(updatedJob.reviewLogText == "Running review\n")
+        #expect(store.activeJobs.map(\.id) == ["job-1"])
+        #expect(store.recentJobs.map(\.id) == ["job-2"])
+        #expect(updatedJob.startedAt == Date(timeIntervalSince1970: 123))
+
+        store.apply(snapshots: [requeuedSnapshot])
+        #expect(updatedJob.startedAt == .distantPast)
+
+        store.apply(snapshots: [runningSnapshot])
+        #expect(store.job(id: "job-2") == nil)
+        #expect(store.jobs.map(\.id) == ["job-1"])
     }
 
 }

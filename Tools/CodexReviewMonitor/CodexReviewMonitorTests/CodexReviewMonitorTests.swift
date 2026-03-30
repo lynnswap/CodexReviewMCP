@@ -23,11 +23,9 @@ struct CodexReviewMonitorTests {
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
         viewController.apply(
-            state: ReviewMonitorViewState(
-                serverState: .stopped,
-                endpointURL: nil,
-                jobs: []
-            ),
+            serverState: .stopped,
+            endpointURL: nil,
+            jobs: [],
             onRestart: {}
         )
 
@@ -44,11 +42,9 @@ struct CodexReviewMonitorTests {
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
         viewController.apply(
-            state: ReviewMonitorViewState(
-                serverState: .running,
-                endpointURL: URL(string: "http://localhost:9417/mcp"),
-                jobs: [activeJob, recentJob]
-            ),
+            serverState: .running,
+            endpointURL: URL(string: "http://localhost:9417/mcp"),
+            jobs: [activeJob, recentJob],
             onRestart: {}
         )
 
@@ -73,11 +69,9 @@ struct CodexReviewMonitorTests {
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
         viewController.apply(
-            state: ReviewMonitorViewState(
-                serverState: .running,
-                endpointURL: URL(string: "http://localhost:9417/mcp"),
-                jobs: [activeJob, recentJob]
-            ),
+            serverState: .running,
+            endpointURL: URL(string: "http://localhost:9417/mcp"),
+            jobs: [activeJob, recentJob],
             onRestart: {}
         )
 
@@ -89,6 +83,44 @@ struct CodexReviewMonitorTests {
         #expect(viewController.reasoningViewControllerForTesting.displayedTitleForTesting == "Reasoning")
         #expect(viewController.reasoningViewControllerForTesting.displayedSummaryForTesting == recentJob.summary)
         #expect(viewController.reasoningViewControllerForTesting.displayedReasoningForTesting == recentJob.reasoningSummaryText)
+    }
+
+    @Test func inPlaceJobUpdateKeepsSelectionAndRefreshesDetailPane() {
+        let job = makeJob(
+            id: "job-1",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            reasoningSummaryText: "",
+            activityLogText: "Initial log\n"
+        )
+        let viewController = ReviewMonitorSplitViewController()
+        viewController.loadViewIfNeeded()
+        viewController.apply(
+            serverState: .running,
+            endpointURL: URL(string: "http://localhost:9417/mcp"),
+            jobs: [job],
+            onRestart: {}
+        )
+
+        viewController.listViewControllerForTesting.selectJobForTesting(id: job.id)
+
+        job.status = .succeeded
+        job.summary = "Review completed successfully."
+        job.reviewLogText = "Updated log\n"
+        job.reasoningLogText = "Updated reasoning\n"
+
+        viewController.apply(
+            serverState: .running,
+            endpointURL: URL(string: "http://localhost:9417/mcp"),
+            jobs: [job],
+            onRestart: {}
+        )
+
+        #expect(viewController.listViewControllerForTesting.selectedJobIDForTesting == "job-1")
+        #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == "Review completed successfully.")
+        #expect(viewController.transportViewControllerForTesting.displayedActivityLogForTesting == "Updated log\n")
+        #expect(viewController.reasoningViewControllerForTesting.displayedReasoningForTesting == "Updated reasoning\n")
     }
 
     @Test func launchedAppEmbeddedReviewStartProgressesViaMCP() async throws {
@@ -673,7 +705,9 @@ private func runGit(_ arguments: [String], in directory: URL) throws -> String {
     return stdout
 }
 
+@MainActor
 private func makeJob(
+    id: String = UUID().uuidString,
     status: CodexReviewMonitorJobStatus,
     targetSummary: String,
     summary: String? = nil,
@@ -682,7 +716,7 @@ private func makeJob(
     rawLogText: String = ""
 ) -> CodexReviewMonitorJob {
     CodexReviewMonitorJob(
-        id: UUID().uuidString,
+        id: id,
         sessionID: "session-1",
         cwd: "/tmp/repo",
         targetSummary: targetSummary,

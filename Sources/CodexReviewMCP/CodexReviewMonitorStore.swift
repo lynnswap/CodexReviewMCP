@@ -71,21 +71,23 @@ public enum CodexReviewMonitorJobStatus: String, Sendable, Hashable {
     }
 }
 
-public struct CodexReviewMonitorJob: Identifiable, Sendable, Hashable {
+@MainActor
+@Observable
+public final class CodexReviewMonitorJob: Identifiable {
     public let id: String
     public let sessionID: String
-    public let cwd: String
-    public let targetSummary: String
-    public let model: String?
-    public let threadID: String?
-    public let turnID: String?
-    public let status: CodexReviewMonitorJobStatus
-    public let startedAt: Date
-    public let endedAt: Date?
-    public let summary: String
-    public let reviewLogText: String
-    public let reasoningLogText: String
-    public let rawLogText: String
+    public var cwd: String
+    public var targetSummary: String
+    public var model: String?
+    public var threadID: String?
+    public var turnID: String?
+    public var status: CodexReviewMonitorJobStatus
+    public var startedAt: Date
+    public var endedAt: Date?
+    public var summary: String
+    public var reviewLogText: String
+    public var reasoningLogText: String
+    public var rawLogText: String
 
     public var isTerminal: Bool {
         status.isTerminal
@@ -142,6 +144,127 @@ public struct CodexReviewMonitorJob: Identifiable, Sendable, Hashable {
         self.reasoningLogText = reasoningLogText
         self.rawLogText = rawLogText
     }
+
+    convenience init(snapshot: ReviewJobSnapshot) {
+        self.init(
+            id: snapshot.jobID,
+            sessionID: snapshot.sessionID,
+            cwd: snapshot.cwd,
+            targetSummary: snapshot.targetSummary,
+            model: snapshot.model,
+            threadID: snapshot.threadID,
+            turnID: nil,
+            status: Self.status(for: snapshot.state),
+            startedAt: snapshot.startedAt ?? .distantPast,
+            endedAt: snapshot.endedAt,
+            summary: snapshot.summary,
+            reviewLogText: snapshot.reviewLogText,
+            reasoningLogText: snapshot.reasoningLogText,
+            rawLogText: snapshot.rawLogText
+        )
+    }
+
+    func apply(snapshot: ReviewJobSnapshot) {
+        cwd = snapshot.cwd
+        targetSummary = snapshot.targetSummary
+        model = snapshot.model
+        threadID = snapshot.threadID
+        turnID = nil
+        status = Self.status(for: snapshot.state)
+        startedAt = snapshot.startedAt ?? .distantPast
+        endedAt = snapshot.endedAt
+        summary = snapshot.summary
+        reviewLogText = snapshot.reviewLogText
+        reasoningLogText = snapshot.reasoningLogText
+        rawLogText = snapshot.rawLogText
+    }
+
+    private static func status(for state: ReviewJobState) -> CodexReviewMonitorJobStatus {
+        switch state {
+        case .queued:
+            .queued
+        case .running:
+            .running
+        case .succeeded:
+            .succeeded
+        case .failed:
+            .failed
+        case .cancelled:
+            .cancelled
+        }
+    }
+}
+
+@MainActor
+@Observable
+public final class CodexReviewMonitorJobStore {
+    public private(set) var jobsByID: [String: CodexReviewMonitorJob] = [:]
+    public private(set) var orderedJobIDs: [String] = []
+
+    private var changeContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
+
+    public init() {}
+
+    public var jobs: [CodexReviewMonitorJob] {
+        orderedJobIDs.compactMap { jobsByID[$0] }
+    }
+
+    public var activeJobs: [CodexReviewMonitorJob] {
+        jobs.filter { $0.isTerminal == false }
+    }
+
+    public var recentJobs: [CodexReviewMonitorJob] {
+        jobs.filter(\.isTerminal)
+    }
+
+    public func job(id: String) -> CodexReviewMonitorJob? {
+        jobsByID[id]
+    }
+
+    public func changes() -> AsyncStream<Void> {
+        let streamID = UUID()
+        return AsyncStream { continuation in
+            changeContinuations[streamID] = continuation
+            continuation.yield(())
+            continuation.onTermination = { _ in
+                Task { @MainActor [weak self] in
+                    self?.changeContinuations[streamID] = nil
+                }
+            }
+        }
+    }
+
+    func apply(snapshots: [ReviewJobSnapshot]) {
+        let orderedIDs = snapshots.map(\.jobID)
+        let validIDs = Set(orderedIDs)
+
+        for snapshot in snapshots {
+            if let job = jobsByID[snapshot.jobID] {
+                job.apply(snapshot: snapshot)
+            } else {
+                jobsByID[snapshot.jobID] = CodexReviewMonitorJob(snapshot: snapshot)
+            }
+        }
+
+        for jobID in Array(jobsByID.keys) where validIDs.contains(jobID) == false {
+            jobsByID.removeValue(forKey: jobID)
+        }
+
+        orderedJobIDs = orderedIDs
+        broadcastChanges()
+    }
+
+    func reset() {
+        jobsByID = [:]
+        orderedJobIDs = []
+        broadcastChanges()
+    }
+
+    private func broadcastChanges() {
+        for continuation in changeContinuations.values {
+            continuation.yield(())
+        }
+    }
 }
 
 private enum CodexReviewMonitorTestEnvironment {
@@ -174,17 +297,19 @@ private struct CodexReviewMonitorDiagnosticsSnapshot: Encodable {
 public final class CodexReviewMonitorStore {
     public private(set) var serverState: CodexReviewMonitorServerState = .stopped
     public private(set) var endpointURL: URL?
-    public private(set) var jobs: [CodexReviewMonitorJob] = []
+    public let jobStore: CodexReviewMonitorJobStore
 
     private let configuration: ReviewServerConfiguration
     private let diagnosticsURL: URL?
     private var server: ReviewMCPHTTPServer?
     private var monitorTask: Task<Void, Never>?
     private var waitTask: Task<Void, Never>?
+    private var stateContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     public init() {
         let environment = ProcessInfo.processInfo.environment
         let arguments = CommandLine.arguments
+        self.jobStore = CodexReviewMonitorJobStore()
         self.configuration = Self.makeConfiguration(
             environment: environment,
             arguments: arguments
@@ -199,8 +324,22 @@ public final class CodexReviewMonitorStore {
         configuration: ReviewServerConfiguration,
         diagnosticsURL: URL? = nil
     ) {
+        self.jobStore = CodexReviewMonitorJobStore()
         self.configuration = configuration
         self.diagnosticsURL = diagnosticsURL
+    }
+
+    public func changes() -> AsyncStream<Void> {
+        let streamID = UUID()
+        return AsyncStream { continuation in
+            stateContinuations[streamID] = continuation
+            continuation.yield(())
+            continuation.onTermination = { _ in
+                Task { @MainActor [weak self] in
+                    self?.stateContinuations[streamID] = nil
+                }
+            }
+        }
     }
 
     public func start() async {
@@ -224,8 +363,9 @@ public final class CodexReviewMonitorStore {
         }
         server = nil
         endpointURL = nil
-        jobs = []
+        jobStore.reset()
         serverState = .stopped
+        broadcastStateChanges()
         writeDiagnosticsIfNeeded()
     }
 
@@ -244,8 +384,9 @@ public final class CodexReviewMonitorStore {
 
     private func startEmbeddedServer() async {
         serverState = .starting
-        jobs = []
         endpointURL = nil
+        jobStore.reset()
+        broadcastStateChanges()
         writeDiagnosticsIfNeeded()
 
         let server = ReviewMCPHTTPServer(configuration: configuration)
@@ -254,6 +395,7 @@ public final class CodexReviewMonitorStore {
             self.server = server
             endpointURL = url
             serverState = .running
+            broadcastStateChanges()
             writeDiagnosticsIfNeeded()
             startMonitoring(server: server)
             observeServerLifecycle(server: server)
@@ -261,8 +403,9 @@ public final class CodexReviewMonitorStore {
             await server.stop()
             self.server = nil
             endpointURL = nil
-            jobs = []
+            jobStore.reset()
             serverState = .failed(Self.errorMessage(from: error))
+            broadcastStateChanges()
             writeDiagnosticsIfNeeded()
         }
     }
@@ -275,11 +418,10 @@ public final class CodexReviewMonitorStore {
                 guard Task.isCancelled == false else {
                     return
                 }
-                let jobs = snapshots.map(CodexReviewMonitorJob.init)
                 guard let self, self.server === server else {
                     return
                 }
-                self.jobs = jobs
+                self.jobStore.apply(snapshots: snapshots)
                 self.writeDiagnosticsIfNeeded()
             }
         }
@@ -295,8 +437,9 @@ public final class CodexReviewMonitorStore {
                 }
                 self.server = nil
                 self.endpointURL = nil
-                self.jobs = []
+                self.jobStore.reset()
                 self.serverState = .stopped
+                self.broadcastStateChanges()
                 self.writeDiagnosticsIfNeeded()
             } catch is CancellationError {
             } catch {
@@ -305,8 +448,9 @@ public final class CodexReviewMonitorStore {
                 }
                 self.server = nil
                 self.endpointURL = nil
-                self.jobs = []
+                self.jobStore.reset()
                 self.serverState = .failed(Self.errorMessage(from: error))
+                self.broadcastStateChanges()
                 self.writeDiagnosticsIfNeeded()
             }
         }
@@ -371,6 +515,12 @@ public final class CodexReviewMonitorStore {
         return arguments[arguments.index(after: index)]
     }
 
+    private func broadcastStateChanges() {
+        for continuation in stateContinuations.values {
+            continuation.yield(())
+        }
+    }
+
     private func writeDiagnosticsIfNeeded() {
         guard let diagnosticsURL else {
             return
@@ -380,7 +530,7 @@ public final class CodexReviewMonitorStore {
             failureMessage: serverState.failureMessage,
             endpointURL: endpointURL?.absoluteString,
             childRuntimePath: nil,
-            jobs: jobs.map {
+            jobs: jobStore.jobs.map {
                 .init(
                     status: $0.status.rawValue,
                     summary: $0.summary,
@@ -402,35 +552,5 @@ public final class CodexReviewMonitorStore {
             try data.write(to: diagnosticsURL, options: .atomic)
         } catch {
         }
-    }
-}
-
-private extension CodexReviewMonitorJob {
-    init(snapshot: ReviewJobSnapshot) {
-        self.id = snapshot.jobID
-        self.sessionID = snapshot.sessionID
-        self.cwd = snapshot.cwd
-        self.targetSummary = snapshot.targetSummary
-        self.model = snapshot.model
-        self.threadID = snapshot.threadID
-        self.turnID = nil
-        self.status = switch snapshot.state {
-        case .queued:
-            .queued
-        case .running:
-            .running
-        case .succeeded:
-            .succeeded
-        case .failed:
-            .failed
-        case .cancelled:
-            .cancelled
-        }
-        self.startedAt = snapshot.startedAt ?? .distantPast
-        self.endedAt = snapshot.endedAt
-        self.summary = snapshot.summary
-        self.reviewLogText = snapshot.reviewLogText
-        self.reasoningLogText = snapshot.reasoningLogText
-        self.rawLogText = snapshot.rawLogText
     }
 }
