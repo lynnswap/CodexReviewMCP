@@ -3,6 +3,55 @@ import Testing
 @testable import ReviewCore
 
 @Suite struct ReviewCommandBuilderTests {
+    @Test func reviewCommandBuilderResolvesCodexFromPATH() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let binDirectory = tempDirectory.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+        let executableURL = binDirectory.appendingPathComponent("codex")
+        try """
+        #!/bin/zsh
+        exit 0
+        """.write(to: executableURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+
+        let builder = ReviewCommandBuilder(
+            codexCommand: "codex",
+            environment: [
+                "HOME": tempDirectory.path,
+                "PATH": "\(binDirectory.path):/usr/bin:/bin",
+            ]
+        )
+        let command = try builder.build(request: .init(cwd: tempDirectory.path))
+
+        #expect(command.executable == executableURL.path)
+    }
+
+    @Test func reviewCommandBuilderFailsBeforeSpawnWhenCodexIsMissing() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let missingCommand = "codex-missing"
+
+        let builder = ReviewCommandBuilder(
+            codexCommand: missingCommand,
+            environment: [
+                "HOME": tempDirectory.path,
+                "PATH": tempDirectory.path,
+            ]
+        )
+
+        #expect(throws: ReviewError.self) {
+            _ = try builder.build(request: .init(cwd: tempDirectory.path))
+        }
+
+        do {
+            _ = try builder.build(request: .init(cwd: tempDirectory.path))
+            Issue.record("expected command resolution failure")
+        } catch let error as ReviewError {
+            #expect(error.errorDescription == "Unable to locate \(missingCommand) executable. Set --codex-command or ensure PATH contains \(missingCommand).")
+        }
+    }
+
     @Test func reviewCommandBuilderAppliesDefaultsFromConfigFile() throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)

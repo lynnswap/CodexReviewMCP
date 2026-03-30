@@ -105,10 +105,7 @@ struct CodexReviewMCPTests {
             configuration: .init(
                 host: "127.0.0.1",
                 port: port,
-                codexCommand: resolveCodexCommand(
-                    requestedCommand: "codex",
-                    environment: liveReviewEnvironment()
-                ),
+                codexCommand: "codex",
                 environment: liveReviewEnvironment()
             )
         )

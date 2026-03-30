@@ -188,6 +188,44 @@ struct CodexReviewMonitorTests {
         #expect(readStructuredContent["status"] as? String == "succeeded")
         #expect(((readStructuredContent["review"] as? String) ?? "").isEmpty == false)
     }
+
+    @Test func launchedAppResolvesCodexFromPATHWithoutExplicitOverride() async throws {
+        let repository = try TemporaryReviewRepository.make()
+        defer { repository.cleanup() }
+        let scriptURL = try makeFakeExecReviewScript(mode: .success)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let executableDirectory = try makeExecutableDirectory(named: "codex", from: scriptURL)
+        defer { try? FileManager.default.removeItem(at: executableDirectory) }
+        let port = try nextAvailableTestPort(in: 39511 ... 39520)
+
+        let launchedApp = try LaunchedMonitorApp.start(
+            codexCommand: nil,
+            port: port,
+            path: "\(executableDirectory.path):/usr/bin:/bin:/usr/sbin:/sbin"
+        )
+        defer { launchedApp.terminate() }
+
+        let endpointURL: URL = try await waitUntilValue(timeout: .seconds(20), interval: .milliseconds(200)) {
+            try launchedApp.readDiagnostics()?.endpointURL.flatMap(URL.init(string:))
+        }
+        let client = MonitorHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
+
+        let response = try await client.callTool(
+            name: "review_start",
+            arguments: [
+                "cwd": repository.url.path,
+                "target": [
+                    "type": "uncommittedChanges",
+                    "title": "Uncommitted changes",
+                ],
+            ]
+        )
+
+        let result = try #require(response["result"] as? [String: Any])
+        let structuredContent = try #require(result["structuredContent"] as? [String: Any])
+        #expect(structuredContent["status"] as? String == "succeeded")
+        #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
+    }
 }
 
 private enum MonitorAppTestEnvironment {
@@ -285,7 +323,7 @@ private final class LaunchedMonitorApp {
         self.stderrHandle = stderrHandle
     }
 
-    static func start(codexCommand: String, port: Int) throws -> LaunchedMonitorApp {
+    static func start(codexCommand: String?, port: Int, path: String = "/usr/bin:/bin:/usr/sbin:/sbin") throws -> LaunchedMonitorApp {
         guard let sourceBundleURL = Bundle.main.bundleURL.pathExtension == "app"
             ? Bundle.main.bundleURL
             : nil
@@ -327,15 +365,21 @@ private final class LaunchedMonitorApp {
             "--args",
             MonitorAppTestEnvironment.portArgument,
             "\(port)",
-            MonitorAppTestEnvironment.codexCommandArgument,
-            codexCommand,
+        ]
+        if let codexCommand {
+            process.arguments?.append(contentsOf: [
+                MonitorAppTestEnvironment.codexCommandArgument,
+                codexCommand,
+            ])
+        }
+        process.arguments?.append(contentsOf: [
             MonitorAppTestEnvironment.diagnosticsPathArgument,
             diagnosticsURL.path,
-        ]
+        ])
         process.environment = [
             "HOME": NSHomeDirectory(),
             "TMPDIR": NSTemporaryDirectory(),
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": path,
         ]
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
@@ -454,6 +498,16 @@ private func makeFakeExecReviewScript(mode: FakeExecReviewMode) throws -> URL {
     try body.write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
     return url
+}
+
+private func makeExecutableDirectory(named name: String, from executableURL: URL) throws -> URL {
+    let directoryURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("CodexReviewMonitorExec-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+    let linkedURL = directoryURL.appendingPathComponent(name)
+    try FileManager.default.copyItem(at: executableURL, to: linkedURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: linkedURL.path)
+    return directoryURL
 }
 
 private final class MonitorHTTPTestClient: @unchecked Sendable {
