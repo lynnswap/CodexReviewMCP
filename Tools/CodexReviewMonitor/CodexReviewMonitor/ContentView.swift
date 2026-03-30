@@ -9,7 +9,7 @@ import SwiftUI
 import CodexReviewMCP
 
 struct ContentView: View {
-    let store: CodexReviewMonitorStore
+    let store: CodexReviewStore
 
     var body: some View {
         ReviewMonitorSplitViewRepresentable(
@@ -25,5 +25,5 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView(store: CodexReviewMonitorStore())
+    ContentView(store: CodexReviewStore())
 }

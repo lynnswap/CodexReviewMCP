@@ -414,12 +414,12 @@ private func parseErrorMessage(_ raw: Any?) -> String {
 private func trimmedParserText(appending line: String, to existing: String) -> String {
     var text = existing
     text.append(line)
-    guard text.utf8.count > reviewMonitorLogLimitBytes else {
+    guard text.utf8.count > reviewLogLimitBytes else {
         return text
     }
 
     let bytes = Array(text.utf8)
-    let start = max(bytes.count - reviewMonitorLogLimitBytes, 0)
+    let start = max(bytes.count - reviewLogLimitBytes, 0)
     let suffix = Array(bytes[start...])
     let firstNewline = suffix.firstIndex(of: 0x0A).map { suffix.index(after: $0) } ?? suffix.startIndex
     return String(decoding: suffix[firstNewline...], as: UTF8.self)

@@ -14,7 +14,7 @@ struct CodexReviewMCPTests {
         let secondPort = try nextAvailableTestPort(in: 39421 ... 39430)
         let scriptURL = try makeFakeExecReviewScript(mode: .success)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
-        let firstStore = CodexReviewMonitorStore(
+        let firstStore = CodexReviewStore(
             configuration: .init(host: "127.0.0.1", port: firstPort, codexCommand: scriptURL.path)
         )
 
@@ -27,7 +27,7 @@ struct CodexReviewMCPTests {
         #expect(firstStore.endpointURL == nil)
         #expect(firstStore.jobStore.jobs.isEmpty)
 
-        let secondStore = CodexReviewMonitorStore(
+        let secondStore = CodexReviewStore(
             configuration: .init(host: "127.0.0.1", port: secondPort, codexCommand: scriptURL.path)
         )
         await secondStore.start()
@@ -36,13 +36,13 @@ struct CodexReviewMCPTests {
         await secondStore.stop()
     }
 
-    @Test func embeddedMonitorReviewStartProgressesViaHTTP() async throws {
+    @Test func embeddedServerReviewStartProgressesViaHTTP() async throws {
         let port = try nextAvailableTestPort(in: 39421 ... 39430)
         let scriptURL = try makeFakeExecReviewScript(mode: .success)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
         let repository = try TemporaryReviewRepository.make()
         defer { repository.cleanup() }
-        let store = CodexReviewMonitorStore(
+        let store = CodexReviewStore(
             configuration: .init(host: "127.0.0.1", port: port, codexCommand: scriptURL.path)
         )
 
@@ -50,7 +50,7 @@ struct CodexReviewMCPTests {
             await store.start()
             #expect(store.serverState == .running)
             let endpointURL = try #require(store.endpointURL)
-            let client = MonitorHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 5)
+            let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 5)
 
             let response = try await client.callTool(
                 name: "review_start",
@@ -93,7 +93,7 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func embeddedMonitorLiveReviewStartProgressesViaHTTP() async throws {
+    @Test func embeddedServerLiveReviewStartProgressesViaHTTP() async throws {
         guard ProcessInfo.processInfo.environment["CODEX_REVIEW_MCP_LIVE_TESTS"] == "1" else {
             return
         }
@@ -101,7 +101,7 @@ struct CodexReviewMCPTests {
         defer { repository.cleanup() }
         let port = try nextAvailableTestPort(in: 39431 ... 39440)
 
-        let store = CodexReviewMonitorStore(
+        let store = CodexReviewStore(
             configuration: .init(
                 host: "127.0.0.1",
                 port: port,
@@ -115,7 +115,7 @@ struct CodexReviewMCPTests {
                 await store.start()
                 #expect(store.serverState == .running)
                 let endpointURL = try #require(store.endpointURL)
-                let client = MonitorHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
+                let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
 
                 let response = try await client.callTool(
                     name: "review_start",
@@ -167,8 +167,8 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func monitorJobStoreAppliesSnapshotsInPlace() throws {
-        let store = CodexReviewMonitorJobStore()
+    @Test func jobStoreAppliesSnapshotsInPlace() throws {
+        let store = CodexReviewJobStore()
         let queuedSnapshot = ReviewJobSnapshot(
             jobID: "job-1",
             sessionID: "session-1",
@@ -367,7 +367,7 @@ private func runProcess(_ arguments: [String], in directoryURL: URL) throws {
     }
 }
 
-private final class MonitorHTTPTestClient: @unchecked Sendable {
+private final class ReviewMCPHTTPTestClient: @unchecked Sendable {
     private let endpointURL: URL
     private let session: URLSession
     private let timeoutInterval: TimeInterval

@@ -22,7 +22,7 @@ private enum CodexReviewMonitorLaunchEnvironment {
 final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private var shouldManageEmbeddedServer = true
 
-    lazy var store = CodexReviewMonitorStore()
+    lazy var store = CodexReviewStore()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = notification

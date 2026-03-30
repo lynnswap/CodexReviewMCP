@@ -223,7 +223,7 @@ package struct ReviewJobSnapshot: Codable, Hashable, Sendable {
 }
 
 package extension ReviewRequestOptions {
-    var monitorTargetSummary: String {
+    var targetSummary: String {
         if uncommitted {
             return "Uncommitted changes"
         }

@@ -8,7 +8,7 @@ import CodexReviewMCP
 @MainActor
 struct CodexReviewMonitorTests {
     @Test func bindingStoreAppliesInitialState() {
-        let store = CodexReviewMonitorStore()
+        let store = CodexReviewStore()
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
         viewController.bind(store: store, onRestart: {})
@@ -139,7 +139,7 @@ struct CodexReviewMonitorTests {
         let endpointURL: URL = try await waitUntilValue(timeout: .seconds(20), interval: .milliseconds(200)) {
             try launchedApp.readDiagnostics()?.endpointURL.flatMap(URL.init(string:))
         }
-        let client = MonitorHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
+        let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
 
         let response = try await client.callTool(
             name: "review_start",
@@ -208,7 +208,7 @@ struct CodexReviewMonitorTests {
         let endpointURL: URL = try await waitUntilValue(timeout: .seconds(20), interval: .milliseconds(200)) {
             try launchedApp.readDiagnostics()?.endpointURL.flatMap(URL.init(string:))
         }
-        let client = MonitorHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
+        let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
 
         let response = try await client.callTool(
             name: "review_start",
@@ -510,7 +510,7 @@ private func makeExecutableDirectory(named name: String, from executableURL: URL
     return directoryURL
 }
 
-private final class MonitorHTTPTestClient: @unchecked Sendable {
+private final class ReviewMCPHTTPTestClient: @unchecked Sendable {
     private let endpointURL: URL
     private let session: URLSession
     private let timeoutInterval: TimeInterval
@@ -762,14 +762,14 @@ private func runGit(_ arguments: [String], in directory: URL) throws -> String {
 @MainActor
 private func makeJob(
     id: String = UUID().uuidString,
-    status: CodexReviewMonitorJobStatus,
+    status: CodexReviewJobStatus,
     targetSummary: String,
     summary: String? = nil,
     reasoningSummaryText: String = "",
     activityLogText: String = "",
     rawLogText: String = ""
-) -> CodexReviewMonitorJob {
-    CodexReviewMonitorJob(
+) -> CodexReviewJob {
+    CodexReviewJob(
         id: id,
         sessionID: "session-1",
         cwd: "/tmp/repo",

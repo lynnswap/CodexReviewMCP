@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 struct ReviewMonitorSplitViewRepresentable: NSViewControllerRepresentable {
-    let store: CodexReviewMonitorStore
+    let store: CodexReviewStore
     let onRestart: () -> Void
 
     func makeNSViewController(context: Context) -> ReviewMonitorSplitViewController {
@@ -28,11 +28,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController {
     private let transportViewController = ReviewMonitorTransportViewController()
     private let reasoningViewController = ReviewMonitorReasoningViewController()
 
-    private var store: CodexReviewMonitorStore?
+    private var store: CodexReviewStore?
     private var onRestart: (() -> Void)?
-    private var jobsByID: [String: CodexReviewMonitorJob] = [:]
+    private var jobsByID: [String: CodexReviewJob] = [:]
     private var selectedJobID: String?
-    private var currentServerState: CodexReviewMonitorServerState = .stopped
+    private var currentServerState: CodexReviewServerState = .stopped
     private var currentEndpointURL: URL?
     private var stateObservationTask: Task<Void, Never>?
     private var jobObservationTask: Task<Void, Never>?
@@ -74,7 +74,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController {
         jobObservationTask?.cancel()
     }
 
-    func bind(store: CodexReviewMonitorStore, onRestart: @escaping () -> Void) {
+    func bind(store: CodexReviewStore, onRestart: @escaping () -> Void) {
         self.store = store
         self.onRestart = onRestart
         currentServerState = store.serverState
@@ -85,9 +85,9 @@ final class ReviewMonitorSplitViewController: NSSplitViewController {
     }
 
     func apply(
-        serverState: CodexReviewMonitorServerState,
+        serverState: CodexReviewServerState,
         endpointURL: URL?,
-        jobs: [CodexReviewMonitorJob],
+        jobs: [CodexReviewJob],
         onRestart: @escaping () -> Void
     ) {
         currentServerState = serverState
@@ -96,7 +96,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController {
         render(jobs: jobs)
     }
 
-    private func render(jobs: [CodexReviewMonitorJob]) {
+    private func render(jobs: [CodexReviewJob]) {
         jobsByID = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
         let resolvedSelection = preferredSelectionJobID(in: jobs, current: selectedJobID)
         selectedJobID = resolvedSelection
@@ -159,7 +159,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController {
 
 @MainActor
 private func preferredSelectionJobID(
-    in jobs: [CodexReviewMonitorJob],
+    in jobs: [CodexReviewJob],
     current: String?
 ) -> String? {
     if let current, jobs.contains(where: { $0.id == current }) {
@@ -194,7 +194,7 @@ final class ReviewMonitorJobListViewController: NSViewController, NSTableViewDel
         var title: String
         var subtitle: String
 
-        init(job: CodexReviewMonitorJob) {
+        init(job: CodexReviewJob) {
             title = job.displayTitle
             subtitle = "\(job.status.displayText) • \(job.sessionID) • \(job.cwd)"
         }
@@ -217,7 +217,7 @@ final class ReviewMonitorJobListViewController: NSViewController, NSTableViewDel
     )
     private lazy var dataSource = makeDataSource()
 
-    private var jobsByID: [String: CodexReviewMonitorJob] = [:]
+    private var jobsByID: [String: CodexReviewJob] = [:]
     private var sectionedJobIDs = SectionedJobIDs(active: [], recent: [])
     private var cellStatesByID: [String: CellDisplayState] = [:]
 
@@ -246,7 +246,7 @@ final class ReviewMonitorJobListViewController: NSViewController, NSTableViewDel
         configureTableView()
     }
 
-    func apply(jobs: [CodexReviewMonitorJob], selectedJobID: String?) {
+    func apply(jobs: [CodexReviewJob], selectedJobID: String?) {
         jobsByID = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
 
         let activeJobs = jobs.filter { $0.isTerminal == false }
@@ -409,7 +409,7 @@ final class ReviewMonitorJobListViewController: NSViewController, NSTableViewDel
 }
 
 @MainActor
-private func reviewMonitorMetadataText(for job: CodexReviewMonitorJob) -> String {
+private func reviewMonitorMetadataText(for job: CodexReviewJob) -> String {
     var parts: [String] = [
         "Status: \(job.status.displayText)",
         "Session: \(job.sessionID)",
@@ -483,7 +483,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
         display(nil)
     }
 
-    func display(_ job: CodexReviewMonitorJob?) {
+    func display(_ job: CodexReviewJob?) {
         guard let job else {
             titleLabel.isHidden = true
             metadataLabel.isHidden = true
@@ -642,7 +642,7 @@ final class ReviewMonitorReasoningViewController: NSViewController {
         display(nil)
     }
 
-    func display(_ job: CodexReviewMonitorJob?) {
+    func display(_ job: CodexReviewJob?) {
         guard let job else {
             titleLabel.isHidden = true
             metadataLabel.isHidden = true
@@ -781,9 +781,9 @@ final class ReviewMonitorSidebarViewController: NSViewController {
     }
 
     func apply(
-        serverState: CodexReviewMonitorServerState,
+        serverState: CodexReviewServerState,
         endpointURL: URL?,
-        jobs: [CodexReviewMonitorJob],
+        jobs: [CodexReviewJob],
         selectedJobID: String?,
         onRestart: @escaping () -> Void
     ) {
@@ -870,7 +870,7 @@ private final class ReviewMonitorJobCellView: NSTableCellView {
         nil
     }
 
-    func configure(with job: CodexReviewMonitorJob) {
+    func configure(with job: CodexReviewJob) {
         titleLabel.stringValue = job.displayTitle
         subtitleLabel.stringValue = "\(job.status.displayText) • \(job.sessionID) • \(job.cwd)"
         toolTip = job.cwd
