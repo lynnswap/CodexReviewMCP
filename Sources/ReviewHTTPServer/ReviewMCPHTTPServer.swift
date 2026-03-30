@@ -183,19 +183,19 @@ private enum ReviewToolCatalog {
     static let tools: [Tool] = [
         Tool(
             name: "review_start",
-            description: "Start a detached review through codex app-server and return the review thread handle.",
+            description: "Run a repository review through codex exec review and wait until the final result is ready.",
             inputSchema: reviewStartInputSchema,
             annotations: .init(readOnlyHint: false)
         ),
         Tool(
             name: "review_read",
-            description: "Read the current or final state of a detached review thread owned by the current MCP session.",
+            description: "Read the current or final state of a review job owned by the current MCP session.",
             inputSchema: reviewReadInputSchema,
             annotations: .init(readOnlyHint: true)
         ),
         Tool(
             name: "review_cancel",
-            description: "Cancel a detached review thread owned by the current MCP session.",
+            description: "Cancel a running review job owned by the current MCP session.",
             inputSchema: cancelInputSchema,
             annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false)
         ),
@@ -265,14 +265,14 @@ private struct ReviewToolHandler {
     private func handleReviewStart(params: CallTool.Parameters) async -> CallTool.Result {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewStartArguments.self)
-            let handle = try await reviewJobStore.startReview(
+            let result = try await reviewJobStore.startReview(
                 sessionID: sessionID,
                 request: arguments.makeRequest()
             )
             return try CallTool.Result(
-                content: [.text(text: "Review started.", annotations: nil, _meta: nil)],
-                structuredContent: handle.structuredContent(),
-                isError: false
+                content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
+                structuredContent: result.structuredContent(),
+                isError: result.status == .failed
             )
         } catch {
             return toolError(error.localizedDescription)

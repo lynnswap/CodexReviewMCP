@@ -425,32 +425,6 @@ package struct ReviewStartRequest: Codable, Hashable, Sendable {
     }
 }
 
-package struct ReviewHandle: Sendable, Hashable {
-    package var jobID: String
-    package var reviewThreadID: String
-    package var threadID: String?
-    package var turnID: String?
-    package var status: ReviewJobState
-
-    package func structuredContent() -> Value {
-        var object: [String: Value] = [
-            "jobId": .string(jobID),
-            "parentThreadId": .string(parentThreadID),
-            "reviewThreadId": .string(reviewThreadID),
-            "status": .string(status.rawValue),
-        ]
-        if let threadID {
-            object["threadId"] = .string(threadID)
-        }
-        object["turnId"] = turnID.map(Value.string) ?? .null
-        return .object(object)
-    }
-
-    package var parentThreadID: String {
-        threadID ?? reviewThreadID
-    }
-}
-
 package struct ReviewReadResult: Sendable, Hashable {
     package var jobID: String
     package var reviewThreadID: String

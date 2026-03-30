@@ -27,7 +27,7 @@ struct ReviewHTTPServerTests {
         #expect(shouldCloseSessionAfterDelete(method: "POST", statusCode: 204) == false)
     }
 
-    @Test func reviewStartReturnsJobBackedHandle() async throws {
+    @Test func reviewStartReturnsFinalReviewResult() async throws {
         let scriptURL = try makeFakeExecReviewScript(mode: .success)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
 
@@ -55,13 +55,13 @@ struct ReviewHTTPServerTests {
         let structuredContent = try #require(result["structuredContent"] as? [String: Any])
         let jobID = try #require(structuredContent["jobId"] as? String)
         #expect(structuredContent["reviewThreadId"] as? String == jobID)
-        #expect(structuredContent["status"] as? String == "queued")
-        #expect(structuredContent["turnId"] is NSNull)
+        #expect(structuredContent["status"] as? String == "succeeded")
+        #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
         await server.stop()
     }
 
     @Test func reviewReadIsIsolatedBySessionID() async throws {
-        let scriptURL = try makeFakeExecReviewScript(mode: .long)
+        let scriptURL = try makeFakeExecReviewScript(mode: .success)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
 
         let port = try nextAvailableTestPort(in: 39451 ... 39460)
@@ -113,16 +113,19 @@ struct ReviewHTTPServerTests {
 
         let endpointURL = try await server.start()
         let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
-        let startResponse = try await client.callTool(
-            name: "review_start",
-            arguments: [
-                "cwd": FileManager.default.temporaryDirectory.path,
-                "target": ["type": "uncommittedChanges"],
-            ]
+        let sessionID = try await client.ensureSession()
+        let jobID = try await server.reviewJobStore.enqueueReview(
+            sessionID: sessionID,
+            request: .init(cwd: FileManager.default.temporaryDirectory.path, uncommitted: true)
         )
-        let startResult = try #require(startResponse["result"] as? [String: Any])
-        let startStructuredContent = try #require(startResult["structuredContent"] as? [String: Any])
-        let jobID = try #require(startStructuredContent["reviewThreadId"] as? String)
+        let reviewTask = Task {
+            await server.reviewJobStore.runReview(jobID: jobID) { _, _ in }
+        }
+
+        try await waitUntil(timeout: .seconds(5), interval: .milliseconds(100)) {
+            let snapshots = await server.reviewJobStore.allSnapshots()
+            return snapshots.contains(where: { $0.jobID == jobID && $0.state == .running })
+        }
 
         let cancelResponse = try await client.callTool(
             name: "review_cancel",
@@ -133,17 +136,8 @@ struct ReviewHTTPServerTests {
         #expect(cancelStructuredContent["jobId"] as? String == jobID)
         #expect(cancelStructuredContent["cancelled"] as? Bool == true)
 
-        let readStructuredContent: [String: Any] = try await waitUntilValue(timeout: .seconds(10), interval: .milliseconds(100)) {
-            let readResponse = try await client.callTool(
-                name: "review_read",
-                arguments: ["reviewThreadId": jobID]
-            )
-            let readResult = try #require(readResponse["result"] as? [String: Any])
-            let structuredContent = try #require(readResult["structuredContent"] as? [String: Any])
-            return structuredContent["status"] as? String == "cancelled" ? structuredContent : nil
-        }
-
-        #expect(readStructuredContent["status"] as? String == "cancelled")
+        let execution = await reviewTask.value
+        #expect(execution.snapshot.state == .cancelled)
         await server.stop()
     }
 
@@ -164,39 +158,34 @@ struct ReviewHTTPServerTests {
         let endpointURL = try await server.start()
         let client1 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
         let client2 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
-        let startResponse1 = try await client1.callTool(
-            name: "review_start",
-            arguments: [
-                "cwd": FileManager.default.temporaryDirectory.path,
-                "target": ["type": "uncommittedChanges"],
-            ]
+        let sessionID1 = try await client1.ensureSession()
+        let sessionID2 = try await client2.ensureSession()
+        let jobID1 = try await server.reviewJobStore.enqueueReview(
+            sessionID: sessionID1,
+            request: .init(cwd: FileManager.default.temporaryDirectory.path, uncommitted: true)
         )
-        let startResponse2 = try await client2.callTool(
-            name: "review_start",
-            arguments: [
-                "cwd": FileManager.default.temporaryDirectory.path,
-                "target": ["type": "uncommittedChanges"],
-            ]
+        let jobID2 = try await server.reviewJobStore.enqueueReview(
+            sessionID: sessionID2,
+            request: .init(cwd: FileManager.default.temporaryDirectory.path, uncommitted: true)
         )
+        let reviewTask1 = Task {
+            await server.reviewJobStore.runReview(jobID: jobID1) { _, _ in }
+        }
+        let reviewTask2 = Task {
+            await server.reviewJobStore.runReview(jobID: jobID2) { _, _ in }
+        }
 
-        let startResult1 = try #require(startResponse1["result"] as? [String: Any])
-        let startStructuredContent1 = try #require(startResult1["structuredContent"] as? [String: Any])
-        let jobID1 = try #require(startStructuredContent1["reviewThreadId"] as? String)
-        let startResult2 = try #require(startResponse2["result"] as? [String: Any])
-        let startStructuredContent2 = try #require(startResult2["structuredContent"] as? [String: Any])
-        let jobID2 = try #require(startStructuredContent2["reviewThreadId"] as? String)
+        try await waitUntil(timeout: .seconds(5), interval: .milliseconds(100)) {
+            let snapshots = await server.reviewJobStore.allSnapshots()
+            return snapshots.contains(where: { $0.jobID == jobID1 && $0.state == .running }) &&
+                snapshots.contains(where: { $0.jobID == jobID2 && $0.state == .running })
+        }
 
         let deleteStatus = try await client1.deleteSession()
         #expect(deleteStatus == 200)
 
-        try await waitUntil {
-            let response = try await client1.callTool(
-                name: "review_read",
-                arguments: ["reviewThreadId": jobID1]
-            )
-            let result = try #require(response["result"] as? [String: Any])
-            return (result["isError"] as? Bool) == true
-        }
+        let execution1 = await reviewTask1.value
+        #expect(execution1.snapshot.state == .cancelled)
 
         let session2Read = try await client2.callTool(
             name: "review_read",
@@ -204,7 +193,14 @@ struct ReviewHTTPServerTests {
         )
         let session2Result = try #require(session2Read["result"] as? [String: Any])
         let session2StructuredContent = try #require(session2Result["structuredContent"] as? [String: Any])
-        #expect(["queued", "running", "cancelled"].contains(session2StructuredContent["status"] as? String ?? ""))
+        #expect(session2StructuredContent["status"] as? String == "running")
+
+        _ = try await client2.callTool(
+            name: "review_cancel",
+            arguments: ["reviewThreadId": jobID2]
+        )
+        let execution2 = await reviewTask2.value
+        #expect(execution2.snapshot.state == .cancelled)
         await server.stop()
     }
 }
@@ -258,7 +254,7 @@ private func makeFakeExecReviewScript(mode: FakeExecReviewMode) throws -> URL {
     return url
 }
 
-private final class HTTPToolClient {
+private final class HTTPToolClient: @unchecked Sendable {
     private let endpointURL: URL
     private let session: URLSession
     private let timeoutInterval: TimeInterval
@@ -277,8 +273,16 @@ private final class HTTPToolClient {
         name: String,
         arguments: [String: Any]
     ) async throws -> [String: Any] {
-        let sessionID = try await initializeIfNeeded()
-        let payload = try await postSSEPayload(
+        let payload = try await callToolPayload(name: name, arguments: arguments)
+        return try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
+    }
+
+    func callToolPayload(
+        name: String,
+        arguments: [String: Any]
+    ) async throws -> Data {
+        let sessionID = try await ensureSession()
+        return try await postSSEPayload(
             body: [
                 "jsonrpc": "2.0",
                 "id": 2,
@@ -290,11 +294,10 @@ private final class HTTPToolClient {
             ],
             sessionID: sessionID
         )
-        return try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
     }
 
     func deleteSession() async throws -> Int {
-        let sessionID = try await initializeIfNeeded()
+        let sessionID = try await ensureSession()
         var request = URLRequest(url: endpointURL)
         request.httpMethod = "DELETE"
         request.timeoutInterval = timeoutInterval
@@ -304,6 +307,17 @@ private final class HTTPToolClient {
         let httpResponse = try #require(response as? HTTPURLResponse)
         self.sessionID = nil
         return httpResponse.statusCode
+    }
+
+    func ensureSession() async throws -> String {
+        try await initializeIfNeeded()
+    }
+
+    func siblingSharingSession() async throws -> HTTPToolClient {
+        let sharedSessionID = try await ensureSession()
+        let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: timeoutInterval)
+        client.sessionID = sharedSessionID
+        return client
     }
 
     private func initializeIfNeeded() async throws -> String {

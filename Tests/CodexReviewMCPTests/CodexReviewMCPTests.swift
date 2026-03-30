@@ -40,6 +40,8 @@ struct CodexReviewMCPTests {
         let port = try nextAvailableTestPort(in: 39421 ... 39430)
         let scriptURL = try makeFakeExecReviewScript(mode: .success)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let repository = try TemporaryReviewRepository.make()
+        defer { repository.cleanup() }
         let store = CodexReviewMonitorStore(
             configuration: .init(host: "127.0.0.1", port: port, codexCommand: scriptURL.path)
         )
@@ -53,7 +55,7 @@ struct CodexReviewMCPTests {
             let response = try await client.callTool(
                 name: "review_start",
                 arguments: [
-                    "cwd": "/Users/kn/Dev/CodexReviewMCP",
+                    "cwd": repository.url.path,
                     "target": [
                         "type": "uncommittedChanges",
                         "title": "Uncommitted changes",
@@ -65,17 +67,17 @@ struct CodexReviewMCPTests {
             let structuredContent = try #require(result["structuredContent"] as? [String: Any])
             let jobID = try #require(structuredContent["jobId"] as? String)
             #expect(structuredContent["reviewThreadId"] as? String == jobID)
-            #expect(structuredContent["status"] as? String == "queued")
+            #expect(structuredContent["status"] as? String == "succeeded")
+            #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
 
             try await waitUntil(timeout: .seconds(2)) {
-                await MainActor.run {
-                    guard let job = store.jobs.first else {
-                        return false
-                    }
-                    return job.status != .queued &&
-                        job.reviewLogText.isEmpty == false &&
-                        job.reasoningLogText.isEmpty == false
+                let job = await MainActor.run { store.jobs.first }
+                guard let job else {
+                    return false
                 }
+                return job.status == .succeeded &&
+                    job.reviewLogText.isEmpty == false &&
+                    job.reasoningLogText.isEmpty == false
             }
 
             let job = try #require(store.jobs.first)
@@ -102,17 +104,20 @@ struct CodexReviewMCPTests {
             configuration: .init(
                 host: "127.0.0.1",
                 port: port,
-                codexCommand: "/opt/homebrew/bin/codex",
+                codexCommand: resolveCodexCommand(
+                    requestedCommand: "codex",
+                    environment: liveReviewEnvironment()
+                ),
                 environment: liveReviewEnvironment()
             )
         )
 
         do {
-            try await withTestTimeout(seconds: 150) { @MainActor in
+            try await withTestTimeout(seconds: 1500) { @MainActor in
                 await store.start()
                 #expect(store.serverState == .running)
                 let endpointURL = try #require(store.endpointURL)
-                let client = MonitorHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 30)
+                let client = MonitorHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
 
                 let response = try await client.callTool(
                     name: "review_start",
@@ -128,51 +133,32 @@ struct CodexReviewMCPTests {
                 let result = try #require(response["result"] as? [String: Any])
                 let structuredContent = try #require(result["structuredContent"] as? [String: Any])
                 let reviewThreadID = try #require(structuredContent["reviewThreadId"] as? String)
+                #expect(structuredContent["status"] as? String == "succeeded")
+                #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
                 #expect(reviewThreadID.isEmpty == false)
 
                 try await waitUntil(timeout: .seconds(60), interval: .milliseconds(200)) {
-                    await MainActor.run {
-                        guard let job = store.jobs.first else {
-                            return false
-                        }
-                        return job.status != .queued &&
-                            (job.activityLogText.isEmpty == false || job.reasoningSummaryText.isEmpty == false)
+                    let job = await MainActor.run { store.jobs.first }
+                    guard let job else {
+                        return false
                     }
+                    return job.status == .succeeded &&
+                        (job.activityLogText.isEmpty == false || job.reasoningSummaryText.isEmpty == false)
                 }
 
                 let job = try #require(store.jobs.first)
-                #expect(job.status != .queued)
+                #expect(job.status == .succeeded)
                 #expect(job.activityLogText.isEmpty == false || job.reasoningSummaryText.isEmpty == false)
-
-                let terminalStructuredContent: [String: Any] = try await waitUntilValue(
-                    timeout: .seconds(90),
-                    interval: .seconds(1)
-                ) {
-                    let readResponse = try await client.callTool(
-                        name: "review_read",
-                        arguments: [
-                            "reviewThreadId": reviewThreadID,
-                        ]
-                    )
-                    if let errorObject = readResponse["error"] as? [String: Any] {
-                        throw TestFailure("review_read returned error: \(errorObject)")
-                    }
-                    guard
-                        let readResult = readResponse["result"] as? [String: Any],
-                        let structuredContent = readResult["structuredContent"] as? [String: Any]
-                    else {
-                        return nil
-                    }
-                    let status = structuredContent["status"] as? String ?? ""
-                    if status == "failed" || status == "cancelled" {
-                        throw TestFailure("review_read returned terminal non-success state: \(structuredContent)")
-                    }
-                    let review = structuredContent["review"] as? String ?? ""
-                    return status == "succeeded" && review.isEmpty == false ? structuredContent : nil
-                }
-
-                #expect(terminalStructuredContent["status"] as? String == "succeeded")
-                #expect(((terminalStructuredContent["review"] as? String) ?? "").isEmpty == false)
+                let readResponse = try await client.callTool(
+                    name: "review_read",
+                    arguments: [
+                        "reviewThreadId": reviewThreadID,
+                    ]
+                )
+                let readResult = try #require(readResponse["result"] as? [String: Any])
+                let readStructuredContent = try #require(readResult["structuredContent"] as? [String: Any])
+                #expect(readStructuredContent["status"] as? String == "succeeded")
+                #expect(((readStructuredContent["review"] as? String) ?? "").isEmpty == false)
             }
         } catch {
             await store.stop()

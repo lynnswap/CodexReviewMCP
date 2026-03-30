@@ -107,7 +107,7 @@ struct CodexReviewMonitorTests {
         let endpointURL: URL = try await waitUntilValue(timeout: .seconds(20), interval: .milliseconds(200)) {
             try launchedApp.readDiagnostics()?.endpointURL.flatMap(URL.init(string:))
         }
-        let client = MonitorHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 30)
+        let client = MonitorHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
 
         let response = try await client.callTool(
             name: "review_start",
@@ -126,11 +126,13 @@ struct CodexReviewMonitorTests {
         let jobID = try #require(structuredContent["jobId"] as? String)
         #expect(reviewThreadID == jobID)
         #expect(reviewThreadID.isEmpty == false)
+        #expect(structuredContent["status"] as? String == "succeeded")
+        #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
 
         let diagnostics: MonitorAppDiagnostics = try await waitUntilValue(timeout: .seconds(30), interval: .milliseconds(200)) {
             guard let diagnostics = try launchedApp.readDiagnostics(),
                   let job = diagnostics.jobs.first,
-                  job.status != "queued",
+                  job.status == "succeeded",
                   job.reviewLogText.isEmpty == false || job.reasoningLogText.isEmpty == false
             else {
                 return nil
@@ -139,32 +141,20 @@ struct CodexReviewMonitorTests {
         }
 
         let job = try #require(diagnostics.jobs.first)
-        #expect(job.status != "queued")
+        #expect(job.status == "succeeded")
         #expect(job.reviewLogText.isEmpty == false || job.reasoningLogText.isEmpty == false)
         #expect(diagnostics.childRuntimePath == nil)
 
-        let terminalStructuredContent: [String: Any] = try await waitUntilValue(
-            timeout: .seconds(45),
-            interval: .seconds(1)
-        ) {
-            let readResponse = try await client.callTool(
-                name: "review_read",
-                arguments: [
-                    "reviewThreadId": reviewThreadID,
-                ]
-            )
-            let readResult = try #require(readResponse["result"] as? [String: Any])
-            let structuredContent = try #require(readResult["structuredContent"] as? [String: Any])
-            let status = structuredContent["status"] as? String ?? ""
-            if status == "failed" || status == "cancelled" {
-                throw TestFailure("review_read returned terminal non-success state: \(structuredContent)\n\(launchedApp.failureContext())")
-            }
-            let review = structuredContent["review"] as? String ?? ""
-            return status == "succeeded" && review.isEmpty == false ? structuredContent : nil
-        }
-
-        #expect(terminalStructuredContent["status"] as? String == "succeeded")
-        #expect(((terminalStructuredContent["review"] as? String) ?? "").isEmpty == false)
+        let readResponse = try await client.callTool(
+            name: "review_read",
+            arguments: [
+                "reviewThreadId": reviewThreadID,
+            ]
+        )
+        let readResult = try #require(readResponse["result"] as? [String: Any])
+        let readStructuredContent = try #require(readResult["structuredContent"] as? [String: Any])
+        #expect(readStructuredContent["status"] as? String == "succeeded")
+        #expect(((readStructuredContent["review"] as? String) ?? "").isEmpty == false)
     }
 }
 

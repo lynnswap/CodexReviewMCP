@@ -138,7 +138,7 @@ Adapter endpoint resolution order:
 
 ### `review_start`
 
-Starts a review job through `codex exec review --json`.
+Runs a review through `codex exec review --json` and blocks until the final result is ready.
 
 Key inputs:
 
@@ -159,10 +159,19 @@ Returns:
 - `reviewThreadId`
 - `threadId` when available
 - `status`
+- `review`
+- `lastAgentMessage`
+- `error`
+
+Notes:
+
+- `review_start` is the primary client flow. It waits for terminal completion, so MCP clients should configure a sufficiently large tool timeout.
+- `review_read` is only a supplementary API for post-hoc inspection or manual troubleshooting.
 
 ### `review_read`
 
 Reads the current or final state of a review job owned by the current MCP session.
+This is optional for normal clients because `review_start` already returns the final result.
 
 Returns:
 

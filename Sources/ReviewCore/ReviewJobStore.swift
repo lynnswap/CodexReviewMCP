@@ -42,7 +42,7 @@ package actor ReviewJobStore {
     private let logger = Logger(label: "codex-review-mcp.jobs")
     private var jobs: [String: JobRecord] = [:]
     private var closedSessions: Set<String> = []
-    private var runTasks: [String: Task<Void, Never>] = [:]
+    private var runTasks: [String: Task<ReviewExecutionResult, Never>] = [:]
     private var snapshotContinuations: [UUID: AsyncStream<[ReviewJobSnapshot]>.Continuation] = [:]
 
     package init(
@@ -88,7 +88,7 @@ package actor ReviewJobStore {
     package func startReview(
         sessionID: String,
         request: ReviewStartRequest
-    ) throws -> ReviewHandle {
+    ) async throws -> ReviewReadResult {
         if closedSessions.contains(sessionID) {
             throw ReviewError.accessDenied("Session \(sessionID) is already closed.")
         }
@@ -97,22 +97,25 @@ package actor ReviewJobStore {
             request: request.reviewRequestOptions().validated()
         )
         let task = Task {
-            _ = await self.runReview(jobID: jobID) { _, message in
+            let execution = await self.runReview(jobID: jobID) { _, message in
                 await self.applyProgress(jobID: jobID, message: message)
             }
             await self.clearRunTask(jobID: jobID)
+            return execution
         }
         runTasks[jobID] = task
-        guard let snapshot = snapshot(jobID: jobID) else {
-            throw ReviewError.jobNotFound("Job \(jobID) was not found.")
-        }
-        return ReviewHandle(
-            jobID: jobID,
-            reviewThreadID: jobID,
-            threadID: snapshot.threadID,
-            turnID: nil,
-            status: snapshot.state
-        )
+        let execution = await task.value
+        return readResult(jobID: jobID, sessionID: sessionID)
+            ?? ReviewReadResult(
+                jobID: execution.snapshot.jobID,
+                reviewThreadID: execution.snapshot.jobID,
+                threadID: execution.snapshot.threadID,
+                turnID: nil,
+                status: execution.snapshot.state,
+                review: execution.content,
+                lastAgentMessage: execution.snapshot.lastAgentMessage,
+                error: execution.snapshot.errorMessage
+            )
     }
 
     package func runReview(
@@ -205,26 +208,11 @@ package actor ReviewJobStore {
         reviewThreadID: String,
         sessionID: String
     ) throws -> ReviewReadResult {
-        let snapshot = try authorizedSnapshot(jobID: reviewThreadID, sessionID: sessionID)
-        guard let record = jobs[reviewThreadID] else {
+        try ensureAccess(jobID: reviewThreadID, sessionID: sessionID)
+        guard let result = readResult(jobID: reviewThreadID, sessionID: sessionID) else {
             throw ReviewError.jobNotFound("Job \(reviewThreadID) was not found.")
         }
-        let reviewText: String
-        if snapshot.state.isTerminal {
-            reviewText = record.reviewText
-        } else {
-            reviewText = record.reviewText.nilIfEmpty ?? snapshot.lastAgentMessage
-        }
-        return ReviewReadResult(
-            jobID: snapshot.jobID,
-            reviewThreadID: snapshot.jobID,
-            threadID: snapshot.threadID,
-            turnID: nil,
-            status: snapshot.state,
-            review: reviewText,
-            lastAgentMessage: snapshot.lastAgentMessage,
-            error: snapshot.errorMessage
-        )
+        return result
     }
 
     package func cancelReview(
@@ -462,6 +450,31 @@ package actor ReviewJobStore {
             throw ReviewError.jobNotFound("Job \(jobID) was not found.")
         }
         return snapshot
+    }
+
+    private func readResult(jobID: String, sessionID: String) -> ReviewReadResult? {
+        guard let snapshot = snapshot(jobID: jobID),
+              let record = jobs[jobID],
+              record.sessionID == sessionID
+        else {
+            return nil
+        }
+        let reviewText: String
+        if snapshot.state.isTerminal {
+            reviewText = record.reviewText
+        } else {
+            reviewText = record.reviewText.nilIfEmpty ?? snapshot.lastAgentMessage
+        }
+        return ReviewReadResult(
+            jobID: snapshot.jobID,
+            reviewThreadID: snapshot.jobID,
+            threadID: snapshot.threadID,
+            turnID: nil,
+            status: snapshot.state,
+            review: reviewText,
+            lastAgentMessage: snapshot.lastAgentMessage,
+            error: snapshot.errorMessage
+        )
     }
 
     private func ensureAccess(jobID: String, sessionID: String) throws {

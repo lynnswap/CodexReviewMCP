@@ -114,8 +114,9 @@ import Testing
         }
     }
 
-    @Test func reviewJobStoreReadReviewReturnsLatestAgentMessageWhileRunning() async throws {
-        let scriptURL = try makeFakeCodexScript(mode: "progress")
+    @Test func reviewJobStoreStartReviewReturnsTerminalResult() async throws {
+        let scriptURL = try makeFakeCodexScript(mode: "success")
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
         let store = ReviewJobStore(
             configuration: .init(
                 codexCommand: scriptURL.path,
@@ -125,18 +126,84 @@ import Testing
             )
         )
 
-        let handle = try await store.startReview(
-            sessionID: "session-running",
+        let result = try await store.startReview(
+            sessionID: "session-success",
             request: .init(
                 cwd: FileManager.default.temporaryDirectory.path,
                 target: .uncommittedChanges
             )
         )
 
+        #expect(result.status == .succeeded)
+        #expect(result.review == "Review ok")
+        #expect(result.reviewThreadID == result.jobID)
+    }
+
+    @Test func reviewJobStoreStartReviewReturnsCancelledAfterInFlightCancel() async throws {
+        let scriptURL = try makeFakeCodexScript(mode: "long")
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let store = ReviewJobStore(
+            configuration: .init(
+                codexCommand: scriptURL.path,
+                environment: [
+                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                    "CODEX_FAKE_MODE": "long",
+                ]
+            )
+        )
+
+        let reviewTask = Task {
+            try await store.startReview(
+                sessionID: "session-start-cancel",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
+            )
+        }
+
+        let jobID: String = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(100)) {
+            let snapshots = await store.allSnapshots(for: "session-start-cancel")
+            guard let snapshot = snapshots.first, snapshot.state == .running else {
+                return nil
+            }
+            return snapshot.jobID
+        }
+
+        _ = try await store.cancel(jobID: jobID, sessionID: "session-start-cancel", reason: "test cancel")
+        let result = try await reviewTask.value
+
+        #expect(result.status == .cancelled)
+        #expect(result.error == "test cancel")
+    }
+
+    @Test func reviewJobStoreReadReviewReturnsLatestAgentMessageWhileRunning() async throws {
+        let scriptURL = try makeFakeCodexScript(mode: "progress")
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let store = ReviewJobStore(
+            configuration: .init(
+                codexCommand: scriptURL.path,
+                environment: [
+                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                ]
+            )
+        )
+
+        let jobID = try await store.enqueueReview(
+            sessionID: "session-running",
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                uncommitted: true
+            )
+        )
+        let reviewTask = Task {
+            await store.runReview(jobID: jobID) { _, _ in }
+        }
+
         var observedRunningReview = false
         for _ in 0 ..< 50 {
             let result = try await store.readReview(
-                reviewThreadID: handle.reviewThreadID,
+                reviewThreadID: jobID,
                 sessionID: "session-running"
             )
             if result.status == .running && result.review == "Still working" {
@@ -147,7 +214,8 @@ import Testing
         }
         #expect(observedRunningReview == true)
 
-        _ = try await store.cancel(jobID: handle.reviewThreadID, sessionID: "session-running", reason: "done")
+        _ = try await store.cancel(jobID: jobID, sessionID: "session-running", reason: "done")
+        _ = await reviewTask.value
     }
 
     @Test func reviewJobStoreRejectsMissingWorkingDirectory() async throws {
@@ -248,6 +316,21 @@ private func makeMarkerCodexScript(markerURL: URL) throws -> URL {
     """.write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
     return url
+}
+
+private func waitUntilValue<T>(
+    timeout: Duration = .seconds(2),
+    interval: Duration = .milliseconds(20),
+    action: @escaping () async throws -> T?
+) async throws -> T {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if let value = try await action() {
+            return value
+        }
+        try await Task.sleep(for: interval)
+    }
+    throw TestFailure("timed out")
 }
 
 private struct TestFailure: Error {
