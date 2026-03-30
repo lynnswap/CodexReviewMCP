@@ -40,7 +40,9 @@ final class ReviewMonitorTransportViewController: NSViewController {
         title: "Select a job",
         description: "Choose a running or recent review from the list."
     )
+    private var uiStateObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationHandles: Set<ObservationHandle> = []
+    private var selectedJobObservationGeneration: UInt64 = 0
 
     init(uiState: ReviewMonitorUIState) {
         self.uiState = uiState
@@ -60,12 +62,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         configureHierarchy()
-        titleLabel.isHidden = true
-        metadataStack.isHidden = true
-        summaryLabel.isHidden = true
-        sectionTitleLabel.isHidden = true
-        logScrollView.isHidden = true
-        emptyStateView.isHidden = false
+        renderEmptyState()
     }
 
     private func configureHierarchy() {
@@ -120,79 +117,80 @@ final class ReviewMonitorTransportViewController: NSViewController {
     }
 
     private func bindObservation() {
-        uiState.selectedJobEntry?.observe(\.targetSummary) { [weak self] newValue in
-            guard let self else {
+        uiStateObservationHandles.removeAll()
+        uiState.observe(\.selectedJobEntry) { [weak self] selectedJob in
+            self?.bindSelectedJob(selectedJob)
+        }
+        .store(in: &uiStateObservationHandles)
+    }
+
+    private func bindSelectedJob(_ selectedJob: CodexReviewJob?) {
+        selectedJobObservationGeneration &+= 1
+        selectedJobObservationHandles.removeAll()
+
+        guard let selectedJob else {
+            renderEmptyState()
+            return
+        }
+
+        let generation = selectedJobObservationGeneration
+        renderSelectedJob(selectedJob)
+        selectedJob.observe(
+            [
+                \.targetSummary,
+                \.status,
+                \.cwd,
+                \.model,
+                \.summary,
+                \.threadID,
+                \.turnID,
+                \.reviewEntries,
+            ]
+        ) { [weak self, weak selectedJob] in
+            guard let self, let selectedJob,
+                  self.selectedJobObservationGeneration == generation
+            else {
                 return
             }
-            let hasSelection = self.uiState.selectedJobEntry != nil
-            self.titleLabel.isHidden = hasSelection == false
-            self.metadataStack.isHidden = hasSelection == false
-            self.summaryLabel.isHidden = hasSelection == false
-            self.sectionTitleLabel.isHidden = hasSelection == false
-            self.logScrollView.isHidden = hasSelection == false
-            self.emptyStateView.isHidden = hasSelection
-            self.titleLabel.stringValue = newValue
-            if hasSelection == false {
-                self.statusLabel.stringValue = ""
-                self.cwdLabel.stringValue = ""
-                self.modelLabel.stringValue = ""
-                self.threadLabel.stringValue = ""
-                self.turnLabel.stringValue = ""
-                self.summaryLabel.stringValue = ""
-                self.logScrollView.clear()
-            }
+            self.renderSelectedJob(selectedJob)
         }
         .store(in: &selectedJobObservationHandles)
-        uiState.selectedJobEntry?.observe(\.status) { [weak self] newValue in
-            guard let self else {
-                return
-            }
-            self.statusLabel.stringValue = "Status: \(newValue.displayText)"
-        }
-        .store(in: &selectedJobObservationHandles)
-        uiState.selectedJobEntry?.observe(\.cwd) { [weak self] newValue in
-            guard let self else {
-                return
-            }
-            self.cwdLabel.stringValue = "CWD: \(newValue)"
-        }
-        .store(in: &selectedJobObservationHandles)
-        uiState.selectedJobEntry?.observe(\.model) { [weak self] newValue in
-            guard let self else {
-                return
-            }
-            self.modelLabel.stringValue = newValue.map { "Model: \($0)" } ?? ""
-        }
-        .store(in: &selectedJobObservationHandles)
-        uiState.selectedJobEntry?.observe(\.summary) { [weak self] newValue in
-            guard let self else {
-                return
-            }
-            self.summaryLabel.isHidden = newValue.isEmpty
-            self.summaryLabel.stringValue = newValue
-        }
-        .store(in: &selectedJobObservationHandles)
-        uiState.selectedJobEntry?.observe(\.threadID) { [weak self] newValue in
-            guard let self else {
-                return
-            }
-            self.threadLabel.stringValue = newValue.map { "Thread: \($0)" } ?? ""
-        }
-        .store(in: &selectedJobObservationHandles)
-        uiState.selectedJobEntry?.observe(\.turnID) { [weak self] newValue in
-            guard let self else {
-                return
-            }
-            self.turnLabel.stringValue = newValue.map { "Turn: \($0)" } ?? ""
-        }
-        .store(in: &selectedJobObservationHandles)
-        uiState.selectedJobEntry?.observe(\.reviewEntries) { [weak self] newValue in
-            guard let self else {
-                return
-            }
-            self.logScrollView.setText(newValue.map(\.text).joined(separator: "\n\n"))
-        }
-        .store(in: &selectedJobObservationHandles)
+    }
+
+    private func renderSelectedJob(_ job: CodexReviewJob) {
+        titleLabel.stringValue = job.displayTitle
+        statusLabel.stringValue = "Status: \(job.status.displayText)"
+        cwdLabel.stringValue = "CWD: \(job.cwd)"
+        modelLabel.stringValue = job.model.map { "Model: \($0)" } ?? ""
+        threadLabel.stringValue = job.threadID.map { "Thread: \($0)" } ?? ""
+        turnLabel.stringValue = job.turnID.map { "Turn: \($0)" } ?? ""
+        summaryLabel.stringValue = job.summary
+        summaryLabel.isHidden = job.summary.isEmpty
+        logScrollView.setText(job.activityLogText)
+
+        titleLabel.isHidden = false
+        metadataStack.isHidden = false
+        sectionTitleLabel.isHidden = false
+        logScrollView.isHidden = false
+        emptyStateView.isHidden = true
+    }
+
+    private func renderEmptyState() {
+        titleLabel.stringValue = ""
+        statusLabel.stringValue = ""
+        cwdLabel.stringValue = ""
+        modelLabel.stringValue = ""
+        threadLabel.stringValue = ""
+        turnLabel.stringValue = ""
+        summaryLabel.stringValue = ""
+        logScrollView.clear()
+
+        titleLabel.isHidden = true
+        metadataStack.isHidden = true
+        summaryLabel.isHidden = true
+        sectionTitleLabel.isHidden = true
+        logScrollView.isHidden = true
+        emptyStateView.isHidden = false
     }
 }
 

@@ -2,9 +2,11 @@ import AppKit
 import Darwin
 import Foundation
 import Testing
-import CodexReviewMCP
+@_spi(Testing) import CodexReviewMCP
+import ReviewJobs
 @testable import CodexReviewMonitor
 
+@Suite(.serialized)
 @MainActor
 struct CodexReviewMonitorTests {
     @Test func bindingStoreAppliesInitialState() {
@@ -54,7 +56,7 @@ struct CodexReviewMonitorTests {
         #expect(viewController.sidebarViewControllerForTesting.serverURLTextForTesting == "http://localhost:9417/mcp")
     }
 
-    @Test func selectingJobUpdatesDetailPane() {
+    @Test func selectingJobUpdatesDetailPane() async throws {
         let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes", activityLogText: "Running review\n")
         let recentJob = makeJob(
             status: .succeeded,
@@ -73,12 +75,171 @@ struct CodexReviewMonitorTests {
 
         viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
 
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            await MainActor.run {
+                let transport = viewController.transportViewControllerForTesting
+                guard transport.displayedTitleForTesting == recentJob.displayTitle,
+                      transport.displayedSummaryForTesting == recentJob.summary,
+                      transport.displayedActivityLogForTesting == recentJob.activityLogText
+                else {
+                    return nil
+                }
+                return true
+            }
+        }
+
+        activeJob.summary = "Old selection should not render."
+        activeJob.reviewEntries = [.init(kind: .agentMessage, text: "Old selection log")]
+        try await Task.sleep(for: .milliseconds(200))
+
         #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == recentJob.displayTitle)
         #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == recentJob.summary)
         #expect(viewController.transportViewControllerForTesting.displayedActivityLogForTesting == recentJob.activityLogText)
     }
 
-    @Test func inPlaceJobUpdateKeepsSelectionAndRefreshesDetailPane() {
+    @Test func switchingSelectedJobRebindsDetailPane() async throws {
+        let activeJob = makeJob(
+            id: "job-active",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Active review in progress.",
+            activityLogText: "Active log\n"
+        )
+        let recentJob = makeJob(
+            id: "job-recent",
+            status: .succeeded,
+            targetSummary: "Commit: abc123",
+            summary: "Recent review completed.",
+            activityLogText: "Recent log\n"
+        )
+        let viewController = ReviewMonitorSplitViewController()
+        viewController.loadViewIfNeeded()
+        viewController.sidebarViewControllerForTesting.applyServerState(
+            serverState: .running,
+            serverURL: URL(string: "http://localhost:9417/mcp")
+        )
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [activeJob])
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [recentJob])
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            await MainActor.run {
+                guard viewController.transportViewControllerForTesting.displayedTitleForTesting == activeJob.displayTitle else {
+                    return nil
+                }
+                return true
+            }
+        }
+
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            await MainActor.run {
+                let transport = viewController.transportViewControllerForTesting
+                guard transport.displayedTitleForTesting == recentJob.displayTitle,
+                      transport.displayedSummaryForTesting == recentJob.summary,
+                      transport.displayedActivityLogForTesting == recentJob.activityLogText
+                else {
+                    return nil
+                }
+                return true
+            }
+        }
+    }
+
+    @Test func removingSelectedJobAutoSelectsNextVisibleJob() async throws {
+        let activeJob = makeJob(
+            id: "job-active",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Active review in progress.",
+            activityLogText: "Active log\n"
+        )
+        let recentJob = makeJob(
+            id: "job-recent",
+            status: .succeeded,
+            targetSummary: "Commit: abc123",
+            summary: "Recent review completed.",
+            activityLogText: "Recent log\n"
+        )
+        let viewController = ReviewMonitorSplitViewController()
+        viewController.loadViewIfNeeded()
+        viewController.sidebarViewControllerForTesting.applyServerState(
+            serverState: .running,
+            serverURL: URL(string: "http://localhost:9417/mcp")
+        )
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [activeJob])
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [recentJob])
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            await MainActor.run {
+                guard viewController.transportViewControllerForTesting.displayedTitleForTesting == activeJob.displayTitle else {
+                    return nil
+                }
+                return true
+            }
+        }
+
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [])
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            await MainActor.run {
+                let sidebar = viewController.sidebarViewControllerForTesting
+                let transport = viewController.transportViewControllerForTesting
+                guard sidebar.selectedJobForTesting?.id == recentJob.id,
+                      transport.displayedTitleForTesting == recentJob.displayTitle,
+                      transport.displayedSummaryForTesting == recentJob.summary
+                else {
+                    return nil
+                }
+                return true
+            }
+        }
+    }
+
+    @Test func clearingSelectionShowsEmptyStateAndClearsDetailPane() async throws {
+        let job = makeJob(
+            id: "job-1",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            activityLogText: "Initial log\n"
+        )
+        let viewController = ReviewMonitorSplitViewController()
+        viewController.loadViewIfNeeded()
+        viewController.sidebarViewControllerForTesting.applyServerState(
+            serverState: .running,
+            serverURL: URL(string: "http://localhost:9417/mcp")
+        )
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [job])
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+
+        viewController.sidebarViewControllerForTesting.clearSelectionForTesting()
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            await MainActor.run {
+                let transport = viewController.transportViewControllerForTesting
+                guard transport.isShowingEmptyStateForTesting,
+                      transport.displayedTitleForTesting == nil,
+                      transport.displayedSummaryForTesting == nil,
+                      transport.displayedActivityLogForTesting.isEmpty
+                else {
+                    return nil
+                }
+                return true
+            }
+        }
+
+        job.summary = "Deselected summary"
+        job.reviewEntries = [.init(kind: .agentMessage, text: "Deselected log")]
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.transportViewControllerForTesting.displayedActivityLogForTesting.isEmpty)
+    }
+
+    @Test func inPlaceJobUpdateKeepsSelectionAndRefreshesDetailPane() async throws {
         let job = makeJob(
             id: "job-1",
             status: .running,
@@ -97,6 +258,15 @@ struct CodexReviewMonitorTests {
 
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            await MainActor.run {
+                guard viewController.transportViewControllerForTesting.displayedTitleForTesting == job.displayTitle else {
+                    return nil
+                }
+                return true
+            }
+        }
+
         job.status = .succeeded
         job.summary = "Review completed successfully."
         job.reviewEntries = [.init(kind: .agentMessage, text: "Updated log")]
@@ -108,9 +278,19 @@ struct CodexReviewMonitorTests {
         viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [])
         viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [job])
 
-        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting?.id == "job-1")
-        #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == "Review completed successfully.")
-        #expect(viewController.transportViewControllerForTesting.displayedActivityLogForTesting == "Updated log\n")
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            await MainActor.run {
+                let sidebar = viewController.sidebarViewControllerForTesting
+                let transport = viewController.transportViewControllerForTesting
+                guard sidebar.selectedJobForTesting?.id == "job-1",
+                      transport.displayedSummaryForTesting == "Review completed successfully.",
+                      transport.displayedActivityLogForTesting == "Updated log"
+                else {
+                    return nil
+                }
+                return true
+            }
+        }
     }
 
     @Test func launchedAppEmbeddedReviewStartProgressesViaMCP() async throws {
@@ -759,12 +939,9 @@ private func makeJob(
     activityLogText: String = "",
     rawLogText: String = ""
 ) -> CodexReviewJob {
-    CodexReviewJob(
+    CodexReviewJob.makeForTesting(
         id: id,
-        sessionID: "session-1",
-        cwd: "/tmp/repo",
         targetSummary: targetSummary,
-        model: "gpt-5",
         threadID: status == .queued ? nil : UUID().uuidString,
         turnID: UUID().uuidString,
         status: status,
@@ -774,9 +951,6 @@ private func makeJob(
         lastAgentMessage: "",
         reviewEntries: activityLogText.isEmpty ? [] : [.init(kind: .agentMessage, text: activityLogText.trimmingCharacters(in: .newlines))],
         reasoningEntries: reasoningSummaryText.isEmpty ? [] : [.init(kind: .reasoning, text: reasoningSummaryText.trimmingCharacters(in: .newlines))],
-        rawEventLines: rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init),
-        errorMessage: nil,
-        exitCode: nil,
-        artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)
+        rawEventLines: rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     )
 }

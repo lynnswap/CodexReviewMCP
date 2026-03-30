@@ -202,7 +202,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
 
     private func bindObservation(store: CodexReviewStore) {
         observationHandles.removeAll()
-        store.observeTask([\.serverState, \.serverURL]) { [weak self, weak store] in
+        store.observe([\.serverState, \.serverURL]) { [weak self, weak store] in
             guard let self, let store else {
                 return
             }
@@ -213,7 +213,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
         }
         .store(in: &observationHandles)
 
-        store.observeTask([\.activeJobs]) { [weak self, weak store] in
+        store.observe([\.activeJobs]) { [weak self, weak store] in
             guard let self, let store else {
                 return
             }
@@ -221,7 +221,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
         }
         .store(in: &observationHandles)
 
-        store.observeTask([\.recentJobs]) { [weak self, weak store] in
+        store.observe([\.recentJobs]) { [weak self, weak store] in
             guard let self, let store else {
                 return
             }
@@ -229,7 +229,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
         }
         .store(in: &observationHandles)
 
-        uiState.observeTask(\.selectedJobEntry) { [weak self] selectedJob in
+        uiState.observe(\.selectedJobEntry) { [weak self] selectedJob in
             self?.syncSelection(to: selectedJob)
         }
         .store(in: &observationHandles)
@@ -265,9 +265,10 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
             }
             snapshot.appendItems(jobs, toSection: section)
         }
-        dataSource.apply(snapshot, animatingDifferences: view.window != nil)
+        dataSource.apply(snapshot, animatingDifferences: view.window != nil) { [weak self] in
+            self?.ensureSelection()
+        }
         updateEmptyState()
-        ensureSelection()
     }
 
     private func updateEmptyState() {
@@ -277,14 +278,18 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
     }
 
     private func ensureSelection() {
-        guard let store else {
-            syncSelection(to: nil)
+        let visibleJobs = dataSource.snapshot().itemIdentifiers
+        if let selectedJob = uiState.selectedJobEntry,
+           visibleJobs.contains(selectedJob) {
+            syncSelection(to: selectedJob)
             return
         }
-        if uiState.selectedJobEntry == nil {
-            uiState.selectedJobEntry = store.activeJobs.first ?? store.recentJobs.first
+
+        let replacementJob = visibleJobs.first
+        if uiState.selectedJobEntry != replacementJob {
+            uiState.selectedJobEntry = replacementJob
         }
-        syncSelection(to: uiState.selectedJobEntry)
+        syncSelection(to: replacementJob)
     }
 
     private func syncSelection(to selectedJob: CodexReviewJob?) {
@@ -348,6 +353,12 @@ extension ReviewMonitorSidebarViewController {
             return
         }
         tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        uiState.selectedJobEntry = job
+    }
+
+    func clearSelectionForTesting() {
+        tableView.deselectAll(nil)
+        uiState.selectedJobEntry = nil
     }
 }
 #endif
@@ -371,7 +382,7 @@ private final class ReviewMonitorJobCellView: NSTableCellView {
     func configure(with job: CodexReviewJob) {
         render(job)
         observationHandles.removeAll()
-        job.observeTask(
+        job.observe(
             [
                 \.targetSummary,
                 \.status,

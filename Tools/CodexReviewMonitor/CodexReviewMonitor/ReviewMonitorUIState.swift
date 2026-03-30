@@ -4,5 +4,5 @@ import Observation
 @MainActor
 @Observable
 final class ReviewMonitorUIState {
-    weak var selectedJobEntry: CodexReviewJob?
+    var selectedJobEntry: CodexReviewJob?
 }
