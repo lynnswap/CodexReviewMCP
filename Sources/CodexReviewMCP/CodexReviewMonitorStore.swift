@@ -198,16 +198,11 @@ public final class CodexReviewMonitorJob: Identifiable {
 @MainActor
 @Observable
 public final class CodexReviewMonitorJobStore {
-    public private(set) var jobsByID: [String: CodexReviewMonitorJob] = [:]
-    public private(set) var orderedJobIDs: [String] = []
+    public private(set) var jobs: [CodexReviewMonitorJob] = []
 
     private var changeContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     public init() {}
-
-    public var jobs: [CodexReviewMonitorJob] {
-        orderedJobIDs.compactMap { jobsByID[$0] }
-    }
 
     public var activeJobs: [CodexReviewMonitorJob] {
         jobs.filter { $0.isTerminal == false }
@@ -215,10 +210,6 @@ public final class CodexReviewMonitorJobStore {
 
     public var recentJobs: [CodexReviewMonitorJob] {
         jobs.filter(\.isTerminal)
-    }
-
-    public func job(id: String) -> CodexReviewMonitorJob? {
-        jobsByID[id]
     }
 
     public func changes() -> AsyncStream<Void> {
@@ -235,28 +226,23 @@ public final class CodexReviewMonitorJobStore {
     }
 
     func apply(snapshots: [ReviewJobSnapshot]) {
-        let orderedIDs = snapshots.map(\.jobID)
-        let validIDs = Set(orderedIDs)
-
+        let existingJobsByID = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+        var updatedJobs: [CodexReviewMonitorJob] = []
+        updatedJobs.reserveCapacity(snapshots.count)
         for snapshot in snapshots {
-            if let job = jobsByID[snapshot.jobID] {
+            if let job = existingJobsByID[snapshot.jobID] {
                 job.apply(snapshot: snapshot)
+                updatedJobs.append(job)
             } else {
-                jobsByID[snapshot.jobID] = CodexReviewMonitorJob(snapshot: snapshot)
+                updatedJobs.append(CodexReviewMonitorJob(snapshot: snapshot))
             }
         }
-
-        for jobID in Array(jobsByID.keys) where validIDs.contains(jobID) == false {
-            jobsByID.removeValue(forKey: jobID)
-        }
-
-        orderedJobIDs = orderedIDs
+        jobs = updatedJobs
         broadcastChanges()
     }
 
     func reset() {
-        jobsByID = [:]
-        orderedJobIDs = []
+        jobs = []
         broadcastChanges()
     }
 

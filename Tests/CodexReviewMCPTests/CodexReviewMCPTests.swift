@@ -214,12 +214,12 @@ struct CodexReviewMCPTests {
         )
 
         store.apply(snapshots: [queuedSnapshot])
-        let firstJob = try #require(store.job(id: "job-1"))
+        let firstJob = try #require(store.jobs.first(where: { $0.id == "job-1" }))
         #expect(store.activeJobs.map(\.id) == ["job-1"])
         #expect(store.recentJobs.isEmpty)
 
         store.apply(snapshots: [runningSnapshot, recentSnapshot])
-        let updatedJob = try #require(store.job(id: "job-1"))
+        let updatedJob = try #require(store.jobs.first(where: { $0.id == "job-1" }))
         #expect(updatedJob === firstJob)
         #expect(updatedJob.status == .running)
         #expect(updatedJob.threadID == "thread-1")
@@ -232,8 +232,9 @@ struct CodexReviewMCPTests {
         #expect(updatedJob.startedAt == .distantPast)
 
         store.apply(snapshots: [runningSnapshot])
-        #expect(store.job(id: "job-2") == nil)
+        #expect(store.jobs.contains(where: { $0.id == "job-2" }) == false)
         #expect(store.jobs.map(\.id) == ["job-1"])
+        #expect(store.activeJobs.map(\.id) == ["job-1"])
     }
 
 }
