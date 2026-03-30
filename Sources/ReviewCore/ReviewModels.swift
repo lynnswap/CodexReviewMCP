@@ -461,6 +461,103 @@ package struct ReviewReadResult: Sendable, Hashable {
     }
 }
 
+package struct ReviewJobListItem: Sendable, Hashable {
+    package var jobID: String
+    package var reviewThreadID: String
+    package var cwd: String
+    package var targetSummary: String
+    package var model: String?
+    package var status: ReviewJobState
+    package var summary: String
+    package var startedAt: Date?
+    package var endedAt: Date?
+    package var elapsedSeconds: Int?
+    package var threadID: String?
+    package var lastAgentMessage: String
+    package var cancellable: Bool
+
+    package init(snapshot: ReviewJobSnapshot) {
+        self.jobID = snapshot.jobID
+        self.reviewThreadID = snapshot.jobID
+        self.cwd = snapshot.cwd
+        self.targetSummary = snapshot.targetSummary
+        self.model = snapshot.model
+        self.status = snapshot.state
+        self.summary = snapshot.summary
+        self.startedAt = snapshot.startedAt
+        self.endedAt = snapshot.endedAt
+        self.elapsedSeconds = snapshot.elapsedSeconds
+        self.threadID = snapshot.threadID
+        self.lastAgentMessage = snapshot.lastAgentMessage
+        self.cancellable = snapshot.state.isTerminal == false
+    }
+
+    package func structuredContent() -> Value {
+        var object: [String: Value] = [
+            "jobId": .string(jobID),
+            "reviewThreadId": .string(reviewThreadID),
+            "cwd": .string(cwd),
+            "targetSummary": .string(targetSummary),
+            "status": .string(status.rawValue),
+            "summary": .string(summary),
+            "cancellable": .bool(cancellable),
+        ]
+        if let model {
+            object["model"] = .string(model)
+        }
+        if let startedAt {
+            object["startedAt"] = .string(startedAt.ISO8601Format())
+        }
+        if let endedAt {
+            object["endedAt"] = .string(endedAt.ISO8601Format())
+        }
+        if let elapsedSeconds {
+            object["elapsedSeconds"] = .int(elapsedSeconds)
+        }
+        if let threadID {
+            object["threadId"] = .string(threadID)
+        }
+        if lastAgentMessage.isEmpty == false {
+            object["lastAgentMessage"] = .string(lastAgentMessage)
+        }
+        return .object(object)
+    }
+}
+
+package struct ReviewListResult: Sendable, Hashable {
+    package var items: [ReviewJobListItem]
+
+    package func structuredContent() -> Value {
+        .object([
+            "items": .array(items.map { $0.structuredContent() })
+        ])
+    }
+}
+
+package struct ReviewJobSelector: Sendable, Hashable {
+    package var reviewThreadID: String?
+    package var cwd: String?
+    package var statuses: [ReviewJobState]?
+    package var latest: Bool
+
+    package init(
+        reviewThreadID: String? = nil,
+        cwd: String? = nil,
+        statuses: [ReviewJobState]? = nil,
+        latest: Bool = false
+    ) {
+        self.reviewThreadID = reviewThreadID
+        self.cwd = cwd?.nilIfEmpty
+        self.statuses = statuses
+        self.latest = latest
+    }
+}
+
+package enum ReviewJobSelectionError: Error, Sendable {
+    case notFound(String)
+    case ambiguous([ReviewJobListItem])
+}
+
 package struct ReviewCancelOutcome: Sendable, Hashable {
     package var jobID: String
     package var reviewThreadID: String

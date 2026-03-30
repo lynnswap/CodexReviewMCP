@@ -205,7 +205,7 @@ private struct TurnAccumulator: Sendable {
         }
         if let lastTurnCompletedIndex,
            lastAgentMessage.isEmpty == false,
-           lastErrorIndex == nil || lastErrorIndex! < lastTurnCompletedIndex
+           (lastErrorIndex.map { $0 < lastTurnCompletedIndex } ?? true)
         {
             return TurnAnalysis(
                 lastAgentMessage: lastAgentMessage,

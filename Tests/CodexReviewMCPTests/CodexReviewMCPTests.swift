@@ -679,7 +679,10 @@ private func withTestTimeout<T: Sendable>(
 }
 
 private func jsonLine(_ value: Value) -> String {
-    let data = try! JSONEncoder().encode(value)
+    guard let data = try? JSONEncoder().encode(value) else {
+        assertionFailure("Failed to encode JSON line payload.")
+        return ""
+    }
     return String(decoding: data, as: UTF8.self)
 }
 

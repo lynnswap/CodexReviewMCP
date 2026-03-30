@@ -188,6 +188,12 @@ private enum ReviewToolCatalog {
             annotations: .init(readOnlyHint: false)
         ),
         Tool(
+            name: "review_list",
+            description: "List review jobs owned by the current MCP session.",
+            inputSchema: reviewListInputSchema,
+            annotations: .init(readOnlyHint: true)
+        ),
+        Tool(
             name: "review_read",
             description: "Read the current or final state of a review job owned by the current MCP session.",
             inputSchema: reviewReadInputSchema,
@@ -239,8 +245,32 @@ private enum ReviewToolCatalog {
         "type": "object",
         "properties": [
             "reviewThreadId": ["type": "string"],
+            "cwd": ["type": "string"],
+            "statuses": [
+                "type": "array",
+                "items": [
+                    "type": "string",
+                    "enum": ["queued", "running", "succeeded", "failed", "cancelled"],
+                ],
+            ],
+            "latest": ["type": "boolean"],
         ],
-        "required": ["reviewThreadId"],
+        "additionalProperties": false,
+    ]
+
+    private static let reviewListInputSchema: Value = [
+        "type": "object",
+        "properties": [
+            "cwd": ["type": "string"],
+            "statuses": [
+                "type": "array",
+                "items": [
+                    "type": "string",
+                    "enum": ["queued", "running", "succeeded", "failed", "cancelled"],
+                ],
+            ],
+            "limit": ["type": "integer"],
+        ],
         "additionalProperties": false,
     ]
 }
@@ -253,6 +283,8 @@ private struct ReviewToolHandler {
         switch params.name {
         case "review_start":
             return await handleReviewStart(params: params)
+        case "review_list":
+            return await handleReviewList(params: params)
         case "review_read":
             return await handleReviewRead(params: params)
         case "review_cancel":
@@ -296,15 +328,17 @@ private struct ReviewToolHandler {
         }
     }
 
-    private func handleCancel(params: CallTool.Parameters) async -> CallTool.Result {
+    private func handleReviewList(params: CallTool.Parameters) async -> CallTool.Result {
         do {
-            let arguments = try decodeArguments(params.arguments, as: ReviewCancelArguments.self)
-            let result = try await reviewJobStore.cancelReview(
-                reviewThreadID: arguments.reviewThreadID,
-                sessionID: sessionID
+            let arguments = try decodeArguments(params.arguments, as: ReviewListArguments.self)
+            let result = await reviewJobStore.listReviews(
+                sessionID: sessionID,
+                cwd: arguments.cwd,
+                statuses: arguments.statuses,
+                limit: arguments.limit
             )
             return try CallTool.Result(
-                content: [.text(text: result.cancelled ? "Cancellation requested." : "Review was already finished.", annotations: nil, _meta: nil)],
+                content: [.text(text: "Listed \(result.items.count) review job(s).", annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContent(),
                 isError: false
             )
@@ -313,8 +347,62 @@ private struct ReviewToolHandler {
         }
     }
 
-    private func toolError(_ message: String) -> CallTool.Result {
-        CallTool.Result(
+    private func handleCancel(params: CallTool.Parameters) async -> CallTool.Result {
+        do {
+            let arguments = try decodeArguments(params.arguments, as: ReviewCancelArguments.self)
+            let result: ReviewCancelOutcome
+            if let rawReviewThreadID = arguments.reviewThreadID {
+                guard let reviewThreadID = rawReviewThreadID.nilIfEmpty else {
+                    return toolError("`reviewThreadId` cannot be empty.")
+                }
+                result = try await reviewJobStore.cancelReview(
+                    reviewThreadID: reviewThreadID,
+                    sessionID: sessionID
+                )
+            } else {
+                result = try await reviewJobStore.cancelReview(
+                    selector: .init(
+                        reviewThreadID: nil,
+                        cwd: arguments.cwd,
+                        statuses: arguments.statuses,
+                        latest: arguments.latest ?? false
+                    ),
+                    sessionID: sessionID
+                )
+            }
+            return try CallTool.Result(
+                content: [.text(text: result.cancelled ? "Cancellation requested." : "Review was already finished.", annotations: nil, _meta: nil)],
+                structuredContent: result.structuredContent(),
+                isError: false
+            )
+        } catch let error as ReviewJobSelectionError {
+            switch error {
+            case .notFound(let message):
+                return toolError(message)
+            case .ambiguous(let candidates):
+                return toolError(
+                    "Multiple matching review jobs were found. Narrow the selector or set latest=true.",
+                    structuredContent: .object([
+                        "candidates": .array(candidates.map { $0.structuredContent() })
+                    ])
+                )
+            }
+        } catch {
+            return toolError(error.localizedDescription)
+        }
+    }
+
+    private func toolError(_ message: String, structuredContent: Value? = nil) -> CallTool.Result {
+        if let structuredContent {
+            if let result = try? CallTool.Result(
+                content: [.text(text: message, annotations: nil, _meta: nil)],
+                structuredContent: structuredContent,
+                isError: true
+            ) {
+                return result
+            }
+        }
+        return CallTool.Result(
             content: [.text(text: message, annotations: nil, _meta: nil)],
             isError: true
         )
@@ -344,11 +432,23 @@ private struct ReviewReadArguments: Codable {
 }
 
 private struct ReviewCancelArguments: Codable {
-    var reviewThreadID: String
+    var reviewThreadID: String?
+    var cwd: String?
+    var statuses: [ReviewJobState]?
+    var latest: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case reviewThreadID = "reviewThreadId"
+        case cwd
+        case statuses
+        case latest
     }
+}
+
+private struct ReviewListArguments: Codable {
+    var cwd: String?
+    var statuses: [ReviewJobState]?
+    var limit: Int?
 }
 
 private func decodeArguments<T: Decodable>(_ arguments: [String: Value]?, as type: T.Type) throws -> T {

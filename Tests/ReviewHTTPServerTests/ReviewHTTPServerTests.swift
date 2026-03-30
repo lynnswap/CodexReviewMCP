@@ -30,18 +30,10 @@ struct ReviewHTTPServerTests {
     @Test func reviewStartReturnsFinalReviewResult() async throws {
         let scriptURL = try makeFakeExecReviewScript(mode: .success)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
-
-        let port = try nextAvailableTestPort(in: 39441 ... 39450)
-        let server = ReviewMCPHTTPServer(
-            configuration: .init(
-                host: "127.0.0.1",
-                port: port,
-                codexCommand: scriptURL.path,
-                environment: ["HOME": FileManager.default.homeDirectoryForCurrentUser.path]
-            )
+        let (server, endpointURL) = try await startTestServer(
+            in: 39441 ... 39450,
+            codexCommand: scriptURL.path
         )
-
-        let endpointURL = try await server.start()
         let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
         let response = try await client.callTool(
             name: "review_start",
@@ -63,18 +55,10 @@ struct ReviewHTTPServerTests {
     @Test func reviewReadIsIsolatedBySessionID() async throws {
         let scriptURL = try makeFakeExecReviewScript(mode: .success)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
-
-        let port = try nextAvailableTestPort(in: 39451 ... 39460)
-        let server = ReviewMCPHTTPServer(
-            configuration: .init(
-                host: "127.0.0.1",
-                port: port,
-                codexCommand: scriptURL.path,
-                environment: ["HOME": FileManager.default.homeDirectoryForCurrentUser.path]
-            )
+        let (server, endpointURL) = try await startTestServer(
+            in: 39451 ... 39460,
+            codexCommand: scriptURL.path
         )
-
-        let endpointURL = try await server.start()
         let client1 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
         let client2 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
         let startResponse = try await client1.callTool(
@@ -97,21 +81,47 @@ struct ReviewHTTPServerTests {
         await server.stop()
     }
 
+    @Test func reviewListReturnsSessionScopedJobs() async throws {
+        let scriptURL = try makeFakeExecReviewScript(mode: .success)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let listDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let otherDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: listDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: otherDirectory, withIntermediateDirectories: true)
+        let (server, endpointURL) = try await startTestServer(
+            in: 39481 ... 39490,
+            codexCommand: scriptURL.path
+        )
+        let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let sessionID = try await client.ensureSession()
+        _ = try await server.reviewJobStore.enqueueReview(
+            sessionID: sessionID,
+            request: .init(cwd: listDirectory.path, uncommitted: true)
+        )
+        _ = try await server.reviewJobStore.enqueueReview(
+            sessionID: "other-session",
+            request: .init(cwd: otherDirectory.path, uncommitted: true)
+        )
+
+        let response = try await client.callTool(
+            name: "review_list",
+            arguments: [:]
+        )
+        let result = try #require(response["result"] as? [String: Any])
+        let structuredContent = try #require(result["structuredContent"] as? [String: Any])
+        let items = try #require(structuredContent["items"] as? [[String: Any]])
+        #expect(items.count == 1)
+        #expect(items.first?["cwd"] as? String == listDirectory.path)
+        await server.stop()
+    }
+
     @Test func reviewCancelInterruptsActiveReview() async throws {
         let scriptURL = try makeFakeExecReviewScript(mode: .long)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
-
-        let port = try nextAvailableTestPort(in: 39461 ... 39470)
-        let server = ReviewMCPHTTPServer(
-            configuration: .init(
-                host: "127.0.0.1",
-                port: port,
-                codexCommand: scriptURL.path,
-                environment: ["HOME": FileManager.default.homeDirectoryForCurrentUser.path]
-            )
+        let (server, endpointURL) = try await startTestServer(
+            in: 39461 ... 39470,
+            codexCommand: scriptURL.path
         )
-
-        let endpointURL = try await server.start()
         let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
         let sessionID = try await client.ensureSession()
         let jobID = try await server.reviewJobStore.enqueueReview(
@@ -141,21 +151,138 @@ struct ReviewHTTPServerTests {
         await server.stop()
     }
 
+    @Test func reviewCancelRejectsEmptyReviewThreadID() async throws {
+        let scriptURL = try makeFakeExecReviewScript(mode: .long)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let (server, endpointURL) = try await startTestServer(
+            in: 39511 ... 39520,
+            codexCommand: scriptURL.path
+        )
+        let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let sessionID = try await client.ensureSession()
+        let jobID = try await server.reviewJobStore.enqueueReview(
+            sessionID: sessionID,
+            request: .init(cwd: FileManager.default.temporaryDirectory.path, uncommitted: true)
+        )
+        let reviewTask = Task {
+            await server.reviewJobStore.runReview(jobID: jobID) { _, _ in }
+        }
+
+        try await waitUntil(timeout: .seconds(5), interval: .milliseconds(100)) {
+            let snapshots = await server.reviewJobStore.allSnapshots(for: sessionID)
+            return snapshots.contains(where: { $0.jobID == jobID && $0.state == .running })
+        }
+
+        let response = try await client.callTool(
+            name: "review_cancel",
+            arguments: ["reviewThreadId": ""]
+        )
+        let result = try #require(response["result"] as? [String: Any])
+        #expect(result["isError"] as? Bool == true)
+
+        let readResult = try await server.reviewJobStore.readReview(
+            reviewThreadID: jobID,
+            sessionID: sessionID
+        )
+        #expect(readResult.status == .running)
+
+        _ = try await server.reviewJobStore.cancel(jobID: jobID, sessionID: sessionID, reason: "done")
+        _ = await reviewTask.value
+        await server.stop()
+    }
+
+    @Test func reviewCancelSelectorCancelsLatestMatchingJob() async throws {
+        let scriptURL = try makeFakeExecReviewScript(mode: .long)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let sharedDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sharedDirectory, withIntermediateDirectories: true)
+        let (server, endpointURL) = try await startTestServer(
+            in: 39491 ... 39500,
+            codexCommand: scriptURL.path
+        )
+        let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let sessionID = try await client.ensureSession()
+
+        let firstJobID = try await server.reviewJobStore.enqueueReview(
+            sessionID: sessionID,
+            request: .init(cwd: sharedDirectory.path, uncommitted: true)
+        )
+        let firstTask = Task {
+            await server.reviewJobStore.runReview(jobID: firstJobID) { _, _ in }
+        }
+        try await waitUntil(timeout: .seconds(5), interval: .milliseconds(100)) {
+            await server.reviewJobStore.allSnapshots(for: sessionID).contains(where: { $0.jobID == firstJobID && $0.state == .running })
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        let secondJobID = try await server.reviewJobStore.enqueueReview(
+            sessionID: sessionID,
+            request: .init(cwd: sharedDirectory.path, uncommitted: true)
+        )
+        let secondTask = Task {
+            await server.reviewJobStore.runReview(jobID: secondJobID) { _, _ in }
+        }
+        try await waitUntil(timeout: .seconds(5), interval: .milliseconds(100)) {
+            let snapshots = await server.reviewJobStore.allSnapshots(for: sessionID)
+            return snapshots.contains(where: { $0.jobID == secondJobID && $0.state == .running })
+        }
+
+        let response = try await client.callTool(
+            name: "review_cancel",
+            arguments: [
+                "cwd": sharedDirectory.path,
+                "latest": true,
+            ]
+        )
+        let result = try #require(response["result"] as? [String: Any])
+        let structuredContent = try #require(result["structuredContent"] as? [String: Any])
+        #expect(structuredContent["jobId"] as? String == secondJobID)
+
+        _ = try await server.reviewJobStore.cancel(jobID: firstJobID, sessionID: sessionID, reason: "done")
+        _ = await firstTask.value
+        _ = await secondTask.value
+        await server.stop()
+    }
+
+    @Test func reviewCancelSelectorReturnsAmbiguousCandidates() async throws {
+        let scriptURL = try makeFakeExecReviewScript(mode: .long)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let sharedDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sharedDirectory, withIntermediateDirectories: true)
+        let (server, endpointURL) = try await startTestServer(
+            in: 39501 ... 39510,
+            codexCommand: scriptURL.path
+        )
+        let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let sessionID = try await client.ensureSession()
+        let firstJobID = try await server.reviewJobStore.enqueueReview(
+            sessionID: sessionID,
+            request: .init(cwd: sharedDirectory.path, uncommitted: true)
+        )
+        let secondJobID = try await server.reviewJobStore.enqueueReview(
+            sessionID: sessionID,
+            request: .init(cwd: sharedDirectory.path, uncommitted: true)
+        )
+
+        let response = try await client.callTool(
+            name: "review_cancel",
+            arguments: ["cwd": sharedDirectory.path]
+        )
+        let result = try #require(response["result"] as? [String: Any])
+        #expect(result["isError"] as? Bool == true)
+        let structuredContent = try #require(result["structuredContent"] as? [String: Any])
+        let candidates = try #require(structuredContent["candidates"] as? [[String: Any]])
+        #expect(candidates.map { $0["jobId"] as? String }.compactMap { $0 }.sorted() == [firstJobID, secondJobID].sorted())
+        await server.stop()
+    }
+
     @Test func deletingSessionCancelsOnlyOwnedReviews() async throws {
         let scriptURL = try makeFakeExecReviewScript(mode: .long)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
-
-        let port = try nextAvailableTestPort(in: 39471 ... 39480)
-        let server = ReviewMCPHTTPServer(
-            configuration: .init(
-                host: "127.0.0.1",
-                port: port,
-                codexCommand: scriptURL.path,
-                environment: ["HOME": FileManager.default.homeDirectoryForCurrentUser.path]
-            )
+        let (server, endpointURL) = try await startTestServer(
+            in: 39471 ... 39480,
+            codexCommand: scriptURL.path
         )
-
-        let endpointURL = try await server.start()
         let client1 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
         let client2 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
         let sessionID1 = try await client1.ensureSession()
@@ -463,35 +590,41 @@ private func waitUntilValue<T>(
     throw TestFailure("timed out")
 }
 
-private func nextAvailableTestPort(in range: ClosedRange<Int>) throws -> Int {
+private func startTestServer(
+    in range: ClosedRange<Int>,
+    codexCommand: String
+) async throws -> (ReviewMCPHTTPServer, URL) {
+    var lastAddressInUseError: Error?
     for port in range {
-        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
-        guard descriptor >= 0 else {
-            continue
-        }
-        defer { close(descriptor) }
-
-        var value: Int32 = 1
-        _ = withUnsafePointer(to: &value) {
-            setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, $0, socklen_t(MemoryLayout<Int32>.size))
-        }
-
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = in_port_t(UInt16(port).bigEndian)
-        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-
-        let result = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        let server = ReviewMCPHTTPServer(
+            configuration: .init(
+                host: "127.0.0.1",
+                port: port,
+                codexCommand: codexCommand,
+                environment: ["HOME": FileManager.default.homeDirectoryForCurrentUser.path]
+            )
+        )
+        do {
+            let endpointURL = try await server.start()
+            return (server, endpointURL)
+        } catch {
+            await server.stop()
+            if isAddressInUse(error) {
+                lastAddressInUseError = error
+                continue
             }
-        }
-        if result == 0 {
-            return port
+            throw error
         }
     }
-    throw TestFailure("no free TCP port in range \(range)")
+    throw lastAddressInUseError ?? TestFailure("no free TCP port in range \(range)")
+}
+
+private func isAddressInUse(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    if nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(EADDRINUSE) {
+        return true
+    }
+    return error.localizedDescription.localizedCaseInsensitiveContains("address already in use")
 }
 
 private struct TestFailure: Error {

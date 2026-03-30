@@ -164,10 +164,13 @@ package func parseAdapterOptions(args: [String], environment: [String: String]) 
         }
     }
 
+    guard let defaultURL = URL(string: "http://localhost:\(codexReviewDefaultPort)/mcp") else {
+        throw CLIError(message: "failed to construct default MCP endpoint", exitCode: 1)
+    }
     let url = try explicitURL
         ?? adapterURLFromEnvironment(environment)
         ?? ReviewDiscovery.read().flatMap { URL(string: $0.url) }
-        ?? URL(string: "http://localhost:\(codexReviewDefaultPort)/mcp")!
+        ?? defaultURL
     return AdapterOptions(url: url, requestTimeoutSeconds: requestTimeoutSeconds)
 }
 

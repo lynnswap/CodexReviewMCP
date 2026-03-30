@@ -27,6 +27,7 @@ session-scoped review jobs through `codex exec review`.
 3. Call one of the exposed tools:
 
    - `review_start`
+   - `review_list`
    - `review_read`
    - `review_cancel`
 
@@ -183,9 +184,51 @@ Returns:
 - `lastAgentMessage`
 - `error`
 
+### `review_list`
+
+Lists review jobs owned by the current MCP session.
+
+Optional inputs:
+
+- `cwd`
+- `statuses`
+- `limit` default `20`, max `100`
+
+Returns:
+
+- `items`
+  - `jobId`
+  - `reviewThreadId`
+  - `cwd`
+  - `targetSummary`
+  - `model`
+  - `status`
+  - `summary`
+  - `startedAt`
+  - `endedAt`
+  - `elapsedSeconds`
+  - `threadId`
+  - `lastAgentMessage`
+  - `cancellable`
+
 ### `review_cancel`
 
 Cancels a review job owned by the current MCP session.
+
+Inputs:
+
+- exact:
+  - `reviewThreadId`
+- selector:
+  - `cwd`
+  - `statuses`
+  - `latest`
+
+Notes:
+
+- `cwd` is a search key, not a unique identifier.
+- When `latest: true`, the newest matching active review is selected automatically.
+- Without `reviewThreadId`, `review_cancel` searches only the current MCP session.
 
 ## Development Notes
 

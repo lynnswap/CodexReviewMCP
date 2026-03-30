@@ -803,9 +803,10 @@ private struct AdapterHarness {
     static func make(transport: any ReviewStdioUpstreamTransport) async throws -> AdapterHarness {
         let inputPipe = Pipe()
         let outputSink = RecordingOutputSink()
+        let upstreamURL = try #require(URL(string: "http://localhost:9417/mcp"))
 
         let adapter = ReviewStdioAdapter(
-            configuration: .init(upstreamURL: URL(string: "http://localhost:9417/mcp")!),
+            configuration: .init(upstreamURL: upstreamURL),
             input: inputPipe.fileHandleForReading,
             outputSink: outputSink,
             transport: transport
@@ -1031,7 +1032,7 @@ private func cancelNotification(requestID: Int) -> [String: Any] {
 }
 
 private func successResponse(id: Int) -> Data {
-    try! JSONSerialization.data(withJSONObject: [
+    serializeJSONObject([
         "jsonrpc": "2.0",
         "id": id,
         "result": ["ok": true],
@@ -1039,7 +1040,7 @@ private func successResponse(id: Int) -> Data {
 }
 
 private func errorResponse(id: Int, message: String) -> Data {
-    try! JSONSerialization.data(withJSONObject: [
+    serializeJSONObject([
         "jsonrpc": "2.0",
         "id": id,
         "error": [
@@ -1054,6 +1055,16 @@ private func parseMethod(from data: Data) -> String? {
         return nil
     }
     return object["method"] as? String
+}
+
+private func serializeJSONObject(_ object: Any) -> Data {
+    guard JSONSerialization.isValidJSONObject(object),
+          let data = try? JSONSerialization.data(withJSONObject: object)
+    else {
+        assertionFailure("Expected a valid JSON object.")
+        return Data()
+    }
+    return data
 }
 
 private func neverEndingStream() -> AsyncThrowingStream<ReviewStdioSSEEvent, Error> {

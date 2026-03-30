@@ -25,6 +25,9 @@ package struct ReviewCommandBuilder: Sendable {
     package func build(request: ReviewRequestOptions) throws -> ReviewCommand {
         let request = try request.validated()
         let artifacts = makeArtifacts()
+        guard let lastMessagePath = artifacts.lastMessagePath else {
+            throw ReviewError.io("Failed to allocate last-message artifact path.")
+        }
         let configPath = resolveConfigPath()
         let modelsCache = loadJSONDictionary(at: resolveModelsCachePath())
         var forwardedArgs: [String] = []
@@ -109,7 +112,7 @@ package struct ReviewCommandBuilder: Sendable {
             "review",
             "--json",
             "--output-last-message",
-            artifacts.lastMessagePath!,
+            lastMessagePath,
         ]
         arguments += defaultConfigArgs
         arguments += forwardedArgs

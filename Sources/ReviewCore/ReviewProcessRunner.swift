@@ -35,6 +35,11 @@ package struct CodexReviewProcessRunner: Sendable {
         onProgress: @escaping @Sendable (ReviewProgressStage, String?) async -> Void
     ) async throws -> ReviewProcessOutcome {
         let command = try commandBuilder.build(request: request)
+        guard let eventsPath = command.artifacts.eventsPath,
+              let lastMessagePath = command.artifacts.lastMessagePath
+        else {
+            throw ReviewError.io("Missing review artifact paths.")
+        }
         if let cancelledOutcome = await cancelledOutcomeBeforeStart(
             command: command,
             request: request,
@@ -48,8 +53,8 @@ package struct CodexReviewProcessRunner: Sendable {
         await onStart(command.artifacts, controller, startedAt)
         await onProgress(.started, "Review started.")
 
-        let eventsURL = URL(fileURLWithPath: command.artifacts.eventsPath!)
-        let lastMessageURL = URL(fileURLWithPath: command.artifacts.lastMessagePath!)
+        let eventsURL = URL(fileURLWithPath: eventsPath)
+        let lastMessageURL = URL(fileURLWithPath: lastMessagePath)
         var snapshot = ReviewEventSnapshot()
         var didEmitThreadProgress = false
         var cancellationReason: String?
@@ -289,6 +294,11 @@ package actor ReviewProcessController {
         else {
             throw ReviewError.spawnFailed("Working directory does not exist or is not a directory: \(command.currentDirectory)")
         }
+        guard let eventsPath = command.artifacts.eventsPath,
+              let logPath = command.artifacts.logPath
+        else {
+            throw ReviewError.spawnFailed("Missing review artifact paths.")
+        }
         let executable = try resolveExecutable(for: command)
         let stdinFD = open("/dev/null", O_RDONLY)
         guard stdinFD >= 0 else {
@@ -296,13 +306,13 @@ package actor ReviewProcessController {
         }
         defer { close(stdinFD) }
 
-        let stdoutFD = open(command.artifacts.eventsPath!, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        let stdoutFD = open(eventsPath, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
         guard stdoutFD >= 0 else {
             throw ReviewError.spawnFailed("Failed to open events output file.")
         }
         defer { close(stdoutFD) }
 
-        let stderrFD = open(command.artifacts.logPath!, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        let stderrFD = open(logPath, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
         guard stderrFD >= 0 else {
             throw ReviewError.spawnFailed("Failed to open log output file.")
         }

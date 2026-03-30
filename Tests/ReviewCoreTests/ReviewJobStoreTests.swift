@@ -218,6 +218,144 @@ import Testing
         _ = await reviewTask.value
     }
 
+    @Test func reviewJobStoreListReviewsFiltersAndSortsBySession() async throws {
+        let scriptURL = try makeFakeCodexScript(mode: "long")
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let runningDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let recentDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let foreignDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: runningDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: recentDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: foreignDirectory, withIntermediateDirectories: true)
+        let store = ReviewJobStore(
+            configuration: .init(
+                codexCommand: scriptURL.path,
+                environment: [
+                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                    "CODEX_FAKE_MODE": "long",
+                ]
+            )
+        )
+
+        let runningJobID = try await store.enqueueReview(
+            sessionID: "session-list",
+            request: .init(cwd: runningDirectory.path, uncommitted: true)
+        )
+        let recentJobID = try await store.enqueueReview(
+            sessionID: "session-list",
+            request: .init(cwd: recentDirectory.path, uncommitted: true)
+        )
+        let foreignJobID = try await store.enqueueReview(
+            sessionID: "session-foreign",
+            request: .init(cwd: foreignDirectory.path, uncommitted: true)
+        )
+
+        let runningTask = Task { await store.runReview(jobID: runningJobID) { _, _ in } }
+        let recentTask = Task { await store.runReview(jobID: recentJobID) { _, _ in } }
+        let foreignTask = Task { await store.runReview(jobID: foreignJobID) { _, _ in } }
+
+        let runningSnapshot: ReviewJobSnapshot = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(100)) {
+            await store.allSnapshots(for: "session-list").first(where: { $0.jobID == runningJobID && $0.state == .running })
+        }
+        _ = runningSnapshot
+        _ = try await store.cancel(jobID: recentJobID, sessionID: "session-list", reason: "done")
+        _ = await recentTask.value
+
+        let listed = await store.listReviews(sessionID: "session-list")
+        #expect(listed.items.map(\.jobID) == [runningJobID, recentJobID])
+
+        let filtered = await store.listReviews(sessionID: "session-list", cwd: runningDirectory.path, statuses: [.running], limit: 10)
+        #expect(filtered.items.map(\.jobID) == [runningJobID])
+
+        _ = try await store.cancel(jobID: runningJobID, sessionID: "session-list", reason: "done")
+        _ = try await store.cancel(jobID: foreignJobID, sessionID: "session-foreign", reason: "done")
+        _ = await runningTask.value
+        _ = await foreignTask.value
+    }
+
+    @Test func reviewJobStoreResolveSelectorSupportsLatestAndAmbiguous() async throws {
+        let scriptURL = try makeFakeCodexScript(mode: "long")
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let sharedDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: sharedDirectory, withIntermediateDirectories: true)
+        let store = ReviewJobStore(
+            configuration: .init(
+                codexCommand: scriptURL.path,
+                environment: [
+                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                    "CODEX_FAKE_MODE": "long",
+                ]
+            )
+        )
+
+        let firstJobID = try await store.enqueueReview(
+            sessionID: "session-selector",
+            request: .init(cwd: sharedDirectory.path, uncommitted: true)
+        )
+        let firstTask = Task { await store.runReview(jobID: firstJobID) { _, _ in } }
+        try await waitUntil(timeout: .seconds(5), interval: .milliseconds(100)) {
+            await store.allSnapshots(for: "session-selector").contains(where: { $0.jobID == firstJobID && $0.state == .running })
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        let secondJobID = try await store.enqueueReview(
+            sessionID: "session-selector",
+            request: .init(cwd: sharedDirectory.path, uncommitted: true)
+        )
+        let secondTask = Task { await store.runReview(jobID: secondJobID) { _, _ in } }
+        try await waitUntil(timeout: .seconds(5), interval: .milliseconds(100)) {
+            let snapshots = await store.allSnapshots(for: "session-selector")
+            return snapshots.contains(where: { $0.jobID == secondJobID && $0.state == .running })
+        }
+
+        do {
+            _ = try await store.cancelReview(
+                selector: .init(cwd: sharedDirectory.path),
+                sessionID: "session-selector"
+            )
+            Issue.record("expected ambiguous selector")
+        } catch let error as ReviewJobSelectionError {
+            switch error {
+            case .ambiguous(let candidates):
+                #expect(candidates.map(\.jobID).sorted() == [firstJobID, secondJobID].sorted())
+            case .notFound:
+                Issue.record("expected ambiguous selector")
+            }
+        }
+
+        let cancelOutcome = try await store.cancelReview(
+            selector: .init(cwd: sharedDirectory.path, latest: true),
+            sessionID: "session-selector"
+        )
+        #expect(cancelOutcome.jobID == secondJobID)
+
+        _ = try await store.cancel(jobID: firstJobID, sessionID: "session-selector", reason: "done")
+        _ = await firstTask.value
+        _ = await secondTask.value
+    }
+
+    @Test func reviewJobStoreListReviewsDefaultsToTwentyItems() async throws {
+        let store = ReviewJobStore()
+
+        for index in 0 ..< 25 {
+            _ = try await store.enqueueReview(
+                sessionID: "session-limit",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory
+                        .appendingPathComponent("review-limit-\(index)-\(UUID().uuidString)", isDirectory: true)
+                        .path,
+                    uncommitted: true
+                )
+            )
+        }
+
+        let defaultListed = await store.listReviews(sessionID: "session-limit")
+        #expect(defaultListed.items.count == 20)
+
+        let expandedListed = await store.listReviews(sessionID: "session-limit", limit: 999)
+        #expect(expandedListed.items.count == 25)
+    }
+
     @Test func reviewJobStoreRejectsMissingWorkingDirectory() async throws {
         let missingCWD = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -327,6 +465,21 @@ private func waitUntilValue<T>(
     while ContinuousClock.now < deadline {
         if let value = try await action() {
             return value
+        }
+        try await Task.sleep(for: interval)
+    }
+    throw TestFailure("timed out")
+}
+
+private func waitUntil(
+    timeout: Duration = .seconds(2),
+    interval: Duration = .milliseconds(20),
+    condition: @escaping () async throws -> Bool
+) async throws {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if try await condition() {
+            return
         }
         try await Task.sleep(for: interval)
     }

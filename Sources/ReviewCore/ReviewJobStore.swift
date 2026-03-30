@@ -194,7 +194,18 @@ package actor ReviewJobStore {
                 requestedTerminationReason: nil
             )
             broadcastSnapshots()
-            let failedSnapshot = snapshot(jobID: jobID)!
+            let failedSnapshot = snapshot(jobID: jobID) ?? ReviewJobSnapshot(
+                jobID: jobID,
+                sessionID: queuedRecord.sessionID,
+                cwd: queuedRecord.request.cwd,
+                targetSummary: queuedRecord.request.targetSummary,
+                model: queuedRecord.request.model,
+                state: .failed,
+                errorMessage: message,
+                startedAt: now,
+                endedAt: Date(),
+                summary: "Failed to start review."
+            )
             pruneClosedJobIfNeeded(jobID: jobID)
             return ReviewExecutionResult(
                 snapshot: failedSnapshot,
@@ -215,6 +226,23 @@ package actor ReviewJobStore {
         return result
     }
 
+    package func listReviews(
+        sessionID: String,
+        cwd: String? = nil,
+        statuses: [ReviewJobState]? = nil,
+        limit: Int? = nil
+    ) -> ReviewListResult {
+        let filtered = filteredSnapshots(
+            sessionID: sessionID,
+            cwd: cwd,
+            statuses: statuses
+        )
+        let clampedLimit = min(max(limit ?? 20, 1), 100)
+        return ReviewListResult(
+            items: Array(filtered.prefix(clampedLimit)).map(ReviewJobListItem.init)
+        )
+    }
+
     package func cancelReview(
         reviewThreadID: String,
         sessionID: String
@@ -227,6 +255,17 @@ package actor ReviewJobStore {
             threadID: snapshot.threadID,
             cancelled: result.signalled || result.state == .cancelled,
             status: result.state
+        )
+    }
+
+    package func cancelReview(
+        selector: ReviewJobSelector,
+        sessionID: String
+    ) async throws -> ReviewCancelOutcome {
+        let snapshot = try resolveJob(sessionID: sessionID, selector: selector)
+        return try await cancelReview(
+            reviewThreadID: snapshot.jobID,
+            sessionID: sessionID
         )
     }
 
@@ -441,7 +480,26 @@ package actor ReviewJobStore {
         record.processController = nil
         jobs[jobID] = record
         broadcastSnapshots()
-        return snapshot(jobID: jobID)!
+        return snapshot(jobID: jobID) ?? ReviewJobSnapshot(
+            jobID: jobID,
+            sessionID: record.sessionID,
+            cwd: record.request.cwd,
+            targetSummary: record.request.targetSummary,
+            model: record.request.model,
+            state: record.state,
+            threadID: record.threadID,
+            lastAgentMessage: record.lastAgentMessage,
+            reviewLogText: record.reviewLogText,
+            reasoningLogText: record.reasoningLogText,
+            rawLogText: "",
+            errorMessage: record.errorMessage,
+            startedAt: record.startedAt,
+            endedAt: record.endedAt,
+            exitCode: record.exitCode,
+            summary: record.summary,
+            artifacts: record.artifacts,
+            elapsedSeconds: record.startedAt.map { Int((record.endedAt ?? Date()).timeIntervalSince($0)) }
+        )
     }
 
     private func authorizedSnapshot(jobID: String, sessionID: String) throws -> ReviewJobSnapshot {
@@ -450,6 +508,50 @@ package actor ReviewJobStore {
             throw ReviewError.jobNotFound("Job \(jobID) was not found.")
         }
         return snapshot
+    }
+
+    private func filteredSnapshots(
+        sessionID: String,
+        cwd: String?,
+        statuses: [ReviewJobState]?
+    ) -> [ReviewJobSnapshot] {
+        let normalizedCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let allowedStatuses = statuses.map(Set.init)
+        return allSnapshots(for: sessionID).filter { snapshot in
+            if let normalizedCWD, snapshot.cwd != normalizedCWD {
+                return false
+            }
+            if let allowedStatuses, allowedStatuses.contains(snapshot.state) == false {
+                return false
+            }
+            return true
+        }.sorted(by: reviewListSort)
+    }
+
+    private func resolveJob(
+        sessionID: String,
+        selector: ReviewJobSelector
+    ) throws -> ReviewJobSnapshot {
+        if let reviewThreadID = selector.reviewThreadID?.nilIfEmpty {
+            return try authorizedSnapshot(jobID: reviewThreadID, sessionID: sessionID)
+        }
+
+        let effectiveStatuses = selector.statuses ?? [.queued, .running]
+        let candidates = filteredSnapshots(
+            sessionID: sessionID,
+            cwd: selector.cwd,
+            statuses: effectiveStatuses
+        )
+        guard candidates.isEmpty == false else {
+            throw ReviewJobSelectionError.notFound("No matching review jobs were found.")
+        }
+        if selector.latest {
+            return candidates[0]
+        }
+        guard candidates.count == 1 else {
+            throw ReviewJobSelectionError.ambiguous(candidates.map(ReviewJobListItem.init))
+        }
+        return candidates[0]
     }
 
     private func readResult(jobID: String, sessionID: String) -> ReviewReadResult? {
@@ -531,7 +633,26 @@ package actor ReviewJobStore {
         record.endedAt = now
         jobs[jobID] = record
         broadcastSnapshots()
-        let snapshot = snapshot(jobID: jobID)!
+        let snapshot = snapshot(jobID: jobID) ?? ReviewJobSnapshot(
+            jobID: jobID,
+            sessionID: record.sessionID,
+            cwd: record.request.cwd,
+            targetSummary: record.request.targetSummary,
+            model: record.request.model,
+            state: .cancelled,
+            threadID: record.threadID,
+            lastAgentMessage: record.lastAgentMessage,
+            reviewLogText: record.reviewLogText,
+            reasoningLogText: record.reasoningLogText,
+            rawLogText: "",
+            errorMessage: reason,
+            startedAt: record.startedAt,
+            endedAt: now,
+            exitCode: record.exitCode,
+            summary: "Review cancelled.",
+            artifacts: record.artifacts,
+            elapsedSeconds: record.startedAt.map { Int(now.timeIntervalSince($0)) }
+        )
         return ReviewExecutionResult(
             snapshot: snapshot,
             content: reason,
@@ -611,6 +732,26 @@ package actor ReviewJobStore {
             case (.none, .none):
                 return left.jobID < right.jobID
             }
+        }
+    }
+}
+
+private func reviewListSort(_ left: ReviewJobSnapshot, _ right: ReviewJobSnapshot) -> Bool {
+    switch (left.state.isTerminal, right.state.isTerminal) {
+    case (false, true):
+        return true
+    case (true, false):
+        return false
+    default:
+        switch (left.startedAt, right.startedAt) {
+        case let (lhs?, rhs?):
+            return lhs > rhs
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        case (.none, .none):
+            return left.jobID > right.jobID
         }
     }
 }
