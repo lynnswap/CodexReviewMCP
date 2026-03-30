@@ -35,6 +35,20 @@ struct ReviewToolHandler {
                 structuredContent: result.structuredContent(),
                 isError: result.status == .failed
             )
+        } catch let error as DecodingError {
+            let detail = reviewStartErrorDetail(from: error)
+            return toolError(
+                ReviewHelpCatalog.reviewStartGuidanceMessage(detail: detail),
+                structuredContent: ReviewHelpCatalog.reviewStartGuidanceStructuredContent(detail: detail)
+            )
+        } catch let error as ReviewError {
+            if case .invalidArguments(let detail) = error {
+                return toolError(
+                    ReviewHelpCatalog.reviewStartGuidanceMessage(detail: detail),
+                    structuredContent: ReviewHelpCatalog.reviewStartGuidanceStructuredContent(detail: detail)
+                )
+            }
+            return toolError(error.localizedDescription)
         } catch {
             return toolError(error.localizedDescription)
         }
@@ -168,4 +182,25 @@ private struct ReviewListArguments: Codable {
 private func decodeArguments<T: Decodable>(_ arguments: [String: Value]?, as type: T.Type) throws -> T {
     let data = try JSONEncoder().encode(arguments ?? [:])
     return try JSONDecoder().decode(type, from: data)
+}
+
+private func reviewStartErrorDetail(from error: DecodingError) -> String {
+    switch error {
+    case .dataCorrupted(let context):
+        return context.debugDescription
+    case .keyNotFound(let key, let context):
+        let path = reviewStartCodingPathString(from: context.codingPath + [key])
+        return path.isEmpty ? "`\(key.stringValue)` is required." : "`\(path)` is required."
+    case .typeMismatch(_, let context), .valueNotFound(_, let context):
+        return context.debugDescription
+    @unknown default:
+        return error.localizedDescription
+    }
+}
+
+private func reviewStartCodingPathString(from codingPath: [CodingKey]) -> String {
+    codingPath
+        .map(\.stringValue)
+        .filter { $0.isEmpty == false }
+        .joined(separator: ".")
 }

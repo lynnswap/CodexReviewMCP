@@ -216,6 +216,132 @@ struct CodexReviewMCPTests {
         #expect(updatedJob.startedAt == Date(timeIntervalSince1970: 123))
     }
 
+    @Test func initializeAdvertisesResourcesCapability() async throws {
+        let server = makeMonitorServer()
+        let initialized = try await initializeMonitorSessionAndReadInitializeResponse(server: server)
+        let result = try #require(initialized.response["result"] as? [String: Any])
+        let capabilities = try #require(result["capabilities"] as? [String: Any])
+        #expect(capabilities["resources"] as? [String: Any] != nil)
+    }
+
+    @Test func monitorServerListsReviewHelpResources() async throws {
+        let server = makeMonitorServer()
+        let sessionID = try await initializeMonitorSession(server: server)
+        let response = try await callMonitorMethod(
+            server: server,
+            sessionID: sessionID,
+            requestID: 11,
+            method: "resources/list",
+            params: [:]
+        )
+
+        let result = try #require(response["result"] as? [String: Any])
+        let resources = try #require(result["resources"] as? [[String: Any]])
+        let uris = resources.compactMap { $0["uri"] as? String }
+        #expect(uris == [
+            "codex-review://help/overview",
+            "codex-review://help/troubleshooting",
+        ])
+    }
+
+    @Test func monitorServerListsReviewHelpTemplates() async throws {
+        let server = makeMonitorServer()
+        let sessionID = try await initializeMonitorSession(server: server)
+        let response = try await callMonitorMethod(
+            server: server,
+            sessionID: sessionID,
+            requestID: 12,
+            method: "resources/templates/list",
+            params: [:]
+        )
+
+        let result = try #require(response["result"] as? [String: Any])
+        let templates = try #require(result["resourceTemplates"] as? [[String: Any]])
+        let uris = templates.compactMap { $0["uriTemplate"] as? String }
+        #expect(uris == [
+            "codex-review://help/tools/{toolName}",
+            "codex-review://help/targets/{targetType}",
+        ])
+    }
+
+    @Test func monitorServerReadsConcreteHelpResources() async throws {
+        let server = makeMonitorServer()
+        let sessionID = try await initializeMonitorSession(server: server)
+
+        let toolResponse = try await callMonitorMethod(
+            server: server,
+            sessionID: sessionID,
+            requestID: 13,
+            method: "resources/read",
+            params: ["uri": "codex-review://help/tools/review_start"]
+        )
+        let targetResponse = try await callMonitorMethod(
+            server: server,
+            sessionID: sessionID,
+            requestID: 14,
+            method: "resources/read",
+            params: ["uri": "codex-review://help/targets/uncommitted"]
+        )
+
+        let toolContents = try #require(((toolResponse["result"] as? [String: Any])?["contents"] as? [[String: Any]])?.first)
+        let targetContents = try #require(((targetResponse["result"] as? [String: Any])?["contents"] as? [[String: Any]])?.first)
+        #expect(((toolContents["text"] as? String) ?? "").contains("`review_start`"))
+        #expect(((targetContents["text"] as? String) ?? "").contains("`target.type = \"uncommitted\"`"))
+    }
+
+    @Test func monitorServerRejectsUnknownTargetHelpResource() async throws {
+        let server = makeMonitorServer()
+        let sessionID = try await initializeMonitorSession(server: server)
+        let response = try await callMonitorMethod(
+            server: server,
+            sessionID: sessionID,
+            requestID: 15,
+            method: "resources/read",
+            params: ["uri": "codex-review://help/targets/bogus"]
+        )
+
+        let error = try #require(response["error"] as? [String: Any])
+        let message = try #require(error["message"] as? String)
+        #expect(message.contains("Allowed values: uncommitted, branch, commit, custom"))
+    }
+
+    @Test func monitorServerReviewStartInvalidTargetReturnsGuidance() async throws {
+        let server = makeMonitorServer()
+        let sessionID = try await initializeMonitorSession(server: server)
+        let response = try await callMonitorTool(
+            server: server,
+            sessionID: sessionID,
+            requestID: 16,
+            name: "review_start",
+            arguments: [
+                "cwd": "/tmp/repo",
+                "target": [
+                    "type": "uncommittedChanges",
+                ],
+            ]
+        )
+
+        let result = try #require(response["result"] as? [String: Any])
+        let content = try #require(result["content"] as? [[String: Any]])
+        let text = try #require(content.first?["text"] as? String)
+        let structuredContent = try #require(result["structuredContent"] as? [String: Any])
+        let acceptedTargetTypes = try #require(structuredContent["acceptedTargetTypes"] as? [String])
+        let helpResources = try #require(structuredContent["helpResources"] as? [String])
+        let helpTemplates = try #require(structuredContent["helpTemplates"] as? [String])
+
+        #expect((result["isError"] as? Bool) == true)
+        #expect(text.contains("Accepted `target.type` values: uncommitted, branch, commit, custom"))
+        #expect(text.contains("codex-review://help/overview"))
+        #expect(text.contains("codex-review://help/tools/review_start"))
+        #expect(text.contains("codex-review://help/targets/uncommitted"))
+        #expect(text.contains("codex-review://help/targets/branch"))
+        #expect(text.contains("codex-review://help/targets/commit"))
+        #expect(text.contains("codex-review://help/targets/custom"))
+        #expect(acceptedTargetTypes == ["uncommitted", "branch", "commit", "custom"])
+        #expect(helpResources == ["codex-review://help/overview", "codex-review://help/troubleshooting"])
+        #expect(helpTemplates == ["codex-review://help/tools/{toolName}", "codex-review://help/targets/{targetType}"])
+    }
+
 }
 
 private struct TemporaryReviewRepository {
@@ -468,6 +594,12 @@ private final class ReviewMCPHTTPTestClient: @unchecked Sendable {
 }
 
 private func initializeMonitorSession(server: ReviewMCPHTTPServer) async throws -> String {
+    try await initializeMonitorSessionAndReadInitializeResponse(server: server).sessionID
+}
+
+private func initializeMonitorSessionAndReadInitializeResponse(
+    server: ReviewMCPHTTPServer
+) async throws -> (sessionID: String, response: [String: Any]) {
     let initializeData = try JSONSerialization.data(withJSONObject: [
         "jsonrpc": "2.0",
         "id": 1,
@@ -516,7 +648,7 @@ private func initializeMonitorSession(server: ReviewMCPHTTPServer) async throws 
         )
     )
     #expect(initializedResponse.statusCode == 202)
-    return sessionID
+    return (sessionID, object)
 }
 
 private func callMonitorTool(
@@ -526,15 +658,34 @@ private func callMonitorTool(
     name: String,
     arguments: [String: Any]
 ) async throws -> [String: Any] {
-    let body = try JSONSerialization.data(withJSONObject: [
-        "jsonrpc": "2.0",
-        "id": requestID,
-        "method": "tools/call",
-        "params": [
+    try await callMonitorMethod(
+        server: server,
+        sessionID: sessionID,
+        requestID: requestID,
+        method: "tools/call",
+        params: [
             "name": name,
             "arguments": arguments,
-        ],
-    ])
+        ]
+    )
+}
+
+private func callMonitorMethod(
+    server: ReviewMCPHTTPServer,
+    sessionID: String,
+    requestID: Int,
+    method: String,
+    params: [String: Any]?
+) async throws -> [String: Any] {
+    var requestObject: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": requestID,
+        "method": method,
+    ]
+    if let params {
+        requestObject["params"] = params
+    }
+    let body = try JSONSerialization.data(withJSONObject: requestObject)
     let response = await server.handleHTTPRequest(
         HTTPRequest(
             method: "POST",
@@ -551,6 +702,55 @@ private func callMonitorTool(
     )
     let payload = try await firstMonitorStreamPayload(response)
     return try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
+}
+
+private func makeMonitorServer() -> ReviewMCPHTTPServer {
+    ReviewMCPHTTPServer(
+        configuration: .init(),
+        startReview: { _, _ in
+            ReviewReadResult(
+                jobID: "job-1",
+                reviewThreadID: "job-1",
+                status: .succeeded,
+                review: "ok",
+                lastAgentMessage: "ok",
+                logs: [],
+                rawLogText: ""
+            )
+        },
+        readReview: { _, _ in
+            ReviewReadResult(
+                jobID: "job-1",
+                reviewThreadID: "job-1",
+                status: .succeeded,
+                review: "ok",
+                lastAgentMessage: "ok",
+                logs: [],
+                rawLogText: ""
+            )
+        },
+        listReviews: { _, _, _, _ in
+            ReviewListResult(items: [])
+        },
+        cancelReviewByID: { _, _ in
+            ReviewCancelOutcome(
+                jobID: "job-1",
+                reviewThreadID: "job-1",
+                cancelled: true,
+                status: .cancelled
+            )
+        },
+        cancelReviewBySelector: { _, _, _, _ in
+            ReviewCancelOutcome(
+                jobID: "job-1",
+                reviewThreadID: "job-1",
+                cancelled: true,
+                status: .cancelled
+            )
+        },
+        closeSession: { _ in },
+        hasActiveJobs: { _ in false }
+    )
 }
 
 private func firstMonitorStreamPayload(_ response: HTTPResponse) async throws -> Data {

@@ -31,6 +31,12 @@ session-scoped review jobs through `codex exec review`.
    - `review_read`
    - `review_cancel`
 
+4. If the client or agent is unfamiliar with the server, inspect discovery resources first:
+
+   - `resources/list`
+   - `resources/templates/list`
+   - `resources/read` on `codex-review://help/overview`
+
 ### Codex CLI timeout note
 
 `codex mcp add` does not currently expose MCP timeout flags. If you expect
@@ -172,6 +178,14 @@ Notes:
 - `review_start` is the primary client flow. It waits for terminal completion, so MCP clients should configure a sufficiently large tool timeout.
 - `review_read` is only a supplementary API for post-hoc inspection or manual troubleshooting.
 
+If you are unsure how to build the `target` object, read:
+
+- `codex-review://help/tools/review_start`
+- `codex-review://help/targets/uncommitted`
+- `codex-review://help/targets/branch`
+- `codex-review://help/targets/commit`
+- `codex-review://help/targets/custom`
+
 ### `review_read`
 
 Reads the current or final state of a review job owned by the current MCP session.
@@ -236,8 +250,16 @@ Notes:
 - When `latest: true`, the newest matching active review is selected automatically.
 - Without `reviewThreadId`, `review_cancel` searches only the current MCP session.
 
+## Resources
+
+This server exposes onboarding/discovery resources over MCP. Clients can use `resources/list` and `resources/read` to inspect supported review flows without relying on this README.
+
+## Resource Templates
+
+This server also exposes MCP resource templates for tool-specific and target-specific help. Clients can discover them via `resources/templates/list`.
+
 ## Development Notes
 
-- The package depends on `swift-sdk` via a pinned Git revision in [Package.swift](Package.swift).
+- The package depends on `swift-sdk` via a pinned release version in [Package.swift](Package.swift).
 - Default review model, clamp limits, and server defaults are loaded from [Sources/ReviewCore/Resources/defaults.json](Sources/ReviewCore/Resources/defaults.json).
 - Review jobs are isolated per MCP session.

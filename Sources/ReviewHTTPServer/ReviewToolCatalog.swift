@@ -4,25 +4,25 @@ enum ReviewToolCatalog {
     static let tools: [Tool] = [
         Tool(
             name: "review_start",
-            description: "Run `codex exec review --json` for a repository and wait for the terminal result. `target.type` must be one of `uncommitted`, `branch`, `commit`, or `custom`. The result includes `jobId`, `reviewThreadId`, `threadId`, `turnId`, `status`, `review`, ordered `logs`, and `rawLogText`.",
+            description: ReviewHelpCatalog.reviewStartDescription,
             inputSchema: reviewStartInputSchema,
             annotations: .init(readOnlyHint: false)
         ),
         Tool(
             name: "review_list",
-            description: "List review jobs owned by the current MCP session. Use this to discover active or recent jobs before calling `review_read` or selector-based `review_cancel`.",
+            description: ReviewHelpCatalog.reviewListDescription,
             inputSchema: reviewListInputSchema,
             annotations: .init(readOnlyHint: true)
         ),
         Tool(
             name: "review_read",
-            description: "Read the current or final state of a review job owned by the current MCP session. Returns the same log payload shape as `review_start`.",
+            description: ReviewHelpCatalog.reviewReadDescription,
             inputSchema: reviewReadInputSchema,
             annotations: .init(readOnlyHint: true)
         ),
         Tool(
             name: "review_cancel",
-            description: "Cancel a running review job owned by the current MCP session. Pass either `reviewThreadId` or a selector (`cwd`, `statuses`, `latest`).",
+            description: ReviewHelpCatalog.reviewCancelDescription,
             inputSchema: cancelInputSchema,
             annotations: .init(readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false)
         ),
@@ -33,7 +33,7 @@ enum ReviewToolCatalog {
         "properties": [
             "cwd": ["type": "string", "description": "Absolute repository path to review."],
             "target": [
-                "description": "Review target. Use exactly one variant.",
+                "description": "Review target. Use exactly one variant. If you are unsure, read `\(ReviewHelpCatalog.toolURI("review_start"))` and then one of `\(ReviewHelpCatalog.targetURI("uncommitted"))`, `\(ReviewHelpCatalog.targetURI("branch"))`, `\(ReviewHelpCatalog.targetURI("commit"))`, or `\(ReviewHelpCatalog.targetURI("custom"))`.",
                 "oneOf": [
                     [
                         "type": "object",
@@ -82,7 +82,7 @@ enum ReviewToolCatalog {
     private static let reviewReadInputSchema: Value = [
         "type": "object",
         "properties": [
-            "reviewThreadId": ["type": "string", "description": "The `reviewThreadId` returned by `review_start` or `review_list`."],
+            "reviewThreadId": ["type": "string", "description": "The `reviewThreadId` returned by `review_start` or `review_list`. See `\(ReviewHelpCatalog.toolURI("review_read"))` for usage."],
         ],
         "required": ["reviewThreadId"],
         "additionalProperties": false,
