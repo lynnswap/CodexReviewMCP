@@ -105,6 +105,100 @@ import Testing
         #expect(await startRecorder.didStart == false)
         #expect(FileManager.default.fileExists(atPath: markerURL.path) == false)
     }
+
+    @Test func reviewProcessRunnerResolvesCodexFromPATHAtSpawnTime() async throws {
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        let binDirectory = cwd.appendingPathComponent("bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+        let executableURL = try makeExecReviewSuccessScript(
+            at: binDirectory.appendingPathComponent("codex")
+        )
+
+        let runner = CodexReviewProcessRunner(
+            commandBuilder: ReviewCommandBuilder(
+                codexCommand: "codex",
+                environment: [
+                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                    "PATH": "\(binDirectory.path):/usr/bin:/bin",
+                ]
+            )
+        )
+
+        let result = try await runner.run(
+            request: ReviewRequestOptions(cwd: cwd.path),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _, _ in },
+            onSnapshot: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? },
+            onProgress: { _, _ in }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.content == "Review ok")
+        #expect(FileManager.default.fileExists(atPath: executableURL.path))
+    }
+
+    @Test func reviewProcessRunnerTreatsEmptyPATHSegmentAsCurrentDirectory() async throws {
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        let executableURL = try makeExecReviewSuccessScript(
+            at: cwd.appendingPathComponent("codex")
+        )
+
+        let runner = CodexReviewProcessRunner(
+            commandBuilder: ReviewCommandBuilder(
+                codexCommand: "codex",
+                environment: [
+                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                    "PATH": ":/usr/bin:/bin",
+                ]
+            )
+        )
+
+        let result = try await runner.run(
+            request: ReviewRequestOptions(cwd: cwd.path),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _, _ in },
+            onSnapshot: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? },
+            onProgress: { _, _ in }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.content == "Review ok")
+        #expect(FileManager.default.fileExists(atPath: executableURL.path))
+    }
+
+    @Test func reviewProcessRunnerFailsWithReadableErrorWhenCodexIsMissing() async throws {
+        let cwd = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        let missingCommand = "codex-missing"
+
+        let runner = CodexReviewProcessRunner(
+            commandBuilder: ReviewCommandBuilder(
+                codexCommand: missingCommand,
+                environment: [
+                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                    "PATH": cwd.path,
+                ]
+            )
+        )
+
+        do {
+            _ = try await runner.run(
+                request: ReviewRequestOptions(cwd: cwd.path),
+                defaultTimeoutSeconds: nil as Int?,
+                onStart: { _, _, _ in },
+                onSnapshot: { _ in },
+                requestedTerminationReason: { nil as ReviewTerminationReason? },
+                onProgress: { _, _ in }
+            )
+            Issue.record("expected spawn failure")
+        } catch let error as ReviewError {
+            #expect(error.errorDescription == "Unable to locate \(missingCommand) executable. Set --codex-command or ensure PATH contains \(missingCommand).")
+        }
+    }
 }
 
 private func makeNearTimeoutSuccessScript() throws -> URL {
@@ -154,6 +248,31 @@ private func makeMarkerCodexScript(markerURL: URL) throws -> URL {
     #!/bin/zsh
     touch "\(markerURL.path)"
     sleep 5
+    """.write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    return url
+}
+
+private func makeExecReviewSuccessScript(at url: URL) throws -> URL {
+    try """
+    #!/bin/zsh
+    out=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --output-last-message)
+          out="$2"
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    print '{"type":"thread.started","thread_id":"thread-path"}'
+    print '{"type":"turn.started"}'
+    print '{"type":"item.completed","item":{"type":"agent_message","text":"Review ok"}}'
+    print '{"type":"turn.completed"}'
+    [[ -n "$out" ]] && print -n 'Review ok' > "$out"
     """.write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
     return url

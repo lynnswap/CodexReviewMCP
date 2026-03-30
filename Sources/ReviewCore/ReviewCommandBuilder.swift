@@ -24,7 +24,6 @@ package struct ReviewCommandBuilder: Sendable {
 
     package func build(request: ReviewRequestOptions) throws -> ReviewCommand {
         let request = try request.validated()
-        let resolvedCodexCommand = try resolveExecutable()
         let artifacts = makeArtifacts()
         let configPath = resolveConfigPath()
         let modelsCache = loadJSONDictionary(at: resolveModelsCachePath())
@@ -120,7 +119,7 @@ package struct ReviewCommandBuilder: Sendable {
         }
 
         return ReviewCommand(
-            executable: resolvedCodexCommand,
+            executable: codexCommand,
             arguments: arguments,
             environment: environment,
             currentDirectory: request.cwd,
@@ -167,24 +166,6 @@ package struct ReviewCommandBuilder: Sendable {
                 throw ReviewError.invalidArguments("`extraArgs` cannot override reserved review flag `\(arg)`.")
             }
         }
-    }
-
-    private func resolveExecutable() throws -> String {
-        if codexCommand.contains("/") {
-            return codexCommand
-        }
-
-        let resolvedCommand = resolveCodexCommand(
-            requestedCommand: codexCommand,
-            environment: environment
-        )
-        if resolvedCommand.contains("/") {
-            return resolvedCommand
-        }
-
-        throw ReviewError.spawnFailed(
-            "Unable to locate \(codexCommand) executable. Set --codex-command or ensure PATH contains \(codexCommand)."
-        )
     }
 }
 

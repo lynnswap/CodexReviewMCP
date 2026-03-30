@@ -2,13 +2,17 @@ import Foundation
 
 package func resolveCodexCommand(
     requestedCommand: String,
-    environment: [String: String]
-) -> String {
+    environment: [String: String],
+    currentDirectory: String
+) -> String? {
     if requestedCommand.contains("/") {
         return requestedCommand
     }
 
-    let searchPaths = searchPathsForExecutableLookup(environment: environment)
+    let searchPaths = searchPathsForExecutableLookup(
+        environment: environment,
+        currentDirectory: currentDirectory
+    )
     for directory in searchPaths {
         let candidate = URL(fileURLWithPath: directory, isDirectory: true)
             .appendingPathComponent(requestedCommand)
@@ -18,13 +22,26 @@ package func resolveCodexCommand(
         }
     }
 
-    return requestedCommand
+    return nil
 }
 
-private func searchPathsForExecutableLookup(environment: [String: String]) -> [String] {
+private func searchPathsForExecutableLookup(
+    environment: [String: String],
+    currentDirectory: String
+) -> [String] {
     let envPaths = environment["PATH"]?
-        .split(separator: ":")
-        .map(String.init) ?? []
+        .components(separatedBy: ":")
+        .map { path -> String in
+            if path.isEmpty {
+                return currentDirectory
+            }
+            if path.hasPrefix("/") {
+                return path
+            }
+            return URL(fileURLWithPath: currentDirectory, isDirectory: true)
+                .appendingPathComponent(path, isDirectory: true)
+                .path
+        } ?? []
 
     let fallbackPaths = [
         "/opt/homebrew/bin",

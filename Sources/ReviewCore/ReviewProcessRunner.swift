@@ -289,6 +289,7 @@ package actor ReviewProcessController {
         else {
             throw ReviewError.spawnFailed("Working directory does not exist or is not a directory: \(command.currentDirectory)")
         }
+        let executable = try resolveExecutable(for: command)
         let stdinFD = open("/dev/null", O_RDONLY)
         guard stdinFD >= 0 else {
             throw ReviewError.spawnFailed("Failed to open /dev/null for stdin.")
@@ -336,23 +337,16 @@ package actor ReviewProcessController {
         try throwOnPOSIX(posix_spawnattr_setpgroup(&attributes, 0), context: "posix_spawnattr_setpgroup")
         try throwOnPOSIX(posix_spawnattr_setsigdefault(&attributes, &defaultSignals), context: "posix_spawnattr_setsigdefault")
 
-        let argv = [command.executable] + command.arguments
+        let argv = [executable] + command.arguments
         let envp = command.environment.map { "\($0.key)=\($0.value)" }
 
         let result = try withCStringArray(argv) { argvPointers in
             try withCStringArray(envp) { envPointers in
                 var pid: pid_t = 0
-                let status: Int32
-                if command.executable.contains("/") {
-                    status = command.executable.withCString { executable in
-                        posix_spawn(&pid, executable, &fileActions, &attributes, argvPointers, envPointers)
-                    }
-                } else {
-                    status = command.executable.withCString { executable in
-                        posix_spawnp(&pid, executable, &fileActions, &attributes, argvPointers, envPointers)
-                    }
+                let status = executable.withCString { executablePointer in
+                    posix_spawn(&pid, executablePointer, &fileActions, &attributes, argvPointers, envPointers)
                 }
-                try throwOnPOSIX(status, context: "posix_spawnp")
+                try throwOnPOSIX(status, context: "posix_spawn")
                 return pid
             }
         }
@@ -407,6 +401,23 @@ package actor ReviewProcessController {
         _ = await waitForExit(timeout: .seconds(2))
         return true
     }
+}
+
+private func resolveExecutable(for command: ReviewCommand) throws -> String {
+    if command.executable.contains("/") {
+        return command.executable
+    }
+
+    guard let resolved = resolveCodexCommand(
+        requestedCommand: command.executable,
+        environment: command.environment,
+        currentDirectory: command.currentDirectory
+    ) else {
+        throw ReviewError.spawnFailed(
+            "Unable to locate \(command.executable) executable. Set --codex-command or ensure PATH contains \(command.executable)."
+        )
+    }
+    return resolved
 }
 
 private func normalizeWaitStatus(_ status: Int32) -> Int {
