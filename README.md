@@ -149,8 +149,8 @@ Key inputs:
 
 `target` uses the review target model:
 
-- `{"type":"uncommittedChanges"}`
-- `{"type":"baseBranch","branch":"main"}`
+- `{"type":"uncommitted"}`
+- `{"type":"branch","branch":"main"}`
 - `{"type":"commit","sha":"abc1234","title":"Optional title"}`
 - `{"type":"custom","instructions":"Free-form review instructions"}`
 
@@ -159,8 +159,11 @@ Returns:
 - `jobId`
 - `reviewThreadId`
 - `threadId` when available
+- `turnId`
 - `status`
 - `review`
+- `logs`
+- `rawLogText`
 - `lastAgentMessage`
 - `error`
 
@@ -179,8 +182,11 @@ Returns:
 - `jobId`
 - `reviewThreadId`
 - `threadId` when available
+- `turnId`
 - `status`
 - `review`
+- `logs`
+- `rawLogText`
 - `lastAgentMessage`
 - `error`
 

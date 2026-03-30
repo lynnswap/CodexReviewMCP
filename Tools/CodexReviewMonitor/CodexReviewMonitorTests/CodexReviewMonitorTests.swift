@@ -57,12 +57,12 @@ struct CodexReviewMonitorTests {
     }
 
     @Test func selectingJobUpdatesDetailPane() async throws {
-        let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes", activityLogText: "Running review\n")
+        let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes", logText: "Running review\n")
         let recentJob = makeJob(
             status: .succeeded,
             targetSummary: "Commit: abc123",
             summary: "MCP server codex_review ready.",
-            activityLogText: "Findings ready\n"
+            logText: "Findings ready\n"
         )
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
@@ -80,7 +80,7 @@ struct CodexReviewMonitorTests {
                 let transport = viewController.transportViewControllerForTesting
                 guard transport.displayedTitleForTesting == recentJob.displayTitle,
                       transport.displayedSummaryForTesting == recentJob.summary,
-                      transport.displayedActivityLogForTesting == recentJob.activityLogText
+                      transport.displayedLogForTesting == recentJob.logText
                 else {
                     return nil
                 }
@@ -89,12 +89,12 @@ struct CodexReviewMonitorTests {
         }
 
         activeJob.summary = "Old selection should not render."
-        activeJob.reviewEntries = [.init(kind: .agentMessage, text: "Old selection log")]
+        activeJob.logEntries = [.init(kind: .agentMessage, text: "Old selection log")]
         try await Task.sleep(for: .milliseconds(200))
 
         #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == recentJob.displayTitle)
         #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == recentJob.summary)
-        #expect(viewController.transportViewControllerForTesting.displayedActivityLogForTesting == recentJob.activityLogText)
+        #expect(viewController.transportViewControllerForTesting.displayedLogForTesting == recentJob.logText)
     }
 
     @Test func switchingSelectedJobRebindsDetailPane() async throws {
@@ -103,14 +103,14 @@ struct CodexReviewMonitorTests {
             status: .running,
             targetSummary: "Uncommitted changes",
             summary: "Active review in progress.",
-            activityLogText: "Active log\n"
+            logText: "Active log\n"
         )
         let recentJob = makeJob(
             id: "job-recent",
             status: .succeeded,
             targetSummary: "Commit: abc123",
             summary: "Recent review completed.",
-            activityLogText: "Recent log\n"
+            logText: "Recent log\n"
         )
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
@@ -138,7 +138,7 @@ struct CodexReviewMonitorTests {
                 let transport = viewController.transportViewControllerForTesting
                 guard transport.displayedTitleForTesting == recentJob.displayTitle,
                       transport.displayedSummaryForTesting == recentJob.summary,
-                      transport.displayedActivityLogForTesting == recentJob.activityLogText
+                      transport.displayedLogForTesting == recentJob.logText
                 else {
                     return nil
                 }
@@ -153,14 +153,14 @@ struct CodexReviewMonitorTests {
             status: .running,
             targetSummary: "Uncommitted changes",
             summary: "Active review in progress.",
-            activityLogText: "Active log\n"
+            logText: "Active log\n"
         )
         let recentJob = makeJob(
             id: "job-recent",
             status: .succeeded,
             targetSummary: "Commit: abc123",
             summary: "Recent review completed.",
-            activityLogText: "Recent log\n"
+            logText: "Recent log\n"
         )
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
@@ -204,7 +204,7 @@ struct CodexReviewMonitorTests {
             status: .running,
             targetSummary: "Uncommitted changes",
             summary: "Running review.",
-            activityLogText: "Initial log\n"
+            logText: "Initial log\n"
         )
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
@@ -223,7 +223,7 @@ struct CodexReviewMonitorTests {
                 guard transport.isShowingEmptyStateForTesting,
                       transport.displayedTitleForTesting == nil,
                       transport.displayedSummaryForTesting == nil,
-                      transport.displayedActivityLogForTesting.isEmpty
+                      transport.displayedLogForTesting.isEmpty
                 else {
                     return nil
                 }
@@ -232,11 +232,11 @@ struct CodexReviewMonitorTests {
         }
 
         job.summary = "Deselected summary"
-        job.reviewEntries = [.init(kind: .agentMessage, text: "Deselected log")]
+        job.logEntries = [.init(kind: .agentMessage, text: "Deselected log")]
         try await Task.sleep(for: .milliseconds(200))
 
         #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.transportViewControllerForTesting.displayedActivityLogForTesting.isEmpty)
+        #expect(viewController.transportViewControllerForTesting.displayedLogForTesting.isEmpty)
     }
 
     @Test func inPlaceJobUpdateKeepsSelectionAndRefreshesDetailPane() async throws {
@@ -245,7 +245,7 @@ struct CodexReviewMonitorTests {
             status: .running,
             targetSummary: "Uncommitted changes",
             summary: "Running review.",
-            activityLogText: "Initial log\n"
+            logText: "Initial log\n"
         )
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
@@ -269,7 +269,7 @@ struct CodexReviewMonitorTests {
 
         job.status = .succeeded
         job.summary = "Review completed successfully."
-        job.reviewEntries = [.init(kind: .agentMessage, text: "Updated log")]
+        job.logEntries = [.init(kind: .agentMessage, text: "Updated log")]
 
         viewController.sidebarViewControllerForTesting.applyServerState(
             serverState: .running,
@@ -284,7 +284,7 @@ struct CodexReviewMonitorTests {
                 let transport = viewController.transportViewControllerForTesting
                 guard sidebar.selectedJobForTesting?.id == "job-1",
                       transport.displayedSummaryForTesting == "Review completed successfully.",
-                      transport.displayedActivityLogForTesting == "Updated log"
+                      transport.displayedLogForTesting == "Updated log"
                 else {
                     return nil
                 }
@@ -316,7 +316,7 @@ struct CodexReviewMonitorTests {
             arguments: [
                 "cwd": repository.url.path,
                 "target": [
-                    "type": "uncommittedChanges",
+                    "type": "uncommitted",
                     "title": "Uncommitted changes",
                 ],
             ]
@@ -335,7 +335,7 @@ struct CodexReviewMonitorTests {
             guard let diagnostics = try launchedApp.readDiagnostics(),
                   let job = diagnostics.jobs.first,
                   job.status == "succeeded",
-                  job.reviewLogText.isEmpty == false || job.reasoningLogText.isEmpty == false
+                  job.logText.isEmpty == false
             else {
                 return nil
             }
@@ -344,7 +344,7 @@ struct CodexReviewMonitorTests {
 
         let job = try #require(diagnostics.jobs.first)
         #expect(job.status == "succeeded")
-        #expect(job.reviewLogText.isEmpty == false || job.reasoningLogText.isEmpty == false)
+        #expect(job.logText.isEmpty == false)
         #expect(diagnostics.childRuntimePath == nil)
 
         let readResponse = try await client.callTool(
@@ -385,7 +385,7 @@ struct CodexReviewMonitorTests {
             arguments: [
                 "cwd": repository.url.path,
                 "target": [
-                    "type": "uncommittedChanges",
+                    "type": "uncommitted",
                     "title": "Uncommitted changes",
                 ],
             ]
@@ -408,8 +408,7 @@ private struct MonitorAppDiagnostics: Decodable {
     struct Job: Decodable {
         var status: String
         var summary: String
-        var reviewLogText: String
-        var reasoningLogText: String
+        var logText: String
         var rawLogText: String
     }
 
@@ -935,8 +934,7 @@ private func makeJob(
     status: CodexReviewJobStatus,
     targetSummary: String,
     summary: String? = nil,
-    reasoningSummaryText: String = "",
-    activityLogText: String = "",
+    logText: String = "",
     rawLogText: String = ""
 ) -> CodexReviewJob {
     CodexReviewJob.makeForTesting(
@@ -949,8 +947,7 @@ private func makeJob(
         endedAt: status.isTerminal ? Date() : nil,
         summary: summary ?? status.displayText,
         lastAgentMessage: "",
-        reviewEntries: activityLogText.isEmpty ? [] : [.init(kind: .agentMessage, text: activityLogText.trimmingCharacters(in: .newlines))],
-        reasoningEntries: reasoningSummaryText.isEmpty ? [] : [.init(kind: .reasoning, text: reasoningSummaryText.trimmingCharacters(in: .newlines))],
-        rawEventLines: rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        logEntries: logText.isEmpty ? [] : [.init(kind: .agentMessage, text: logText.trimmingCharacters(in: .newlines))],
+        rawLogLines: rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     )
 }

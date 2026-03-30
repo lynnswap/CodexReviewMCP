@@ -17,9 +17,8 @@ extension CodexReviewJob {
         endedAt: Date? = nil,
         summary: String,
         lastAgentMessage: String? = "",
-        reviewEntries: [ReviewLogEntry] = [],
-        reasoningEntries: [ReviewLogEntry] = [],
-        rawEventLines: [String] = [],
+        logEntries: [ReviewLogEntry] = [],
+        rawLogLines: [String] = [],
         errorMessage: String? = nil,
         exitCode: Int? = nil
     ) -> CodexReviewJob {
@@ -36,9 +35,8 @@ extension CodexReviewJob {
             endedAt: endedAt,
             summary: summary,
             lastAgentMessage: lastAgentMessage,
-            reviewEntries: reviewEntries,
-            reasoningEntries: reasoningEntries,
-            rawEventLines: rawEventLines,
+            logEntries: logEntries,
+            rawLogLines: rawLogLines,
             errorMessage: errorMessage,
             exitCode: exitCode,
             artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)

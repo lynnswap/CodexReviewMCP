@@ -79,7 +79,8 @@ package struct ReviewEventParser: Sendable {
         rawLine: String,
         into events: inout [ReviewProcessEvent]
     ) {
-        appendRawLine(rawLine, into: &events)
+        let trimmedRawLine = trimmedLine(rawLine)
+        appendRawLine(trimmedRawLine, into: &events)
 
         if threadID == nil,
            (entry["type"] as? String) == "thread.started",
@@ -93,7 +94,7 @@ package struct ReviewEventParser: Sendable {
             finalizeCurrentTurn()
         }
 
-        currentTurn.append(entry, into: &events)
+        currentTurn.append(entry, rawLine: trimmedRawLine, into: &events)
     }
 
     private mutating func finalizeCurrentTurn() {
@@ -137,11 +138,10 @@ package struct ReviewEventParser: Sendable {
     }
 
     private mutating func appendRawLine(_ line: String, into events: inout [ReviewProcessEvent]) {
-        let trimmed = trimmedLine(line)
-        guard trimmed.isEmpty == false else {
+        guard line.isEmpty == false else {
             return
         }
-        events.append(.rawLine(trimmed))
+        events.append(.rawLine(line))
     }
 }
 
@@ -154,22 +154,35 @@ private struct TurnAccumulator: Sendable {
     var lastTurnFailedError = ""
     private var entryIndex = 0
 
-    mutating func append(_ entry: [String: Any], into events: inout [ReviewProcessEvent]) {
+    mutating func append(
+        _ entry: [String: Any],
+        rawLine: String,
+        into events: inout [ReviewProcessEvent]
+    ) {
         hasEntries = true
+
+        let emitted: Bool
         switch entry["type"] as? String {
+        case "thread.started":
+            emitted = appendLog(kind: .event, text: rawLine, into: &events)
+        case "turn.started":
+            emitted = appendLog(kind: .event, text: rawLine, into: &events)
         case "item.started":
-            appendStartedItem(entry["item"], into: &events)
+            emitted = appendStartedItem(entry["item"], into: &events)
         case "item.updated":
-            appendUpdatedItem(entry["item"], into: &events)
+            emitted = appendUpdatedItem(entry["item"], into: &events)
         case "item.completed":
-            appendCompletedItem(entry["item"], into: &events)
+            emitted = appendCompletedItem(entry["item"], into: &events)
         case "turn.completed":
             lastTurnCompletedIndex = entryIndex
+            emitted = appendLog(kind: .event, text: rawLine, into: &events)
         case "turn.failed":
             lastTurnFailedError = parseErrorMessage(entry["error"])
             if lastTurnFailedError.isEmpty == false {
                 events.append(.failed(lastTurnFailedError))
-                events.append(.reviewEntry(.init(kind: .error, text: lastTurnFailedError)))
+                emitted = appendLog(kind: .error, text: lastTurnFailedError, into: &events)
+            } else {
+                emitted = appendLog(kind: .event, text: rawLine, into: &events)
             }
         case "error":
             lastErrorIndex = entryIndex
@@ -177,11 +190,18 @@ private struct TurnAccumulator: Sendable {
             if message.isEmpty == false {
                 fallbackErrorMessage = message
                 events.append(.failed(message))
-                events.append(.reviewEntry(.init(kind: .error, text: message)))
+                emitted = appendLog(kind: .error, text: message, into: &events)
+            } else {
+                emitted = appendLog(kind: .event, text: rawLine, into: &events)
             }
         default:
-            break
+            emitted = false
         }
+
+        if emitted == false {
+            _ = appendLog(kind: .event, text: rawLine, into: &events)
+        }
+
         entryIndex += 1
     }
 
@@ -217,75 +237,66 @@ private struct TurnAccumulator: Sendable {
         )
     }
 
-    private mutating func appendStartedItem(_ rawItem: Any?, into events: inout [ReviewProcessEvent]) {
+    private mutating func appendStartedItem(_ rawItem: Any?, into events: inout [ReviewProcessEvent]) -> Bool {
         guard let item = rawItem as? [String: Any],
               let type = item["type"] as? String
         else {
-            return
+            return false
         }
 
         switch type {
         case "command_execution":
             let command = trimmedLine(item["command"] as? String)
-            if command.isEmpty == false {
-                events.append(.reviewEntry(.init(kind: .command, text: "$ \(command)")))
-            }
+            return appendLog(kind: .command, text: command.isEmpty ? "" : "$ \(command)", into: &events)
         case "todo_list":
-            if let todoList = formattedTodoList(from: item) {
-                events.append(.reviewEntry(.init(kind: .todoList, text: todoList)))
-            }
+            return appendLog(kind: .todoList, text: formattedTodoList(from: item) ?? "", into: &events)
         default:
-            break
+            return false
         }
     }
 
-    private mutating func appendUpdatedItem(_ rawItem: Any?, into events: inout [ReviewProcessEvent]) {
+    private mutating func appendUpdatedItem(_ rawItem: Any?, into events: inout [ReviewProcessEvent]) -> Bool {
         guard let item = rawItem as? [String: Any],
-              (item["type"] as? String) == "todo_list",
-              let todoList = formattedTodoList(from: item)
+              (item["type"] as? String) == "todo_list"
         else {
-            return
+            return false
         }
-        events.append(.reviewEntry(.init(kind: .todoList, text: todoList)))
+        return appendLog(kind: .todoList, text: formattedTodoList(from: item) ?? "", into: &events)
     }
 
-    private mutating func appendCompletedItem(_ rawItem: Any?, into events: inout [ReviewProcessEvent]) {
+    private mutating func appendCompletedItem(_ rawItem: Any?, into events: inout [ReviewProcessEvent]) -> Bool {
         guard let item = rawItem as? [String: Any],
               let type = item["type"] as? String
         else {
-            return
+            return false
         }
 
         switch type {
         case "agent_message":
             let text = trimmedLine(item["text"] as? String)
-            if text.isEmpty == false {
-                lastAgentMessage = text
-                events.append(.reviewEntry(.init(kind: .agentMessage, text: text)))
-                events.append(.agentMessage(text))
+            guard appendLog(kind: .agentMessage, text: text, into: &events) else {
+                return false
             }
+            lastAgentMessage = text
+            events.append(.agentMessage(text))
+            return true
         case "reasoning":
             let text = trimmedLine(item["text"] as? String)
-            if text.isEmpty == false {
-                events.append(.reasoningEntry(.init(kind: .reasoning, text: text)))
-            }
+            return appendLog(kind: .reasoning, text: text, into: &events)
         case "command_execution":
             let output = trimmedLine(item["aggregated_output"] as? String)
-            if output.isEmpty == false {
-                events.append(.reviewEntry(.init(kind: .commandOutput, text: output)))
-            }
+            return appendLog(kind: .commandOutput, text: output, into: &events)
         case "todo_list":
-            if let todoList = formattedTodoList(from: item) {
-                events.append(.reviewEntry(.init(kind: .todoList, text: todoList)))
-            }
+            return appendLog(kind: .todoList, text: formattedTodoList(from: item) ?? "", into: &events)
         case "error":
             let message = trimmedLine(item["message"] as? String)
-            if message.isEmpty == false {
-                events.append(.failed(message))
-                events.append(.reviewEntry(.init(kind: .error, text: message)))
+            guard appendLog(kind: .error, text: message, into: &events) else {
+                return false
             }
+            events.append(.failed(message))
+            return true
         default:
-            break
+            return false
         }
     }
 
@@ -305,6 +316,18 @@ private struct TurnAccumulator: Sendable {
             return nil
         }
         return lines.joined(separator: "\n")
+    }
+
+    private func appendLog(
+        kind: ReviewLogEntry.Kind,
+        text: String,
+        into events: inout [ReviewProcessEvent]
+    ) -> Bool {
+        guard text.isEmpty == false else {
+            return false
+        }
+        events.append(.logEntry(.init(kind: kind, text: text)))
+        return true
     }
 }
 

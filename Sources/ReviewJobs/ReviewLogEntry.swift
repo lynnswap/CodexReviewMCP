@@ -1,4 +1,5 @@
 import Foundation
+import MCP
 
 public struct ReviewLogEntry: Identifiable, Sendable, Hashable {
     public enum Kind: String, Sendable, Hashable {
@@ -9,6 +10,7 @@ public struct ReviewLogEntry: Identifiable, Sendable, Hashable {
         case reasoning
         case error
         case progress
+        case event
     }
 
     public let id: UUID
@@ -26,5 +28,14 @@ public struct ReviewLogEntry: Identifiable, Sendable, Hashable {
         self.kind = kind
         self.text = text
         self.timestamp = timestamp
+    }
+
+    package func structuredContent() -> Value {
+        .object([
+            "id": .string(id.uuidString),
+            "kind": .string(kind.rawValue),
+            "text": .string(text),
+            "timestamp": .string(timestamp.ISO8601Format()),
+        ])
     }
 }

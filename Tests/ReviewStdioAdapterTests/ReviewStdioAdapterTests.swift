@@ -344,6 +344,9 @@ import Testing
 
         let outputs = try await harness.waitForOutputs(count: 1, timeout: .seconds(5))
         #expect(outputs[0].contains("\"id\":1"))
+        try await waitUntil {
+            await transport.deleteCalls() == ["session-1"]
+        }
         #expect(await transport.deleteCalls() == ["session-1"])
         await harness.stop()
     }

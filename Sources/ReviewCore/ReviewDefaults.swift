@@ -36,9 +36,9 @@ package struct ReviewDefaults: Codable, Sendable {
                 server: .init(defaultPort: 9417, endpointPath: "/mcp", sessionTimeoutSeconds: 3600),
                 review: .init(
                     defaultModel: "gpt-5.4-mini",
-                    hideAgentReasoning: true,
+                    hideAgentReasoning: false,
                     reasoningEffort: "xhigh",
-                    reasoningSummary: "none",
+                    reasoningSummary: "detailed",
                     autoCompactRatio: 0.9
                 ),
                 models: .init(

@@ -144,7 +144,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
                 \.summary,
                 \.threadID,
                 \.turnID,
-                \.reviewEntries,
+                \.logEntries,
             ]
         ) { [weak self, weak selectedJob] in
             guard let self, let selectedJob,
@@ -166,7 +166,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
         turnLabel.stringValue = job.turnID.map { "Turn: \($0)" } ?? ""
         summaryLabel.stringValue = job.summary
         summaryLabel.isHidden = job.summary.isEmpty
-        logScrollView.setText(job.activityLogText)
+        logScrollView.setText(job.logText)
 
         titleLabel.isHidden = false
         metadataStack.isHidden = false
@@ -201,7 +201,7 @@ extension ReviewMonitorTransportViewController {
         titleLabel.isHidden ? nil : titleLabel.stringValue
     }
 
-    var displayedActivityLogForTesting: String {
+    var displayedLogForTesting: String {
         logScrollView.displayedTextForTesting
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ReviewCore
+import ReviewJobs
 
 @Suite
 struct ReviewEventParserTests {
@@ -124,5 +125,44 @@ struct ReviewEventParserTests {
 
         #expect(parser.terminalState == .none)
         #expect(parser.errorMessage.isEmpty)
+    }
+
+    @Test func reviewEventParserEmitsMergedLogsInOrderWithFallback() throws {
+        let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try """
+        {"type":"thread.started","thread_id":"thread-7"}
+        {"type":"turn.started"}
+        {"type":"item.started","item":{"type":"command_execution","command":"git diff --stat"}}
+        {"type":"item.completed","item":{"type":"command_execution","aggregated_output":"README.md | 1 +"}}
+        {"type":"item.completed","item":{"type":"reasoning","text":"Inspecting current changes"}}
+        {"type":"item.completed","item":{"type":"agent_message","text":"No functional issues found."}}
+        {"type":"item.completed","item":{"type":"unknown_item","foo":"bar"}}
+        {"type":"turn.completed"}
+        """.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        var parser = ReviewEventParser()
+        let events = parser.refresh(fileURL: fileURL)
+        let logs = events.compactMap { event -> ReviewLogEntry? in
+            if case .logEntry(let entry) = event {
+                return entry
+            }
+            return nil
+        }
+
+        #expect(logs.map(\.kind) == [
+            .event,
+            .event,
+            .command,
+            .commandOutput,
+            .reasoning,
+            .agentMessage,
+            .event,
+            .event,
+        ])
+        #expect(logs.map(\.text)[2] == "$ git diff --stat")
+        #expect(logs.map(\.text)[3] == "README.md | 1 +")
+        #expect(logs.map(\.text)[4] == "Inspecting current changes")
+        #expect(logs.map(\.text)[5] == "No functional issues found.")
+        #expect(logs.map(\.text)[6].contains("\"type\":\"item.completed\""))
     }
 }

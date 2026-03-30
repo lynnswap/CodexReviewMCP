@@ -17,9 +17,8 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public var endedAt: Date?
     public var summary: String
     public var lastAgentMessage: String?
-    public var reviewEntries: [ReviewLogEntry]
-    public var reasoningEntries: [ReviewLogEntry]
-    public var rawEventLines: [String]
+    public var logEntries: [ReviewLogEntry]
+    public var rawLogLines: [String]
     public var errorMessage: String?
     public var exitCode: Int?
     package var artifacts: ReviewArtifacts
@@ -32,24 +31,12 @@ public final class CodexReviewJob: Identifiable, Hashable {
         targetSummary
     }
 
-    public var activityLogText: String {
-        Self.concatenatedText(from: reviewEntries)
-    }
-
-    public var reviewLogText: String {
-        activityLogText
-    }
-
-    public var reasoningSummaryText: String {
-        Self.concatenatedText(from: reasoningEntries)
-    }
-
-    public var reasoningLogText: String {
-        reasoningSummaryText
+    public var logText: String {
+        Self.concatenatedText(from: logEntries)
     }
 
     public var rawLogText: String {
-        rawEventLines.joined(separator: "\n")
+        rawLogLines.joined(separator: "\n")
     }
 
     public var reviewText: String {
@@ -83,9 +70,8 @@ public final class CodexReviewJob: Identifiable, Hashable {
         endedAt: Date?,
         summary: String,
         lastAgentMessage: String?,
-        reviewEntries: [ReviewLogEntry],
-        reasoningEntries: [ReviewLogEntry],
-        rawEventLines: [String],
+        logEntries: [ReviewLogEntry],
+        rawLogLines: [String],
         errorMessage: String?,
         exitCode: Int?,
         artifacts: ReviewArtifacts
@@ -102,9 +88,8 @@ public final class CodexReviewJob: Identifiable, Hashable {
         self.endedAt = endedAt
         self.summary = summary
         self.lastAgentMessage = lastAgentMessage
-        self.reviewEntries = reviewEntries
-        self.reasoningEntries = reasoningEntries
-        self.rawEventLines = rawEventLines
+        self.logEntries = logEntries
+        self.rawLogLines = rawLogLines
         self.errorMessage = errorMessage
         self.exitCode = exitCode
         self.artifacts = artifacts

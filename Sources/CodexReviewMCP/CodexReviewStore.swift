@@ -168,6 +168,8 @@ public final class CodexReviewStore {
             status: job.status.state,
             review: job.isTerminal ? job.reviewText : (job.reviewText.nilIfEmpty ?? job.lastAgentMessage ?? ""),
             lastAgentMessage: job.lastAgentMessage ?? "",
+            logs: job.logEntries,
+            rawLogText: job.rawLogText,
             error: job.errorMessage
         )
     }
@@ -253,24 +255,20 @@ public final class CodexReviewStore {
             }
             updateJob(id: jobID) { job in
                 job.summary = message
-                job.reviewEntries.append(.init(kind: .progress, text: message))
+                job.logEntries.append(.init(kind: .progress, text: message))
             }
         case .threadStarted(let threadID):
             updateJob(id: jobID) { job in
                 job.threadID = threadID
                 job.summary = "Thread started: \(threadID)"
             }
-        case .reviewEntry(let entry):
+        case .logEntry(let entry):
             updateJob(id: jobID) { job in
-                job.reviewEntries.append(entry)
-            }
-        case .reasoningEntry(let entry):
-            updateJob(id: jobID) { job in
-                job.reasoningEntries.append(entry)
+                job.logEntries.append(entry)
             }
         case .rawLine(let line):
             updateJob(id: jobID) { job in
-                job.rawEventLines.append(line)
+                job.rawLogLines.append(line)
                 trimRawLines(job: job)
             }
         case .agentMessage(let message):
@@ -311,7 +309,7 @@ public final class CodexReviewStore {
             job.startedAt = startedAt
             job.endedAt = endedAt
             if message.isEmpty == false {
-                job.reviewEntries.append(.init(kind: .error, text: message))
+                job.logEntries.append(.init(kind: .error, text: message))
             }
         }
     }
@@ -400,9 +398,8 @@ public final class CodexReviewStore {
                 endedAt: nil,
                 summary: "Queued.",
                 lastAgentMessage: nil,
-                reviewEntries: [],
-                reasoningEntries: [],
-                rawEventLines: [],
+                logEntries: [],
+                rawLogLines: [],
                 errorMessage: nil,
                 exitCode: nil,
                 artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)
@@ -649,10 +646,10 @@ public final class CodexReviewStore {
     }
 
     private func trimRawLines(job: CodexReviewJob) {
-        while job.rawEventLines.joined(separator: "\n").utf8.count > reviewLogLimitBytes,
-              job.rawEventLines.isEmpty == false
+        while job.rawLogLines.joined(separator: "\n").utf8.count > reviewLogLimitBytes,
+              job.rawLogLines.isEmpty == false
         {
-            job.rawEventLines.removeFirst()
+            job.rawLogLines.removeFirst()
         }
     }
 
@@ -669,8 +666,7 @@ public final class CodexReviewStore {
                 .init(
                     status: $0.status.rawValue,
                     summary: $0.summary,
-                    reviewLogText: $0.activityLogText,
-                    reasoningLogText: $0.reasoningSummaryText,
+                    logText: $0.logText,
                     rawLogText: $0.rawLogText
                 )
             }

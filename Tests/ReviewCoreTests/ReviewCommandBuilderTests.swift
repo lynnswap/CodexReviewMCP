@@ -23,10 +23,11 @@ import Testing
         #expect(command.executable == "codex")
         #expect(command.arguments.contains("--json"))
         #expect(command.arguments.contains("review_model=gpt-5.4-mini"))
-        #expect(command.arguments.contains("hide_agent_reasoning=true"))
+        #expect(command.arguments.contains("hide_agent_reasoning=false"))
         #expect(command.arguments.contains("personality=none"))
         #expect(command.arguments.contains("model_context_window=272000"))
         #expect(command.arguments.contains("model_auto_compact_token_limit=244800"))
+        #expect(command.arguments.contains("model_reasoning_summary=detailed"))
     }
 
     @Test func reviewRequestRejectsCommitAndBaseAtTheSameTime() {

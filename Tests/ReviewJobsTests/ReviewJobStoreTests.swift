@@ -62,7 +62,7 @@ struct ReviewRuntimeTests {
             sessionID: "session-success",
             request: .init(
                 cwd: FileManager.default.temporaryDirectory.path,
-                target: .uncommittedChanges
+                target: .uncommitted
             )
         )
 
@@ -92,7 +92,7 @@ struct ReviewRuntimeTests {
                 sessionID: "session-cancel",
                 request: .init(
                     cwd: FileManager.default.temporaryDirectory.path,
-                    target: .uncommittedChanges
+                    target: .uncommitted
                 )
             )
         }

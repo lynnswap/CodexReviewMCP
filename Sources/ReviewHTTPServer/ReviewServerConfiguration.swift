@@ -173,7 +173,30 @@ private extension ReviewMCPHTTPServer {
         let server = Server(
             name: codexReviewMCPName,
             version: codexReviewMCPVersion,
-            instructions: "Run repository reviews through codex exec review and expose job progress over MCP.",
+            instructions: """
+Run repository reviews through `codex exec review --json`.
+
+Use `review_start` with `target.type` set to exactly one of:
+- `uncommitted`
+- `branch` with `branch`
+- `commit` with `sha` and optional `title`
+- `custom` with `instructions`
+
+`review_start` and `review_read` return:
+- `jobId`
+- `parentThreadId`
+- `reviewThreadId`
+- `threadId` when available
+- `turnId`
+- `status`
+- `review`
+- `lastAgentMessage`
+- ordered `logs`
+- `rawLogText`
+- `error` when present
+
+Use `review_list` to discover jobs for the current MCP session and `review_cancel` to stop a running job by `reviewThreadId` or by selector.
+""",
             capabilities: .init(
                 tools: .init()
             )

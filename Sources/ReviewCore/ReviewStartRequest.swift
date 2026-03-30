@@ -26,13 +26,13 @@ package struct ReviewStartRequest: Codable, Hashable, Sendable {
 
     package func reviewRequestOptions() -> ReviewRequestOptions {
         switch target {
-        case .uncommittedChanges:
+        case .uncommitted:
             return ReviewRequestOptions(
                 cwd: cwd,
                 uncommitted: true,
                 model: model
             )
-        case .baseBranch(let branch):
+        case .branch(let branch):
             return ReviewRequestOptions(
                 cwd: cwd,
                 base: branch,

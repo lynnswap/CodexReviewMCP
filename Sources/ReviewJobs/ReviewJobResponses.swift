@@ -9,6 +9,8 @@ package struct ReviewReadResult: Sendable, Hashable {
     package var status: ReviewJobState
     package var review: String
     package var lastAgentMessage: String
+    package var logs: [ReviewLogEntry]
+    package var rawLogText: String
     package var error: String?
 
     package init(
@@ -19,6 +21,8 @@ package struct ReviewReadResult: Sendable, Hashable {
         status: ReviewJobState,
         review: String,
         lastAgentMessage: String,
+        logs: [ReviewLogEntry],
+        rawLogText: String,
         error: String? = nil
     ) {
         self.jobID = jobID
@@ -28,6 +32,8 @@ package struct ReviewReadResult: Sendable, Hashable {
         self.status = status
         self.review = review
         self.lastAgentMessage = lastAgentMessage
+        self.logs = logs
+        self.rawLogText = rawLogText
         self.error = error
     }
 
@@ -38,6 +44,8 @@ package struct ReviewReadResult: Sendable, Hashable {
             "reviewThreadId": .string(reviewThreadID),
             "status": .string(status.rawValue),
             "review": .string(review),
+            "logs": .array(logs.map { $0.structuredContent() }),
+            "rawLogText": .string(rawLogText),
         ]
         if let threadID {
             object["threadId"] = .string(threadID)
@@ -230,33 +238,5 @@ package struct ReviewCancelResult: Sendable {
             "status": .string(state.rawValue),
             "signalled": .bool(signalled),
         ])
-    }
-}
-
-package struct ReviewLogResult: Sendable {
-    package var jobID: String
-    package var source: ReviewLogSource
-    package var text: String
-    package var tailBytes: Int
-    package var path: String?
-
-    package init(jobID: String, source: ReviewLogSource, text: String, tailBytes: Int, path: String? = nil) {
-        self.jobID = jobID
-        self.source = source
-        self.text = text
-        self.tailBytes = tailBytes
-        self.path = path
-    }
-
-    package func structuredContent() -> Value {
-        var object: [String: Value] = [
-            "jobId": .string(jobID),
-            "source": .string(source.rawValue),
-            "tailBytes": .int(tailBytes),
-        ]
-        if let path {
-            object["path"] = .string(path)
-        }
-        return .object(object)
     }
 }

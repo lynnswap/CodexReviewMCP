@@ -13,8 +13,7 @@ struct CodexReviewStoreDiagnosticsSnapshot: Encodable {
     struct Job: Encodable {
         var status: String
         var summary: String
-        var reviewLogText: String
-        var reasoningLogText: String
+        var logText: String
         var rawLogText: String
     }
 

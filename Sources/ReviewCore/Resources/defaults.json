@@ -6,9 +6,9 @@
   },
   "review": {
     "defaultModel": "gpt-5.4-mini",
-    "hideAgentReasoning": true,
+    "hideAgentReasoning": false,
     "reasoningEffort": "xhigh",
-    "reasoningSummary": "none",
+    "reasoningSummary": "detailed",
     "autoCompactRatio": 0.9
   },
   "models": {

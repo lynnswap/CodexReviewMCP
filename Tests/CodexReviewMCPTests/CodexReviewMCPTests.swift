@@ -59,8 +59,7 @@ struct CodexReviewMCPTests {
                 arguments: [
                     "cwd": repository.url.path,
                     "target": [
-                        "type": "uncommittedChanges",
-                        "title": "Uncommitted changes",
+                        "type": "uncommitted",
                     ],
                 ]
             )
@@ -68,25 +67,27 @@ struct CodexReviewMCPTests {
             let result = try #require(response["result"] as? [String: Any])
             let structuredContent = try #require(result["structuredContent"] as? [String: Any])
             let jobID = try #require(structuredContent["jobId"] as? String)
+            let logs = try #require(structuredContent["logs"] as? [[String: Any]])
+            let rawLogText = try #require(structuredContent["rawLogText"] as? String)
             #expect(structuredContent["reviewThreadId"] as? String == jobID)
             #expect(structuredContent["status"] as? String == "succeeded")
             #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
+            #expect(logs.contains { ($0["kind"] as? String) == "reasoning" && (($0["text"] as? String) ?? "").contains("Inspecting current changes") })
+            #expect(rawLogText.contains("\"type\":\"thread.started\""))
 
             try await waitUntil(timeout: .seconds(2)) {
-                    await MainActor.run {
+                await MainActor.run {
                     guard let job = store.jobs.first else {
                         return false
                     }
-                    return job.status == .succeeded &&
-                        job.reviewLogText.isEmpty == false &&
-                        job.reasoningLogText.isEmpty == false
+                    return job.status == .succeeded && job.logText.isEmpty == false
                 }
             }
 
             let job = try #require(store.jobs.first)
             #expect(job.status == .succeeded)
-            #expect(job.reviewLogText.contains("$ git diff --stat"))
-            #expect(job.reasoningLogText.contains("Inspecting current changes"))
+            #expect(job.logText.contains("$ git diff --stat"))
+            #expect(job.logText.contains("Inspecting current changes"))
         } catch {
             await store.stop()
             throw error
@@ -124,8 +125,7 @@ struct CodexReviewMCPTests {
                     arguments: [
                         "cwd": repository.url.path,
                         "target": [
-                            "type": "uncommittedChanges",
-                            "title": "Uncommitted changes",
+                            "type": "uncommitted",
                         ],
                     ]
                 )
@@ -133,23 +133,24 @@ struct CodexReviewMCPTests {
                 let result = try #require(response["result"] as? [String: Any])
                 let structuredContent = try #require(result["structuredContent"] as? [String: Any])
                 let reviewThreadID = try #require(structuredContent["reviewThreadId"] as? String)
+                let logs = try #require(structuredContent["logs"] as? [[String: Any]])
                 #expect(structuredContent["status"] as? String == "succeeded")
                 #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
                 #expect(reviewThreadID.isEmpty == false)
+                #expect(logs.isEmpty == false)
 
                 try await waitUntil(timeout: .seconds(60), interval: .milliseconds(200)) {
                     await MainActor.run {
                         guard let job = store.jobs.first else {
                             return false
                         }
-                        return job.status == .succeeded &&
-                            (job.activityLogText.isEmpty == false || job.reasoningSummaryText.isEmpty == false)
+                        return job.status == .succeeded && job.logText.isEmpty == false
                     }
                 }
 
                 let job = try #require(store.jobs.first)
                 #expect(job.status == .succeeded)
-                #expect(job.activityLogText.isEmpty == false || job.reasoningSummaryText.isEmpty == false)
+                #expect(job.logText.isEmpty == false)
                 let readResponse = try await client.callTool(
                     name: "review_read",
                     arguments: [
@@ -158,8 +159,12 @@ struct CodexReviewMCPTests {
                 )
                 let readResult = try #require(readResponse["result"] as? [String: Any])
                 let readStructuredContent = try #require(readResult["structuredContent"] as? [String: Any])
+                let readLogs = try #require(readStructuredContent["logs"] as? [[String: Any]])
+                let rawLogText = try #require(readStructuredContent["rawLogText"] as? String)
                 #expect(readStructuredContent["status"] as? String == "succeeded")
                 #expect(((readStructuredContent["review"] as? String) ?? "").isEmpty == false)
+                #expect(readLogs.isEmpty == false)
+                #expect(rawLogText.isEmpty == false)
             }
         } catch {
             await store.stop()
@@ -188,7 +193,7 @@ struct CodexReviewMCPTests {
             startedAt: Date(timeIntervalSince1970: 123)
         )
         store.handle(jobID: firstJobID, event: .threadStarted("thread-1"))
-        store.handle(jobID: firstJobID, event: .reviewEntry(.init(kind: .agentMessage, text: "Running review")))
+        store.handle(jobID: firstJobID, event: .logEntry(.init(kind: .agentMessage, text: "Running review")))
 
         let secondJobID = try store.enqueueReview(
             sessionID: "session-1",
@@ -205,7 +210,7 @@ struct CodexReviewMCPTests {
         #expect(updatedJob === firstJob)
         #expect(updatedJob.status == .running)
         #expect(updatedJob.threadID == "thread-1")
-        #expect(updatedJob.reviewLogText == "Running review")
+        #expect(updatedJob.logText == "Running review")
         #expect(store.activeJobs.map(\.id) == [firstJobID])
         #expect(store.recentJobs.map(\.id) == [secondJobID])
         #expect(updatedJob.startedAt == Date(timeIntervalSince1970: 123))
