@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ReviewCore
+@testable import ReviewJobs
 
 @Suite(.serialized) struct ReviewProcessRunnerTests {
     @Test func reviewProcessRunnerPrefersTerminalSuccessOverTimeoutBoundary() async throws {
@@ -27,9 +28,8 @@ import Testing
             ),
             defaultTimeoutSeconds: nil as Int?,
             onStart: { _, _, _ in },
-            onSnapshot: { _ in },
-            requestedTerminationReason: { nil as ReviewTerminationReason? },
-            onProgress: { _, _ in }
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
         #expect(result.state == ReviewJobState.succeeded)
@@ -58,9 +58,8 @@ import Testing
                 request: ReviewRequestOptions(cwd: cwd.path),
                 defaultTimeoutSeconds: nil as Int?,
                 onStart: { _, _, _ in },
-                onSnapshot: { _ in },
-                requestedTerminationReason: { nil as ReviewTerminationReason? },
-                onProgress: { _, _ in }
+                onEvent: { _ in },
+                requestedTerminationReason: { nil as ReviewTerminationReason? }
             )
         }
 
@@ -68,7 +67,7 @@ import Testing
         task.cancel()
 
         let result = try await task.value
-        #expect(result.state == .cancelled)
+        #expect(result.state == ReviewJobState.cancelled)
         #expect(result.summary == "Review cancelled.")
     }
 
@@ -94,12 +93,11 @@ import Testing
             onStart: { _, _, _ in
                 await startRecorder.markStarted()
             },
-            onSnapshot: { _ in },
-            requestedTerminationReason: { .cancelled("Cancelled before spawn.") },
-            onProgress: { _, _ in }
+            onEvent: { _ in },
+            requestedTerminationReason: { .cancelled("Cancelled before spawn.") }
         )
 
-        #expect(result.state == .cancelled)
+        #expect(result.state == ReviewJobState.cancelled)
         #expect(result.summary == "Review cancelled.")
         #expect(result.errorMessage == "Cancelled before spawn.")
         #expect(await startRecorder.didStart == false)
@@ -129,12 +127,11 @@ import Testing
             request: ReviewRequestOptions(cwd: cwd.path),
             defaultTimeoutSeconds: nil as Int?,
             onStart: { _, _, _ in },
-            onSnapshot: { _ in },
-            requestedTerminationReason: { nil as ReviewTerminationReason? },
-            onProgress: { _, _ in }
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
+        #expect(result.state == ReviewJobState.succeeded)
         #expect(result.content == "Review ok")
         #expect(FileManager.default.fileExists(atPath: executableURL.path))
     }
@@ -160,12 +157,11 @@ import Testing
             request: ReviewRequestOptions(cwd: cwd.path),
             defaultTimeoutSeconds: nil as Int?,
             onStart: { _, _, _ in },
-            onSnapshot: { _ in },
-            requestedTerminationReason: { nil as ReviewTerminationReason? },
-            onProgress: { _, _ in }
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
+        #expect(result.state == ReviewJobState.succeeded)
         #expect(result.content == "Review ok")
         #expect(FileManager.default.fileExists(atPath: executableURL.path))
     }
@@ -190,9 +186,8 @@ import Testing
                 request: ReviewRequestOptions(cwd: cwd.path),
                 defaultTimeoutSeconds: nil as Int?,
                 onStart: { _, _, _ in },
-                onSnapshot: { _ in },
-                requestedTerminationReason: { nil as ReviewTerminationReason? },
-                onProgress: { _, _ in }
+                onEvent: { _ in },
+                requestedTerminationReason: { nil as ReviewTerminationReason? }
             )
             Issue.record("expected spawn failure")
         } catch let error as ReviewError {

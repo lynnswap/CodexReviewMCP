@@ -11,29 +11,27 @@ struct CodexReviewMonitorTests {
         let store = CodexReviewStore()
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
-        viewController.bind(store: store, onRestart: {})
+        viewController.bind(store: store)
 
         #expect(viewController.sidebarViewControllerForTesting.statusTextForTesting == "Server: Stopped")
-        #expect(viewController.listViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
         #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.reasoningViewControllerForTesting.isShowingEmptyStateForTesting)
     }
 
     @Test func splitViewShowsEmptyStateWithoutJobs() {
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
-        viewController.apply(
+        viewController.sidebarViewControllerForTesting.applyServerState(
             serverState: .stopped,
-            endpointURL: nil,
-            jobs: [],
-            onRestart: {}
+            serverURL: nil
         )
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [])
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [])
 
-        #expect(viewController.splitViewItems.count == 3)
+        #expect(viewController.splitViewItems.count == 2)
         #expect(viewController.sidebarViewControllerForTesting.statusTextForTesting == "Server: Stopped")
-        #expect(viewController.listViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
         #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.reasoningViewControllerForTesting.isShowingEmptyStateForTesting)
     }
 
     @Test func splitViewSeparatesActiveAndRecentJobs() {
@@ -41,20 +39,19 @@ struct CodexReviewMonitorTests {
         let recentJob = makeJob(status: .failed, targetSummary: "Base branch: main")
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
-        viewController.apply(
+        viewController.sidebarViewControllerForTesting.applyServerState(
             serverState: .running,
-            endpointURL: URL(string: "http://localhost:9417/mcp"),
-            jobs: [activeJob, recentJob],
-            onRestart: {}
+            serverURL: URL(string: "http://localhost:9417/mcp")
         )
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [activeJob])
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [recentJob])
 
-        #expect(viewController.listViewControllerForTesting.displayedSectionTitlesForTesting == ["Active", "Recent"])
-        #expect(viewController.splitViewItems.count == 3)
+        #expect(viewController.sidebarViewControllerForTesting.displayedSectionTitlesForTesting == ["Active", "Recent"])
+        #expect(viewController.splitViewItems.count == 2)
         #expect(viewController.splitViewItems[0].behavior == .sidebar)
         #expect(viewController.splitViewItems[1].behavior == .default)
-        #expect(viewController.splitViewItems[2].behavior == .inspector)
         #expect(viewController.sidebarViewControllerForTesting.statusTextForTesting == "Server: Running")
-        #expect(viewController.sidebarViewControllerForTesting.endpointTextForTesting == "http://localhost:9417/mcp")
+        #expect(viewController.sidebarViewControllerForTesting.serverURLTextForTesting == "http://localhost:9417/mcp")
     }
 
     @Test func selectingJobUpdatesDetailPane() {
@@ -63,26 +60,22 @@ struct CodexReviewMonitorTests {
             status: .succeeded,
             targetSummary: "Commit: abc123",
             summary: "MCP server codex_review ready.",
-            reasoningSummaryText: "差分が大きいので、まず ReviewCore と monitor UI を切り分けます。",
             activityLogText: "Findings ready\n"
         )
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
-        viewController.apply(
+        viewController.sidebarViewControllerForTesting.applyServerState(
             serverState: .running,
-            endpointURL: URL(string: "http://localhost:9417/mcp"),
-            jobs: [activeJob, recentJob],
-            onRestart: {}
+            serverURL: URL(string: "http://localhost:9417/mcp")
         )
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [activeJob])
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [recentJob])
 
-        viewController.listViewControllerForTesting.selectJobForTesting(id: recentJob.id)
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
 
         #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == recentJob.displayTitle)
         #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == recentJob.summary)
         #expect(viewController.transportViewControllerForTesting.displayedActivityLogForTesting == recentJob.activityLogText)
-        #expect(viewController.reasoningViewControllerForTesting.displayedTitleForTesting == "Reasoning")
-        #expect(viewController.reasoningViewControllerForTesting.displayedSummaryForTesting == recentJob.summary)
-        #expect(viewController.reasoningViewControllerForTesting.displayedReasoningForTesting == recentJob.reasoningSummaryText)
     }
 
     @Test func inPlaceJobUpdateKeepsSelectionAndRefreshesDetailPane() {
@@ -91,36 +84,33 @@ struct CodexReviewMonitorTests {
             status: .running,
             targetSummary: "Uncommitted changes",
             summary: "Running review.",
-            reasoningSummaryText: "",
             activityLogText: "Initial log\n"
         )
         let viewController = ReviewMonitorSplitViewController()
         viewController.loadViewIfNeeded()
-        viewController.apply(
+        viewController.sidebarViewControllerForTesting.applyServerState(
             serverState: .running,
-            endpointURL: URL(string: "http://localhost:9417/mcp"),
-            jobs: [job],
-            onRestart: {}
+            serverURL: URL(string: "http://localhost:9417/mcp")
         )
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [job])
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [])
 
-        viewController.listViewControllerForTesting.selectJobForTesting(id: job.id)
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
         job.status = .succeeded
         job.summary = "Review completed successfully."
-        job.reviewLogText = "Updated log\n"
-        job.reasoningLogText = "Updated reasoning\n"
+        job.reviewEntries = [.init(kind: .agentMessage, text: "Updated log")]
 
-        viewController.apply(
+        viewController.sidebarViewControllerForTesting.applyServerState(
             serverState: .running,
-            endpointURL: URL(string: "http://localhost:9417/mcp"),
-            jobs: [job],
-            onRestart: {}
+            serverURL: URL(string: "http://localhost:9417/mcp")
         )
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [])
+        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [job])
 
-        #expect(viewController.listViewControllerForTesting.selectedJobIDForTesting == "job-1")
+        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting?.id == "job-1")
         #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == "Review completed successfully.")
         #expect(viewController.transportViewControllerForTesting.displayedActivityLogForTesting == "Updated log\n")
-        #expect(viewController.reasoningViewControllerForTesting.displayedReasoningForTesting == "Updated reasoning\n")
     }
 
     @Test func launchedAppEmbeddedReviewStartProgressesViaMCP() async throws {
@@ -137,7 +127,7 @@ struct CodexReviewMonitorTests {
         defer { launchedApp.terminate() }
 
         let endpointURL: URL = try await waitUntilValue(timeout: .seconds(20), interval: .milliseconds(200)) {
-            try launchedApp.readDiagnostics()?.endpointURL.flatMap(URL.init(string:))
+            try launchedApp.readDiagnostics()?.serverURL.flatMap(URL.init(string:))
         }
         let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
 
@@ -206,7 +196,7 @@ struct CodexReviewMonitorTests {
         defer { launchedApp.terminate() }
 
         let endpointURL: URL = try await waitUntilValue(timeout: .seconds(20), interval: .milliseconds(200)) {
-            try launchedApp.readDiagnostics()?.endpointURL.flatMap(URL.init(string:))
+            try launchedApp.readDiagnostics()?.serverURL.flatMap(URL.init(string:))
         }
         let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
 
@@ -245,7 +235,7 @@ private struct MonitorAppDiagnostics: Decodable {
 
     var serverState: String
     var failureMessage: String?
-    var endpointURL: String?
+    var serverURL: String?
     var childRuntimePath: String?
     var jobs: [Job]
 }
@@ -781,8 +771,12 @@ private func makeJob(
         startedAt: Date(),
         endedAt: status.isTerminal ? Date() : nil,
         summary: summary ?? status.displayText,
-        reviewLogText: activityLogText,
-        reasoningLogText: reasoningSummaryText,
-        rawLogText: rawLogText
+        lastAgentMessage: "",
+        reviewEntries: activityLogText.isEmpty ? [] : [.init(kind: .agentMessage, text: activityLogText.trimmingCharacters(in: .newlines))],
+        reasoningEntries: reasoningSummaryText.isEmpty ? [] : [.init(kind: .reasoning, text: reasoningSummaryText.trimmingCharacters(in: .newlines))],
+        rawEventLines: rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init),
+        errorMessage: nil,
+        exitCode: nil,
+        artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)
     )
 }

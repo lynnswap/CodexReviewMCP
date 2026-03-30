@@ -1,4 +1,5 @@
 import Foundation
+import ReviewJobs
 
 package enum ReviewTerminalState: String, Sendable {
     case none
@@ -6,16 +7,13 @@ package enum ReviewTerminalState: String, Sendable {
     case failure
 }
 
-package struct ReviewEventSnapshot: Sendable {
-    package var sizeBytes = -1
-    package var threadID: String?
-    package var lastAgentMessage = ""
-    package var reviewLogText = ""
-    package var reasoningLogText = ""
-    package var rawLogText = ""
-    package var errorMessage = ""
-    package var terminalState: ReviewTerminalState = .none
+package struct ReviewEventParser: Sendable {
+    package private(set) var threadID: String?
+    package private(set) var lastAgentMessage: String?
+    package private(set) var errorMessage = ""
+    package private(set) var terminalState: ReviewTerminalState = .none
 
+    private var sizeBytes = -1
     private var readOffset = 0
     private var pendingLine = Data()
     private var currentTurn = TurnAccumulator()
@@ -24,32 +22,31 @@ package struct ReviewEventSnapshot: Sendable {
 
     package init() {}
 
-    package mutating func refresh(fileURL: URL, force: Bool = false) -> Bool {
+    package mutating func refresh(fileURL: URL, force: Bool = false) -> [ReviewProcessEvent] {
         let currentSize = ((try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size]) as? NSNumber)?.intValue ?? 0
         if force || currentSize < sizeBytes {
             reset()
         } else if currentSize == sizeBytes {
-            return false
+            return []
         }
 
         let appendedData = readAppendedData(fileURL: fileURL, fromOffset: readOffset) ?? Data()
         sizeBytes = currentSize
         readOffset = currentSize
         pendingLine.append(appendedData)
-        processPendingLines()
+
+        var events: [ReviewProcessEvent] = []
+        processPendingLines(into: &events)
         publishState()
-        return true
+        return events
     }
 
     private mutating func reset() {
-        sizeBytes = -1
         threadID = nil
-        lastAgentMessage = ""
-        reviewLogText = ""
-        reasoningLogText = ""
-        rawLogText = ""
+        lastAgentMessage = nil
         errorMessage = ""
         terminalState = .none
+        sizeBytes = -1
         readOffset = 0
         pendingLine.removeAll(keepingCapacity: false)
         currentTurn = TurnAccumulator()
@@ -57,41 +54,46 @@ package struct ReviewEventSnapshot: Sendable {
         latestTerminalTurn = nil
     }
 
-    private mutating func processPendingLines() {
+    private mutating func processPendingLines(into events: inout [ReviewProcessEvent]) {
         while let newlineIndex = pendingLine.firstIndex(of: 0x0A) {
             let lineData = Data(pendingLine[..<newlineIndex])
             pendingLine.removeSubrange(...newlineIndex)
-            processLineData(lineData)
+            processLineData(lineData, into: &events)
         }
 
         if let entry = parseEntry(from: pendingLine) {
-            process(entry: entry, rawLine: String(decoding: pendingLine, as: UTF8.self))
+            process(entry: entry, rawLine: String(decoding: pendingLine, as: UTF8.self), into: &events)
             pendingLine.removeAll(keepingCapacity: true)
         }
     }
 
-    private mutating func processLineData(_ data: Data) {
+    private mutating func processLineData(_ data: Data, into events: inout [ReviewProcessEvent]) {
         guard data.isEmpty == false, let entry = parseEntry(from: data) else {
             return
         }
-        process(entry: entry, rawLine: String(decoding: data, as: UTF8.self))
+        process(entry: entry, rawLine: String(decoding: data, as: UTF8.self), into: &events)
     }
 
-    private mutating func process(entry: [String: Any], rawLine: String) {
+    private mutating func process(
+        entry: [String: Any],
+        rawLine: String,
+        into events: inout [ReviewProcessEvent]
+    ) {
+        appendRawLine(rawLine, into: &events)
+
         if threadID == nil,
            (entry["type"] as? String) == "thread.started",
            let value = entry["thread_id"] as? String
         {
             threadID = value
+            events.append(.threadStarted(value))
         }
-
-        appendRawLine(rawLine)
 
         if (entry["type"] as? String) == "turn.started", currentTurn.hasEntries {
             finalizeCurrentTurn()
         }
 
-        currentTurn.append(entry)
+        currentTurn.append(entry, into: &events)
     }
 
     private mutating func finalizeCurrentTurn() {
@@ -107,9 +109,7 @@ package struct ReviewEventSnapshot: Sendable {
     }
 
     private mutating func publishState() {
-        lastAgentMessage = ""
-        reviewLogText = ""
-        reasoningLogText = ""
+        lastAgentMessage = nil
         errorMessage = ""
         terminalState = .none
 
@@ -121,19 +121,9 @@ package struct ReviewEventSnapshot: Sendable {
         if let currentAnalysis {
             terminalState = currentAnalysis.terminalState
             lastAgentMessage = currentAnalysis.lastAgentMessage
-            reviewLogText = currentAnalysis.reviewLogText
-            reasoningLogText = currentAnalysis.reasoningLogText
             errorMessage = currentAnalysis.errorMessage
-            if terminalState == .none, let terminalAnalysis = latestTerminalTurn {
-                if lastAgentMessage.isEmpty {
-                    lastAgentMessage = terminalAnalysis.lastAgentMessage
-                }
-                if reviewLogText.isEmpty {
-                    reviewLogText = terminalAnalysis.reviewLogText
-                }
-                if reasoningLogText.isEmpty {
-                    reasoningLogText = terminalAnalysis.reasoningLogText
-                }
+            if terminalState == .none, let terminalAnalysis = latestTerminalTurn, lastAgentMessage == nil {
+                lastAgentMessage = terminalAnalysis.lastAgentMessage
             }
             return
         }
@@ -143,49 +133,51 @@ package struct ReviewEventSnapshot: Sendable {
         }
         terminalState = latestAnalysis.terminalState
         lastAgentMessage = latestAnalysis.lastAgentMessage
-        reviewLogText = latestAnalysis.reviewLogText
-        reasoningLogText = latestAnalysis.reasoningLogText
         errorMessage = latestAnalysis.errorMessage
     }
 
-    private mutating func appendRawLine(_ line: String) {
-        rawLogText = trimmedParserText(appending: line + "\n", to: rawLogText)
+    private mutating func appendRawLine(_ line: String, into events: inout [ReviewProcessEvent]) {
+        let trimmed = trimmedLine(line)
+        guard trimmed.isEmpty == false else {
+            return
+        }
+        events.append(.rawLine(trimmed))
     }
 }
 
 private struct TurnAccumulator: Sendable {
     var hasEntries = false
-    var lastAgentMessage = ""
-    var reviewLogText = ""
-    var reasoningLogText = ""
+    var lastAgentMessage: String?
     var lastTurnCompletedIndex: Int?
     var lastErrorIndex: Int?
     var fallbackErrorMessage = ""
     var lastTurnFailedError = ""
     private var entryIndex = 0
 
-    mutating func append(_ entry: [String: Any]) {
+    mutating func append(_ entry: [String: Any], into events: inout [ReviewProcessEvent]) {
         hasEntries = true
         switch entry["type"] as? String {
         case "item.started":
-            appendStartedItem(entry["item"])
+            appendStartedItem(entry["item"], into: &events)
         case "item.updated":
-            appendUpdatedItem(entry["item"])
+            appendUpdatedItem(entry["item"], into: &events)
         case "item.completed":
-            appendCompletedItem(entry["item"])
+            appendCompletedItem(entry["item"], into: &events)
         case "turn.completed":
             lastTurnCompletedIndex = entryIndex
         case "turn.failed":
             lastTurnFailedError = parseErrorMessage(entry["error"])
             if lastTurnFailedError.isEmpty == false {
-                appendReviewLine(lastTurnFailedError)
+                events.append(.failed(lastTurnFailedError))
+                events.append(.reviewEntry(.init(kind: .error, text: lastTurnFailedError)))
             }
         case "error":
             lastErrorIndex = entryIndex
             let message = parseErrorMessage(entry)
             if message.isEmpty == false {
                 fallbackErrorMessage = message
-                appendReviewLine(message)
+                events.append(.failed(message))
+                events.append(.reviewEntry(.init(kind: .error, text: message)))
             }
         default:
             break
@@ -195,45 +187,37 @@ private struct TurnAccumulator: Sendable {
 
     func analysis() -> TurnAnalysis {
         if lastTurnFailedError.isEmpty == false {
-            return TurnAnalysis(
+            return .init(
                 lastAgentMessage: lastAgentMessage,
-                reviewLogText: reviewLogText,
-                reasoningLogText: reasoningLogText,
                 errorMessage: lastTurnFailedError,
                 terminalState: .failure
             )
         }
         if let lastTurnCompletedIndex,
-           lastAgentMessage.isEmpty == false,
+           lastAgentMessage?.isEmpty == false,
            (lastErrorIndex.map { $0 < lastTurnCompletedIndex } ?? true)
         {
-            return TurnAnalysis(
+            return .init(
                 lastAgentMessage: lastAgentMessage,
-                reviewLogText: reviewLogText,
-                reasoningLogText: reasoningLogText,
                 errorMessage: "",
                 terminalState: .success
             )
         }
         if lastErrorIndex != nil {
-            return TurnAnalysis(
+            return .init(
                 lastAgentMessage: lastAgentMessage,
-                reviewLogText: reviewLogText,
-                reasoningLogText: reasoningLogText,
                 errorMessage: fallbackErrorMessage,
                 terminalState: .failure
             )
         }
-        return TurnAnalysis(
+        return .init(
             lastAgentMessage: lastAgentMessage,
-            reviewLogText: reviewLogText,
-            reasoningLogText: reasoningLogText,
             errorMessage: "",
             terminalState: .none
         )
     }
 
-    private mutating func appendStartedItem(_ rawItem: Any?) {
+    private mutating func appendStartedItem(_ rawItem: Any?, into events: inout [ReviewProcessEvent]) {
         guard let item = rawItem as? [String: Any],
               let type = item["type"] as? String
         else {
@@ -242,37 +226,30 @@ private struct TurnAccumulator: Sendable {
 
         switch type {
         case "command_execution":
-            let command = (item["command"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let command = trimmedLine(item["command"] as? String)
             if command.isEmpty == false {
-                appendReviewLine("$ \(command)")
+                events.append(.reviewEntry(.init(kind: .command, text: "$ \(command)")))
             }
         case "todo_list":
             if let todoList = formattedTodoList(from: item) {
-                appendReviewLine(todoList)
+                events.append(.reviewEntry(.init(kind: .todoList, text: todoList)))
             }
         default:
             break
         }
     }
 
-    private mutating func appendUpdatedItem(_ rawItem: Any?) {
+    private mutating func appendUpdatedItem(_ rawItem: Any?, into events: inout [ReviewProcessEvent]) {
         guard let item = rawItem as? [String: Any],
-              let type = item["type"] as? String
+              (item["type"] as? String) == "todo_list",
+              let todoList = formattedTodoList(from: item)
         else {
             return
         }
-
-        switch type {
-        case "todo_list":
-            if let todoList = formattedTodoList(from: item) {
-                appendReviewLine(todoList)
-            }
-        default:
-            break
-        }
+        events.append(.reviewEntry(.init(kind: .todoList, text: todoList)))
     }
 
-    private mutating func appendCompletedItem(_ rawItem: Any?) {
+    private mutating func appendCompletedItem(_ rawItem: Any?, into events: inout [ReviewProcessEvent]) {
         guard let item = rawItem as? [String: Any],
               let type = item["type"] as? String
         else {
@@ -281,41 +258,35 @@ private struct TurnAccumulator: Sendable {
 
         switch type {
         case "agent_message":
-            let text = (item["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let text = trimmedLine(item["text"] as? String)
             if text.isEmpty == false {
                 lastAgentMessage = text
-                appendReviewLine(text)
+                events.append(.reviewEntry(.init(kind: .agentMessage, text: text)))
+                events.append(.agentMessage(text))
             }
         case "reasoning":
-            let text = (item["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let text = trimmedLine(item["text"] as? String)
             if text.isEmpty == false {
-                appendReasoningLine(text)
+                events.append(.reasoningEntry(.init(kind: .reasoning, text: text)))
             }
         case "command_execution":
-            let output = (item["aggregated_output"] as? String)?.trimmingCharacters(in: .newlines) ?? ""
+            let output = trimmedLine(item["aggregated_output"] as? String)
             if output.isEmpty == false {
-                appendReviewLine(output)
+                events.append(.reviewEntry(.init(kind: .commandOutput, text: output)))
             }
         case "todo_list":
             if let todoList = formattedTodoList(from: item) {
-                appendReviewLine(todoList)
+                events.append(.reviewEntry(.init(kind: .todoList, text: todoList)))
             }
         case "error":
-            let message = (item["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let message = trimmedLine(item["message"] as? String)
             if message.isEmpty == false {
-                appendReviewLine(message)
+                events.append(.failed(message))
+                events.append(.reviewEntry(.init(kind: .error, text: message)))
             }
         default:
             break
         }
-    }
-
-    private mutating func appendReviewLine(_ text: String) {
-        append(text, to: &reviewLogText)
-    }
-
-    private mutating func appendReasoningLine(_ text: String) {
-        append(text, to: &reasoningLogText)
     }
 
     private func formattedTodoList(from item: [String: Any]) -> String? {
@@ -323,7 +294,7 @@ private struct TurnAccumulator: Sendable {
             return nil
         }
         let lines = items.compactMap { item -> String? in
-            let text = (item["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let text = trimmedLine(item["text"] as? String)
             guard text.isEmpty == false else {
                 return nil
             }
@@ -335,23 +306,10 @@ private struct TurnAccumulator: Sendable {
         }
         return lines.joined(separator: "\n")
     }
-
-    private func append(_ text: String, to target: inout String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.isEmpty == false else {
-            return
-        }
-        if target.isEmpty == false {
-            target.append("\n\n")
-        }
-        target.append(trimmed)
-    }
 }
 
 private struct TurnAnalysis: Sendable {
-    var lastAgentMessage: String
-    var reviewLogText: String
-    var reasoningLogText: String
+    var lastAgentMessage: String?
     var errorMessage: String
     var terminalState: ReviewTerminalState
 }
@@ -411,16 +369,6 @@ private func parseErrorMessage(_ raw: Any?) -> String {
     return ""
 }
 
-private func trimmedParserText(appending line: String, to existing: String) -> String {
-    var text = existing
-    text.append(line)
-    guard text.utf8.count > reviewLogLimitBytes else {
-        return text
-    }
-
-    let bytes = Array(text.utf8)
-    let start = max(bytes.count - reviewLogLimitBytes, 0)
-    let suffix = Array(bytes[start...])
-    let firstNewline = suffix.firstIndex(of: 0x0A).map { suffix.index(after: $0) } ?? suffix.startIndex
-    return String(decoding: suffix[firstNewline...], as: UTF8.self)
+private func trimmedLine(_ text: String?) -> String {
+    (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 }

@@ -1,5 +1,5 @@
 {
-  "originHash" : "70b7342c0941c5c7a7cd0249615a3c702bc4770227bd55a2068587b23b92157a",
+  "originHash" : "e952125db1c46cc5a1356d7fb166136dbf2139dd625e3b33037eaa98f68c5a5d",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -8,6 +8,24 @@
       "state" : {
         "revision" : "a3a85a85214caf642abaa96ae664e4c772a59f6e",
         "version" : "1.4.1"
+      }
+    },
+    {
+      "identity" : "observationbridge",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lynnswap/ObservationBridge.git",
+      "state" : {
+        "revision" : "90f85df63a93816b8802da192c47d4163f616527",
+        "version" : "0.6.1"
+      }
+    },
+    {
+      "identity" : "swift-async-algorithms",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-async-algorithms",
+      "state" : {
+        "revision" : "9d349bcc328ac3c31ce40e746b5882742a0d1272",
+        "version" : "1.1.3"
       }
     },
     {

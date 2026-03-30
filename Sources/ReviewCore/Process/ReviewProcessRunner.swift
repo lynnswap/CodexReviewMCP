@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ReviewJobs
 
 package struct ReviewProcessOutcome: Sendable {
     package var state: ReviewJobState
@@ -30,9 +31,8 @@ package struct CodexReviewProcessRunner: Sendable {
         request: ReviewRequestOptions,
         defaultTimeoutSeconds: Int?,
         onStart: @escaping @Sendable (ReviewArtifacts, ReviewProcessController, Date) async -> Void,
-        onSnapshot: @escaping @Sendable (ReviewEventSnapshot) async -> Void,
+        onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void,
         requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
-        onProgress: @escaping @Sendable (ReviewProgressStage, String?) async -> Void
     ) async throws -> ReviewProcessOutcome {
         let command = try commandBuilder.build(request: request)
         guard let eventsPath = command.artifacts.eventsPath,
@@ -44,27 +44,27 @@ package struct CodexReviewProcessRunner: Sendable {
             command: command,
             request: request,
             requestedTerminationReason: requestedTerminationReason,
-            onProgress: onProgress
+            onEvent: onEvent
         ) {
             return cancelledOutcome
         }
         let controller = try ReviewProcessController.start(command: command)
         let startedAt = Date()
         await onStart(command.artifacts, controller, startedAt)
-        await onProgress(.started, "Review started.")
+        await onEvent(.progress(.started, "Review started."))
 
         let eventsURL = URL(fileURLWithPath: eventsPath)
         let lastMessageURL = URL(fileURLWithPath: lastMessagePath)
-        var snapshot = ReviewEventSnapshot()
-        var didEmitThreadProgress = false
+        var parser = ReviewEventParser()
         var cancellationReason: String?
         let timeoutSeconds = request.timeoutSeconds ?? defaultTimeoutSeconds
 
         while true {
-            _ = snapshot.refresh(fileURL: eventsURL)
-            await onSnapshot(snapshot)
+            for event in parser.refresh(fileURL: eventsURL) {
+                await onEvent(event)
+            }
 
-            if snapshot.terminalState == .none,
+            if parser.terminalState == .none,
                let terminationReason = await requestedTerminationReason()
             {
                 switch terminationReason {
@@ -73,17 +73,12 @@ package struct CodexReviewProcessRunner: Sendable {
                 }
             }
 
-            if didEmitThreadProgress == false, let threadID = snapshot.threadID {
-                didEmitThreadProgress = true
-                await onProgress(.threadStarted, "Thread started: \(threadID)")
-            }
-
-            if snapshot.terminalState == .success {
+            if parser.terminalState == .success {
                 _ = await controller.terminateGracefully(grace: gracefulTerminationWait)
                 let exitCode = (await controller.pollExitStatus()) ?? 0
                 let endedAt = Date()
                 let content = readText(from: lastMessageURL)?.nilIfEmpty
-                    ?? snapshot.lastAgentMessage.nilIfEmpty
+                    ?? parser.lastAgentMessage?.nilIfEmpty
                     ?? "Review completed."
                 let finalState: ReviewJobState = cancellationReason == nil ? .succeeded : .cancelled
                 let summary = cancellationReason == nil ? "Review completed successfully." : "Review cancelled."
@@ -92,12 +87,12 @@ package struct CodexReviewProcessRunner: Sendable {
                     keepArtifacts: request.keepArtifacts,
                     state: finalState
                 )
-                await onProgress(.completed, summary)
+                await onEvent(.progress(.completed, summary))
                 return ReviewProcessOutcome(
                     state: finalState,
                     exitCode: exitCode,
-                    threadID: snapshot.threadID,
-                    lastAgentMessage: snapshot.lastAgentMessage,
+                    threadID: parser.threadID,
+                    lastAgentMessage: parser.lastAgentMessage ?? "",
                     errorMessage: cancellationReason,
                     summary: summary,
                     artifacts: artifacts,
@@ -107,30 +102,30 @@ package struct CodexReviewProcessRunner: Sendable {
                 )
             }
 
-            if snapshot.terminalState == .failure {
+            if parser.terminalState == .failure {
                 if await controller.waitForExit(timeout: failureFlushWait) == nil {
                     _ = await controller.terminateGracefully(grace: gracefulTerminationWait)
                 }
                 let exitCode = (await controller.pollExitStatus()) ?? 1
                 let endedAt = Date()
                 let content = readText(from: lastMessageURL)?.nilIfEmpty
-                    ?? snapshot.lastAgentMessage.nilIfEmpty
-                    ?? snapshot.errorMessage.nilIfEmpty
+                    ?? parser.lastAgentMessage?.nilIfEmpty
+                    ?? parser.errorMessage.nilIfEmpty
                     ?? "Review failed."
                 let finalState: ReviewJobState = cancellationReason == nil ? .failed : .cancelled
-                let errorMessage = cancellationReason ?? snapshot.errorMessage.nilIfEmpty ?? "codex review failed (exit=\(exitCode))"
+                let errorMessage = cancellationReason ?? parser.errorMessage.nilIfEmpty ?? "codex review failed (exit=\(exitCode))"
                 let summary = cancellationReason == nil ? "Review failed." : "Review cancelled."
                 let artifacts = finalizeArtifacts(
                     command.artifacts,
                     keepArtifacts: request.keepArtifacts,
                     state: finalState
                 )
-                await onProgress(.completed, summary)
+                await onEvent(.progress(.completed, summary))
                 return ReviewProcessOutcome(
                     state: finalState,
                     exitCode: exitCode,
-                    threadID: snapshot.threadID,
-                    lastAgentMessage: snapshot.lastAgentMessage,
+                    threadID: parser.threadID,
+                    lastAgentMessage: parser.lastAgentMessage ?? "",
                     errorMessage: errorMessage,
                     summary: summary,
                     artifacts: artifacts,
@@ -156,7 +151,7 @@ package struct CodexReviewProcessRunner: Sendable {
                     summary = "Review finished."
                 }
                 let content = readText(from: lastMessageURL)?.nilIfEmpty
-                    ?? snapshot.lastAgentMessage.nilIfEmpty
+                    ?? parser.lastAgentMessage?.nilIfEmpty
                     ?? errorMessage
                     ?? summary
                 let artifacts = finalizeArtifacts(
@@ -164,12 +159,12 @@ package struct CodexReviewProcessRunner: Sendable {
                     keepArtifacts: request.keepArtifacts,
                     state: state
                 )
-                await onProgress(.completed, summary)
+                await onEvent(.progress(.completed, summary))
                 return ReviewProcessOutcome(
                     state: state,
                     exitCode: exitCode,
-                    threadID: snapshot.threadID,
-                    lastAgentMessage: snapshot.lastAgentMessage,
+                    threadID: parser.threadID,
+                    lastAgentMessage: parser.lastAgentMessage ?? "",
                     errorMessage: errorMessage,
                     summary: summary,
                     artifacts: artifacts,
@@ -186,19 +181,19 @@ package struct CodexReviewProcessRunner: Sendable {
                 _ = await controller.terminateGracefully(grace: gracefulTerminationWait)
                 let endedAt = Date()
                 let content = readText(from: lastMessageURL)?.nilIfEmpty
-                    ?? snapshot.lastAgentMessage.nilIfEmpty
+                    ?? parser.lastAgentMessage?.nilIfEmpty
                     ?? "Review timed out."
                 let artifacts = finalizeArtifacts(
                     command.artifacts,
                     keepArtifacts: request.keepArtifacts,
                     state: .failed
                 )
-                await onProgress(.completed, "Review timed out.")
+                await onEvent(.progress(.completed, "Review timed out."))
                 return ReviewProcessOutcome(
                     state: .failed,
                     exitCode: (await controller.pollExitStatus()) ?? 124,
-                    threadID: snapshot.threadID,
-                    lastAgentMessage: snapshot.lastAgentMessage,
+                    threadID: parser.threadID,
+                    lastAgentMessage: parser.lastAgentMessage ?? "",
                     errorMessage: "Review timed out after \(timeoutSeconds) seconds.",
                     summary: "Review timed out after \(timeoutSeconds) seconds.",
                     artifacts: artifacts,
@@ -213,19 +208,19 @@ package struct CodexReviewProcessRunner: Sendable {
                 _ = await controller.terminateGracefully(grace: gracefulTerminationWait)
                 let endedAt = Date()
                 let content = readText(from: lastMessageURL)?.nilIfEmpty
-                    ?? snapshot.lastAgentMessage.nilIfEmpty
+                    ?? parser.lastAgentMessage?.nilIfEmpty
                     ?? reason
                 let artifacts = finalizeArtifacts(
                     command.artifacts,
                     keepArtifacts: request.keepArtifacts,
                     state: .cancelled
                 )
-                await onProgress(.completed, "Review cancelled.")
+                await onEvent(.progress(.completed, "Review cancelled."))
                 return ReviewProcessOutcome(
                     state: .cancelled,
                     exitCode: (await controller.pollExitStatus()) ?? 130,
-                    threadID: snapshot.threadID,
-                    lastAgentMessage: snapshot.lastAgentMessage,
+                    threadID: parser.threadID,
+                    lastAgentMessage: parser.lastAgentMessage ?? "",
                     errorMessage: reason,
                     summary: "Review cancelled.",
                     artifacts: artifacts,
@@ -243,7 +238,7 @@ package struct CodexReviewProcessRunner: Sendable {
         command: ReviewCommand,
         request: ReviewRequestOptions,
         requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
-        onProgress: @escaping @Sendable (ReviewProgressStage, String?) async -> Void
+        onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void
     ) async -> ReviewProcessOutcome? {
         let cancellationReason: String?
         if Task.isCancelled {
@@ -263,7 +258,7 @@ package struct CodexReviewProcessRunner: Sendable {
             keepArtifacts: request.keepArtifacts,
             state: .cancelled
         )
-        await onProgress(.completed, "Review cancelled.")
+        await onEvent(.progress(.completed, "Review cancelled."))
         return ReviewProcessOutcome(
             state: .cancelled,
             exitCode: 130,

@@ -1,4 +1,5 @@
 import Foundation
+import ReviewJobs
 
 package struct ReviewCommand: Sendable {
     package var executable: String

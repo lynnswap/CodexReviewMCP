@@ -4,6 +4,8 @@ import Testing
 @testable import CodexReviewMCP
 @testable import ReviewCore
 @testable import ReviewHTTPServer
+@testable import ReviewJobs
+@testable import ReviewRuntime
 import Darwin
 
 @Suite(.serialized)
@@ -20,19 +22,19 @@ struct CodexReviewMCPTests {
 
         await firstStore.start()
         #expect(firstStore.serverState == .running)
-        #expect(firstStore.endpointURL != nil)
+        #expect(firstStore.serverURL != nil)
 
         await firstStore.stop()
         #expect(firstStore.serverState == .stopped)
-        #expect(firstStore.endpointURL == nil)
-        #expect(firstStore.jobStore.jobs.isEmpty)
+        #expect(firstStore.serverURL == nil)
+        #expect(firstStore.jobs.isEmpty)
 
         let secondStore = CodexReviewStore(
             configuration: .init(host: "127.0.0.1", port: secondPort, codexCommand: scriptURL.path)
         )
         await secondStore.start()
         #expect(secondStore.serverState == .running)
-        #expect(secondStore.endpointURL != nil)
+        #expect(secondStore.serverURL != nil)
         await secondStore.stop()
     }
 
@@ -49,7 +51,7 @@ struct CodexReviewMCPTests {
         do {
             await store.start()
             #expect(store.serverState == .running)
-            let endpointURL = try #require(store.endpointURL)
+            let endpointURL = try #require(store.serverURL)
             let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 5)
 
             let response = try await client.callTool(
@@ -71,8 +73,8 @@ struct CodexReviewMCPTests {
             #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
 
             try await waitUntil(timeout: .seconds(2)) {
-                await MainActor.run {
-                    guard let job = store.jobStore.jobs.first else {
+                    await MainActor.run {
+                    guard let job = store.jobs.first else {
                         return false
                     }
                     return job.status == .succeeded &&
@@ -81,7 +83,7 @@ struct CodexReviewMCPTests {
                 }
             }
 
-            let job = try #require(store.jobStore.jobs.first)
+            let job = try #require(store.jobs.first)
             #expect(job.status == .succeeded)
             #expect(job.reviewLogText.contains("$ git diff --stat"))
             #expect(job.reasoningLogText.contains("Inspecting current changes"))
@@ -114,7 +116,7 @@ struct CodexReviewMCPTests {
             try await withTestTimeout(seconds: 1500) { @MainActor in
                 await store.start()
                 #expect(store.serverState == .running)
-                let endpointURL = try #require(store.endpointURL)
+                let endpointURL = try #require(store.serverURL)
                 let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
 
                 let response = try await client.callTool(
@@ -137,7 +139,7 @@ struct CodexReviewMCPTests {
 
                 try await waitUntil(timeout: .seconds(60), interval: .milliseconds(200)) {
                     await MainActor.run {
-                        guard let job = store.jobStore.jobs.first else {
+                        guard let job = store.jobs.first else {
                             return false
                         }
                         return job.status == .succeeded &&
@@ -145,7 +147,7 @@ struct CodexReviewMCPTests {
                     }
                 }
 
-                let job = try #require(store.jobStore.jobs.first)
+                let job = try #require(store.jobs.first)
                 #expect(job.status == .succeeded)
                 #expect(job.activityLogText.isEmpty == false || job.reasoningSummaryText.isEmpty == false)
                 let readResponse = try await client.callTool(
@@ -167,71 +169,46 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func jobStoreAppliesSnapshotsInPlace() throws {
-        let store = CodexReviewJobStore()
-        let queuedSnapshot = ReviewJobSnapshot(
-            jobID: "job-1",
-            sessionID: "session-1",
+    @Test func codexReviewStoreAppliesMutationsInPlace() throws {
+        let store = CodexReviewStore(configuration: .init())
+        let queuedRequest = ReviewRequestOptions(
             cwd: "/tmp/repo",
-            targetSummary: "Uncommitted changes",
-            model: "gpt-5",
-            state: .queued,
-            summary: "Queued."
-        )
-        let runningSnapshot = ReviewJobSnapshot(
-            jobID: "job-1",
-            sessionID: "session-1",
-            cwd: "/tmp/repo",
-            targetSummary: "Uncommitted changes",
-            model: "gpt-5",
-            state: .running,
-            threadID: "thread-1",
-            reviewLogText: "Running review\n",
-            reasoningLogText: "Inspecting diff\n",
-            startedAt: Date(timeIntervalSince1970: 123),
-            summary: "Running."
-        )
-        let requeuedSnapshot = ReviewJobSnapshot(
-            jobID: "job-1",
-            sessionID: "session-1",
-            cwd: "/tmp/repo",
-            targetSummary: "Uncommitted changes",
-            model: "gpt-5",
-            state: .queued,
-            summary: "Queued again."
-        )
-        let recentSnapshot = ReviewJobSnapshot(
-            jobID: "job-2",
-            sessionID: "session-1",
-            cwd: "/tmp/repo",
-            targetSummary: "Base branch: main",
-            model: nil,
-            state: .failed,
-            summary: "Failed."
+            uncommitted: true,
+            model: "gpt-5"
         )
 
-        store.apply(snapshots: [queuedSnapshot])
-        let firstJob = try #require(store.jobs.first(where: { $0.id == "job-1" }))
-        #expect(store.activeJobs.map(\.id) == ["job-1"])
+        let firstJobID = try store.enqueueReview(sessionID: "session-1", request: queuedRequest)
+        let firstJob = try #require(store.jobs.first(where: { $0.id == firstJobID }))
+        #expect(store.activeJobs.map(\.id) == [firstJobID])
         #expect(store.recentJobs.isEmpty)
 
-        store.apply(snapshots: [runningSnapshot, recentSnapshot])
-        let updatedJob = try #require(store.jobs.first(where: { $0.id == "job-1" }))
+        store.markStarted(
+            jobID: firstJobID,
+            artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil),
+            startedAt: Date(timeIntervalSince1970: 123)
+        )
+        store.handle(jobID: firstJobID, event: .threadStarted("thread-1"))
+        store.handle(jobID: firstJobID, event: .reviewEntry(.init(kind: .agentMessage, text: "Running review")))
+
+        let secondJobID = try store.enqueueReview(
+            sessionID: "session-1",
+            request: .init(cwd: "/tmp/repo", base: "main")
+        )
+        store.failToStart(
+            jobID: secondJobID,
+            message: "boom",
+            startedAt: Date(timeIntervalSince1970: 200),
+            endedAt: Date(timeIntervalSince1970: 201)
+        )
+
+        let updatedJob = try #require(store.jobs.first(where: { $0.id == firstJobID }))
         #expect(updatedJob === firstJob)
         #expect(updatedJob.status == .running)
         #expect(updatedJob.threadID == "thread-1")
-        #expect(updatedJob.reviewLogText == "Running review\n")
-        #expect(store.activeJobs.map(\.id) == ["job-1"])
-        #expect(store.recentJobs.map(\.id) == ["job-2"])
+        #expect(updatedJob.reviewLogText == "Running review")
+        #expect(store.activeJobs.map(\.id) == [firstJobID])
+        #expect(store.recentJobs.map(\.id) == [secondJobID])
         #expect(updatedJob.startedAt == Date(timeIntervalSince1970: 123))
-
-        store.apply(snapshots: [requeuedSnapshot])
-        #expect(updatedJob.startedAt == .distantPast)
-
-        store.apply(snapshots: [runningSnapshot])
-        #expect(store.jobs.contains(where: { $0.id == "job-2" }) == false)
-        #expect(store.jobs.map(\.id) == ["job-1"])
-        #expect(store.activeJobs.map(\.id) == ["job-1"])
     }
 
 }

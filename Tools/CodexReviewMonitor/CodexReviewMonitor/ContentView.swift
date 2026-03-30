@@ -12,15 +12,8 @@ struct ContentView: View {
     let store: CodexReviewStore
 
     var body: some View {
-        ReviewMonitorSplitViewRepresentable(
-            store: store,
-            onRestart: {
-                Task {
-                    await store.restart()
-                }
-            }
-        )
-        .frame(minWidth: 960, minHeight: 640)
+        ReviewMonitorSplitViewRepresentable(store: store)
+            .frame(minWidth: 960, minHeight: 640)
     }
 }
 
