@@ -1,10 +1,12 @@
+import Darwin
 import Foundation
 import MCP
 import Testing
 @testable import ReviewCore
 @testable import ReviewHTTPServer
 
-@Suite(.serialized) struct ReviewHTTPServerTests {
+@Suite(.serialized)
+struct ReviewHTTPServerTests {
     @Test func reviewServerConfigurationNormalizesEndpointPath() {
         let configuration = ReviewServerConfiguration(endpoint: "mcp")
 
@@ -25,44 +27,23 @@ import Testing
         #expect(shouldCloseSessionAfterDelete(method: "POST", statusCode: 204) == false)
     }
 
-    @Test func reviewStartReturnsDetachedHandle() async throws {
-        let transport = HTTPTestAppServerTransport { message, transport in
-            let method = try #require(message.objectValue?["method"]?.stringValue)
-            let requestID = message.objectValue?["id"]?.intValue
-            switch method {
-            case "initialize":
-                await transport.respond(id: try #require(requestID), result: ["serverInfo": ["name": "codex"]])
-            case "initialized":
-                break
-            case "thread/start":
-                await transport.respond(id: try #require(requestID), result: ["thread": ["id": "parent-1", "turns": []]])
-            case "review/start":
-                await transport.respond(
-                    id: try #require(requestID),
-                    result: [
-                        "turn": [
-                            "id": "turn-1",
-                            "items": [],
-                            "status": "inProgress",
-                            "error": nil,
-                        ],
-                        "reviewThreadId": .string("review-1"),
-                    ]
-                )
-            default:
-                throw TestFailure("unexpected method \(method)")
-            }
-        }
+    @Test func reviewStartReturnsJobBackedHandle() async throws {
+        let scriptURL = try makeFakeExecReviewScript(mode: .success)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let port = try nextAvailableTestPort(in: 39441 ... 39450)
         let server = ReviewMCPHTTPServer(
-            configuration: .init(port: 0),
-            appServerTransportFactory: { transport }
+            configuration: .init(
+                host: "127.0.0.1",
+                port: port,
+                codexCommand: scriptURL.path,
+                environment: ["HOME": FileManager.default.homeDirectoryForCurrentUser.path]
+            )
         )
 
-        let sessionID = try await initialize(server: server)
-        let response = try await callTool(
-            server: server,
-            sessionID: sessionID,
-            requestID: 10,
+        let endpointURL = try await server.start()
+        let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let response = try await client.callTool(
             name: "review_start",
             arguments: [
                 "cwd": FileManager.default.temporaryDirectory.path,
@@ -72,64 +53,44 @@ import Testing
 
         let result = try #require(response["result"] as? [String: Any])
         let structuredContent = try #require(result["structuredContent"] as? [String: Any])
-        #expect(structuredContent["parentThreadId"] as? String == "parent-1")
-        #expect(structuredContent["reviewThreadId"] as? String == "review-1")
-        #expect(structuredContent["turnId"] as? String == "turn-1")
+        let jobID = try #require(structuredContent["jobId"] as? String)
+        #expect(structuredContent["reviewThreadId"] as? String == jobID)
+        #expect(structuredContent["status"] as? String == "queued")
+        #expect(structuredContent["turnId"] is NSNull)
         await server.stop()
     }
 
     @Test func reviewReadIsIsolatedBySessionID() async throws {
-        let transport = HTTPTestAppServerTransport { message, transport in
-            let method = try #require(message.objectValue?["method"]?.stringValue)
-            let requestID = message.objectValue?["id"]?.intValue
-            switch method {
-            case "initialize":
-                await transport.respond(id: try #require(requestID), result: ["serverInfo": ["name": "codex"]])
-            case "initialized":
-                break
-            case "thread/start":
-                await transport.respond(id: try #require(requestID), result: ["thread": ["id": "parent-1", "turns": []]])
-            case "review/start":
-                await transport.respond(
-                    id: try #require(requestID),
-                    result: [
-                        "turn": [
-                            "id": "turn-1",
-                            "items": [],
-                            "status": "inProgress",
-                            "error": nil,
-                        ],
-                        "reviewThreadId": .string("review-1"),
-                    ]
-                )
-            default:
-                throw TestFailure("unexpected method \(method)")
-            }
-        }
+        let scriptURL = try makeFakeExecReviewScript(mode: .long)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let port = try nextAvailableTestPort(in: 39451 ... 39460)
         let server = ReviewMCPHTTPServer(
-            configuration: .init(port: 0),
-            appServerTransportFactory: { transport }
+            configuration: .init(
+                host: "127.0.0.1",
+                port: port,
+                codexCommand: scriptURL.path,
+                environment: ["HOME": FileManager.default.homeDirectoryForCurrentUser.path]
+            )
         )
 
-        let session1 = try await initialize(server: server)
-        let session2 = try await initialize(server: server)
-        _ = try await callTool(
-            server: server,
-            sessionID: session1,
-            requestID: 20,
+        let endpointURL = try await server.start()
+        let client1 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let client2 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let startResponse = try await client1.callTool(
             name: "review_start",
             arguments: [
                 "cwd": FileManager.default.temporaryDirectory.path,
                 "target": ["type": "uncommittedChanges"],
             ]
         )
+        let startResult = try #require(startResponse["result"] as? [String: Any])
+        let startStructuredContent = try #require(startResult["structuredContent"] as? [String: Any])
+        let jobID = try #require(startStructuredContent["reviewThreadId"] as? String)
 
-        let readResponse = try await callTool(
-            server: server,
-            sessionID: session2,
-            requestID: 21,
+        let readResponse = try await client2.callTool(
             name: "review_read",
-            arguments: ["reviewThreadId": "review-1"]
+            arguments: ["reviewThreadId": jobID]
         )
         let result = try #require(readResponse["result"] as? [String: Any])
         #expect(result["isError"] as? Bool == true)
@@ -137,333 +98,302 @@ import Testing
     }
 
     @Test func reviewCancelInterruptsActiveReview() async throws {
-        let transport = HTTPTestAppServerTransport { message, transport in
-            let method = try #require(message.objectValue?["method"]?.stringValue)
-            let requestID = message.objectValue?["id"]?.intValue
-            switch method {
-            case "initialize":
-                await transport.respond(id: try #require(requestID), result: ["serverInfo": ["name": "codex"]])
-            case "initialized":
-                break
-            case "thread/start":
-                await transport.respond(id: try #require(requestID), result: ["thread": ["id": "parent-1", "turns": []]])
-            case "review/start":
-                await transport.respond(
-                    id: try #require(requestID),
-                    result: [
-                        "turn": [
-                            "id": "turn-1",
-                            "items": [],
-                            "status": "inProgress",
-                            "error": nil,
-                        ],
-                        "reviewThreadId": .string("review-1"),
-                    ]
-                )
-            case "turn/interrupt":
-                await transport.respond(id: try #require(requestID), result: [:])
-            default:
-                throw TestFailure("unexpected method \(method)")
-            }
-        }
+        let scriptURL = try makeFakeExecReviewScript(mode: .long)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let port = try nextAvailableTestPort(in: 39461 ... 39470)
         let server = ReviewMCPHTTPServer(
-            configuration: .init(port: 0),
-            appServerTransportFactory: { transport }
+            configuration: .init(
+                host: "127.0.0.1",
+                port: port,
+                codexCommand: scriptURL.path,
+                environment: ["HOME": FileManager.default.homeDirectoryForCurrentUser.path]
+            )
         )
 
-        let sessionID = try await initialize(server: server)
-        _ = try await callTool(
-            server: server,
-            sessionID: sessionID,
-            requestID: 30,
+        let endpointURL = try await server.start()
+        let client = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let startResponse = try await client.callTool(
             name: "review_start",
             arguments: [
                 "cwd": FileManager.default.temporaryDirectory.path,
                 "target": ["type": "uncommittedChanges"],
             ]
         )
+        let startResult = try #require(startResponse["result"] as? [String: Any])
+        let startStructuredContent = try #require(startResult["structuredContent"] as? [String: Any])
+        let jobID = try #require(startStructuredContent["reviewThreadId"] as? String)
 
-        let cancelResponse = try await callTool(
-            server: server,
-            sessionID: sessionID,
-            requestID: 31,
+        let cancelResponse = try await client.callTool(
             name: "review_cancel",
-            arguments: ["reviewThreadId": "review-1"]
+            arguments: ["reviewThreadId": jobID]
         )
-        let result = try #require(cancelResponse["result"] as? [String: Any])
-        let structuredContent = try #require(result["structuredContent"] as? [String: Any])
-        #expect(structuredContent["cancelled"] as? Bool == true)
-        #expect(await transport.sentMethods().suffix(1) == ["turn/interrupt"])
+        let cancelResult = try #require(cancelResponse["result"] as? [String: Any])
+        let cancelStructuredContent = try #require(cancelResult["structuredContent"] as? [String: Any])
+        #expect(cancelStructuredContent["jobId"] as? String == jobID)
+        #expect(cancelStructuredContent["cancelled"] as? Bool == true)
 
-        let readResponse = try await callTool(
-            server: server,
-            sessionID: sessionID,
-            requestID: 32,
-            name: "review_read",
-            arguments: ["reviewThreadId": "review-1"]
-        )
-        let readResult = try #require(readResponse["result"] as? [String: Any])
-        let readStructuredContent = try #require(readResult["structuredContent"] as? [String: Any])
+        let readStructuredContent: [String: Any] = try await waitUntilValue(timeout: .seconds(10), interval: .milliseconds(100)) {
+            let readResponse = try await client.callTool(
+                name: "review_read",
+                arguments: ["reviewThreadId": jobID]
+            )
+            let readResult = try #require(readResponse["result"] as? [String: Any])
+            let structuredContent = try #require(readResult["structuredContent"] as? [String: Any])
+            return structuredContent["status"] as? String == "cancelled" ? structuredContent : nil
+        }
+
         #expect(readStructuredContent["status"] as? String == "cancelled")
         await server.stop()
     }
 
     @Test func deletingSessionCancelsOnlyOwnedReviews() async throws {
-        let transport = HTTPTestAppServerTransport { message, transport in
-            let method = try #require(message.objectValue?["method"]?.stringValue)
-            let requestID = message.objectValue?["id"]?.intValue
-            switch method {
-            case "initialize":
-                await transport.respond(id: try #require(requestID), result: ["serverInfo": ["name": "codex"]])
-            case "initialized":
-                break
-            case "thread/start":
-                let parentID = await transport.sentMethods().filter { $0 == "thread/start" }.count == 1 ? "parent-1" : "parent-2"
-                await transport.respond(id: try #require(requestID), result: ["thread": ["id": .string(parentID), "turns": []]])
-            case "review/start":
-                let reviewIndex = await transport.sentMethods().filter { $0 == "review/start" }.count
-                let reviewThreadID = reviewIndex == 1 ? "review-1" : "review-2"
-                let turnID = reviewIndex == 1 ? "turn-1" : "turn-2"
-                await transport.respond(
-                    id: try #require(requestID),
-                    result: [
-                        "turn": .object([
-                            "id": .string(turnID),
-                            "items": .array([]),
-                            "status": .string("inProgress"),
-                            "error": .null,
-                        ]),
-                        "reviewThreadId": .string(reviewThreadID),
-                    ]
-                )
-            case "turn/interrupt":
-                await transport.respond(id: try #require(requestID), result: [:])
-            default:
-                throw TestFailure("unexpected method \(method)")
-            }
-        }
+        let scriptURL = try makeFakeExecReviewScript(mode: .long)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let port = try nextAvailableTestPort(in: 39471 ... 39480)
         let server = ReviewMCPHTTPServer(
-            configuration: .init(port: 0),
-            appServerTransportFactory: { transport }
+            configuration: .init(
+                host: "127.0.0.1",
+                port: port,
+                codexCommand: scriptURL.path,
+                environment: ["HOME": FileManager.default.homeDirectoryForCurrentUser.path]
+            )
         )
 
-        let session1 = try await initialize(server: server)
-        let session2 = try await initialize(server: server)
-        _ = try await callTool(
-            server: server,
-            sessionID: session1,
-            requestID: 40,
+        let endpointURL = try await server.start()
+        let client1 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let client2 = HTTPToolClient(endpointURL: endpointURL, timeoutInterval: 5)
+        let startResponse1 = try await client1.callTool(
             name: "review_start",
             arguments: [
                 "cwd": FileManager.default.temporaryDirectory.path,
                 "target": ["type": "uncommittedChanges"],
             ]
         )
-        _ = try await callTool(
-            server: server,
-            sessionID: session2,
-            requestID: 41,
+        let startResponse2 = try await client2.callTool(
             name: "review_start",
             arguments: [
-                "cwd": FileManager.default.temporaryDirectory.path + "/other",
+                "cwd": FileManager.default.temporaryDirectory.path,
                 "target": ["type": "uncommittedChanges"],
             ]
         )
 
-        let deleteResponse = await server.handleHTTPRequest(
-            HTTPRequest(
-                method: "DELETE",
-                headers: [
-                    HTTPHeaderName.sessionID: session1,
-                    HTTPHeaderName.protocolVersion: Version.latest,
-                    HTTPHeaderName.host: "localhost:9417",
-                ],
-                path: "/mcp"
-            )
-        )
-        #expect(deleteResponse.statusCode == 200)
+        let startResult1 = try #require(startResponse1["result"] as? [String: Any])
+        let startStructuredContent1 = try #require(startResult1["structuredContent"] as? [String: Any])
+        let jobID1 = try #require(startStructuredContent1["reviewThreadId"] as? String)
+        let startResult2 = try #require(startResponse2["result"] as? [String: Any])
+        let startStructuredContent2 = try #require(startResult2["structuredContent"] as? [String: Any])
+        let jobID2 = try #require(startStructuredContent2["reviewThreadId"] as? String)
+
+        let deleteStatus = try await client1.deleteSession()
+        #expect(deleteStatus == 200)
 
         try await waitUntil {
-            await transport.sentMethods().contains("turn/interrupt")
+            let response = try await client1.callTool(
+                name: "review_read",
+                arguments: ["reviewThreadId": jobID1]
+            )
+            let result = try #require(response["result"] as? [String: Any])
+            return (result["isError"] as? Bool) == true
         }
-        let interruptRequest = try #require(await transport.sentMessages().first(where: {
-            $0.objectValue?["method"]?.stringValue == "turn/interrupt"
-        })?.objectValue)
-        let params = try #require(interruptRequest["params"]?.objectValue)
-        #expect(params["threadId"]?.stringValue == "review-1")
-        #expect(params["turnId"]?.stringValue == "turn-1")
+
+        let session2Read = try await client2.callTool(
+            name: "review_read",
+            arguments: ["reviewThreadId": jobID2]
+        )
+        let session2Result = try #require(session2Read["result"] as? [String: Any])
+        let session2StructuredContent = try #require(session2Result["structuredContent"] as? [String: Any])
+        #expect(["queued", "running", "cancelled"].contains(session2StructuredContent["status"] as? String ?? ""))
         await server.stop()
     }
 }
 
-private actor HTTPTestAppServerTransport: CodexAppServerTransport {
-    typealias Handler = @Sendable (Value, HTTPTestAppServerTransport) async throws -> Void
+private enum FakeExecReviewMode {
+    case success
+    case long
+}
 
-    private let handler: Handler
-    private var continuation: AsyncThrowingStream<String, Error>.Continuation?
-    private var sent: [Value] = []
+private func makeFakeExecReviewScript(mode: FakeExecReviewMode) throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let body: String
+    switch mode {
+    case .success:
+        body = """
+        #!/bin/zsh
+        out=""
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            --output-last-message)
+              out="$2"
+              shift 2
+              ;;
+            *)
+              shift
+              ;;
+          esac
+        done
+        print '{"type":"thread.started","thread_id":"thread-success"}'
+        print '{"type":"turn.started"}'
+        print '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"git diff --stat","aggregated_output":"","status":"in_progress"}}'
+        print '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"git diff --stat","aggregated_output":"README.md | 1 +","exit_code":0,"status":"completed"}}'
+        print '{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"Inspecting current changes"}}'
+        print '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"No functional issues found."}}'
+        print '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
+        [[ -n "$out" ]] && print -n 'No functional issues found.' > "$out"
+        """
+    case .long:
+        body = """
+        #!/bin/zsh
+        trap 'exit 143' TERM INT
+        print '{"type":"thread.started","thread_id":"thread-long"}'
+        print '{"type":"turn.started"}'
+        while true; do
+          sleep 1
+        done
+        """
+    }
+    try body.write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    return url
+}
 
-    init(handler: @escaping Handler) {
-        self.handler = handler
+private final class HTTPToolClient {
+    private let endpointURL: URL
+    private let session: URLSession
+    private let timeoutInterval: TimeInterval
+    private var sessionID: String?
+
+    init(endpointURL: URL, timeoutInterval: TimeInterval) {
+        self.endpointURL = endpointURL
+        self.timeoutInterval = timeoutInterval
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeoutInterval
+        configuration.timeoutIntervalForResource = timeoutInterval
+        self.session = URLSession(configuration: configuration)
     }
 
-    func start() async throws -> AsyncThrowingStream<String, Error> {
-        var continuation: AsyncThrowingStream<String, Error>.Continuation!
-        let stream = AsyncThrowingStream<String, Error> { continuation = $0 }
-        self.continuation = continuation
-        return stream
+    func callTool(
+        name: String,
+        arguments: [String: Any]
+    ) async throws -> [String: Any] {
+        let sessionID = try await initializeIfNeeded()
+        let payload = try await postSSEPayload(
+            body: [
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": [
+                    "name": name,
+                    "arguments": arguments,
+                ],
+            ],
+            sessionID: sessionID
+        )
+        return try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
     }
 
-    func send(_ line: String) async throws {
-        let value = try JSONDecoder().decode(Value.self, from: Data(line.utf8))
-        sent.append(value)
-        try await handler(value, self)
+    func deleteSession() async throws -> Int {
+        let sessionID = try await initializeIfNeeded()
+        var request = URLRequest(url: endpointURL)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = timeoutInterval
+        request.setValue("2025-11-25", forHTTPHeaderField: "Mcp-Protocol-Version")
+        request.setValue(sessionID, forHTTPHeaderField: "MCP-Session-Id")
+        let (_, response) = try await session.data(for: request)
+        let httpResponse = try #require(response as? HTTPURLResponse)
+        self.sessionID = nil
+        return httpResponse.statusCode
     }
 
-    func stop() async {
-        continuation?.finish()
-        continuation = nil
+    private func initializeIfNeeded() async throws -> String {
+        if let sessionID {
+            return sessionID
+        }
+
+        let (payload, response) = try await postSSE(
+            body: [
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": [
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": [:],
+                    "clientInfo": [
+                        "name": "test",
+                        "version": "0.0.1",
+                    ],
+                ],
+            ],
+            sessionID: nil
+        )
+        let httpResponse = try #require(response as? HTTPURLResponse)
+        let newSessionID = try #require(httpResponse.value(forHTTPHeaderField: "MCP-Session-Id"))
+        let object = try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
+        #expect((object["id"] as? Int) == 1)
+
+        try await postNotificationInitialized(sessionID: newSessionID)
+        self.sessionID = newSessionID
+        return newSessionID
     }
 
-    func respond(id: Int, result: Value) {
-        continuation?.yield(jsonLine([
-            "id": .int(id),
-            "result": result,
-        ]))
+    private func postNotificationInitialized(sessionID: String) async throws {
+        var request = URLRequest(url: endpointURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeoutInterval
+        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("2025-11-25", forHTTPHeaderField: "Mcp-Protocol-Version")
+        request.setValue(sessionID, forHTTPHeaderField: "MCP-Session-Id")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": [:],
+        ])
+        let (_, response) = try await session.data(for: request)
+        let httpResponse = try #require(response as? HTTPURLResponse)
+        #expect(httpResponse.statusCode == 202)
     }
 
-    func sentMethods() -> [String] {
-        sent.compactMap { $0.objectValue?["method"]?.stringValue }
+    private func postSSEPayload(
+        body: [String: Any],
+        sessionID: String?
+    ) async throws -> Data {
+        let (payload, _) = try await postSSE(body: body, sessionID: sessionID)
+        return payload
     }
 
-    func sentMessages() -> [Value] {
-        sent
+    private func postSSE(
+        body: [String: Any],
+        sessionID: String?
+    ) async throws -> (Data, URLResponse) {
+        var request = URLRequest(url: endpointURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeoutInterval
+        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("2025-11-25", forHTTPHeaderField: "Mcp-Protocol-Version")
+        if let sessionID {
+            request.setValue(sessionID, forHTTPHeaderField: "MCP-Session-Id")
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        return (try decodeFirstSSEPayload(from: data), response)
     }
 }
 
-private func initialize(server: ReviewMCPHTTPServer) async throws -> String {
-    let initializeData = try JSONSerialization.data(withJSONObject: [
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": [
-            "protocolVersion": "2025-11-25",
-            "capabilities": [:],
-            "clientInfo": ["name": "test", "version": "0.0.1"],
-        ],
-    ])
-    let response = await server.handleHTTPRequest(
-        HTTPRequest(
-            method: "POST",
-            headers: [
-                HTTPHeaderName.accept: "application/json, text/event-stream",
-                HTTPHeaderName.contentType: "application/json",
-                HTTPHeaderName.protocolVersion: Version.latest,
-                HTTPHeaderName.host: "localhost:9417",
-            ],
-            body: initializeData,
-            path: "/mcp"
-        )
-    )
-    let sessionID = try #require(response.headers[HTTPHeaderName.sessionID])
-    let payload = try await firstStreamPayload(response)
-    let object = try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
-    #expect((object["id"] as? Int) == 1)
-
-    let initializedData = try JSONSerialization.data(withJSONObject: [
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": [:],
-    ])
-    let initializedResponse = await server.handleHTTPRequest(
-        HTTPRequest(
-            method: "POST",
-            headers: [
-                HTTPHeaderName.sessionID: sessionID,
-                HTTPHeaderName.accept: "application/json, text/event-stream",
-                HTTPHeaderName.contentType: "application/json",
-                HTTPHeaderName.protocolVersion: Version.latest,
-                HTTPHeaderName.host: "localhost:9417",
-            ],
-            body: initializedData,
-            path: "/mcp"
-        )
-    )
-    #expect(initializedResponse.statusCode == 202)
-    return sessionID
-}
-
-private func callTool(
-    server: ReviewMCPHTTPServer,
-    sessionID: String,
-    requestID: Int,
-    name: String,
-    arguments: [String: Any]
-) async throws -> [String: Any] {
-    let body = try JSONSerialization.data(withJSONObject: [
-        "jsonrpc": "2.0",
-        "id": requestID,
-        "method": "tools/call",
-        "params": [
-            "name": name,
-            "arguments": arguments,
-        ],
-    ])
-    let response = await server.handleHTTPRequest(
-        HTTPRequest(
-            method: "POST",
-            headers: [
-                HTTPHeaderName.sessionID: sessionID,
-                HTTPHeaderName.accept: "application/json, text/event-stream",
-                HTTPHeaderName.contentType: "application/json",
-                HTTPHeaderName.protocolVersion: Version.latest,
-                HTTPHeaderName.host: "localhost:9417",
-            ],
-            body: body,
-            path: "/mcp"
-        )
-    )
-    let payload = try await firstStreamPayload(response)
-    return try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
-}
-
-private func firstStreamPayload(_ response: HTTPResponse) async throws -> Data {
-    guard case .stream(let stream, _) = response else {
-        throw TestFailure("expected stream response")
-    }
+private func decodeFirstSSEPayload(from data: Data) throws -> Data {
     var decoder = LocalSSEDecoder()
-    for try await chunk in stream {
-        let text = String(decoding: chunk, as: UTF8.self)
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            if let payload = decoder.feed(line: String(line)), payload.isEmpty == false {
-                return payload
-            }
+    let text = String(decoding: data, as: UTF8.self)
+    for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        if let payload = decoder.feed(line: String(line)), payload.isEmpty == false {
+            return payload
         }
     }
     if let payload = decoder.flushIfNeeded(), payload.isEmpty == false {
         return payload
     }
-    throw TestFailure("missing stream payload")
-}
-
-private func waitUntil(
-    timeout: Duration = .seconds(2),
-    interval: Duration = .milliseconds(20),
-    condition: @escaping @Sendable () async -> Bool
-) async throws {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if await condition() {
-            return
-        }
-        try await Task.sleep(for: interval)
-    }
-    throw TestFailure("timed out")
-}
-
-private func jsonLine(_ value: Value) -> String {
-    let data = try! JSONEncoder().encode(value)
-    return String(decoding: data, as: UTF8.self)
+    throw TestFailure("missing SSE payload")
 }
 
 private struct LocalSSEDecoder {
@@ -473,10 +403,9 @@ private struct LocalSSEDecoder {
         if line.isEmpty {
             return flushIfNeeded()
         }
-        guard line.hasPrefix("data:") else {
-            return nil
+        if line.hasPrefix("data:") {
+            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
         }
-        dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
         return nil
     }
 
@@ -484,10 +413,71 @@ private struct LocalSSEDecoder {
         guard dataLines.isEmpty == false else {
             return nil
         }
-        let payload = Data(dataLines.joined(separator: "\n").utf8)
+        let payload = dataLines.joined(separator: "\n")
         dataLines.removeAll(keepingCapacity: true)
-        return payload
+        return Data(payload.utf8)
     }
+}
+
+private func waitUntil(
+    timeout: Duration = .seconds(2),
+    interval: Duration = .milliseconds(20),
+    condition: @escaping () async throws -> Bool
+) async throws {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if try await condition() {
+            return
+        }
+        try await Task.sleep(for: interval)
+    }
+    throw TestFailure("timed out")
+}
+
+private func waitUntilValue<T>(
+    timeout: Duration = .seconds(2),
+    interval: Duration = .milliseconds(20),
+    action: @escaping () async throws -> T?
+) async throws -> T {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if let value = try await action() {
+            return value
+        }
+        try await Task.sleep(for: interval)
+    }
+    throw TestFailure("timed out")
+}
+
+private func nextAvailableTestPort(in range: ClosedRange<Int>) throws -> Int {
+    for port in range {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            continue
+        }
+        defer { close(descriptor) }
+
+        var value: Int32 = 1
+        _ = withUnsafePointer(to: &value) {
+            setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, $0, socklen_t(MemoryLayout<Int32>.size))
+        }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if result == 0 {
+            return port
+        }
+    }
+    throw TestFailure("no free TCP port in range \(range)")
 }
 
 private struct TestFailure: Error {

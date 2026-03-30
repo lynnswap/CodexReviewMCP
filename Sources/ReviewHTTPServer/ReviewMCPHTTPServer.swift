@@ -34,22 +34,20 @@ package struct ReviewServerConfiguration: Sendable {
 
 package final class ReviewMCPHTTPServer: @unchecked Sendable {
     package let configuration: ReviewServerConfiguration
-    package let reviewRegistry: ReviewRegistry
+    package let reviewJobStore: ReviewJobStore
     private let logger = Logger(label: "codex-review-mcp.http")
     private let app: ReviewHTTPApplication
     private var startedURL: URL?
 
     package init(
-        configuration: ReviewServerConfiguration = .init(),
-        appServerTransportFactory: CodexAppServerTransportFactory? = nil
+        configuration: ReviewServerConfiguration = .init()
     ) {
         self.configuration = configuration
-        self.reviewRegistry = ReviewRegistry(
+        self.reviewJobStore = ReviewJobStore(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
                 environment: configuration.environment
-            ),
-            transportFactory: appServerTransportFactory
+            )
         )
         self.app = ReviewHTTPApplication(
             configuration: .init(
@@ -58,24 +56,23 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
                 endpoint: configuration.endpoint,
                 sessionTimeoutSeconds: configuration.sessionTimeoutSeconds
             ),
-            serverFactory: { [reviewRegistry] sessionID, transport in
+            serverFactory: { [reviewJobStore] sessionID, transport in
                 await Self.makeServer(
                     sessionID: sessionID,
                     transport: transport,
-                    reviewRegistry: reviewRegistry
+                    reviewJobStore: reviewJobStore
                 )
             },
-            onSessionClosed: { [reviewRegistry] sessionID in
-                await reviewRegistry.closeSession(sessionID, reason: "MCP session closed.")
+            onSessionClosed: { [reviewJobStore] sessionID in
+                await reviewJobStore.closeSession(sessionID, reason: "MCP session closed.")
             },
-            isSessionBusy: { [reviewRegistry] sessionID in
-                await reviewRegistry.hasActiveReviews(for: sessionID)
+            isSessionBusy: { [reviewJobStore] sessionID in
+                await reviewJobStore.hasActiveJobs(for: sessionID)
             }
         )
     }
 
     package func start() async throws -> URL {
-        await reviewRegistry.start()
         let address = try await app.startListening()
         let discoveryHost = normalizedDiscoveryHost(
             configuredHost: configuration.host,
@@ -112,7 +109,6 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
 
     package func stop() async {
         await app.stop()
-        await reviewRegistry.shutdown()
         ReviewDiscovery.removeIfOwned(
             pid: Int(ProcessInfo.processInfo.processIdentifier),
             url: startedURL
@@ -121,7 +117,6 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
     }
 
     package func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
-        await reviewRegistry.start()
         return await app.handleHTTPRequest(request)
     }
 
@@ -149,12 +144,12 @@ private extension ReviewMCPHTTPServer {
     static func makeServer(
         sessionID: String,
         transport: StatefulHTTPServerTransport,
-        reviewRegistry: ReviewRegistry
+        reviewJobStore: ReviewJobStore
     ) async -> Server {
         let server = Server(
             name: codexReviewMCPName,
             version: codexReviewMCPVersion,
-            instructions: "Run repository reviews through Codex CLI without streaming agent reasoning.",
+            instructions: "Run repository reviews through codex exec review and expose job progress over MCP.",
             capabilities: .init(
                 tools: .init()
             )
@@ -167,7 +162,7 @@ private extension ReviewMCPHTTPServer {
         await server.withMethodHandler(CallTool.self) { (params: CallTool.Parameters) in
             await ReviewToolHandler(
                 sessionID: sessionID,
-                reviewRegistry: reviewRegistry
+                reviewJobStore: reviewJobStore
             ).handle(params: params)
         }
 
@@ -252,7 +247,7 @@ private enum ReviewToolCatalog {
 
 private struct ReviewToolHandler {
     let sessionID: String
-    let reviewRegistry: ReviewRegistry
+    let reviewJobStore: ReviewJobStore
 
     func handle(params: CallTool.Parameters) async -> CallTool.Result {
         switch params.name {
@@ -270,7 +265,7 @@ private struct ReviewToolHandler {
     private func handleReviewStart(params: CallTool.Parameters) async -> CallTool.Result {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewStartArguments.self)
-            let handle = try await reviewRegistry.startReview(
+            let handle = try await reviewJobStore.startReview(
                 sessionID: sessionID,
                 request: arguments.makeRequest()
             )
@@ -287,7 +282,7 @@ private struct ReviewToolHandler {
     private func handleReviewRead(params: CallTool.Parameters) async -> CallTool.Result {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewReadArguments.self)
-            let result = try await reviewRegistry.readReview(
+            let result = try await reviewJobStore.readReview(
                 reviewThreadID: arguments.reviewThreadID,
                 sessionID: sessionID
             )
@@ -304,7 +299,7 @@ private struct ReviewToolHandler {
     private func handleCancel(params: CallTool.Parameters) async -> CallTool.Result {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewCancelArguments.self)
-            let result = try await reviewRegistry.cancelReview(
+            let result = try await reviewJobStore.cancelReview(
                 reviewThreadID: arguments.reviewThreadID,
                 sessionID: sessionID
             )

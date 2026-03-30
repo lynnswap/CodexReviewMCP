@@ -6,13 +6,24 @@
 //
 
 import SwiftUI
+import CodexReviewMCP
 
 struct ContentView: View {
+    let store: CodexReviewMonitorStore
+
     var body: some View {
-        Text("Hello, world!")
+        ReviewMonitorSplitViewRepresentable(
+            store: store,
+            onRestart: {
+                Task {
+                    await store.restart()
+                }
+            }
+        )
+        .frame(minWidth: 960, minHeight: 640)
     }
 }
 
 #Preview {
-    ContentView()
+    ContentView(store: CodexReviewMonitorStore())
 }

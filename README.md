@@ -1,9 +1,9 @@
 # CodexReviewMCP
 
-An MCP server and STDIO adapter for Codex reviews backed by `codex app-server`.
+An MCP server and STDIO adapter for Codex reviews backed by `codex exec review --json`.
 
-`codex-review-mcp-server` runs as a persistent HTTP/SSE MCP server and keeps a shared
-`codex app-server --listen stdio://` child alive behind it.
+`codex-review-mcp-server` runs as a persistent HTTP/SSE MCP server and executes
+session-scoped review jobs through `codex exec review`.
 `codex-review-mcp` is a thin STDIO adapter for clients that require STDIO transport.
 
 ## Quick Start
@@ -51,9 +51,8 @@ entry to include the timeout values.
 - `codex-review-mcp-server`
   - Persistent HTTP/SSE MCP server
   - Multi-session
-  - Session-scoped review handles
-  - Shared `codex app-server` backend over stdio JSON-RPC
-  - Detached review threads per review request
+  - Session-scoped review jobs
+  - `codex exec review --json` backend
 - `codex-review-mcp`
   - JSON-RPC over STDIO adapter
   - Forwards to the HTTP/SSE server
@@ -139,7 +138,7 @@ Adapter endpoint resolution order:
 
 ### `review_start`
 
-Starts a detached review through `codex app-server`.
+Starts a review job through `codex exec review --json`.
 
 Key inputs:
 
@@ -147,7 +146,7 @@ Key inputs:
 - `target`
 - `model`
 
-`target` uses the app-server review target model:
+`target` uses the review target model:
 
 - `{"type":"uncommittedChanges"}`
 - `{"type":"baseBranch","branch":"main"}`
@@ -156,30 +155,31 @@ Key inputs:
 
 Returns:
 
-- `parentThreadId`
+- `jobId`
 - `reviewThreadId`
-- `turnId`
+- `threadId` when available
 - `status`
 
 ### `review_read`
 
-Reads the current or final state of a detached review thread owned by the current MCP session.
+Reads the current or final state of a review job owned by the current MCP session.
 
 Returns:
 
-- `parentThreadId`
+- `jobId`
 - `reviewThreadId`
-- `turnId`
+- `threadId` when available
 - `status`
 - `review`
+- `lastAgentMessage`
 - `error`
 
 ### `review_cancel`
 
-Cancels a detached review thread owned by the current MCP session.
+Cancels a review job owned by the current MCP session.
 
 ## Development Notes
 
 - The package depends on `swift-sdk` via a pinned Git revision in [Package.swift](Package.swift).
 - Default review model, clamp limits, and server defaults are loaded from [Sources/ReviewCore/Resources/defaults.json](Sources/ReviewCore/Resources/defaults.json).
-- Review threads are isolated per MCP session.
+- Review jobs are isolated per MCP session.

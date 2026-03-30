@@ -24,6 +24,9 @@ package actor ReviewJobStore {
         var state: ReviewJobState
         var threadID: String?
         var lastAgentMessage: String
+        var reviewText: String
+        var reviewLogText: String
+        var reasoningLogText: String
         var errorMessage: String?
         var startedAt: Date?
         var endedAt: Date?
@@ -39,6 +42,8 @@ package actor ReviewJobStore {
     private let logger = Logger(label: "codex-review-mcp.jobs")
     private var jobs: [String: JobRecord] = [:]
     private var closedSessions: Set<String> = []
+    private var runTasks: [String: Task<Void, Never>] = [:]
+    private var snapshotContinuations: [UUID: AsyncStream<[ReviewJobSnapshot]>.Continuation] = [:]
 
     package init(
         configuration: Configuration = .init()
@@ -64,6 +69,9 @@ package actor ReviewJobStore {
             state: .queued,
             threadID: nil,
             lastAgentMessage: "",
+            reviewText: "",
+            reviewLogText: "",
+            reasoningLogText: "",
             errorMessage: nil,
             startedAt: nil,
             endedAt: nil,
@@ -73,7 +81,38 @@ package actor ReviewJobStore {
             processController: nil,
             requestedTerminationReason: nil
         )
+        broadcastSnapshots()
         return jobID
+    }
+
+    package func startReview(
+        sessionID: String,
+        request: ReviewStartRequest
+    ) throws -> ReviewHandle {
+        if closedSessions.contains(sessionID) {
+            throw ReviewError.accessDenied("Session \(sessionID) is already closed.")
+        }
+        let jobID = try enqueueReview(
+            sessionID: sessionID,
+            request: request.reviewRequestOptions().validated()
+        )
+        let task = Task {
+            _ = await self.runReview(jobID: jobID) { _, message in
+                await self.applyProgress(jobID: jobID, message: message)
+            }
+            await self.clearRunTask(jobID: jobID)
+        }
+        runTasks[jobID] = task
+        guard let snapshot = snapshot(jobID: jobID) else {
+            throw ReviewError.jobNotFound("Job \(jobID) was not found.")
+        }
+        return ReviewHandle(
+            jobID: jobID,
+            reviewThreadID: jobID,
+            threadID: snapshot.threadID,
+            turnID: nil,
+            status: snapshot.state
+        )
     }
 
     package func runReview(
@@ -86,7 +125,13 @@ package actor ReviewJobStore {
                 snapshot: ReviewJobSnapshot(
                     jobID: jobID,
                     sessionID: "",
+                    cwd: "",
+                    targetSummary: "",
+                    model: nil,
                     state: .failed,
+                    reviewLogText: "",
+                    reasoningLogText: "",
+                    rawLogText: "",
                     summary: "Job not found."
                 ),
                 content: "Job \(jobID) was not found.",
@@ -133,6 +178,9 @@ package actor ReviewJobStore {
                 state: .failed,
                 threadID: nil,
                 lastAgentMessage: "",
+                reviewText: "",
+                reviewLogText: "",
+                reasoningLogText: "",
                 errorMessage: message,
                 startedAt: now,
                 endedAt: Date(),
@@ -142,6 +190,7 @@ package actor ReviewJobStore {
                 processController: nil,
                 requestedTerminationReason: nil
             )
+            broadcastSnapshots()
             let failedSnapshot = snapshot(jobID: jobID)!
             pruneClosedJobIfNeeded(jobID: jobID)
             return ReviewExecutionResult(
@@ -150,6 +199,47 @@ package actor ReviewJobStore {
                 isError: true
             )
         }
+    }
+
+    package func readReview(
+        reviewThreadID: String,
+        sessionID: String
+    ) throws -> ReviewReadResult {
+        let snapshot = try authorizedSnapshot(jobID: reviewThreadID, sessionID: sessionID)
+        guard let record = jobs[reviewThreadID] else {
+            throw ReviewError.jobNotFound("Job \(reviewThreadID) was not found.")
+        }
+        let reviewText: String
+        if snapshot.state.isTerminal {
+            reviewText = record.reviewText
+        } else {
+            reviewText = record.reviewText.nilIfEmpty ?? snapshot.lastAgentMessage
+        }
+        return ReviewReadResult(
+            jobID: snapshot.jobID,
+            reviewThreadID: snapshot.jobID,
+            threadID: snapshot.threadID,
+            turnID: nil,
+            status: snapshot.state,
+            review: reviewText,
+            lastAgentMessage: snapshot.lastAgentMessage,
+            error: snapshot.errorMessage
+        )
+    }
+
+    package func cancelReview(
+        reviewThreadID: String,
+        sessionID: String
+    ) async throws -> ReviewCancelOutcome {
+        let result = try await cancel(jobID: reviewThreadID, sessionID: sessionID, reason: "Cancellation requested.")
+        let snapshot = try authorizedSnapshot(jobID: reviewThreadID, sessionID: sessionID)
+        return ReviewCancelOutcome(
+            jobID: result.jobID,
+            reviewThreadID: result.jobID,
+            threadID: snapshot.threadID,
+            cancelled: result.signalled || result.state == .cancelled,
+            status: result.state
+        )
     }
 
     package func status(jobID: String, sessionID: String, includeArtifacts: Bool) throws -> ReviewJobSnapshot {
@@ -178,6 +268,7 @@ package actor ReviewJobStore {
             record.endedAt = Date()
         }
         jobs[jobID] = record
+        broadcastSnapshots()
 
         var signalled = false
         if let controller = record.processController {
@@ -214,6 +305,20 @@ package actor ReviewJobStore {
         }
     }
 
+    package func snapshots() -> AsyncStream<[ReviewJobSnapshot]> {
+        let streamID = UUID()
+        return AsyncStream { continuation in
+            Task {
+                await self.addSnapshotContinuation(continuation, id: streamID)
+            }
+            continuation.onTermination = { _ in
+                Task {
+                    await self.removeSnapshotContinuation(id: streamID)
+                }
+            }
+        }
+    }
+
     package func closeSession(_ sessionID: String, reason: String) async {
         closedSessions.insert(sessionID)
         await cancelJobs(for: sessionID, reason: reason)
@@ -235,7 +340,18 @@ package actor ReviewJobStore {
                 return nil
             }
             return snapshot(jobID: jobID)
-        }.sorted { $0.jobID < $1.jobID }
+        }.sorted { left, right in
+            switch (left.startedAt, right.startedAt) {
+            case let (lhs?, rhs?):
+                return lhs > rhs
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                return left.jobID < right.jobID
+            }
+        }
     }
 
     private func markStarted(
@@ -254,6 +370,7 @@ package actor ReviewJobStore {
             record.state = .cancelled
             record.summary = "Review cancelled."
             jobs[jobID] = record
+            broadcastSnapshots()
             Task {
                 _ = await controller.terminateGracefully(grace: .seconds(2))
             }
@@ -264,6 +381,7 @@ package actor ReviewJobStore {
             record.summary = "Running."
         }
         jobs[jobID] = record
+        broadcastSnapshots()
     }
 
     private func applySnapshot(jobID: String, snapshot: ReviewEventSnapshot) {
@@ -276,8 +394,14 @@ package actor ReviewJobStore {
         if snapshot.lastAgentMessage.isEmpty == false {
             record.lastAgentMessage = snapshot.lastAgentMessage
         }
+        record.reviewLogText = snapshot.reviewLogText
+        record.reasoningLogText = snapshot.reasoningLogText
+        record.reviewText = snapshot.terminalState == .success
+            ? (snapshot.lastAgentMessage.nilIfEmpty ?? record.reviewText)
+            : record.reviewText
         record.errorMessage = Self.normalizedErrorMessage(from: snapshot)
         jobs[jobID] = record
+        broadcastSnapshots()
     }
 
     package static func normalizedErrorMessage(from snapshot: ReviewEventSnapshot) -> String? {
@@ -290,9 +414,15 @@ package actor ReviewJobStore {
             let fallback = ReviewJobSnapshot(
                 jobID: jobID,
                 sessionID: "",
+                cwd: "",
+                targetSummary: "",
+                model: nil,
                 state: outcome.state,
                 threadID: outcome.threadID,
                 lastAgentMessage: outcome.lastAgentMessage,
+                reviewLogText: "",
+                reasoningLogText: "",
+                rawLogText: "",
                 errorMessage: outcome.errorMessage,
                 startedAt: outcome.startedAt,
                 endedAt: outcome.endedAt,
@@ -307,10 +437,12 @@ package actor ReviewJobStore {
             record.state = .cancelled
             record.summary = "Review cancelled."
             record.errorMessage = reason
+            record.reviewText = outcome.content
         } else {
             record.state = outcome.state
             record.summary = outcome.summary
             record.errorMessage = outcome.errorMessage
+            record.reviewText = outcome.content
         }
         record.threadID = outcome.threadID ?? record.threadID
         record.lastAgentMessage = outcome.lastAgentMessage
@@ -320,6 +452,7 @@ package actor ReviewJobStore {
         record.artifacts = outcome.artifacts
         record.processController = nil
         jobs[jobID] = record
+        broadcastSnapshots()
         return snapshot(jobID: jobID)!
     }
 
@@ -354,9 +487,15 @@ package actor ReviewJobStore {
         return ReviewJobSnapshot(
             jobID: jobID,
             sessionID: record.sessionID,
+            cwd: record.request.cwd,
+            targetSummary: record.request.monitorTargetSummary,
+            model: record.request.model,
             state: record.state,
             threadID: record.threadID,
             lastAgentMessage: record.lastAgentMessage,
+            reviewLogText: record.reviewLogText,
+            reasoningLogText: record.reasoningLogText,
+            rawLogText: record.artifacts.eventsPath.flatMap { readTail(path: $0, tailBytes: reviewMonitorLogLimitBytes) } ?? "",
             errorMessage: record.errorMessage,
             startedAt: record.startedAt,
             endedAt: record.endedAt,
@@ -378,6 +517,7 @@ package actor ReviewJobStore {
         record.errorMessage = reason
         record.endedAt = now
         jobs[jobID] = record
+        broadcastSnapshots()
         let snapshot = snapshot(jobID: jobID)!
         return ReviewExecutionResult(
             snapshot: snapshot,
@@ -390,7 +530,7 @@ package actor ReviewJobStore {
         jobs = jobs.filter { _, record in
             record.sessionID != sessionID || canPrune(record) == false
         }
-        clearClosedSessionIfPruned(sessionID)
+        broadcastSnapshots()
     }
 
     private func pruneClosedJobIfNeeded(jobID: String) {
@@ -400,20 +540,65 @@ package actor ReviewJobStore {
         else {
             return
         }
-        let sessionID = record.sessionID
         jobs.removeValue(forKey: jobID)
-        clearClosedSessionIfPruned(sessionID)
+        runTasks[jobID]?.cancel()
+        runTasks[jobID] = nil
+        broadcastSnapshots()
     }
 
     private func canPrune(_ record: JobRecord) -> Bool {
         record.state.isTerminal && record.processController == nil && (record.startedAt != nil || record.endedAt != nil)
     }
 
-    private func clearClosedSessionIfPruned(_ sessionID: String) {
-        guard jobs.values.contains(where: { $0.sessionID == sessionID }) == false else {
+    private func applyProgress(jobID: String, message: String?) {
+        guard var record = jobs[jobID] else {
             return
         }
-        closedSessions.remove(sessionID)
+        if let message = message?.nilIfEmpty {
+            record.summary = message
+            jobs[jobID] = record
+            broadcastSnapshots()
+        }
+    }
+
+    private func clearRunTask(jobID: String) async {
+        runTasks[jobID] = nil
+    }
+
+    private func addSnapshotContinuation(
+        _ continuation: AsyncStream<[ReviewJobSnapshot]>.Continuation,
+        id: UUID
+    ) async {
+        snapshotContinuations[id] = continuation
+        continuation.yield(allSnapshots())
+    }
+
+    private func removeSnapshotContinuation(id: UUID) async {
+        snapshotContinuations[id] = nil
+    }
+
+    private func broadcastSnapshots() {
+        let snapshots = allSnapshots()
+        for continuation in snapshotContinuations.values {
+            continuation.yield(snapshots)
+        }
+    }
+
+    private func allSnapshots() -> [ReviewJobSnapshot] {
+        jobs.compactMap { jobID, _ in
+            snapshot(jobID: jobID)
+        }.sorted { left, right in
+            switch (left.startedAt, right.startedAt) {
+            case let (lhs?, rhs?):
+                return lhs > rhs
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                return left.jobID < right.jobID
+            }
+        }
     }
 }
 

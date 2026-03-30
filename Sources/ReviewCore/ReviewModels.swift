@@ -115,9 +115,15 @@ package struct ReviewArtifacts: Codable, Hashable, Sendable {
 package struct ReviewJobSnapshot: Codable, Hashable, Sendable {
     package var jobID: String
     package var sessionID: String
+    package var cwd: String
+    package var targetSummary: String
+    package var model: String?
     package var state: ReviewJobState
     package var threadID: String?
     package var lastAgentMessage: String
+    package var reviewLogText: String
+    package var reasoningLogText: String
+    package var rawLogText: String
     package var errorMessage: String?
     package var startedAt: Date?
     package var endedAt: Date?
@@ -129,9 +135,15 @@ package struct ReviewJobSnapshot: Codable, Hashable, Sendable {
     package init(
         jobID: String,
         sessionID: String,
+        cwd: String = "",
+        targetSummary: String = "",
+        model: String? = nil,
         state: ReviewJobState,
         threadID: String? = nil,
         lastAgentMessage: String = "",
+        reviewLogText: String = "",
+        reasoningLogText: String = "",
+        rawLogText: String = "",
         errorMessage: String? = nil,
         startedAt: Date? = nil,
         endedAt: Date? = nil,
@@ -142,9 +154,15 @@ package struct ReviewJobSnapshot: Codable, Hashable, Sendable {
     ) {
         self.jobID = jobID
         self.sessionID = sessionID
+        self.cwd = cwd
+        self.targetSummary = targetSummary
+        self.model = model
         self.state = state
         self.threadID = threadID
         self.lastAgentMessage = lastAgentMessage
+        self.reviewLogText = reviewLogText
+        self.reasoningLogText = reasoningLogText
+        self.rawLogText = rawLogText
         self.errorMessage = errorMessage
         self.startedAt = startedAt
         self.endedAt = endedAt
@@ -201,6 +219,38 @@ package struct ReviewJobSnapshot: Codable, Hashable, Sendable {
             }
         }
         return .object(object)
+    }
+}
+
+package extension ReviewRequestOptions {
+    var monitorTargetSummary: String {
+        if uncommitted {
+            return "Uncommitted changes"
+        }
+        if let base, base.isEmpty == false {
+            return "Base branch: \(base)"
+        }
+        if let commit, commit.isEmpty == false {
+            if let title, title.isEmpty == false {
+                return title
+            }
+            return "Commit: \(String(commit.prefix(12)))"
+        }
+        if let prompt, prompt.isEmpty == false {
+            let firstLine = prompt
+                .split(whereSeparator: \.isNewline)
+                .first
+                .map(String.init)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Custom review"
+            if firstLine.isEmpty {
+                return "Custom review"
+            }
+            if firstLine.count > 80 {
+                return String(firstLine.prefix(77)) + "..."
+            }
+            return firstLine
+        }
+        return "Review"
     }
 }
 
@@ -343,58 +393,124 @@ package struct ReviewStartRequest: Codable, Hashable, Sendable {
         copy.model = model?.nilIfEmpty
         return copy
     }
+
+    package func reviewRequestOptions() -> ReviewRequestOptions {
+        switch target {
+        case .uncommittedChanges:
+            return ReviewRequestOptions(
+                cwd: cwd,
+                uncommitted: true,
+                model: model
+            )
+        case .baseBranch(let branch):
+            return ReviewRequestOptions(
+                cwd: cwd,
+                base: branch,
+                model: model
+            )
+        case .commit(let sha, let title):
+            return ReviewRequestOptions(
+                cwd: cwd,
+                commit: sha,
+                title: title,
+                model: model
+            )
+        case .custom(let instructions):
+            return ReviewRequestOptions(
+                cwd: cwd,
+                prompt: instructions,
+                model: model
+            )
+        }
+    }
 }
 
 package struct ReviewHandle: Sendable, Hashable {
-    package var parentThreadID: String
+    package var jobID: String
     package var reviewThreadID: String
-    package var turnID: String
+    package var threadID: String?
+    package var turnID: String?
     package var status: ReviewJobState
 
     package func structuredContent() -> Value {
-        .object([
+        var object: [String: Value] = [
+            "jobId": .string(jobID),
             "parentThreadId": .string(parentThreadID),
             "reviewThreadId": .string(reviewThreadID),
-            "turnId": .string(turnID),
             "status": .string(status.rawValue),
-        ])
+        ]
+        if let threadID {
+            object["threadId"] = .string(threadID)
+        }
+        object["turnId"] = turnID.map(Value.string) ?? .null
+        return .object(object)
+    }
+
+    package var parentThreadID: String {
+        threadID ?? reviewThreadID
     }
 }
 
 package struct ReviewReadResult: Sendable, Hashable {
-    package var parentThreadID: String
+    package var jobID: String
     package var reviewThreadID: String
-    package var turnID: String
+    package var threadID: String?
+    package var turnID: String?
     package var status: ReviewJobState
     package var review: String
+    package var lastAgentMessage: String
     package var error: String?
 
     package func structuredContent() -> Value {
         var object: [String: Value] = [
+            "jobId": .string(jobID),
             "parentThreadId": .string(parentThreadID),
             "reviewThreadId": .string(reviewThreadID),
-            "turnId": .string(turnID),
             "status": .string(status.rawValue),
             "review": .string(review),
         ]
+        if let threadID {
+            object["threadId"] = .string(threadID)
+        }
+        object["turnId"] = turnID.map(Value.string) ?? .null
+        if lastAgentMessage.isEmpty == false {
+            object["lastAgentMessage"] = .string(lastAgentMessage)
+        }
         if let error {
             object["error"] = .string(error)
         }
         return .object(object)
     }
+
+    package var parentThreadID: String {
+        threadID ?? reviewThreadID
+    }
 }
 
 package struct ReviewCancelOutcome: Sendable, Hashable {
+    package var jobID: String
     package var reviewThreadID: String
-    package var turnID: String
+    package var threadID: String?
     package var cancelled: Bool
+    package var status: ReviewJobState
 
     package func structuredContent() -> Value {
-        .object([
+        var object: [String: Value] = [
+            "jobId": .string(jobID),
+            "parentThreadId": .string(threadID ?? reviewThreadID),
             "reviewThreadId": .string(reviewThreadID),
-            "turnId": .string(turnID),
             "cancelled": .bool(cancelled),
-        ])
+            "status": .string(status.rawValue),
+            "turnId": .null,
+        ]
+        if let threadID {
+            object["threadId"] = .string(threadID)
+        }
+        return .object(object)
+    }
+
+    package var turnID: String? {
+        nil
     }
 }
 

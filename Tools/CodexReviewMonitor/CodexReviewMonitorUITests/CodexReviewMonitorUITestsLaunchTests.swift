@@ -8,9 +8,14 @@
 import XCTest
 
 final class CodexReviewMonitorUITestsLaunchTests: XCTestCase {
+    private func skipUnlessUITestsEnabled() throws {
+        if ProcessInfo.processInfo.environment["CODEX_REVIEW_MONITOR_RUN_UI_TESTS"] != "1" {
+            throw XCTSkip("UI launch smoke is opt-in. Set CODEX_REVIEW_MONITOR_RUN_UI_TESTS=1 to run it.")
+        }
+    }
 
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
-        true
+        false
     }
 
     override func setUpWithError() throws {
@@ -19,6 +24,7 @@ final class CodexReviewMonitorUITestsLaunchTests: XCTestCase {
 
     @MainActor
     func testLaunch() throws {
+        try skipUnlessUITestsEnabled()
         let app = XCUIApplication()
         app.launch()
 

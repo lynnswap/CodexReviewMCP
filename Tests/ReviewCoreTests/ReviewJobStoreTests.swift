@@ -83,6 +83,73 @@ import Testing
         #expect(await store.allSnapshots(for: "session-prune").isEmpty)
     }
 
+    @Test func reviewJobStoreKeepsClosedSessionDeniedAfterPruningJobs() async throws {
+        let scriptURL = try makeFakeCodexScript(mode: "long")
+        let store = ReviewJobStore(
+            configuration: .init(
+                codexCommand: scriptURL.path,
+                environment: [
+                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                ]
+            )
+        )
+
+        let jobID = try await store.enqueueReview(
+            sessionID: "session-closed",
+            request: .init(cwd: FileManager.default.temporaryDirectory.path)
+        )
+        _ = try await store.cancel(jobID: jobID, sessionID: "session-closed", reason: "cancel before close")
+        await store.closeSession("session-closed", reason: "session closed")
+
+        do {
+            _ = try await store.startReview(
+                sessionID: "session-closed",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
+            )
+            throw TestFailure("expected closed session to stay denied")
+        } catch is ReviewError {
+        }
+    }
+
+    @Test func reviewJobStoreReadReviewReturnsLatestAgentMessageWhileRunning() async throws {
+        let scriptURL = try makeFakeCodexScript(mode: "progress")
+        let store = ReviewJobStore(
+            configuration: .init(
+                codexCommand: scriptURL.path,
+                environment: [
+                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+                ]
+            )
+        )
+
+        let handle = try await store.startReview(
+            sessionID: "session-running",
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                target: .uncommittedChanges
+            )
+        )
+
+        var observedRunningReview = false
+        for _ in 0 ..< 50 {
+            let result = try await store.readReview(
+                reviewThreadID: handle.reviewThreadID,
+                sessionID: "session-running"
+            )
+            if result.status == .running && result.review == "Still working" {
+                observedRunningReview = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(observedRunningReview == true)
+
+        _ = try await store.cancel(jobID: handle.reviewThreadID, sessionID: "session-running", reason: "done")
+    }
+
     @Test func reviewJobStoreRejectsMissingWorkingDirectory() async throws {
         let missingCWD = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -148,6 +215,15 @@ private func makeFakeCodexScript(mode: String) throws -> URL {
     if [[ "$mode" == "long" ]]; then
       trap 'exit 143' TERM INT
       print '{"type":"thread.started","thread_id":"thread-long"}'
+      sleep 30
+      exit 0
+    fi
+
+    if [[ "$mode" == "progress" ]]; then
+      trap 'exit 143' TERM INT
+      print '{"type":"thread.started","thread_id":"thread-progress"}'
+      print '{"type":"turn.started"}'
+      print '{"type":"item.completed","item":{"type":"agent_message","text":"Still working"}}'
       sleep 30
       exit 0
     fi

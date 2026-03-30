@@ -136,6 +136,14 @@ let package = Package(
                 .swiftLanguageMode(.v6),
             ]
         ),
+        .testTarget(
+            name: "CodexReviewMCPTests",
+            dependencies: ["CodexReviewMCP", "ReviewHTTPServer", "ReviewCore"],
+            path: "Tests/CodexReviewMCPTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )
