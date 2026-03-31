@@ -70,6 +70,9 @@ package struct ReviewCommandBuilder: Sendable {
         var defaultConfigArgs: [String] = []
         var forcedConfigArgs: [String] = []
 
+        if !inspection.foundSandboxMode {
+            defaultConfigArgs += ["-c", #"sandbox_mode="danger-full-access""#]
+        }
         if !inspection.foundHideReasoning {
             defaultConfigArgs += ["-c", "hide_agent_reasoning=\(ReviewDefaults.shared.review.hideAgentReasoning ? "true" : "false")"]
         }
@@ -179,6 +182,7 @@ private struct ForwardedArgsInspection: Sendable {
     var foundReasoningEffort = false
     var foundReasoningSummary = false
     var foundPersonality = false
+    var foundSandboxMode = false
     var explicitReviewModel: String?
     var explicitModelContextWindow: Int?
     var explicitModelAutoCompactTokenLimit: Int?
@@ -223,6 +227,8 @@ private func inspectForwardedArgs(_ args: [String]) -> ForwardedArgsInspection {
                 inspection.foundReasoningSummary = true
             case "personality":
                 inspection.foundPersonality = true
+            case "sandbox_mode":
+                inspection.foundSandboxMode = true
             case "profile":
                 inspection.overrideProfileKey = trimMatchingQuotes(assignment.value)
             case "model_context_window":

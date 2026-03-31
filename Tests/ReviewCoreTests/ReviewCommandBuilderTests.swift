@@ -22,6 +22,7 @@ import Testing
 
         #expect(command.executable == "codex")
         #expect(command.arguments.contains("--json"))
+        #expect(command.arguments.contains(#"sandbox_mode="danger-full-access""#))
         #expect(command.arguments.contains("review_model=gpt-5.4-mini"))
         #expect(command.arguments.contains("hide_agent_reasoning=false"))
         #expect(command.arguments.contains("personality=none"))
@@ -116,6 +117,36 @@ import Testing
         )
 
         #expect(command.arguments.contains("model_context_window=128000"))
+    }
+
+    @Test func reviewCommandBuilderSkipsDefaultSandboxOverrideWhenSandboxModeIsExplicit() throws {
+        let builder = ReviewCommandBuilder()
+        let command = try builder.build(
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                configOverrides: [
+                    #"sandbox_mode="read-only""#,
+                ]
+            )
+        )
+
+        let sandboxOverrides = command.arguments.filter { $0.contains("sandbox_mode=") }
+        #expect(sandboxOverrides == [#"sandbox_mode="read-only""#])
+    }
+
+    @Test func reviewCommandBuilderKeepsDefaultSandboxOverrideWhenProfileIsExplicit() throws {
+        let builder = ReviewCommandBuilder()
+        let command = try builder.build(
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                configOverrides: [
+                    #"profile="reviewer""#,
+                ]
+            )
+        )
+
+        #expect(command.arguments.contains(#"sandbox_mode="danger-full-access""#))
+        #expect(command.arguments.contains(#"profile="reviewer""#))
     }
 
     @Test func reviewCommandBuilderRejectsBareOptionTerminatorInExtraArgs() throws {
