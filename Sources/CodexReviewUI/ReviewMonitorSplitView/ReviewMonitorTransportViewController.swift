@@ -62,7 +62,11 @@ final class ReviewMonitorTransportViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         configureHierarchy()
-        renderEmptyState()
+        if let selectedJob = uiState.selectedJobEntry {
+            bindSelectedJob(selectedJob)
+        } else {
+            renderEmptyState()
+        }
     }
 
     private func configureHierarchy() {

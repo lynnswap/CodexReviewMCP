@@ -1,6 +1,7 @@
 import SwiftUI
 import CodexReviewModel
 
+@available(macOS 26.0, *)
 public struct ReviewMonitorContentView: View {
     let store: CodexReviewStore
 
@@ -10,11 +11,14 @@ public struct ReviewMonitorContentView: View {
 
     public var body: some View {
         ReviewMonitorSplitViewRepresentable(store: store)
+            .ignoresSafeArea()
     }
 }
 
 #if DEBUG
 #Preview {
-    ReviewMonitorContentView(store: ReviewMonitorPreviewContent.makeStore())
+    if #available(macOS 26.0, *) {
+        ReviewMonitorContentView(store: ReviewMonitorPreviewContent.makeStore())
+    }
 }
 #endif

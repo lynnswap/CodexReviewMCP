@@ -26,13 +26,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
         static let sectionHeader = NSUserInterfaceItemIdentifier("ReviewMonitorJobs.SectionHeader")
     }
 
-    private weak var store: CodexReviewStore?
     private let uiState: ReviewMonitorUIState
-    private let stackView = NSStackView()
-    private let statusLabel = NSTextField(labelWithString: "Server: Stopped")
-    private let serverURLLabel = NSTextField(labelWithString: "Server unavailable")
-    private let errorLabel = NSTextField(wrappingLabelWithString: "")
-    private let restartButton = NSButton(title: "Restart", target: nil, action: nil)
     private let scrollView = NSScrollView()
     private let tableView = NSTableView(frame: .zero)
     private let tableColumn = NSTableColumn(identifier: Identifier.tableColumn)
@@ -65,26 +59,10 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
     }
 
     func bind(store: CodexReviewStore) {
-        self.store = store
         bindObservation(store: store)
-        applyServerState(
-            serverState: store.serverState,
-            serverURL: store.serverURL
-        )
         applySection(.active, jobs: store.activeJobs)
         applySection(.recent, jobs: store.recentJobs)
         ensureSelection()
-    }
-
-    func applyServerState(
-        serverState: CodexReviewServerState,
-        serverURL: URL?
-    ) {
-        statusLabel.stringValue = "Server: \(serverState.displayText)"
-        serverURLLabel.stringValue = serverURL?.absoluteString ?? "Server unavailable"
-        errorLabel.stringValue = serverState.failureMessage ?? ""
-        errorLabel.isHidden = serverState.failureMessage == nil
-        restartButton.isEnabled = serverState.isRestartAvailable
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
@@ -101,45 +79,17 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
     }
 
     private func configureHierarchy() {
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        stackView.orientation = .vertical
-        stackView.alignment = .leading
-        stackView.spacing = 10
-
-        serverURLLabel.font = .preferredFont(forTextStyle: .footnote)
-        serverURLLabel.textColor = .secondaryLabelColor
-        serverURLLabel.lineBreakMode = .byTruncatingMiddle
-        serverURLLabel.maximumNumberOfLines = 2
-
-        errorLabel.font = .preferredFont(forTextStyle: .footnote)
-        errorLabel.textColor = .systemRed
-        errorLabel.isHidden = true
-
-        restartButton.bezelStyle = .rounded
-        restartButton.target = self
-        restartButton.action = #selector(restartPressed)
-
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        view.addSubview(stackView)
         view.addSubview(scrollView)
         view.addSubview(emptyStateView)
 
-        stackView.addArrangedSubview(statusLabel)
-        stackView.addArrangedSubview(serverURLLabel)
-        stackView.addArrangedSubview(errorLabel)
-        stackView.addArrangedSubview(restartButton)
-
         NSLayoutConstraint.activate([
-            stackView.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            stackView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            stackView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            scrollView.topAnchor.constraint(equalTo: stackView.bottomAnchor, constant: 16),
+            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -204,17 +154,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
 
     private func bindObservation(store: CodexReviewStore) {
         observationHandles.removeAll()
-        store.observe([\.serverState, \.serverURL]) { [weak self, weak store] in
-            guard let self, let store else {
-                return
-            }
-            self.applyServerState(
-                serverState: store.serverState,
-                serverURL: store.serverURL
-            )
-        }
-        .store(in: &observationHandles)
-
         store.observe([\.activeJobs]) { [weak self, weak store] in
             guard let self, let store else {
                 return
@@ -308,32 +247,11 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
             tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
     }
-
-    @objc private func restartPressed() {
-        guard let store else {
-            return
-        }
-        Task {
-            await store.restart()
-        }
-    }
 }
 
 #if DEBUG
 @MainActor
 extension ReviewMonitorSidebarViewController {
-    var statusTextForTesting: String {
-        statusLabel.stringValue
-    }
-
-    var serverURLTextForTesting: String {
-        serverURLLabel.stringValue
-    }
-
-    var restartEnabledForTesting: Bool {
-        restartButton.isEnabled
-    }
-
     var displayedSectionTitlesForTesting: [String] {
         dataSource.snapshot().sectionIdentifiers.map(\.title)
     }

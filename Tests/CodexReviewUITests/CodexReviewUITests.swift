@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @_spi(Testing) @testable import CodexReviewModel
@@ -9,53 +10,79 @@ import ReviewRuntime
 @MainActor
 struct CodexReviewUITests {
     @Test func bindingStoreAppliesInitialState() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let viewController = ReviewMonitorSplitViewController()
+        let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.bind(store: store)
 
-        #expect(viewController.sidebarViewControllerForTesting.statusTextForTesting == "Server: Stopped")
+        #expect(viewController.sidebarAccessoryCountForTesting == 1)
+        #expect(viewController.contentAccessoryCountForTesting == 0)
         #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
         #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
     }
 
     @Test func splitViewShowsEmptyStateWithoutJobs() {
-        let viewController = ReviewMonitorSplitViewController()
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.sidebarViewControllerForTesting.applyServerState(
-            serverState: .stopped,
-            serverURL: nil
-        )
         viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [])
         viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [])
 
         #expect(viewController.splitViewItems.count == 2)
-        #expect(viewController.sidebarViewControllerForTesting.statusTextForTesting == "Server: Stopped")
+        #expect(viewController.sidebarAccessoryCountForTesting == 1)
+        #expect(viewController.contentAccessoryCountForTesting == 0)
         #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
         #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
     }
 
+    @Test func splitViewInstallsToolbarWithSidebarTrackingSeparator() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+
+        viewController.viewDidAppear()
+
+        #expect(window.toolbar != nil)
+        #expect(viewController.toolbarIdentifiersForTesting.contains(.toggleSidebar))
+        #expect(viewController.toolbarIdentifiersForTesting.contains(.sidebarTrackingSeparator))
+        #expect(window.styleMask.contains(.fullSizeContentView))
+        #expect(window.titleVisibility == .hidden)
+        #expect(window.title == "Review Details")
+        #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
+    }
+
     @Test func splitViewSeparatesActiveAndRecentJobs() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
         let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
         let recentJob = makeJob(status: .failed, targetSummary: "Base branch: main")
-        let viewController = ReviewMonitorSplitViewController()
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, jobs: [activeJob, recentJob])
+        let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.sidebarViewControllerForTesting.applyServerState(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp")
-        )
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [activeJob])
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [recentJob])
 
         #expect(viewController.sidebarViewControllerForTesting.displayedSectionTitlesForTesting == ["Active", "Recent"])
         #expect(viewController.splitViewItems.count == 2)
         #expect(viewController.splitViewItems[0].behavior == .sidebar)
         #expect(viewController.splitViewItems[1].behavior == .default)
-        #expect(viewController.sidebarViewControllerForTesting.statusTextForTesting == "Server: Running")
-        #expect(viewController.sidebarViewControllerForTesting.serverURLTextForTesting == "http://localhost:9417/mcp")
+        #expect(viewController.sidebarAccessoryCountForTesting == 1)
+        #expect(viewController.contentAccessoryCountForTesting == 0)
     }
 
     @Test func selectingJobUpdatesDetailPane() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
         let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes", logText: "Running review\n")
         let recentJob = makeJob(
             status: .succeeded,
@@ -63,14 +90,10 @@ struct CodexReviewUITests {
             summary: "MCP server codex_review ready.",
             logText: "Findings ready\n"
         )
-        let viewController = ReviewMonitorSplitViewController()
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, jobs: [activeJob, recentJob])
+        let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.sidebarViewControllerForTesting.applyServerState(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp")
-        )
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [activeJob])
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [recentJob])
 
         viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
 
@@ -95,6 +118,9 @@ struct CodexReviewUITests {
     }
 
     @Test func switchingSelectedJobRebindsDetailPane() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
         let activeJob = makeJob(
             id: "job-active",
             status: .running,
@@ -109,14 +135,10 @@ struct CodexReviewUITests {
             summary: "Recent review completed.",
             logText: "Recent log\n"
         )
-        let viewController = ReviewMonitorSplitViewController()
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, jobs: [activeJob, recentJob])
+        let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.sidebarViewControllerForTesting.applyServerState(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp")
-        )
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [activeJob])
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [recentJob])
         viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
 
         let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
@@ -141,6 +163,9 @@ struct CodexReviewUITests {
     }
 
     @Test func removingSelectedJobAutoSelectsNextVisibleJob() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
         let activeJob = makeJob(
             id: "job-active",
             status: .running,
@@ -155,14 +180,10 @@ struct CodexReviewUITests {
             summary: "Recent review completed.",
             logText: "Recent log\n"
         )
-        let viewController = ReviewMonitorSplitViewController()
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, jobs: [activeJob, recentJob])
+        let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.sidebarViewControllerForTesting.applyServerState(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp")
-        )
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [activeJob])
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [recentJob])
         viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
 
         let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
@@ -188,6 +209,9 @@ struct CodexReviewUITests {
     }
 
     @Test func clearingSelectionShowsEmptyStateAndClearsDetailPane() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
         let job = makeJob(
             id: "job-1",
             status: .running,
@@ -195,14 +219,18 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: "Initial log\n"
         )
-        let viewController = ReviewMonitorSplitViewController()
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, jobs: [job])
+        let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.sidebarViewControllerForTesting.applyServerState(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp")
-        )
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [job])
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            guard viewController.transportViewControllerForTesting.displayedTitleForTesting == job.displayTitle else {
+                return nil
+            }
+            return true
+        }
 
         viewController.sidebarViewControllerForTesting.clearSelectionForTesting()
 
@@ -227,6 +255,9 @@ struct CodexReviewUITests {
     }
 
     @Test func inPlaceJobUpdateKeepsSelectionAndRefreshesDetailPane() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
         let job = makeJob(
             id: "job-1",
             status: .running,
@@ -234,14 +265,10 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: "Initial log\n"
         )
-        let viewController = ReviewMonitorSplitViewController()
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, jobs: [job])
+        let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.sidebarViewControllerForTesting.applyServerState(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp")
-        )
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [job])
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [])
 
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
@@ -256,10 +283,6 @@ struct CodexReviewUITests {
         job.summary = "Review completed successfully."
         job.logEntries = [.init(kind: .agentMessage, text: "Updated log")]
 
-        viewController.sidebarViewControllerForTesting.applyServerState(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp")
-        )
         viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [])
         viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [job])
 
