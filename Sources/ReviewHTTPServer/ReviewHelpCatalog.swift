@@ -195,11 +195,11 @@ package enum ReviewHelpCatalog {
     }
 
     package static var reviewStartDescription: String {
-        "Run `codex exec review --json` for a repository and wait for the terminal result. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`. The result includes `jobId`, `reviewThreadId`, `threadId`, `turnId`, `status`, `review`, ordered `logs`, and `rawLogText`."
+        "Run `codex exec review --json` for a repository and wait for the terminal result. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`. The result includes `jobId`, `reviewThreadId`, `threadId`, `turnId`, `status`, `review`, and `error`. Use `review_read` to fetch detailed logs."
     }
 
     package static var reviewReadDescription: String {
-        "Read the current or final state of a review job owned by the current MCP session. Returns the same log payload shape as `review_start`. Read `\(toolURI("review_read"))` for details."
+        "Read the current or final state of a review job owned by the current MCP session. Returns the detailed review payload, including `lastAgentMessage`, ordered `logs`, and `rawLogText`. Read `\(toolURI("review_read"))` for details."
     }
 
     package static var reviewListDescription: String {
@@ -301,10 +301,9 @@ package enum ReviewHelpCatalog {
             - `turnId`
             - `status`
             - `review`
-            - `logs`
-            - `rawLogText`
-            - `lastAgentMessage`
             - `error`
+
+            Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
 
             ## Common Mistakes
 

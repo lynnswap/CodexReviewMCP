@@ -102,13 +102,12 @@ struct CodexReviewMCPTests {
             let result = try #require(response["result"] as? [String: Any])
             let structuredContent = try #require(result["structuredContent"] as? [String: Any])
             let jobID = try #require(structuredContent["jobId"] as? String)
-            let logs = try #require(structuredContent["logs"] as? [[String: Any]])
-            let rawLogText = try #require(structuredContent["rawLogText"] as? String)
             #expect(structuredContent["reviewThreadId"] as? String == jobID)
             #expect(structuredContent["status"] as? String == "succeeded")
             #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
-            #expect(logs.contains { ($0["kind"] as? String) == "reasoning" && (($0["text"] as? String) ?? "").contains("Inspecting current changes") })
-            #expect(rawLogText.contains("\"type\":\"thread.started\""))
+            #expect(structuredContent["logs"] == nil)
+            #expect(structuredContent["rawLogText"] == nil)
+            #expect(structuredContent["lastAgentMessage"] == nil)
 
             try await waitUntil(timeout: .seconds(2)) {
                 await MainActor.run {
@@ -168,11 +167,12 @@ struct CodexReviewMCPTests {
                 let result = try #require(response["result"] as? [String: Any])
                 let structuredContent = try #require(result["structuredContent"] as? [String: Any])
                 let reviewThreadID = try #require(structuredContent["reviewThreadId"] as? String)
-                let logs = try #require(structuredContent["logs"] as? [[String: Any]])
                 #expect(structuredContent["status"] as? String == "succeeded")
                 #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
                 #expect(reviewThreadID.isEmpty == false)
-                #expect(logs.isEmpty == false)
+                #expect(structuredContent["logs"] == nil)
+                #expect(structuredContent["rawLogText"] == nil)
+                #expect(structuredContent["lastAgentMessage"] == nil)
 
                 try await waitUntil(timeout: .seconds(60), interval: .milliseconds(200)) {
                     await MainActor.run {
@@ -194,10 +194,12 @@ struct CodexReviewMCPTests {
                 )
                 let readResult = try #require(readResponse["result"] as? [String: Any])
                 let readStructuredContent = try #require(readResult["structuredContent"] as? [String: Any])
+                let lastAgentMessage = try #require(readStructuredContent["lastAgentMessage"] as? String)
                 let readLogs = try #require(readStructuredContent["logs"] as? [[String: Any]])
                 let rawLogText = try #require(readStructuredContent["rawLogText"] as? String)
                 #expect(readStructuredContent["status"] as? String == "succeeded")
                 #expect(((readStructuredContent["review"] as? String) ?? "").isEmpty == false)
+                #expect(lastAgentMessage.isEmpty == false)
                 #expect(readLogs.isEmpty == false)
                 #expect(rawLogText.isEmpty == false)
             }

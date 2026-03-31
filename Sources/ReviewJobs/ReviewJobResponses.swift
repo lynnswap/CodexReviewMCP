@@ -37,22 +37,32 @@ package struct ReviewReadResult: Sendable, Hashable {
         self.error = error
     }
 
-    package func structuredContent() -> Value {
+    package func structuredContentForStart() -> Value {
+        structuredContent(includeDetails: false)
+    }
+
+    package func structuredContentForRead() -> Value {
+        structuredContent(includeDetails: true)
+    }
+
+    private func structuredContent(includeDetails: Bool) -> Value {
         var object: [String: Value] = [
             "jobId": .string(jobID),
             "parentThreadId": .string(parentThreadID),
             "reviewThreadId": .string(reviewThreadID),
             "status": .string(status.rawValue),
             "review": .string(review),
-            "logs": .array(logs.map { $0.structuredContent() }),
-            "rawLogText": .string(rawLogText),
         ]
         if let threadID {
             object["threadId"] = .string(threadID)
         }
         object["turnId"] = turnID.map(Value.string) ?? .null
-        if lastAgentMessage.isEmpty == false {
-            object["lastAgentMessage"] = .string(lastAgentMessage)
+        if includeDetails {
+            object["logs"] = .array(logs.map { $0.structuredContent() })
+            object["rawLogText"] = .string(rawLogText)
+            if lastAgentMessage.isEmpty == false {
+                object["lastAgentMessage"] = .string(lastAgentMessage)
+            }
         }
         if let error {
             object["error"] = .string(error)

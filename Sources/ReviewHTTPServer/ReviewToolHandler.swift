@@ -32,7 +32,7 @@ struct ReviewToolHandler {
             let result = try await startReview(arguments.makeRequest())
             return try CallTool.Result(
                 content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
-                structuredContent: result.structuredContent(),
+                structuredContent: result.structuredContentForStart(),
                 isError: result.status == .failed
             )
         } catch let error as DecodingError {
@@ -60,7 +60,7 @@ struct ReviewToolHandler {
             let result = try await readReview(arguments.reviewThreadID)
             return try CallTool.Result(
                 content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
-                structuredContent: result.structuredContent(),
+                structuredContent: result.structuredContentForRead(),
                 isError: result.status == .failed
             )
         } catch {

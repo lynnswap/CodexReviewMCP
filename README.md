@@ -168,15 +168,12 @@ Returns:
 - `turnId`
 - `status`
 - `review`
-- `logs`
-- `rawLogText`
-- `lastAgentMessage`
 - `error`
 
 Notes:
 
 - `review_start` is the primary client flow. It waits for terminal completion, so MCP clients should configure a sufficiently large tool timeout.
-- `review_read` is only a supplementary API for post-hoc inspection or manual troubleshooting.
+- Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
 
 If you are unsure how to build the `target` object, read:
 
@@ -189,7 +186,7 @@ If you are unsure how to build the `target` object, read:
 ### `review_read`
 
 Reads the current or final state of a review job owned by the current MCP session.
-This is optional for normal clients because `review_start` already returns the final result.
+This is optional for normal clients because `review_start` already returns the final summary.
 
 Returns:
 
