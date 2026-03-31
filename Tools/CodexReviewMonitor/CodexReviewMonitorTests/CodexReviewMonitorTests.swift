@@ -9,6 +9,92 @@ import ReviewJobs
 @Suite(.serialized)
 @MainActor
 struct CodexReviewMonitorTests {
+    @Test func launchModeTreatsPreviewEnvironmentAsPreview() {
+        let environment = [
+            CodexReviewMonitorLaunchEnvironment.xcodeRunningForPlaygroundsKey: "1",
+        ]
+
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.launchMode(
+                environment: environment,
+                arguments: []
+            ) == .preview
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer(
+                environment: environment,
+                arguments: []
+            ) == false
+        )
+    }
+
+    @Test func launchModeTreatsXcodePreviewFlagAsPreview() {
+        let environment = [
+            CodexReviewMonitorLaunchEnvironment.xcodeRunningForPreviewsKey: "YES",
+        ]
+
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.launchMode(
+                environment: environment,
+                arguments: []
+            ) == .preview
+        )
+    }
+
+    @Test func launchModeTreatsPlainXCTestLaunchAsTest() {
+        let environment = [
+            CodexReviewMonitorLaunchEnvironment.xctestConfigurationKey: "/tmp/test.xctestconfiguration",
+        ]
+
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.launchMode(
+                environment: environment,
+                arguments: []
+            ) == .xctest
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer(
+                environment: environment,
+                arguments: []
+            ) == false
+        )
+    }
+
+    @Test func launchModeKeepsExplicitTestOverrideLaunchable() {
+        let environment = [
+            CodexReviewMonitorLaunchEnvironment.xctestConfigurationKey: "/tmp/test.xctestconfiguration",
+            CodexReviewMonitorLaunchEnvironment.testPortKey: "9417",
+        ]
+
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.launchMode(
+                environment: environment,
+                arguments: []
+            ) == .application
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer(
+                environment: environment,
+                arguments: []
+            )
+        )
+    }
+
+    @Test func launchModeTreatsNormalLaunchAsApplication() {
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.launchMode(
+                environment: [:],
+                arguments: []
+            ) == .application
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer(
+                environment: [:],
+                arguments: []
+            )
+        )
+    }
+
     @Test func bindingStoreAppliesInitialState() {
         let store = CodexReviewStore()
         let viewController = ReviewMonitorSplitViewController()

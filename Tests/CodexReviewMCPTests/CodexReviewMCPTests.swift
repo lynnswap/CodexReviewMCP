@@ -1,7 +1,7 @@
 import Foundation
 import MCP
 import Testing
-@testable import CodexReviewMCP
+@_spi(Testing) @testable import CodexReviewMCP
 @testable import ReviewCore
 @testable import ReviewHTTPServer
 @testable import ReviewJobs
@@ -36,6 +36,41 @@ struct CodexReviewMCPTests {
         #expect(secondStore.serverState == .running)
         #expect(secondStore.serverURL != nil)
         await secondStore.stop()
+    }
+
+    @Test func loadForTestingReplacesStoreSnapshotAndSortsJobs() {
+        let store = CodexReviewStore(configuration: .init())
+        let recentJob = CodexReviewJob.makeForTesting(
+            id: "recent-job",
+            cwd: "/tmp/recent",
+            targetSummary: "Commit: abc123",
+            status: .succeeded,
+            startedAt: Date(timeIntervalSince1970: 100),
+            endedAt: Date(timeIntervalSince1970: 110),
+            summary: "Succeeded",
+            logEntries: [.init(kind: .agentMessage, text: "Done")]
+        )
+        let activeJob = CodexReviewJob.makeForTesting(
+            id: "active-job",
+            cwd: "/tmp/active",
+            targetSummary: "Branch: feature/previews",
+            status: .running,
+            startedAt: Date(timeIntervalSince1970: 200),
+            summary: "Running",
+            logEntries: [.init(kind: .agentMessage, text: "Running review")]
+        )
+
+        store.loadForTesting(
+            serverState: .running,
+            serverURL: URL(string: "http://localhost:9417/mcp"),
+            jobs: [recentJob, activeJob]
+        )
+
+        #expect(store.serverState == .running)
+        #expect(store.serverURL?.absoluteString == "http://localhost:9417/mcp")
+        #expect(store.jobs.map(\.id) == ["active-job", "recent-job"])
+        #expect(store.activeJobs.map(\.id) == ["active-job"])
+        #expect(store.recentJobs.map(\.id) == ["recent-job"])
     }
 
     @Test func embeddedServerReviewStartProgressesViaHTTP() async throws {

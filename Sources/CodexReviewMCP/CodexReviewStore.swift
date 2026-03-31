@@ -137,6 +137,24 @@ public final class CodexReviewStore {
         await start(forceRestartIfNeeded: true)
     }
 
+    @_spi(Testing)
+    public func loadForTesting(
+        serverState: CodexReviewServerState,
+        serverURL: URL? = nil,
+        jobs: [CodexReviewJob]
+    ) {
+        precondition(
+            server == nil && waitTask == nil,
+            "loadForTesting must be called before the embedded server starts."
+        )
+        self.serverState = serverState
+        self.serverURL = serverURL
+        self.jobs = jobs
+        closedSessions = []
+        sortJobs()
+        writeDiagnosticsIfNeeded()
+    }
+
     public func waitUntilStopped() async {
         guard let waitTask else {
             return
