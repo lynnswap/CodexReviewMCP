@@ -195,6 +195,42 @@ struct CodexReviewMonitorTests {
         #expect(structuredContent["status"] as? String == "succeeded")
         #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
     }
+
+    @Test func relaunchedAppRecoversEmbeddedServerAutomatically() async throws {
+        guard ProcessInfo.processInfo.environment["CODEX_REVIEW_MCP_LIVE_TESTS"] == "1" else {
+            return
+        }
+        let scriptURL = try makeFakeExecReviewScript(mode: .success)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let port = try nextAvailableTestPort(in: 39521 ... 39530)
+
+        let firstApp = try LaunchedMonitorApp.start(codexCommand: scriptURL.path, port: port)
+        defer { firstApp.terminate() }
+
+        _ = try await waitUntilValue(timeout: .seconds(20), interval: .milliseconds(200)) {
+            try firstApp.readDiagnostics()?.serverURL.flatMap(URL.init(string:))
+        } as URL
+
+        let secondApp = try LaunchedMonitorApp.start(codexCommand: scriptURL.path, port: port)
+        defer { secondApp.terminate() }
+
+        let diagnostics: MonitorAppDiagnostics = try await waitUntilValue(
+            timeout: .seconds(20),
+            interval: .milliseconds(200)
+        ) {
+            guard let diagnostics = try secondApp.readDiagnostics(),
+                  diagnostics.serverState == "Running",
+                  diagnostics.serverURL != nil
+            else {
+                return nil
+            }
+            return diagnostics
+        }
+
+        #expect(diagnostics.serverState == "Running")
+        #expect(diagnostics.failureMessage == nil)
+        #expect(diagnostics.serverURL != nil)
+    }
 }
 
 private enum MonitorAppTestEnvironment {

@@ -89,7 +89,7 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Task {
-            await store.start()
+            await store.start(forceRestartIfNeeded: true)
         }
     }
 
