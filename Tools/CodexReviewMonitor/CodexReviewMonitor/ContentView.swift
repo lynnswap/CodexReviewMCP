@@ -5,14 +5,9 @@
 //  Created by Kazuki Nakashima on 2026/03/28.
 //
 
-import Foundation
 import SwiftUI
-#if DEBUG
-@_spi(Testing) import CodexReviewMCP
-import ReviewJobs
-#else
 import CodexReviewMCP
-#endif
+
 struct ContentView: View {
     let store: CodexReviewStore
 
@@ -26,8 +21,11 @@ struct ContentView: View {
     ContentView(store: ReviewMonitorPreviewContent.makeStore())
 }
 
+@_spi(Testing) import CodexReviewMCP
+import ReviewJobs
+import Foundation
 @MainActor
-private enum ReviewMonitorPreviewContent {
+enum ReviewMonitorPreviewContent {
     static func makeStore() -> CodexReviewStore {
         let store = CodexReviewStore()
         store.loadForTesting(
