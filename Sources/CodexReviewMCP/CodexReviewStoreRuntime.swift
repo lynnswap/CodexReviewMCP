@@ -1,172 +1,43 @@
 import Darwin
+import CodexReviewModel
 import Foundation
-import Observation
 import ReviewCore
 import ReviewHTTPServer
 import ReviewJobs
 import ReviewRuntime
 
-@MainActor
-@Observable
-public final class CodexReviewStore {
-    public private(set) var serverState: CodexReviewServerState = .stopped
-    public private(set) var serverURL: URL?
-    public private(set) var jobs: [CodexReviewJob] = []
-
-    public var activeJobs: [CodexReviewJob] {
-        jobs.filter { $0.isTerminal == false }
-    }
-
-    public var recentJobs: [CodexReviewJob] {
-        jobs.filter(\.isTerminal)
-    }
-
-    @ObservationIgnored private let configuration: ReviewServerConfiguration
-    @ObservationIgnored private let diagnosticsURL: URL?
-    @ObservationIgnored private let executionCoordinator: ReviewExecutionCoordinator
-    @ObservationIgnored private var server: ReviewMCPHTTPServer?
-    @ObservationIgnored private var waitTask: Task<Void, Never>?
-    @ObservationIgnored private var closedSessions: Set<String> = []
-
-    public init() {
+extension CodexReviewStore {
+    public convenience init() {
         let environment = ProcessInfo.processInfo.environment
         let arguments = CommandLine.arguments
         let configuration = Self.makeConfiguration(
             environment: environment,
             arguments: arguments
         )
-        self.configuration = configuration
-        self.diagnosticsURL = Self.makeDiagnosticsURL(
-            environment: environment,
-            arguments: arguments
-        )
-        self.executionCoordinator = ReviewExecutionCoordinator(
-            configuration: .init(
-                codexCommand: configuration.codexCommand,
-                environment: configuration.environment
+        self.init(
+            backend: CodexReviewEmbeddedServerBackend(configuration: configuration),
+            diagnosticsURL: Self.makeDiagnosticsURL(
+                environment: environment,
+                arguments: arguments
             )
         )
     }
 
-    package init(
+    package convenience init(
         configuration: ReviewServerConfiguration,
         diagnosticsURL: URL? = nil
     ) {
-        self.configuration = configuration
-        self.diagnosticsURL = diagnosticsURL
-        self.executionCoordinator = ReviewExecutionCoordinator(
-            configuration: .init(
-                codexCommand: configuration.codexCommand,
-                environment: configuration.environment
-            )
+        self.init(
+            backend: CodexReviewEmbeddedServerBackend(configuration: configuration),
+            diagnosticsURL: diagnosticsURL
         )
-    }
-
-    public func job(id: String) -> CodexReviewJob? {
-        jobs.first { $0.id == id }
-    }
-
-    public func jobs(sessionID: String) -> [CodexReviewJob] {
-        jobs.filter { $0.sessionID == sessionID }
-    }
-
-    public func start(forceRestartIfNeeded: Bool = false) async {
-        switch serverState {
-        case .stopped, .failed:
-            break
-        case .starting, .running:
-            return
-        }
-
-        serverState = .starting
-        serverURL = nil
-        resetReviews()
-        writeDiagnosticsIfNeeded()
-
-        let server = makeServer()
-        do {
-            let url: URL
-            do {
-                url = try await server.start()
-            } catch {
-                guard forceRestartIfNeeded,
-                      isAddressInUse(error),
-                      let discovery = ReviewDiscovery.read(),
-                      discoveryMatchesListenAddress(
-                        discovery,
-                        host: configuration.host,
-                        port: configuration.port
-                      )
-                else {
-                    throw error
-                }
-                try await forceRestart(discovery)
-                url = try await server.start()
-            }
-
-            self.server = server
-            serverURL = url
-            serverState = .running
-            writeDiagnosticsIfNeeded()
-            observeServerLifecycle(server: server)
-        } catch {
-            await server.stop()
-            self.server = nil
-            serverURL = nil
-            serverState = .failed(Self.errorMessage(from: error))
-            writeDiagnosticsIfNeeded()
-        }
-    }
-
-    public func stop() async {
-        waitTask?.cancel()
-        waitTask = nil
-
-        if let server {
-            await server.stop()
-        }
-        server = nil
-        serverURL = nil
-        resetReviews()
-        serverState = .stopped
-        writeDiagnosticsIfNeeded()
-    }
-
-    public func restart() async {
-        await stop()
-        await start(forceRestartIfNeeded: true)
-    }
-
-    @_spi(Testing)
-    public func loadForTesting(
-        serverState: CodexReviewServerState,
-        serverURL: URL? = nil,
-        jobs: [CodexReviewJob]
-    ) {
-        precondition(
-            server == nil && waitTask == nil,
-            "loadForTesting must be called before the embedded server starts."
-        )
-        self.serverState = serverState
-        self.serverURL = serverURL
-        self.jobs = jobs
-        closedSessions = []
-        sortJobs()
-        writeDiagnosticsIfNeeded()
-    }
-
-    public func waitUntilStopped() async {
-        guard let waitTask else {
-            return
-        }
-        _ = await waitTask.value
     }
 
     package func startReview(
         sessionID: String,
         request: ReviewStartRequest
     ) async throws -> ReviewReadResult {
-        try await executionCoordinator.startReview(
+        try await liveBackend().executionCoordinator.startReview(
             sessionID: sessionID,
             request: request,
             store: self
@@ -208,7 +79,7 @@ public final class CodexReviewStore {
         sessionID: String,
         reason: String = "Cancellation requested."
     ) async throws -> ReviewCancelOutcome {
-        try await executionCoordinator.cancelReview(
+        try await liveBackend().executionCoordinator.cancelReview(
             reviewThreadID: reviewThreadID,
             sessionID: sessionID,
             reason: reason,
@@ -220,7 +91,7 @@ public final class CodexReviewStore {
         selector: ReviewJobSelector,
         sessionID: String
     ) async throws -> ReviewCancelOutcome {
-        try await executionCoordinator.cancelReview(
+        try await liveBackend().executionCoordinator.cancelReview(
             selector: selector,
             sessionID: sessionID,
             store: self
@@ -232,14 +103,18 @@ public final class CodexReviewStore {
     }
 
     package func closeSession(_ sessionID: String, reason: String) async {
-        await executionCoordinator.closeSession(sessionID, reason: reason, store: self)
+        guard let backend = backend as? CodexReviewEmbeddedServerBackend else {
+            return
+        }
+        await backend.executionCoordinator.closeSession(sessionID, reason: reason, store: self)
     }
 
     package func enqueueReview(
         sessionID: String,
         request: ReviewRequestOptions
     ) throws -> String {
-        if closedSessions.contains(sessionID) {
+        let backend = try liveBackend()
+        if backend.closedSessions.contains(sessionID) {
             throw ReviewError.accessDenied("Session \(sessionID) is already closed.")
         }
         let request = try request.validated()
@@ -356,7 +231,10 @@ public final class CodexReviewStore {
     }
 
     package func closeSessionState(_ sessionID: String) -> [String] {
-        closedSessions.insert(sessionID)
+        guard let backend = backend as? CodexReviewEmbeddedServerBackend else {
+            return []
+        }
+        backend.closedSessions.insert(sessionID)
         let activeJobIDs = jobs
             .filter { $0.sessionID == sessionID && $0.isTerminal == false }
             .map(\.id)
@@ -366,8 +244,9 @@ public final class CodexReviewStore {
     }
 
     package func pruneClosedJobIfNeeded(jobID: String) {
-        guard let job = job(id: jobID),
-              closedSessions.contains(job.sessionID),
+        guard let backend = backend as? CodexReviewEmbeddedServerBackend,
+              let job = job(id: jobID),
+              backend.closedSessions.contains(job.sessionID),
               job.isTerminal
         else {
             return
@@ -401,210 +280,14 @@ public final class CodexReviewStore {
         return candidates[0]
     }
 
-    private func appendQueuedJob(_ queued: ReviewQueuedJob) {
-        jobs.append(
-            CodexReviewJob(
-                id: queued.jobID,
-                sessionID: queued.sessionID,
-                cwd: queued.request.cwd,
-                targetSummary: queued.request.targetSummary,
-                model: queued.request.model,
-                threadID: nil,
-                turnID: nil,
-                status: .queued,
-                startedAt: nil,
-                endedAt: nil,
-                summary: "Queued.",
-                lastAgentMessage: nil,
-                logEntries: [],
-                rawLogLines: [],
-                errorMessage: nil,
-                exitCode: nil,
-                artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)
-            )
-        )
-        sortJobs()
-        writeDiagnosticsIfNeeded()
-    }
-
-    private func updateJob(
-        id: String,
-        resort: Bool = false,
-        _ update: (CodexReviewJob) -> Void
-    ) {
-        guard let job = job(id: id) else {
-            return
+    private func liveBackend() throws -> CodexReviewEmbeddedServerBackend {
+        guard let backend = backend as? CodexReviewEmbeddedServerBackend else {
+            throw ReviewError.io("CodexReviewStore live runtime is unavailable.")
         }
-        update(job)
-        if resort {
-            sortJobs()
-        }
-        writeDiagnosticsIfNeeded()
+        return backend
     }
 
-    private func removeJob(id: String) {
-        jobs.removeAll { $0.id == id }
-        writeDiagnosticsIfNeeded()
-    }
-
-    private func resetReviews() {
-        jobs = []
-        closedSessions = []
-    }
-
-    private func filteredJobs(
-        sessionID: String,
-        cwd: String?,
-        statuses: [ReviewJobState]?
-    ) -> [CodexReviewJob] {
-        let normalizedCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        let allowedStatuses = statuses.map(Set.init)
-        return jobs
-            .filter { $0.sessionID == sessionID }
-            .filter { job in
-                if let normalizedCWD, job.cwd != normalizedCWD {
-                    return false
-                }
-                if let allowedStatuses, allowedStatuses.contains(job.status.state) == false {
-                    return false
-                }
-                return true
-            }
-            .sorted(by: compareJobs)
-    }
-
-    private func authorizedJob(id: String, sessionID: String) throws -> CodexReviewJob {
-        guard let job = job(id: id) else {
-            throw ReviewError.jobNotFound("Job \(id) was not found.")
-        }
-        guard job.sessionID == sessionID else {
-            throw ReviewError.accessDenied("Job \(id) belongs to another MCP session.")
-        }
-        return job
-    }
-
-    private func makeListItem(_ job: CodexReviewJob) -> ReviewJobListItem {
-        ReviewJobListItem(
-            jobID: job.id,
-            reviewThreadID: job.id,
-            cwd: job.cwd,
-            targetSummary: job.targetSummary,
-            model: job.model,
-            status: job.status.state,
-            summary: job.summary,
-            startedAt: job.startedAt,
-            endedAt: job.endedAt,
-            elapsedSeconds: elapsedSeconds(for: job),
-            threadID: job.threadID,
-            lastAgentMessage: job.lastAgentMessage ?? "",
-            cancellable: job.isTerminal == false
-        )
-    }
-
-    private func elapsedSeconds(for job: CodexReviewJob) -> Int? {
-        guard let startedAt = job.startedAt else {
-            return nil
-        }
-        let endedAt = job.endedAt ?? (job.isTerminal ? Date() : nil) ?? Date()
-        return Int(endedAt.timeIntervalSince(startedAt))
-    }
-
-    private func sortJobs() {
-        jobs.sort(by: compareJobs)
-    }
-
-    private func makeServer() -> ReviewMCPHTTPServer {
-        ReviewMCPHTTPServer(
-            configuration: configuration,
-            startReview: { [weak self] sessionID, request in
-                guard let self else {
-                    throw ReviewError.io("Review store is unavailable.")
-                }
-                return try await self.startReview(sessionID: sessionID, request: request)
-            },
-            readReview: { [weak self] sessionID, reviewThreadID in
-                guard let self else {
-                    throw ReviewError.io("Review store is unavailable.")
-                }
-                return try self.readReview(reviewThreadID: reviewThreadID, sessionID: sessionID)
-            },
-            listReviews: { [weak self] sessionID, cwd, statuses, limit in
-                guard let self else {
-                    return ReviewListResult(items: [])
-                }
-                return self.listReviews(
-                    sessionID: sessionID,
-                    cwd: cwd,
-                    statuses: statuses,
-                    limit: limit
-                )
-            },
-            cancelReviewByID: { [weak self] sessionID, reviewThreadID in
-                guard let self else {
-                    throw ReviewError.io("Review store is unavailable.")
-                }
-                return try await self.cancelReview(
-                    reviewThreadID: reviewThreadID,
-                    sessionID: sessionID
-                )
-            },
-            cancelReviewBySelector: { [weak self] sessionID, cwd, statuses, latest in
-                guard let self else {
-                    throw ReviewError.io("Review store is unavailable.")
-                }
-                return try await self.cancelReview(
-                    selector: .init(
-                        reviewThreadID: nil,
-                        cwd: cwd,
-                        statuses: statuses,
-                        latest: latest
-                    ),
-                    sessionID: sessionID
-                )
-            },
-            closeSession: { [weak self] sessionID in
-                guard let self else {
-                    return
-                }
-                await self.closeSession(sessionID, reason: "MCP session closed.")
-            },
-            hasActiveJobs: { [weak self] sessionID in
-                guard let self else {
-                    return false
-                }
-                return self.hasActiveJobs(for: sessionID)
-            }
-        )
-    }
-
-    private func observeServerLifecycle(server: ReviewMCPHTTPServer) {
-        waitTask?.cancel()
-        waitTask = Task { @MainActor [weak self] in
-            do {
-                try await server.waitUntilShutdown()
-                guard let self, self.server === server else {
-                    return
-                }
-                self.server = nil
-                self.serverURL = nil
-                self.resetReviews()
-                self.serverState = .stopped
-                self.writeDiagnosticsIfNeeded()
-            } catch is CancellationError {
-            } catch {
-                guard let self, self.server === server else {
-                    return
-                }
-                self.server = nil
-                self.serverURL = nil
-                self.resetReviews()
-                self.serverState = .failed(Self.errorMessage(from: error))
-                self.writeDiagnosticsIfNeeded()
-            }
-        }
-    }
-
-    private static func errorMessage(from error: Error) -> String {
+    fileprivate static func errorMessage(from error: Error) -> String {
         if let localized = (error as? LocalizedError)?.errorDescription, localized.isEmpty == false {
             return localized
         }
@@ -663,6 +346,109 @@ public final class CodexReviewStore {
         return arguments[arguments.index(after: index)]
     }
 
+    private func appendQueuedJob(_ queued: ReviewQueuedJob) {
+        jobs.append(
+            CodexReviewJob(
+                id: queued.jobID,
+                sessionID: queued.sessionID,
+                cwd: queued.request.cwd,
+                targetSummary: queued.request.targetSummary,
+                model: queued.request.model,
+                threadID: nil,
+                turnID: nil,
+                status: .queued,
+                startedAt: nil,
+                endedAt: nil,
+                summary: "Queued.",
+                lastAgentMessage: nil,
+                logEntries: [],
+                rawLogLines: [],
+                errorMessage: nil,
+                exitCode: nil,
+                artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)
+            )
+        )
+        sortJobs()
+        writeDiagnosticsIfNeeded()
+    }
+
+    private func updateJob(
+        id: String,
+        resort: Bool = false,
+        _ update: (CodexReviewJob) -> Void
+    ) {
+        guard let job = job(id: id) else {
+            return
+        }
+        update(job)
+        if resort {
+            sortJobs()
+        }
+        writeDiagnosticsIfNeeded()
+    }
+
+    private func removeJob(id: String) {
+        jobs.removeAll { $0.id == id }
+        writeDiagnosticsIfNeeded()
+    }
+
+    private func filteredJobs(
+        sessionID: String,
+        cwd: String?,
+        statuses: [ReviewJobState]?
+    ) -> [CodexReviewJob] {
+        let normalizedCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let allowedStatuses = statuses.map(Set.init)
+        return jobs
+            .filter { $0.sessionID == sessionID }
+            .filter { job in
+                if let normalizedCWD, job.cwd != normalizedCWD {
+                    return false
+                }
+                if let allowedStatuses, allowedStatuses.contains(job.status.state) == false {
+                    return false
+                }
+                return true
+            }
+            .sorted(by: compareRuntimeJobs)
+    }
+
+    private func authorizedJob(id: String, sessionID: String) throws -> CodexReviewJob {
+        guard let job = job(id: id) else {
+            throw ReviewError.jobNotFound("Job \(id) was not found.")
+        }
+        guard job.sessionID == sessionID else {
+            throw ReviewError.accessDenied("Job \(id) belongs to another MCP session.")
+        }
+        return job
+    }
+
+    private func makeListItem(_ job: CodexReviewJob) -> ReviewJobListItem {
+        ReviewJobListItem(
+            jobID: job.id,
+            reviewThreadID: job.id,
+            cwd: job.cwd,
+            targetSummary: job.targetSummary,
+            model: job.model,
+            status: job.status.state,
+            summary: job.summary,
+            startedAt: job.startedAt,
+            endedAt: job.endedAt,
+            elapsedSeconds: elapsedSeconds(for: job),
+            threadID: job.threadID,
+            lastAgentMessage: job.lastAgentMessage ?? "",
+            cancellable: job.isTerminal == false
+        )
+    }
+
+    private func elapsedSeconds(for job: CodexReviewJob) -> Int? {
+        guard let startedAt = job.startedAt else {
+            return nil
+        }
+        let endedAt = job.endedAt ?? (job.isTerminal ? Date() : nil) ?? Date()
+        return Int(endedAt.timeIntervalSince(startedAt))
+    }
+
     private func trimRawLines(job: CodexReviewJob) {
         while job.rawLogLines.joined(separator: "\n").utf8.count > reviewLogLimitBytes,
               job.rawLogLines.isEmpty == false
@@ -670,42 +456,182 @@ public final class CodexReviewStore {
             job.rawLogLines.removeFirst()
         }
     }
+}
 
-    private func writeDiagnosticsIfNeeded() {
-        guard let diagnosticsURL else {
+@MainActor
+private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
+    let configuration: ReviewServerConfiguration
+    let executionCoordinator: ReviewExecutionCoordinator
+
+    private var server: ReviewMCPHTTPServer?
+    private var waitTask: Task<Void, Never>?
+    var closedSessions: Set<String> = []
+
+    var isActive: Bool {
+        server != nil || waitTask != nil
+    }
+
+    init(configuration: ReviewServerConfiguration) {
+        self.configuration = configuration
+        self.executionCoordinator = ReviewExecutionCoordinator(
+            configuration: .init(
+                codexCommand: configuration.codexCommand,
+                environment: configuration.environment
+            )
+        )
+    }
+
+    func start(
+        store: CodexReviewStore,
+        forceRestartIfNeeded: Bool
+    ) async {
+        closedSessions = []
+
+        let server = makeServer(store: store)
+        do {
+            let url: URL
+            do {
+                url = try await server.start()
+            } catch {
+                guard forceRestartIfNeeded,
+                      isAddressInUse(error),
+                      let discovery = ReviewDiscovery.read(),
+                      discoveryMatchesListenAddress(
+                        discovery,
+                        host: configuration.host,
+                        port: configuration.port
+                      )
+                else {
+                    throw error
+                }
+                try await forceRestart(discovery)
+                url = try await server.start()
+            }
+
+            self.server = server
+            store.transitionToRunning(serverURL: url)
+            observeServerLifecycle(server: server, store: store)
+        } catch {
+            await server.stop()
+            self.server = nil
+            store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
+        }
+    }
+
+    func stop(store: CodexReviewStore) async {
+        waitTask?.cancel()
+        waitTask = nil
+        if let server {
+            await server.stop()
+        }
+        self.server = nil
+        closedSessions = []
+        _ = store
+    }
+
+    func waitUntilStopped() async {
+        guard let waitTask else {
             return
         }
-        let snapshot = CodexReviewStoreDiagnosticsSnapshot(
-            serverState: serverState.displayText,
-            failureMessage: serverState.failureMessage,
-            serverURL: serverURL?.absoluteString,
-            childRuntimePath: nil,
-            jobs: jobs.map {
-                .init(
-                    status: $0.status.rawValue,
-                    summary: $0.summary,
-                    logText: $0.logText,
-                    rawLogText: $0.rawLogText
+        _ = await waitTask.value
+    }
+
+    private func makeServer(store: CodexReviewStore) -> ReviewMCPHTTPServer {
+        ReviewMCPHTTPServer(
+            configuration: configuration,
+            startReview: { [weak store] sessionID, request in
+                guard let store else {
+                    throw ReviewError.io("Review store is unavailable.")
+                }
+                return try await store.startReview(sessionID: sessionID, request: request)
+            },
+            readReview: { [weak store] sessionID, reviewThreadID in
+                guard let store else {
+                    throw ReviewError.io("Review store is unavailable.")
+                }
+                return try store.readReview(reviewThreadID: reviewThreadID, sessionID: sessionID)
+            },
+            listReviews: { [weak store] sessionID, cwd, statuses, limit in
+                guard let store else {
+                    return ReviewListResult(items: [])
+                }
+                return store.listReviews(
+                    sessionID: sessionID,
+                    cwd: cwd,
+                    statuses: statuses,
+                    limit: limit
                 )
+            },
+            cancelReviewByID: { [weak store] sessionID, reviewThreadID in
+                guard let store else {
+                    throw ReviewError.io("Review store is unavailable.")
+                }
+                return try await store.cancelReview(
+                    reviewThreadID: reviewThreadID,
+                    sessionID: sessionID
+                )
+            },
+            cancelReviewBySelector: { [weak store] sessionID, cwd, statuses, latest in
+                guard let store else {
+                    throw ReviewError.io("Review store is unavailable.")
+                }
+                return try await store.cancelReview(
+                    selector: .init(
+                        reviewThreadID: nil,
+                        cwd: cwd,
+                        statuses: statuses,
+                        latest: latest
+                    ),
+                    sessionID: sessionID
+                )
+            },
+            closeSession: { [weak store] sessionID in
+                guard let store else {
+                    return
+                }
+                await store.closeSession(sessionID, reason: "MCP session closed.")
+            },
+            hasActiveJobs: { [weak store] sessionID in
+                guard let store else {
+                    return false
+                }
+                return store.hasActiveJobs(for: sessionID)
             }
         )
+    }
 
-        do {
-            try FileManager.default.createDirectory(
-                at: diagnosticsURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(snapshot)
-            try data.write(to: diagnosticsURL, options: .atomic)
-        } catch {
+    private func observeServerLifecycle(
+        server: ReviewMCPHTTPServer,
+        store: CodexReviewStore
+    ) {
+        waitTask?.cancel()
+        waitTask = Task { @MainActor [weak self, weak store] in
+            do {
+                try await server.waitUntilShutdown()
+                guard let self, let store, self.server === server else {
+                    return
+                }
+                self.server = nil
+                self.closedSessions = []
+                store.transitionToStopped()
+            } catch is CancellationError {
+            } catch {
+                guard let self, let store, self.server === server else {
+                    return
+                }
+                self.server = nil
+                self.closedSessions = []
+                store.transitionToFailed(
+                    CodexReviewStore.errorMessage(from: error),
+                    resetJobs: true
+                )
+            }
         }
     }
 }
 
 @MainActor
-private func compareJobs(_ left: CodexReviewJob, _ right: CodexReviewJob) -> Bool {
+private func compareRuntimeJobs(_ left: CodexReviewJob, _ right: CodexReviewJob) -> Bool {
     switch (left.isTerminal, right.isTerminal) {
     case (false, true):
         return true

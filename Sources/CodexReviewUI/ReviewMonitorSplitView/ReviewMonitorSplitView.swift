@@ -1,6 +1,6 @@
 import AppKit
-import CodexReviewMCP
 import SwiftUI
+import CodexReviewModel
 
 @MainActor
 struct ReviewMonitorSplitViewRepresentable: NSViewControllerRepresentable {
@@ -52,6 +52,5 @@ extension ReviewMonitorSplitViewController {
     var transportViewControllerForTesting: ReviewMonitorTransportViewController {
         transportViewController
     }
-
 }
 #endif

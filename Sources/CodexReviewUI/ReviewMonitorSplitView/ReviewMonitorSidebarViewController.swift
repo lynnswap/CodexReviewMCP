@@ -1,5 +1,7 @@
 import AppKit
-import CodexReviewMCP
+import CodexReviewModel
+import ObservationBridge
+import ReviewRuntime
 
 @MainActor
 enum ReviewMonitorJobSection: Int, Hashable, CaseIterable {
@@ -278,7 +280,10 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSTableViewDel
     }
 
     private func ensureSelection() {
-        let visibleJobs = dataSource.snapshot().itemIdentifiers
+        let snapshot = dataSource.snapshot()
+        let visibleJobs = snapshot.sectionIdentifiers.flatMap { section in
+            snapshot.itemIdentifiers(inSection: section)
+        }
         if let selectedJob = uiState.selectedJobEntry,
            visibleJobs.contains(selectedJob) {
             syncSelection(to: selectedJob)

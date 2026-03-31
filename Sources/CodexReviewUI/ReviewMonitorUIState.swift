@@ -1,5 +1,5 @@
-import CodexReviewMCP
 import Observation
+import ReviewRuntime
 
 @MainActor
 @Observable

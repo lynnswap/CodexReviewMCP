@@ -1,6 +1,6 @@
 //
-//  CodexReviewMonitorUITests.swift
-//  CodexReviewMonitorUITests
+//  CodexReviewUITests.swift
+//  CodexReviewUITests
 //
 //  Created by Kazuki Nakashima on 2026/03/28.
 //
@@ -8,7 +8,7 @@
 import XCTest
 import Foundation
 
-final class CodexReviewMonitorUITests: XCTestCase {
+final class CodexReviewUITests: XCTestCase {
     private func skipUnlessUITestsEnabled() throws {
         if ProcessInfo.processInfo.environment["CODEX_REVIEW_MONITOR_RUN_UI_TESTS"] != "1" {
             throw XCTSkip("UI smoke tests are opt-in. Set CODEX_REVIEW_MONITOR_RUN_UI_TESTS=1 to run them.")

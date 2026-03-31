@@ -9,6 +9,14 @@ let package = Package(
     ],
     products: [
         .library(
+            name: "CodexReviewModel",
+            targets: ["CodexReviewModel"]
+        ),
+        .library(
+            name: "CodexReviewUI",
+            targets: ["CodexReviewUI"]
+        ),
+        .library(
             name: "CodexReviewMCP",
             targets: ["CodexReviewMCP"]
         ),
@@ -88,6 +96,28 @@ let package = Package(
             ]
         ),
         .target(
+            name: "CodexReviewModel",
+            dependencies: [
+                "ReviewJobs",
+                "ReviewRuntime",
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "CodexReviewUI",
+            dependencies: [
+                "CodexReviewModel",
+                .product(name: "ObservationBridge", package: "ObservationBridge"),
+                "ReviewJobs",
+                "ReviewRuntime",
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
             name: "ReviewCLI",
             dependencies: [
                 "CodexReviewMCP",
@@ -102,6 +132,7 @@ let package = Package(
         .target(
             name: "CodexReviewMCP",
             dependencies: [
+                "CodexReviewModel",
                 "ReviewCore",
                 "ReviewJobs",
                 "ReviewRuntime",
@@ -171,8 +202,16 @@ let package = Package(
         ),
         .testTarget(
             name: "CodexReviewMCPTests",
-            dependencies: ["CodexReviewMCP", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime"],
+            dependencies: ["CodexReviewMCP", "CodexReviewModel", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime"],
             path: "Tests/CodexReviewMCPTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .testTarget(
+            name: "CodexReviewUITests",
+            dependencies: ["CodexReviewUI", "CodexReviewModel", "ReviewJobs", "ReviewRuntime"],
+            path: "Tests/CodexReviewUITests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

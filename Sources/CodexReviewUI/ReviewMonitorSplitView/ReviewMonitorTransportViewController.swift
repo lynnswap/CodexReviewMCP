@@ -1,6 +1,6 @@
 import AppKit
-import CodexReviewMCP
-import ReviewJobs
+import ObservationBridge
+import ReviewRuntime
 
 @MainActor
 func reviewMonitorMetadataText(for job: CodexReviewJob) -> String {
