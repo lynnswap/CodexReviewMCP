@@ -25,32 +25,6 @@ package struct ReviewStartRequest: Codable, Hashable, Sendable {
     }
 
     package func reviewRequestOptions() -> ReviewRequestOptions {
-        switch target {
-        case .uncommitted:
-            return ReviewRequestOptions(
-                cwd: cwd,
-                uncommitted: true,
-                model: model
-            )
-        case .branch(let branch):
-            return ReviewRequestOptions(
-                cwd: cwd,
-                base: branch,
-                model: model
-            )
-        case .commit(let sha, let title):
-            return ReviewRequestOptions(
-                cwd: cwd,
-                commit: sha,
-                title: title,
-                model: model
-            )
-        case .custom(let instructions):
-            return ReviewRequestOptions(
-                cwd: cwd,
-                prompt: instructions,
-                model: model
-            )
-        }
+        ReviewRequestOptions(cwd: cwd, target: target, model: model)
     }
 }

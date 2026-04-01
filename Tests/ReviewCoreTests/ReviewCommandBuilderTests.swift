@@ -1,61 +1,10 @@
 import Foundation
 import Testing
 @testable import ReviewCore
+@testable import ReviewJobs
 
-@Suite struct ReviewCommandBuilderTests {
-    @Test func reviewCommandBuilderAppliesDefaultsFromConfigFile() throws {
-        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        let codexHome = tempDirectory.appendingPathComponent(".codex", isDirectory: true)
-        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
-        try """
-        personality = "friendly"
-        model_context_window = 999999
-        model_auto_compact_token_limit = 999999
-        """.write(to: codexHome.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
-
-        let builder = ReviewCommandBuilder(
-            codexCommand: "codex",
-            environment: ["HOME": tempDirectory.path]
-        )
-        let command = try builder.build(request: .init(cwd: tempDirectory.path))
-
-        #expect(command.executable == "codex")
-        #expect(command.arguments.contains("--json"))
-        #expect(command.arguments.contains(#"sandbox_mode="danger-full-access""#))
-        #expect(command.arguments.contains("review_model=gpt-5.4-mini"))
-        #expect(command.arguments.contains("hide_agent_reasoning=false"))
-        #expect(command.arguments.contains("personality=none"))
-        #expect(command.arguments.contains("model_context_window=272000"))
-        #expect(command.arguments.contains("model_auto_compact_token_limit=244800"))
-        #expect(command.arguments.contains("model_reasoning_summary=detailed"))
-    }
-
-    @Test func reviewRequestRejectsCommitAndBaseAtTheSameTime() {
-        let request = ReviewRequestOptions(
-            cwd: "/tmp/example",
-            base: "main",
-            commit: "HEAD~1"
-        )
-
-        #expect(throws: ReviewError.self) {
-            _ = try request.validated()
-        }
-    }
-
-    @Test func reviewRequestRejectsBaseAndUncommittedAtTheSameTime() {
-        let request = ReviewRequestOptions(
-            cwd: "/tmp/example",
-            base: "main",
-            uncommitted: true
-        )
-
-        #expect(throws: ReviewError.self) {
-            _ = try request.validated()
-        }
-    }
-
-    @Test func reviewCommandBuilderClampsProfileScopedModelLimits() throws {
+@Suite struct ReviewExecutionSettingsBuilderTests {
+    @Test func reviewExecutionSettingsBuilderAppliesAppServerDefaults() throws {
         let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
         let codexHome = tempDirectory.appendingPathComponent(".codex", isDirectory: true)
@@ -68,118 +17,62 @@ import Testing
         model_auto_compact_token_limit = 999999
         """.write(to: codexHome.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
 
-        let builder = ReviewCommandBuilder(
+        let builder = ReviewExecutionSettingsBuilder(
             codexCommand: "codex",
             environment: ["HOME": tempDirectory.path]
         )
-        let command = try builder.build(request: .init(cwd: tempDirectory.path))
+        let settings = try builder.build(
+            request: .init(
+                cwd: tempDirectory.path,
+                target: .uncommittedChanges
+            )
+        )
 
-        #expect(command.arguments.contains("model_context_window=272000"))
-        #expect(command.arguments.contains("model_auto_compact_token_limit=244800"))
+        #expect(settings.command.executable == "codex")
+        #expect(settings.command.arguments == ["app-server", "--listen", "stdio://"])
+        #expect(settings.threadStart.model == "gpt-5.4-mini")
+        #expect(settings.threadStart.cwd == tempDirectory.path)
+        #expect(settings.threadStart.approvalPolicy == "never")
+        #expect(settings.threadStart.sandbox == "danger-full-access")
+        #expect(settings.threadStart.personality == "none")
+        #expect(settings.threadStart.ephemeral == true)
+        #expect(settings.threadStart.config?["hide_agent_reasoning"] == .bool(false))
+        #expect(settings.threadStart.config?["model_reasoning_effort"] == .string("xhigh"))
+        #expect(settings.threadStart.config?["model_reasoning_summary"] == .string("detailed"))
+        #expect(settings.threadStart.config?["model_context_window"] == .int(272000))
+        #expect(settings.threadStart.config?["model_auto_compact_token_limit"] == .int(244800))
+        #expect(settings.reviewStart.delivery == "inline")
+        #expect(settings.reviewStart.target == .uncommittedChanges)
     }
 
-    @Test func reviewCommandBuilderRejectsReservedExtraArgs() throws {
-        let builder = ReviewCommandBuilder()
+    @Test func reviewExecutionSettingsBuilderUsesExplicitModelOverride() throws {
+        let builder = ReviewExecutionSettingsBuilder()
+        let settings = try builder.build(
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                target: .commit(sha: "abc1234", title: "Title"),
+                model: "gpt-5.4"
+            )
+        )
+
+        #expect(settings.threadStart.model == "gpt-5.4")
+        #expect(settings.reviewStart.target == .commit(sha: "abc1234", title: "Title"))
+    }
+
+    @Test func reviewRequestRejectsEmptyBranchAndTimeout() {
+        #expect(throws: ReviewError.self) {
+            _ = try ReviewRequestOptions(
+                cwd: "/tmp/example",
+                target: .baseBranch("  ")
+            ).validated()
+        }
 
         #expect(throws: ReviewError.self) {
-            _ = try builder.build(
-                request: .init(
-                    cwd: FileManager.default.temporaryDirectory.path,
-                    extraArgs: ["--output-last-message", "/tmp/override.txt"]
-                )
-            )
+            _ = try ReviewRequestOptions(
+                cwd: "/tmp/example",
+                target: .custom(instructions: "Inspect API changes"),
+                timeoutSeconds: 0
+            ).validated()
         }
-    }
-
-    @Test func reviewCommandBuilderTreatsPromptAsPositionalArgument() throws {
-        let builder = ReviewCommandBuilder()
-        let command = try builder.build(
-            request: .init(
-                cwd: FileManager.default.temporaryDirectory.path,
-                prompt: "--model should-stay-a-prompt"
-            )
-        )
-
-        #expect(command.arguments.contains("review_model=gpt-5.4-mini"))
-        #expect(Array(command.arguments.suffix(2)) == ["--", "--model should-stay-a-prompt"])
-    }
-
-    @Test func reviewCommandBuilderRecognizesSpacedConfigOverrides() throws {
-        let builder = ReviewCommandBuilder()
-        let command = try builder.build(
-            request: .init(
-                cwd: FileManager.default.temporaryDirectory.path,
-                configOverrides: [
-                    "review_model = gpt-5.3-codex-spark",
-                    "model_context_window = 999999",
-                ]
-            )
-        )
-
-        #expect(command.arguments.contains("model_context_window=128000"))
-    }
-
-    @Test func reviewCommandBuilderSkipsDefaultSandboxOverrideWhenSandboxModeIsExplicit() throws {
-        let builder = ReviewCommandBuilder()
-        let command = try builder.build(
-            request: .init(
-                cwd: FileManager.default.temporaryDirectory.path,
-                configOverrides: [
-                    #"sandbox_mode="read-only""#,
-                ]
-            )
-        )
-
-        let sandboxOverrides = command.arguments.filter { $0.contains("sandbox_mode=") }
-        #expect(sandboxOverrides == [#"sandbox_mode="read-only""#])
-    }
-
-    @Test func reviewCommandBuilderKeepsDefaultSandboxOverrideWhenProfileIsExplicit() throws {
-        let builder = ReviewCommandBuilder()
-        let command = try builder.build(
-            request: .init(
-                cwd: FileManager.default.temporaryDirectory.path,
-                configOverrides: [
-                    #"profile="reviewer""#,
-                ]
-            )
-        )
-
-        #expect(command.arguments.contains(#"sandbox_mode="danger-full-access""#))
-        #expect(command.arguments.contains(#"profile="reviewer""#))
-    }
-
-    @Test func reviewCommandBuilderRejectsBareOptionTerminatorInExtraArgs() throws {
-        let builder = ReviewCommandBuilder()
-
-        #expect(throws: ReviewError.self) {
-            _ = try builder.build(
-                request: .init(
-                    cwd: FileManager.default.temporaryDirectory.path,
-                    extraArgs: ["--"]
-                )
-            )
-        }
-    }
-
-    @Test func reviewCommandBuilderPreservesQuotedHashInConfig() throws {
-        let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-        let codexHome = tempDirectory.appendingPathComponent(".codex", isDirectory: true)
-        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
-        try """
-        profile = "review#1"
-
-        [profiles."review#1"]
-        personality = "friendly"
-        """.write(to: codexHome.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
-
-        let builder = ReviewCommandBuilder(
-            codexCommand: "codex",
-            environment: ["HOME": tempDirectory.path]
-        )
-        let command = try builder.build(request: .init(cwd: tempDirectory.path))
-
-        #expect(command.arguments.contains("personality=none"))
     }
 }

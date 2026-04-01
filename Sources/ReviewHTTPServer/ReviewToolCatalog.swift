@@ -33,12 +33,12 @@ enum ReviewToolCatalog {
         "properties": [
             "cwd": ["type": "string", "description": "Absolute repository path to review."],
             "target": [
-                "description": "Review target. Use exactly one variant. If you are unsure, read `\(ReviewHelpCatalog.toolURI("review_start"))` and then one of `\(ReviewHelpCatalog.targetURI("uncommitted"))`, `\(ReviewHelpCatalog.targetURI("branch"))`, `\(ReviewHelpCatalog.targetURI("commit"))`, or `\(ReviewHelpCatalog.targetURI("custom"))`.",
+                "description": "Review target. Use exactly one variant. If you are unsure, read `\(ReviewHelpCatalog.toolURI("review_start"))` and then one of `\(ReviewHelpCatalog.targetURI("uncommittedChanges"))`, `\(ReviewHelpCatalog.targetURI("baseBranch"))`, `\(ReviewHelpCatalog.targetURI("commit"))`, or `\(ReviewHelpCatalog.targetURI("custom"))`.",
                 "oneOf": [
                     [
                         "type": "object",
                         "properties": [
-                            "type": ["const": "uncommitted", "description": "Review staged, unstaged, and untracked local changes."],
+                            "type": ["const": "uncommittedChanges", "description": "Review staged, unstaged, and untracked local changes."],
                         ],
                         "required": ["type"],
                         "additionalProperties": false,
@@ -46,7 +46,7 @@ enum ReviewToolCatalog {
                     [
                         "type": "object",
                         "properties": [
-                            "type": ["const": "branch", "description": "Review changes relative to a base branch."],
+                            "type": ["const": "baseBranch", "description": "Review changes relative to a base branch."],
                             "branch": ["type": "string", "description": "Base branch name to compare against, such as `main`."],
                         ],
                         "required": ["type", "branch"],

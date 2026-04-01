@@ -1,9 +1,9 @@
 # CodexReviewMCP
 
-An MCP server and STDIO adapter for Codex reviews backed by `codex exec review --json`.
+An MCP server and STDIO adapter for Codex reviews backed by `codex app-server`.
 
 `codex-review-mcp-server` runs as a persistent HTTP/SSE MCP server and executes
-session-scoped review jobs through `codex exec review`.
+session-scoped review jobs through a per-review `codex app-server --listen stdio://` session.
 `codex-review-mcp` is a thin STDIO adapter for clients that require STDIO transport.
 
 ## Quick Start
@@ -59,7 +59,7 @@ entry to include the timeout values.
   - Persistent HTTP/SSE MCP server
   - Multi-session
   - Session-scoped review jobs
-  - `codex exec review --json` backend
+  - `codex app-server` backend
 - `codex-review-mcp`
   - JSON-RPC over STDIO adapter
   - Forwards to the HTTP/SSE server
@@ -145,7 +145,7 @@ Adapter endpoint resolution order:
 
 ### `review_start`
 
-Runs a review through `codex exec review --json` and blocks until the final result is ready.
+Runs a review through `codex app-server` and blocks until the final result is ready.
 
 Key inputs:
 
@@ -153,16 +153,15 @@ Key inputs:
 - `target`
 - `model`
 
-`target` uses the review target model:
+`target` uses the app-server review target model:
 
-- `{"type":"uncommitted"}`
-- `{"type":"branch","branch":"main"}`
+- `{"type":"uncommittedChanges"}`
+- `{"type":"baseBranch","branch":"main"}`
 - `{"type":"commit","sha":"abc1234","title":"Optional title"}`
 - `{"type":"custom","instructions":"Free-form review instructions"}`
 
 Returns:
 
-- `jobId`
 - `reviewThreadId`
 - `threadId` when available
 - `turnId`
@@ -178,8 +177,8 @@ Notes:
 If you are unsure how to build the `target` object, read:
 
 - `codex-review://help/tools/review_start`
-- `codex-review://help/targets/uncommitted`
-- `codex-review://help/targets/branch`
+- `codex-review://help/targets/uncommittedChanges`
+- `codex-review://help/targets/baseBranch`
 - `codex-review://help/targets/commit`
 - `codex-review://help/targets/custom`
 
@@ -190,7 +189,6 @@ This is optional for normal clients because `review_start` already returns the f
 
 Returns:
 
-- `jobId`
 - `reviewThreadId`
 - `threadId` when available
 - `turnId`
@@ -214,7 +212,6 @@ Optional inputs:
 Returns:
 
 - `items`
-  - `jobId`
   - `reviewThreadId`
   - `cwd`
   - `targetSummary`

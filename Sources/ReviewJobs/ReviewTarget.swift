@@ -1,22 +1,21 @@
 import Foundation
 import MCP
-import ReviewJobs
 
 package enum ReviewTarget: Hashable, Sendable {
-    case uncommitted
-    case branch(String)
+    case uncommittedChanges
+    case baseBranch(String)
     case commit(sha: String, title: String?)
     case custom(instructions: String)
 
     package func validated() throws -> Self {
         switch self {
-        case .uncommitted:
+        case .uncommittedChanges:
             return self
-        case .branch(let branch):
+        case .baseBranch(let branch):
             guard branch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
                 throw ReviewError.invalidArguments("`target.branch` is required.")
             }
-            return .branch(branch.trimmingCharacters(in: .whitespacesAndNewlines))
+            return .baseBranch(branch.trimmingCharacters(in: .whitespacesAndNewlines))
         case .commit(let sha, let title):
             let trimmedSHA = sha.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmedSHA.isEmpty == false else {
@@ -34,13 +33,13 @@ package enum ReviewTarget: Hashable, Sendable {
 
     package func appServerValue() -> Value {
         switch self {
-        case .uncommitted:
+        case .uncommittedChanges:
             return [
-                "type": .string("uncommitted"),
+                "type": .string("uncommittedChanges"),
             ]
-        case .branch(let branch):
+        case .baseBranch(let branch):
             return [
-                "type": .string("branch"),
+                "type": .string("baseBranch"),
                 "branch": .string(branch),
             ]
         case .commit(let sha, let title):
@@ -74,10 +73,10 @@ extension ReviewTarget: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let type = try container.decode(String.self, forKey: .type)
         switch type {
-        case "uncommitted":
-            self = .uncommitted
-        case "branch":
-            self = .branch(try container.decode(String.self, forKey: .branch))
+        case "uncommittedChanges":
+            self = .uncommittedChanges
+        case "baseBranch":
+            self = .baseBranch(try container.decode(String.self, forKey: .branch))
         case "commit":
             self = .commit(
                 sha: try container.decode(String.self, forKey: .sha),
@@ -97,10 +96,10 @@ extension ReviewTarget: Codable {
     package func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .uncommitted:
-            try container.encode("uncommitted", forKey: .type)
-        case .branch(let branch):
-            try container.encode("branch", forKey: .type)
+        case .uncommittedChanges:
+            try container.encode("uncommittedChanges", forKey: .type)
+        case .baseBranch(let branch):
+            try container.encode("baseBranch", forKey: .type)
             try container.encode(branch, forKey: .branch)
         case .commit(let sha, let title):
             try container.encode("commit", forKey: .type)

@@ -5,6 +5,7 @@ package enum ReviewError: LocalizedError, Sendable {
     case jobNotFound(String)
     case accessDenied(String)
     case spawnFailed(String)
+    case bootstrapFailed(String)
     case io(String)
 
     package var errorDescription: String? {
@@ -13,6 +14,7 @@ package enum ReviewError: LocalizedError, Sendable {
              .jobNotFound(let message),
              .accessDenied(let message),
              .spawnFailed(let message),
+             .bootstrapFailed(let message),
              .io(let message):
             message
         }

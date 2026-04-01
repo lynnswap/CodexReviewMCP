@@ -48,10 +48,27 @@ extension CodexReviewStore {
         reviewThreadID: String,
         sessionID: String
     ) throws -> ReviewReadResult {
-        let job = try authorizedJob(id: reviewThreadID, sessionID: sessionID)
+        let job = try authorizedJob(reviewThreadID: reviewThreadID, sessionID: sessionID)
         return ReviewReadResult(
-            jobID: job.id,
-            reviewThreadID: job.id,
+            reviewThreadID: publicReviewIdentifier(for: job),
+            threadID: job.threadID,
+            turnID: job.turnID,
+            status: job.status.state,
+            review: job.isTerminal ? job.reviewText : (job.reviewText.nilIfEmpty ?? job.lastAgentMessage ?? ""),
+            lastAgentMessage: job.lastAgentMessage ?? "",
+            logs: job.logEntries,
+            rawLogText: job.rawLogText,
+            error: job.errorMessage
+        )
+    }
+
+    package func readReview(
+        jobID: String,
+        sessionID: String
+    ) throws -> ReviewReadResult {
+        let job = try authorizedJob(jobID: jobID, sessionID: sessionID)
+        return ReviewReadResult(
+            reviewThreadID: publicReviewIdentifier(for: job),
             threadID: job.threadID,
             turnID: job.turnID,
             status: job.status.state,
@@ -132,11 +149,9 @@ extension CodexReviewStore {
 
     package func markStarted(
         jobID: String,
-        artifacts: ReviewArtifacts,
         startedAt: Date
     ) {
         updateJob(id: jobID) { job in
-            job.artifacts = artifacts
             job.startedAt = startedAt
             if job.status == .queued {
                 job.status = .running
@@ -155,10 +170,12 @@ extension CodexReviewStore {
                 job.summary = message
                 job.logEntries.append(.init(kind: .progress, text: message))
             }
-        case .threadStarted(let threadID):
+        case .reviewStarted(let reviewThreadID, let threadID, let turnID):
             updateJob(id: jobID) { job in
+                job.reviewThreadID = reviewThreadID
                 job.threadID = threadID
-                job.summary = "Thread started: \(threadID)"
+                job.turnID = turnID
+                job.summary = "Review started: \(reviewThreadID)"
             }
         case .logEntry(let entry):
             updateJob(id: jobID) { job in
@@ -186,11 +203,12 @@ extension CodexReviewStore {
             job.summary = outcome.summary
             job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
             job.errorMessage = outcome.errorMessage
+            job.reviewThreadID = outcome.reviewThreadID ?? job.reviewThreadID
             job.threadID = outcome.threadID ?? job.threadID
+            job.turnID = outcome.turnID ?? job.turnID
             job.startedAt = outcome.startedAt
             job.endedAt = outcome.endedAt
             job.exitCode = outcome.exitCode
-            job.artifacts = outcome.artifacts
         }
     }
 
@@ -212,12 +230,39 @@ extension CodexReviewStore {
         }
     }
 
+    package func markBootstrapCancelled(
+        jobID: String,
+        reason: String,
+        startedAt: Date,
+        endedAt: Date
+    ) {
+        updateJob(id: jobID) { job in
+            job.status = .cancelled
+            job.summary = "Review cancelled."
+            job.errorMessage = reason.nilIfEmpty ?? job.errorMessage
+            if job.startedAt == nil {
+                job.startedAt = startedAt
+            }
+            job.endedAt = endedAt
+        }
+    }
+
     package func requestCancellation(
         jobID: String,
         sessionID: String,
         reason: String
     ) throws -> ReviewCancelResult {
-        let job = try authorizedJob(id: jobID, sessionID: sessionID)
+        let requestCancellationDelay = Self.requestCancellationDelay
+        if requestCancellationDelay > 0 {
+            Thread.sleep(forTimeInterval: requestCancellationDelay)
+        }
+        guard let location = jobLocation(id: jobID) else {
+            throw ReviewError.jobNotFound("Job \(jobID) was not found.")
+        }
+        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
+        guard job.sessionID == sessionID else {
+            throw ReviewError.accessDenied("Job \(jobID) belongs to another MCP session.")
+        }
         if job.isTerminal {
             return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: false)
         }
@@ -233,6 +278,17 @@ extension CodexReviewStore {
             }
         }
         return ReviewCancelResult(jobID: jobID, state: .cancelled, signalled: false)
+    }
+
+    package func discardQueuedOrRunningJob(jobID: String) {
+        removeJob(id: jobID)
+    }
+
+    package func resolveJob(
+        jobID: String,
+        sessionID: String
+    ) throws -> CodexReviewJob {
+        try authorizedJob(jobID: jobID, sessionID: sessionID)
     }
 
     package func closeSessionState(_ sessionID: String) -> [String] {
@@ -277,7 +333,7 @@ extension CodexReviewStore {
         selector: ReviewJobSelector
     ) throws -> CodexReviewJob {
         if let reviewThreadID = selector.reviewThreadID?.nilIfEmpty {
-            return try authorizedJob(id: reviewThreadID, sessionID: sessionID)
+            return try authorizedJob(reviewThreadID: reviewThreadID, sessionID: sessionID)
         }
 
         let effectiveStatuses = selector.statuses ?? [.queued, .running]
@@ -370,6 +426,7 @@ extension CodexReviewStore {
             sortOrder: nextJobSortOrder(in: queued.request.cwd),
             sessionID: queued.sessionID,
             cwd: queued.request.cwd,
+            reviewThreadID: nil,
             targetSummary: queued.request.targetSummary,
             model: queued.request.model,
             threadID: nil,
@@ -382,8 +439,7 @@ extension CodexReviewStore {
             logEntries: [],
             rawLogLines: [],
             errorMessage: nil,
-            exitCode: nil,
-            artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)
+            exitCode: nil
         )
 
         if let workspaceIndex = workspaces.firstIndex(where: { $0.cwd == queued.request.cwd }) {
@@ -468,21 +524,31 @@ extension CodexReviewStore {
         return (workspace.jobs.map(\.sortOrder).max() ?? 0) + 1
     }
 
-    private func authorizedJob(id: String, sessionID: String) throws -> CodexReviewJob {
-        guard let location = jobLocation(id: id) else {
-            throw ReviewError.jobNotFound("Job \(id) was not found.")
+    private func authorizedJob(reviewThreadID: String, sessionID: String) throws -> CodexReviewJob {
+        guard let location = jobLocation(reviewThreadID: reviewThreadID) else {
+            throw ReviewError.jobNotFound("Review thread \(reviewThreadID) was not found.")
         }
         let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
         guard job.sessionID == sessionID else {
-            throw ReviewError.accessDenied("Job \(id) belongs to another MCP session.")
+            throw ReviewError.accessDenied("Review thread \(reviewThreadID) belongs to another MCP session.")
+        }
+        return job
+    }
+
+    private func authorizedJob(jobID: String, sessionID: String) throws -> CodexReviewJob {
+        guard let location = jobLocation(id: jobID) else {
+            throw ReviewError.jobNotFound("Job \(jobID) was not found.")
+        }
+        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
+        guard job.sessionID == sessionID else {
+            throw ReviewError.accessDenied("Job \(jobID) belongs to another MCP session.")
         }
         return job
     }
 
     private func makeListItem(_ job: CodexReviewJob) -> ReviewJobListItem {
         ReviewJobListItem(
-            jobID: job.id,
-            reviewThreadID: job.id,
+            reviewThreadID: publicReviewIdentifier(for: job),
             cwd: job.cwd,
             targetSummary: job.targetSummary,
             model: job.model,
@@ -511,6 +577,22 @@ extension CodexReviewStore {
         {
             job.rawLogLines.removeFirst()
         }
+    }
+
+    private func jobLocation(reviewThreadID: String) -> (workspaceIndex: Int, jobIndex: Int)? {
+        for (workspaceIndex, workspace) in workspaces.enumerated() {
+            guard let jobIndex = workspace.jobs.firstIndex(where: {
+                $0.reviewThreadID == reviewThreadID || $0.id == reviewThreadID
+            }) else {
+                continue
+            }
+            return (workspaceIndex, jobIndex)
+        }
+        return nil
+    }
+
+    private func publicReviewIdentifier(for job: CodexReviewJob) -> String {
+        job.reviewThreadID ?? job.id
     }
 }
 

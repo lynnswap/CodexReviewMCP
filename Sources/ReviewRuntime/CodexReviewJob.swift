@@ -9,6 +9,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public var sortOrder: Int
     public let sessionID: String
     public let cwd: String
+    public var reviewThreadID: String?
     public var targetSummary: String
     public var model: String?
     public var threadID: String?
@@ -22,7 +23,6 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public var rawLogLines: [String]
     public var errorMessage: String?
     public var exitCode: Int?
-    package var artifacts: ReviewArtifacts
 
     public var isTerminal: Bool {
         status.isTerminal
@@ -50,19 +50,12 @@ public final class CodexReviewJob: Identifiable, Hashable {
         return summary
     }
 
-    public var reviewThreadID: String {
-        id
-    }
-
-    public var parentThreadID: String? {
-        threadID
-    }
-
     package init(
         id: String,
         sortOrder: Int,
         sessionID: String,
         cwd: String,
+        reviewThreadID: String?,
         targetSummary: String,
         model: String?,
         threadID: String?,
@@ -75,13 +68,13 @@ public final class CodexReviewJob: Identifiable, Hashable {
         logEntries: [ReviewLogEntry],
         rawLogLines: [String],
         errorMessage: String?,
-        exitCode: Int?,
-        artifacts: ReviewArtifacts
+        exitCode: Int?
     ) {
         self.id = id
         self.sortOrder = sortOrder
         self.sessionID = sessionID
         self.cwd = cwd
+        self.reviewThreadID = reviewThreadID
         self.targetSummary = targetSummary
         self.model = model
         self.threadID = threadID
@@ -95,7 +88,6 @@ public final class CodexReviewJob: Identifiable, Hashable {
         self.rawLogLines = rawLogLines
         self.errorMessage = errorMessage
         self.exitCode = exitCode
-        self.artifacts = artifacts
     }
 
     public nonisolated static func == (lhs: CodexReviewJob, rhs: CodexReviewJob) -> Bool {

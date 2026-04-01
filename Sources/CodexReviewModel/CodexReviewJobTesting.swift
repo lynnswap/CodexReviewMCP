@@ -28,6 +28,7 @@ extension CodexReviewJob {
             sortOrder: sortOrder,
             sessionID: sessionID,
             cwd: cwd,
+            reviewThreadID: threadID,
             targetSummary: targetSummary,
             model: model,
             threadID: threadID,
@@ -40,8 +41,7 @@ extension CodexReviewJob {
             logEntries: logEntries,
             rawLogLines: rawLogLines,
             errorMessage: errorMessage,
-            exitCode: exitCode,
-            artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)
+            exitCode: exitCode
         )
     }
 }

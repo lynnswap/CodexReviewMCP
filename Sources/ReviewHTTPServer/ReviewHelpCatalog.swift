@@ -16,8 +16,8 @@ package enum ReviewHelpCatalog {
     ]
 
     package static let targetTypes = [
-        "uncommitted",
-        "branch",
+        "uncommittedChanges",
+        "baseBranch",
         "commit",
         "custom",
     ]
@@ -34,20 +34,20 @@ package enum ReviewHelpCatalog {
 
     package static let reviewStartConcreteHelpURIs = [
         toolURI("review_start"),
-        targetURI("uncommitted"),
+        targetURI("uncommittedChanges"),
     ]
 
     package static let reviewStartExample = """
     {
       "cwd": "/absolute/path/to/repo",
       "target": {
-        "type": "uncommitted"
+        "type": "uncommittedChanges"
       }
     }
     """
 
     package static let serverInstructions = """
-    Run repository reviews through `codex exec review --json`.
+    Run repository reviews through `codex app-server`.
 
     If you are unsure how to call this server, start with:
     - `resources/read` on `\(overviewURI)`
@@ -195,7 +195,7 @@ package enum ReviewHelpCatalog {
     }
 
     package static var reviewStartDescription: String {
-        "Run `codex exec review --json` for a repository and wait for the terminal result. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`. The result includes `jobId`, `reviewThreadId`, `threadId`, `turnId`, `status`, `review`, and `error`. Use `review_read` to fetch detailed logs."
+        "Run a repository review through `codex app-server` and wait for the terminal result. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`. The result includes `reviewThreadId`, `threadId`, `turnId`, `status`, `review`, and `error`. Use `review_read` to fetch detailed logs."
     }
 
     package static var reviewReadDescription: String {
@@ -221,8 +221,8 @@ package enum ReviewHelpCatalog {
         1. Call `resources/templates/list`.
         2. Read `\(toolURI("review_start"))`.
         3. Read the target you want to use:
-           - `\(targetURI("uncommitted"))`
-           - `\(targetURI("branch"))`
+           - `\(targetURI("uncommittedChanges"))`
+           - `\(targetURI("baseBranch"))`
            - `\(targetURI("commit"))`
            - `\(targetURI("custom"))`
         4. Call `review_start`.
@@ -256,7 +256,7 @@ package enum ReviewHelpCatalog {
         Check these first:
 
         - `target.type` must be one of `\(targetTypes.joined(separator: "`, `"))`.
-        - `branch` requires `branch`.
+        - `baseBranch` requires `branch`.
         - `commit` requires `sha`.
         - `custom` requires `instructions`.
         - `cwd` must be an absolute repository path.
@@ -264,8 +264,8 @@ package enum ReviewHelpCatalog {
         Read:
 
         - `\(toolURI("review_start"))`
-        - `\(targetURI("uncommitted"))`
-        - `\(targetURI("branch"))`
+        - `\(targetURI("uncommittedChanges"))`
+        - `\(targetURI("baseBranch"))`
         - `\(targetURI("commit"))`
         - `\(targetURI("custom"))`
         """
@@ -277,7 +277,7 @@ package enum ReviewHelpCatalog {
             return """
             # `review_start`
 
-            Runs `codex exec review --json` and waits for the terminal result.
+            Runs a review through `codex app-server` and waits for the terminal result.
 
             ## Minimal Input
 
@@ -287,15 +287,13 @@ package enum ReviewHelpCatalog {
 
             ## Accepted `target.type`
 
-            - `uncommitted`
-            - `branch`
+            - `uncommittedChanges`
+            - `baseBranch`
             - `commit`
             - `custom`
 
             ## Returns
 
-            - `jobId`
-            - `parentThreadId`
             - `reviewThreadId`
             - `threadId`
             - `turnId`
@@ -307,7 +305,7 @@ package enum ReviewHelpCatalog {
 
             ## Common Mistakes
 
-            - Using old values like `uncommittedChanges` or `baseBranch`
+            - Using old values like `uncommitted` or `branch`
             - Omitting `branch`, `sha`, or `instructions` for the selected target
             """
         case "review_read":
@@ -374,9 +372,9 @@ package enum ReviewHelpCatalog {
 
     private static func targetMarkdown(_ targetType: String) -> String {
         switch targetType {
-        case "uncommitted":
+        case "uncommittedChanges":
             return """
-            # `target.type = "uncommitted"`
+            # `target.type = "uncommittedChanges"`
 
             Reviews staged, unstaged, and untracked local changes.
 
@@ -384,14 +382,14 @@ package enum ReviewHelpCatalog {
             {
               "cwd": "/absolute/path/to/repo",
               "target": {
-                "type": "uncommitted"
+                "type": "uncommittedChanges"
               }
             }
             ```
             """
-        case "branch":
+        case "baseBranch":
             return """
-            # `target.type = "branch"`
+            # `target.type = "baseBranch"`
 
             Reviews changes relative to a base branch.
 
@@ -399,7 +397,7 @@ package enum ReviewHelpCatalog {
             {
               "cwd": "/absolute/path/to/repo",
               "target": {
-                "type": "branch",
+                "type": "baseBranch",
                 "branch": "main"
               }
             }

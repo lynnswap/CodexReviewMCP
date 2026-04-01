@@ -2,8 +2,7 @@ import Foundation
 import MCP
 
 package struct ReviewReadResult: Sendable, Hashable {
-    package var jobID: String
-    package var reviewThreadID: String
+    package var reviewThreadID: String?
     package var threadID: String?
     package var turnID: String?
     package var status: ReviewJobState
@@ -14,8 +13,7 @@ package struct ReviewReadResult: Sendable, Hashable {
     package var error: String?
 
     package init(
-        jobID: String,
-        reviewThreadID: String,
+        reviewThreadID: String?,
         threadID: String? = nil,
         turnID: String? = nil,
         status: ReviewJobState,
@@ -25,7 +23,6 @@ package struct ReviewReadResult: Sendable, Hashable {
         rawLogText: String,
         error: String? = nil
     ) {
-        self.jobID = jobID
         self.reviewThreadID = reviewThreadID
         self.threadID = threadID
         self.turnID = turnID
@@ -47,12 +44,10 @@ package struct ReviewReadResult: Sendable, Hashable {
 
     private func structuredContent(includeDetails: Bool) -> Value {
         var object: [String: Value] = [
-            "jobId": .string(jobID),
-            "parentThreadId": .string(parentThreadID),
-            "reviewThreadId": .string(reviewThreadID),
             "status": .string(status.rawValue),
             "review": .string(review),
         ]
+        object["reviewThreadId"] = reviewThreadID.map(Value.string) ?? .null
         if let threadID {
             object["threadId"] = .string(threadID)
         }
@@ -69,15 +64,10 @@ package struct ReviewReadResult: Sendable, Hashable {
         }
         return .object(object)
     }
-
-    package var parentThreadID: String {
-        threadID ?? reviewThreadID
-    }
 }
 
 package struct ReviewJobListItem: Sendable, Hashable {
-    package var jobID: String
-    package var reviewThreadID: String
+    package var reviewThreadID: String?
     package var cwd: String
     package var targetSummary: String
     package var model: String?
@@ -91,8 +81,7 @@ package struct ReviewJobListItem: Sendable, Hashable {
     package var cancellable: Bool
 
     package init(
-        jobID: String,
-        reviewThreadID: String,
+        reviewThreadID: String?,
         cwd: String,
         targetSummary: String,
         model: String?,
@@ -105,7 +94,6 @@ package struct ReviewJobListItem: Sendable, Hashable {
         lastAgentMessage: String,
         cancellable: Bool
     ) {
-        self.jobID = jobID
         self.reviewThreadID = reviewThreadID
         self.cwd = cwd
         self.targetSummary = targetSummary
@@ -122,14 +110,13 @@ package struct ReviewJobListItem: Sendable, Hashable {
 
     package func structuredContent() -> Value {
         var object: [String: Value] = [
-            "jobId": .string(jobID),
-            "reviewThreadId": .string(reviewThreadID),
             "cwd": .string(cwd),
             "targetSummary": .string(targetSummary),
             "status": .string(status.rawValue),
             "summary": .string(summary),
             "cancellable": .bool(cancellable),
         ]
+        object["reviewThreadId"] = reviewThreadID.map(Value.string) ?? .null
         if let model {
             object["model"] = .string(model)
         }
@@ -191,20 +178,17 @@ package enum ReviewJobSelectionError: Error, Sendable {
 }
 
 package struct ReviewCancelOutcome: Sendable, Hashable {
-    package var jobID: String
-    package var reviewThreadID: String
+    package var reviewThreadID: String?
     package var threadID: String?
     package var cancelled: Bool
     package var status: ReviewJobState
 
     package init(
-        jobID: String,
-        reviewThreadID: String,
+        reviewThreadID: String?,
         threadID: String? = nil,
         cancelled: Bool,
         status: ReviewJobState
     ) {
-        self.jobID = jobID
         self.reviewThreadID = reviewThreadID
         self.threadID = threadID
         self.cancelled = cancelled
@@ -213,13 +197,11 @@ package struct ReviewCancelOutcome: Sendable, Hashable {
 
     package func structuredContent() -> Value {
         var object: [String: Value] = [
-            "jobId": .string(jobID),
-            "parentThreadId": .string(threadID ?? reviewThreadID),
-            "reviewThreadId": .string(reviewThreadID),
             "cancelled": .bool(cancelled),
             "status": .string(status.rawValue),
             "turnId": .null,
         ]
+        object["reviewThreadId"] = reviewThreadID.map(Value.string) ?? .null
         if let threadID {
             object["threadId"] = .string(threadID)
         }

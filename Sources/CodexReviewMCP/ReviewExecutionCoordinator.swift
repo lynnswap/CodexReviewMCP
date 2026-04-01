@@ -21,8 +21,8 @@ package actor ReviewExecutionCoordinator {
 
     private struct ExecutionHandle {
         var sessionID: String
-        var task: Task<Void, Never>
-        var controller: ReviewProcessController?
+        var task: Task<Void, Error>
+        var controller: AppServerProcessController?
         var requestedTerminationReason: ReviewTerminationReason?
     }
 
@@ -45,7 +45,7 @@ package actor ReviewExecutionCoordinator {
             request: requestOptions
         )
         let task = Task {
-            await self.runReview(
+            try await self.runReview(
                 jobID: jobID,
                 request: requestOptions,
                 store: store
@@ -57,11 +57,13 @@ package actor ReviewExecutionCoordinator {
             controller: nil,
             requestedTerminationReason: nil
         )
-        _ = await task.value
-        let result = try await store.readReview(
-            reviewThreadID: jobID,
-            sessionID: sessionID
-        )
+        do {
+            try await task.value
+        } catch {
+            executions[jobID] = nil
+            throw error
+        }
+        let result = try await store.readReview(jobID: jobID, sessionID: sessionID)
         await store.pruneClosedJobIfNeeded(jobID: jobID)
         return result
     }
@@ -73,31 +75,15 @@ package actor ReviewExecutionCoordinator {
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         let normalizedReason = reason.nilIfEmpty ?? "Cancellation requested."
-        let result = try await store.requestCancellation(
-            jobID: reviewThreadID,
-            sessionID: sessionID,
-            reason: normalizedReason
-        )
-        var cancelled = result.state == .cancelled
-        if var handle = executions[reviewThreadID] {
-            handle.requestedTerminationReason = .cancelled(normalizedReason)
-            executions[reviewThreadID] = handle
-            if let processController = handle.controller {
-                cancelled = await processController.terminateGracefully(grace: .seconds(2)) || cancelled
-            }
-        }
         let job = try await store.resolveJob(
             sessionID: sessionID,
             selector: .init(reviewThreadID: reviewThreadID)
         )
-        let threadID = await job.threadID
-        let status = await job.status.state
-        return ReviewCancelOutcome(
-            jobID: result.jobID,
-            reviewThreadID: result.jobID,
-            threadID: threadID,
-            cancelled: cancelled,
-            status: status
+        return try await cancelResolvedJob(
+            job: job,
+            sessionID: sessionID,
+            reason: normalizedReason,
+            store: store
         )
     }
 
@@ -107,9 +93,10 @@ package actor ReviewExecutionCoordinator {
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         let job = try await store.resolveJob(sessionID: sessionID, selector: selector)
-        return try await cancelReview(
-            reviewThreadID: job.id,
+        return try await cancelResolvedJob(
+            job: job,
             sessionID: sessionID,
+            reason: "Cancellation requested.",
             store: store
         )
     }
@@ -121,8 +108,11 @@ package actor ReviewExecutionCoordinator {
     ) async {
         let targetIDs = await store.closeSessionState(sessionID)
         for jobID in targetIDs {
-            _ = try? await cancelReview(
-                reviewThreadID: jobID,
+            guard let job = try? await store.resolveJob(jobID: jobID, sessionID: sessionID) else {
+                continue
+            }
+            _ = try? await cancelResolvedJob(
+                job: job,
                 sessionID: sessionID,
                 reason: reason,
                 store: store
@@ -134,10 +124,10 @@ package actor ReviewExecutionCoordinator {
         jobID: String,
         request: ReviewRequestOptions,
         store: CodexReviewStore
-    ) async {
+    ) async throws {
         let now = Date()
-        let runner = CodexReviewProcessRunner(
-            commandBuilder: ReviewCommandBuilder(
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: configuration.codexCommand,
                 environment: configuration.environment
             )
@@ -147,11 +137,10 @@ package actor ReviewExecutionCoordinator {
             let outcome = try await runner.run(
                 request: request,
                 defaultTimeoutSeconds: configuration.defaultTimeoutSeconds,
-                onStart: { artifacts, processController, startedAt in
+                onStart: { processController, startedAt in
                     await self.markStarted(jobID: jobID, controller: processController)
                     await store.markStarted(
                         jobID: jobID,
-                        artifacts: artifacts,
                         startedAt: startedAt
                     )
                 },
@@ -163,6 +152,22 @@ package actor ReviewExecutionCoordinator {
                 }
             )
             await store.completeReview(jobID: jobID, outcome: outcome)
+        } catch let error as ReviewError where isBootstrapFailure(error) {
+            if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
+                await store.markBootstrapCancelled(
+                    jobID: jobID,
+                    reason: reason,
+                    startedAt: now,
+                    endedAt: Date()
+                )
+            } else {
+                await store.failToStart(
+                    jobID: jobID,
+                    message: error.errorDescription ?? "Failed to start review.",
+                    startedAt: now,
+                    endedAt: Date()
+                )
+            }
         } catch {
             let message = (error as? ReviewError)?.errorDescription ?? error.localizedDescription
             await store.failToStart(
@@ -174,10 +179,9 @@ package actor ReviewExecutionCoordinator {
         }
 
         executions[jobID] = nil
-        await store.pruneClosedJobIfNeeded(jobID: jobID)
     }
 
-    private func markStarted(jobID: String, controller: ReviewProcessController) {
+    private func markStarted(jobID: String, controller: AppServerProcessController) {
         guard var handle = executions[jobID] else {
             return
         }
@@ -187,5 +191,56 @@ package actor ReviewExecutionCoordinator {
 
     private func requestedTerminationReason(jobID: String) -> ReviewTerminationReason? {
         executions[jobID]?.requestedTerminationReason
+    }
+
+    private func recordRequestedTerminationReason(
+        jobID: String,
+        reason: ReviewTerminationReason
+    ) {
+        guard var handle = executions[jobID] else {
+            return
+        }
+        handle.requestedTerminationReason = reason
+        executions[jobID] = handle
+    }
+
+    private func cancelResolvedJob(
+        job: CodexReviewJob,
+        sessionID: String,
+        reason: String,
+        store: CodexReviewStore
+    ) async throws -> ReviewCancelOutcome {
+        let normalizedReason = reason.nilIfEmpty ?? "Cancellation requested."
+        let terminationReason = ReviewTerminationReason.cancelled(normalizedReason)
+        recordRequestedTerminationReason(jobID: job.id, reason: terminationReason)
+        let result = try await store.requestCancellation(
+            jobID: job.id,
+            sessionID: sessionID,
+            reason: normalizedReason
+        )
+        var cancelled = result.state == .cancelled
+        if let handle = executions[job.id] {
+            if let processController = handle.controller {
+                cancelled = await processController.terminateGracefully(grace: .seconds(2)) || cancelled
+            }
+        }
+        let resolvedReviewThreadID = await job.reviewThreadID
+        let resolvedThreadID = await job.threadID
+        let status = await job.status.state
+        return ReviewCancelOutcome(
+            reviewThreadID: resolvedReviewThreadID ?? job.id,
+            threadID: resolvedThreadID,
+            cancelled: cancelled,
+            status: status
+        )
+    }
+
+    private func isBootstrapFailure(_ error: ReviewError) -> Bool {
+        switch error {
+        case .bootstrapFailed, .spawnFailed:
+            true
+        case .invalidArguments, .jobNotFound, .accessDenied, .io:
+            false
+        }
     }
 }

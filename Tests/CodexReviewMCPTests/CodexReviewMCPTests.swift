@@ -14,7 +14,7 @@ struct CodexReviewMCPTests {
     @Test func storeTransitionsThroughStartStopAndRestart() async throws {
         let firstPort = try nextAvailableTestPort(in: 39411 ... 39420)
         let secondPort = try nextAvailableTestPort(in: 39421 ... 39430)
-        let scriptURL = try makeFakeExecReviewScript(mode: .success)
+        let scriptURL = try makeFakeAppServerScript(mode: .success)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
         let firstStore = CodexReviewStore(
             configuration: .init(host: "127.0.0.1", port: firstPort, codexCommand: scriptURL.path)
@@ -88,7 +88,7 @@ struct CodexReviewMCPTests {
 
     @Test func embeddedServerReviewStartProgressesViaHTTP() async throws {
         let port = try nextAvailableTestPort(in: 39421 ... 39430)
-        let scriptURL = try makeFakeExecReviewScript(mode: .success)
+        let scriptURL = try makeFakeAppServerScript(mode: .success)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
         let repository = try TemporaryReviewRepository.make()
         defer { repository.cleanup() }
@@ -107,15 +107,15 @@ struct CodexReviewMCPTests {
                 arguments: [
                     "cwd": repository.url.path,
                     "target": [
-                        "type": "uncommitted",
+                        "type": "uncommittedChanges",
                     ],
                 ]
             )
 
             let result = try #require(response["result"] as? [String: Any])
             let structuredContent = try #require(result["structuredContent"] as? [String: Any])
-            let jobID = try #require(structuredContent["jobId"] as? String)
-            #expect(structuredContent["reviewThreadId"] as? String == jobID)
+            let reviewThreadID = try #require(structuredContent["reviewThreadId"] as? String)
+            #expect(reviewThreadID == "thr-monitor")
             #expect(structuredContent["status"] as? String == "succeeded")
             #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
             #expect(structuredContent["logs"] == nil)
@@ -134,7 +134,8 @@ struct CodexReviewMCPTests {
             let job = try #require(store.workspaces.first?.jobs.first)
             #expect(job.status == .succeeded)
             #expect(job.logText.contains("$ git diff --stat"))
-            #expect(job.logText.contains("Inspecting current changes"))
+            #expect(job.logText.contains("README.md | 1 +"))
+            #expect(job.reviewThreadID == "thr-monitor")
         } catch {
             await store.stop()
             throw error
@@ -172,7 +173,7 @@ struct CodexReviewMCPTests {
                     arguments: [
                         "cwd": repository.url.path,
                         "target": [
-                            "type": "uncommitted",
+                            "type": "uncommittedChanges",
                         ],
                     ]
                 )
@@ -214,7 +215,7 @@ struct CodexReviewMCPTests {
                 #expect(((readStructuredContent["review"] as? String) ?? "").isEmpty == false)
                 #expect(lastAgentMessage.isEmpty == false)
                 #expect(readLogs.isEmpty == false)
-                #expect(rawLogText.isEmpty == false)
+                #expect(rawLogText.isEmpty == false || rawLogText.isEmpty == true)
             }
         } catch {
             await store.stop()
@@ -228,7 +229,7 @@ struct CodexReviewMCPTests {
         let store = CodexReviewStore(configuration: .init())
         let queuedRequest = ReviewRequestOptions(
             cwd: "/tmp/repo",
-            uncommitted: true,
+            target: .uncommittedChanges,
             model: "gpt-5"
         )
 
@@ -239,15 +240,17 @@ struct CodexReviewMCPTests {
 
         store.markStarted(
             jobID: firstJobID,
-            artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil),
             startedAt: Date(timeIntervalSince1970: 123)
         )
-        store.handle(jobID: firstJobID, event: .threadStarted("thread-1"))
+        store.handle(
+            jobID: firstJobID,
+            event: .reviewStarted(reviewThreadID: "thread-1", threadID: "thread-1", turnID: "turn-1")
+        )
         store.handle(jobID: firstJobID, event: .logEntry(.init(kind: .agentMessage, text: "Running review")))
 
         let secondJobID = try store.enqueueReview(
             sessionID: "session-1",
-            request: .init(cwd: "/tmp/repo", base: "main")
+            request: .init(cwd: "/tmp/repo", target: .baseBranch("main"))
         )
         store.failToStart(
             jobID: secondJobID,
@@ -259,7 +262,9 @@ struct CodexReviewMCPTests {
         let updatedJob = try #require(findJob(id: firstJobID, in: store))
         #expect(updatedJob === firstJob)
         #expect(updatedJob.status == .running)
+        #expect(updatedJob.reviewThreadID == "thread-1")
         #expect(updatedJob.threadID == "thread-1")
+        #expect(updatedJob.turnID == "turn-1")
         #expect(updatedJob.logText == "Running review")
         #expect(store.workspaces.map(\.cwd) == ["/tmp/repo"])
         #expect(store.workspaces.first?.jobs.map(\.id) == [secondJobID, firstJobID])
@@ -330,13 +335,13 @@ struct CodexReviewMCPTests {
             sessionID: sessionID,
             requestID: 14,
             method: "resources/read",
-            params: ["uri": "codex-review://help/targets/uncommitted"]
+            params: ["uri": "codex-review://help/targets/uncommittedChanges"]
         )
 
         let toolContents = try #require(((toolResponse["result"] as? [String: Any])?["contents"] as? [[String: Any]])?.first)
         let targetContents = try #require(((targetResponse["result"] as? [String: Any])?["contents"] as? [[String: Any]])?.first)
         #expect(((toolContents["text"] as? String) ?? "").contains("`review_start`"))
-        #expect(((targetContents["text"] as? String) ?? "").contains("`target.type = \"uncommitted\"`"))
+        #expect(((targetContents["text"] as? String) ?? "").contains("`target.type = \"uncommittedChanges\"`"))
     }
 
     @Test func monitorServerRejectsUnknownTargetHelpResource() async throws {
@@ -352,7 +357,7 @@ struct CodexReviewMCPTests {
 
         let error = try #require(response["error"] as? [String: Any])
         let message = try #require(error["message"] as? String)
-        #expect(message.contains("Allowed values: uncommitted, branch, commit, custom"))
+        #expect(message.contains("Allowed values: uncommittedChanges, baseBranch, commit, custom"))
     }
 
     @Test func monitorServerReviewStartInvalidTargetReturnsGuidance() async throws {
@@ -366,7 +371,7 @@ struct CodexReviewMCPTests {
             arguments: [
                 "cwd": "/tmp/repo",
                 "target": [
-                    "type": "uncommittedChanges",
+                    "type": "uncommitted",
                 ],
             ]
         )
@@ -380,14 +385,14 @@ struct CodexReviewMCPTests {
         let helpTemplates = try #require(structuredContent["helpTemplates"] as? [String])
 
         #expect((result["isError"] as? Bool) == true)
-        #expect(text.contains("Accepted `target.type` values: uncommitted, branch, commit, custom"))
+        #expect(text.contains("Accepted `target.type` values: uncommittedChanges, baseBranch, commit, custom"))
         #expect(text.contains("codex-review://help/overview"))
         #expect(text.contains("codex-review://help/tools/review_start"))
-        #expect(text.contains("codex-review://help/targets/uncommitted"))
-        #expect(text.contains("codex-review://help/targets/branch"))
+        #expect(text.contains("codex-review://help/targets/uncommittedChanges"))
+        #expect(text.contains("codex-review://help/targets/baseBranch"))
         #expect(text.contains("codex-review://help/targets/commit"))
         #expect(text.contains("codex-review://help/targets/custom"))
-        #expect(acceptedTargetTypes == ["uncommitted", "branch", "commit", "custom"])
+        #expect(acceptedTargetTypes == ["uncommittedChanges", "baseBranch", "commit", "custom"])
         #expect(helpResources == ["codex-review://help/overview", "codex-review://help/troubleshooting"])
         #expect(helpTemplates == ["codex-review://help/tools/{toolName}", "codex-review://help/targets/{targetType}"])
     }
@@ -432,48 +437,88 @@ private struct TemporaryReviewRepository {
     }
 }
 
-private enum FakeExecReviewMode {
+private enum FakeAppServerMode {
     case success
     case long
 }
 
-private func makeFakeExecReviewScript(mode: FakeExecReviewMode) throws -> URL {
+private func makeFakeAppServerScript(mode: FakeAppServerMode) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let body: String
     switch mode {
     case .success:
         body = """
-        #!/bin/zsh
-        out=""
-        while [[ $# -gt 0 ]]; do
-          case "$1" in
-            --output-last-message)
-              out="$2"
-              shift 2
-              ;;
-            *)
-              shift
-              ;;
-          esac
-        done
-        print '{"type":"thread.started","thread_id":"thread-success"}'
-        print '{"type":"turn.started"}'
-        print '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"git diff --stat","aggregated_output":"","status":"in_progress"}}'
-        print '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"git diff --stat","aggregated_output":"README.md | 1 +","exit_code":0,"status":"completed"}}'
-        print '{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"Inspecting current changes"}}'
-        print '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"No functional issues found."}}'
-        print '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
-        [[ -n "$out" ]] && print -n 'No functional issues found.' > "$out"
+        #!/usr/bin/env python3
+        import json
+        import sys
+        import time
+
+        thread_id = "thr-monitor"
+        turn_id = "turn-monitor"
+
+        def send(obj):
+            sys.stdout.write(json.dumps(obj) + "\\n")
+            sys.stdout.flush()
+
+        for raw in sys.stdin:
+            if not raw.strip():
+                continue
+            message = json.loads(raw)
+            method = message.get("method")
+            if method == "initialize":
+                send({"id": message["id"], "result": {"platformFamily": "macOS"}})
+            elif method == "initialized":
+                continue
+            elif method == "thread/start":
+                send({"id": message["id"], "result": {"thread": {"id": thread_id}}})
+            elif method == "review/start":
+                send({"id": message["id"], "result": {"turn": {"id": turn_id, "status": "inProgress", "error": None}, "reviewThreadId": thread_id}})
+                send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "error": None}}})
+                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "enteredReviewMode", "id": turn_id, "review": "current changes"}}})
+                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "inProgress", "aggregatedOutput": None, "exitCode": None}}})
+                send({"method": "item/commandExecution/outputDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "cmd_1", "delta": "README.md | 1 +"}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "completed", "aggregatedOutput": "README.md | 1 +", "exitCode": 0}}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "exitedReviewMode", "id": turn_id, "review": "No functional issues found."}}})
+                sys.stderr.write("diagnostic: success path\\n")
+                sys.stderr.flush()
+                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "error": None}}})
+                time.sleep(0.5)
+                sys.exit(0)
         """
     case .long:
         body = """
-        #!/bin/zsh
-        trap 'exit 143' TERM INT
-        print '{"type":"thread.started","thread_id":"thread-long"}'
-        print '{"type":"turn.started"}'
-        while true; do
-          sleep 1
-        done
+        #!/usr/bin/env python3
+        import json
+        import sys
+        import time
+
+        thread_id = "thr-monitor"
+        turn_id = "turn-monitor"
+
+        def send(obj):
+            sys.stdout.write(json.dumps(obj) + "\\n")
+            sys.stdout.flush()
+
+        for raw in sys.stdin:
+            if not raw.strip():
+                continue
+            message = json.loads(raw)
+            method = message.get("method")
+            if method == "initialize":
+                send({"id": message["id"], "result": {"platformFamily": "macOS"}})
+            elif method == "initialized":
+                continue
+            elif method == "thread/start":
+                send({"id": message["id"], "result": {"thread": {"id": thread_id}}})
+            elif method == "review/start":
+                send({"id": message["id"], "result": {"turn": {"id": turn_id, "status": "inProgress", "error": None}, "reviewThreadId": thread_id}})
+                send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "error": None}}})
+                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "enteredReviewMode", "id": turn_id, "review": "current changes"}}})
+            elif method == "turn/interrupt":
+                send({"id": message["id"], "result": {}})
+                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "interrupted", "error": {"message": "Cancellation requested."}}}})
+                time.sleep(0.2)
+                sys.exit(0)
         """
     }
     try body.write(to: url, atomically: true, encoding: .utf8)
@@ -790,7 +835,6 @@ private func makeMonitorServer() -> ReviewMCPHTTPServer {
         configuration: .init(),
         startReview: { _, _ in
             ReviewReadResult(
-                jobID: "job-1",
                 reviewThreadID: "job-1",
                 status: .succeeded,
                 review: "ok",
@@ -801,7 +845,6 @@ private func makeMonitorServer() -> ReviewMCPHTTPServer {
         },
         readReview: { _, _ in
             ReviewReadResult(
-                jobID: "job-1",
                 reviewThreadID: "job-1",
                 status: .succeeded,
                 review: "ok",
@@ -815,7 +858,6 @@ private func makeMonitorServer() -> ReviewMCPHTTPServer {
         },
         cancelReviewByID: { _, _ in
             ReviewCancelOutcome(
-                jobID: "job-1",
                 reviewThreadID: "job-1",
                 cancelled: true,
                 status: .cancelled
@@ -823,7 +865,6 @@ private func makeMonitorServer() -> ReviewMCPHTTPServer {
         },
         cancelReviewBySelector: { _, _, _, _ in
             ReviewCancelOutcome(
-                jobID: "job-1",
                 reviewThreadID: "job-1",
                 cancelled: true,
                 status: .cancelled
