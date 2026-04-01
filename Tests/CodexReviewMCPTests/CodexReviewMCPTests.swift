@@ -116,6 +116,7 @@ struct CodexReviewMCPTests {
             let structuredContent = try #require(result["structuredContent"] as? [String: Any])
             let reviewThreadID = try #require(structuredContent["reviewThreadId"] as? String)
             #expect(reviewThreadID == "thr-monitor")
+            #expect(structuredContent["model"] as? String == "gpt-5.4-mini")
             #expect(structuredContent["status"] as? String == "succeeded")
             #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
             #expect(structuredContent["logs"] == nil)
@@ -212,6 +213,7 @@ struct CodexReviewMCPTests {
                 let readLogs = try #require(readStructuredContent["logs"] as? [[String: Any]])
                 let rawLogText = try #require(readStructuredContent["rawLogText"] as? String)
                 #expect(readStructuredContent["status"] as? String == "succeeded")
+                #expect(readStructuredContent["model"] as? String == "gpt-5.4-mini")
                 #expect(((readStructuredContent["review"] as? String) ?? "").isEmpty == false)
                 #expect(lastAgentMessage.isEmpty == false)
                 #expect(readLogs.isEmpty == false)
@@ -229,14 +231,14 @@ struct CodexReviewMCPTests {
         let store = CodexReviewStore(configuration: .init())
         let queuedRequest = ReviewRequestOptions(
             cwd: "/tmp/repo",
-            target: .uncommittedChanges,
-            model: "gpt-5"
+            target: .uncommittedChanges
         )
 
-        let firstJobID = try store.enqueueReview(sessionID: "session-1", request: queuedRequest)
+        let firstJobID = try store.enqueueReview(sessionID: "session-1", request: queuedRequest, initialModel: "gpt-5")
         let firstJob = try #require(findJob(id: firstJobID, in: store))
         #expect(store.workspaces.map(\.cwd) == ["/tmp/repo"])
         #expect(store.workspaces.first?.jobs.map(\.id) == [firstJobID])
+        #expect(firstJob.model == "gpt-5")
 
         store.markStarted(
             jobID: firstJobID,
@@ -244,7 +246,12 @@ struct CodexReviewMCPTests {
         )
         store.handle(
             jobID: firstJobID,
-            event: .reviewStarted(reviewThreadID: "thread-1", threadID: "thread-1", turnID: "turn-1")
+            event: .reviewStarted(
+                reviewThreadID: "thread-1",
+                threadID: "thread-1",
+                turnID: "turn-1",
+                model: "gpt-5.4-mini"
+            )
         )
         store.handle(jobID: firstJobID, event: .logEntry(.init(kind: .agentMessage, text: "Running review")))
 
@@ -265,6 +272,7 @@ struct CodexReviewMCPTests {
         #expect(updatedJob.reviewThreadID == "thread-1")
         #expect(updatedJob.threadID == "thread-1")
         #expect(updatedJob.turnID == "turn-1")
+        #expect(updatedJob.model == "gpt-5.4-mini")
         #expect(updatedJob.logText == "Running review")
         #expect(store.workspaces.map(\.cwd) == ["/tmp/repo"])
         #expect(store.workspaces.first?.jobs.map(\.id) == [secondJobID, firstJobID])
@@ -469,8 +477,10 @@ private func makeFakeAppServerScript(mode: FakeAppServerMode) throws -> URL {
                 send({"id": message["id"], "result": {"platformFamily": "macOS"}})
             elif method == "initialized":
                 continue
+            elif method == "config/read":
+                send({"id": message["id"], "result": {"config": {"model": "gpt-5.4-mini"}}})
             elif method == "thread/start":
-                send({"id": message["id"], "result": {"thread": {"id": thread_id}}})
+                send({"id": message["id"], "result": {"thread": {"id": thread_id}, "model": "gpt-5.4-mini"}})
             elif method == "review/start":
                 send({"id": message["id"], "result": {"turn": {"id": turn_id, "status": "inProgress", "error": None}, "reviewThreadId": thread_id}})
                 send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "error": None}}})
@@ -508,8 +518,10 @@ private func makeFakeAppServerScript(mode: FakeAppServerMode) throws -> URL {
                 send({"id": message["id"], "result": {"platformFamily": "macOS"}})
             elif method == "initialized":
                 continue
+            elif method == "config/read":
+                send({"id": message["id"], "result": {"config": {"model": "gpt-5.4-mini"}}})
             elif method == "thread/start":
-                send({"id": message["id"], "result": {"thread": {"id": thread_id}}})
+                send({"id": message["id"], "result": {"thread": {"id": thread_id}, "model": "gpt-5.4-mini"}})
             elif method == "review/start":
                 send({"id": message["id"], "result": {"turn": {"id": turn_id, "status": "inProgress", "error": None}, "reviewThreadId": thread_id}})
                 send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "error": None}}})

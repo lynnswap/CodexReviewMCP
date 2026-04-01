@@ -8,10 +8,30 @@ package struct AppServerCommand: Sendable {
     package var currentDirectory: String
 }
 
+package struct ReviewRunnerOverrides: Sendable, Equatable {
+    package var approvalPolicy: String
+    package var sandbox: String
+    package var personality: String
+    package var ephemeral: Bool
+
+    package static let reviewRunner = Self(
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        personality: "none",
+        ephemeral: true
+    )
+}
+
 package struct ReviewExecutionSettings: Sendable {
     package var command: AppServerCommand
-    package var threadStart: AppServerThreadStartParams
-    package var reviewStart: AppServerReviewStartParams
+    package var request: ReviewRequestOptions
+    package var overrides: ReviewRunnerOverrides
+}
+
+package struct ResolvedReviewModelSelection: Sendable, Equatable {
+    package var reportedModelBeforeThreadStart: String?
+    package var threadStartModelHint: String?
+    package var clampModel: String?
 }
 
 package struct ReviewExecutionSettingsBuilder: Sendable {
@@ -28,37 +48,6 @@ package struct ReviewExecutionSettingsBuilder: Sendable {
 
     package func build(request: ReviewRequestOptions) throws -> ReviewExecutionSettings {
         let request = try request.validated()
-        let configPath = resolveConfigPath()
-        let modelsCache = loadJSONDictionary(at: resolveModelsCachePath())
-        let model = request.model?.nilIfEmpty ?? ReviewDefaults.shared.review.defaultModel
-        let profileKey = readTopLevelString(from: configPath, key: "profile")
-
-        var config: [String: AppServerJSONValue] = [
-            "hide_agent_reasoning": .bool(ReviewDefaults.shared.review.hideAgentReasoning),
-            "model_reasoning_effort": .string(ReviewDefaults.shared.review.reasoningEffort),
-            "model_reasoning_summary": .string(ReviewDefaults.shared.review.reasoningSummary),
-        ]
-
-        if let clampedContextWindow = computeForcedIntegerOverride(
-            modelSlug: model,
-            key: "model_context_window",
-            configPath: configPath,
-            profileKey: profileKey,
-            modelsCache: modelsCache
-        ) {
-            config["model_context_window"] = .int(clampedContextWindow)
-        }
-
-        if let clampedAutoCompactLimit = computeForcedIntegerOverride(
-            modelSlug: model,
-            key: "model_auto_compact_token_limit",
-            configPath: configPath,
-            profileKey: profileKey,
-            modelsCache: modelsCache
-        ) {
-            config["model_auto_compact_token_limit"] = .int(clampedAutoCompactLimit)
-        }
-
         return ReviewExecutionSettings(
             command: AppServerCommand(
                 executable: codexCommand,
@@ -66,41 +55,133 @@ package struct ReviewExecutionSettingsBuilder: Sendable {
                 environment: environment,
                 currentDirectory: request.cwd
             ),
-            threadStart: AppServerThreadStartParams(
-                model: model,
-                cwd: request.cwd,
-                approvalPolicy: "never",
-                sandbox: "danger-full-access",
-                config: config,
-                personality: "none",
-                ephemeral: true
-            ),
-            reviewStart: AppServerReviewStartParams(
-                threadID: "",
-                target: request.target,
-                delivery: "inline"
-            )
+            request: request,
+            overrides: .reviewRunner
         )
     }
+}
 
-    private func resolveCodexHome() -> URL? {
-        if let codexHome = environment["CODEX_HOME"]?.nilIfEmpty {
-            return URL(fileURLWithPath: codexHome, isDirectory: true)
+package func makeReviewThreadStartConfig(
+    reviewSpecificModel: String?,
+    localConfig: ReviewLocalConfig,
+    resolvedConfig: AppServerConfigReadResponse.Config,
+    clampModel: String?,
+    environment: [String: String],
+    codexHome: URL? = nil
+) -> [String: AppServerJSONValue]? {
+    let modelsCache = loadModelsCache(environment: environment, codexHome: codexHome)
+    var config: [String: AppServerJSONValue] = [:]
+
+    if let reviewSpecificModel = reviewSpecificModel?.nilIfEmpty {
+        config["review_model"] = .string(reviewSpecificModel)
+    }
+    if let localReasoningEffort = localConfig.modelReasoningEffort?.nilIfEmpty {
+        config["model_reasoning_effort"] = .string(localReasoningEffort)
+    }
+
+    let baselineContextWindow = localConfig.modelContextWindow ?? resolvedConfig.modelContextWindow
+    let baselineAutoCompactTokenLimit = localConfig.modelAutoCompactTokenLimit ?? resolvedConfig.modelAutoCompactTokenLimit
+
+    if let clampModel = clampModel?.nilIfEmpty {
+        if let clampedContextWindow = computeForcedIntegerOverride(
+            modelSlug: clampModel,
+            key: "model_context_window",
+            configuredValue: baselineContextWindow,
+            modelsCache: modelsCache
+        ) {
+            config["model_context_window"] = .int(clampedContextWindow)
+        } else if let baselineContextWindow {
+            config["model_context_window"] = .int(baselineContextWindow)
         }
-        if let home = environment["HOME"]?.nilIfEmpty {
-            return URL(fileURLWithPath: home, isDirectory: true)
-                .appendingPathComponent(".codex", isDirectory: true)
+
+        if let clampedAutoCompactLimit = computeForcedIntegerOverride(
+            modelSlug: clampModel,
+            key: "model_auto_compact_token_limit",
+            configuredValue: baselineAutoCompactTokenLimit,
+            modelsCache: modelsCache
+        ) {
+            config["model_auto_compact_token_limit"] = .int(clampedAutoCompactLimit)
+        } else if let baselineAutoCompactTokenLimit {
+            config["model_auto_compact_token_limit"] = .int(baselineAutoCompactTokenLimit)
         }
-        return nil
     }
 
-    private func resolveConfigPath() -> URL? {
-        resolveCodexHome()?.appendingPathComponent("config.toml")
-    }
+    return config.isEmpty ? nil : config
+}
 
-    private func resolveModelsCachePath() -> URL? {
-        resolveCodexHome()?.appendingPathComponent("models_cache.json")
-    }
+package func resolveInitialReviewModel(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    codexHome: URL? = nil
+) -> String? {
+    let localConfig = (try? loadReviewLocalConfig(environment: environment)) ?? .init()
+    let fallbackConfig = loadFallbackAppServerConfig(environment: environment, codexHome: codexHome)
+    return resolveReviewModelSelection(
+        localConfig: localConfig,
+        resolvedConfig: fallbackConfig
+    ).reportedModelBeforeThreadStart
+}
+
+package func resolveReviewModelSelection(
+    localConfig: ReviewLocalConfig,
+    resolvedConfig: AppServerConfigReadResponse.Config
+) -> ResolvedReviewModelSelection {
+    let reviewSpecificModel = localConfig.reviewModel?.nilIfEmpty
+        ?? resolvedConfig.reviewModel?.nilIfEmpty
+    let reportedModel = reviewSpecificModel
+        ?? resolvedConfig.model?.nilIfEmpty
+    return .init(
+        reportedModelBeforeThreadStart: reportedModel,
+        threadStartModelHint: reportedModel,
+        clampModel: reportedModel
+    )
+}
+
+package func loadFallbackAppServerConfig(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    codexHome: URL? = nil
+) -> AppServerConfigReadResponse.Config {
+    let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
+    let profile = readTopLevelString(from: configPath, key: "profile")
+
+    return .init(
+        model: readProfileString(from: configPath, profile: profile, key: "model")
+            ?? readTopLevelString(from: configPath, key: "model"),
+        reviewModel: readProfileString(from: configPath, profile: profile, key: "review_model")
+            ?? readTopLevelString(from: configPath, key: "review_model"),
+        modelContextWindow: readProfileInteger(from: configPath, profile: profile, key: "model_context_window")
+            ?? readTopLevelInteger(from: configPath, key: "model_context_window"),
+        modelAutoCompactTokenLimit: readProfileInteger(
+            from: configPath,
+            profile: profile,
+            key: "model_auto_compact_token_limit"
+        ) ?? readTopLevelInteger(from: configPath, key: "model_auto_compact_token_limit")
+    )
+}
+
+package func mergeAppServerConfig(
+    primary: AppServerConfigReadResponse.Config,
+    fallback: AppServerConfigReadResponse.Config
+) -> AppServerConfigReadResponse.Config {
+    .init(
+        model: primary.model?.nilIfEmpty ?? fallback.model?.nilIfEmpty,
+        reviewModel: primary.reviewModel?.nilIfEmpty ?? fallback.reviewModel?.nilIfEmpty,
+        modelContextWindow: primary.modelContextWindow ?? fallback.modelContextWindow,
+        modelAutoCompactTokenLimit: primary.modelAutoCompactTokenLimit ?? fallback.modelAutoCompactTokenLimit
+    )
+}
+
+private func resolveModelsCachePath(
+    environment: [String: String],
+    codexHome: URL?
+) -> URL? {
+    ReviewHomePaths.modelsCacheURL(environment: environment, codexHome: codexHome)
+}
+
+private func loadModelsCache(
+    environment: [String: String],
+    codexHome: URL?
+) -> [String: Any] {
+    loadJSONDictionary(at: resolveModelsCachePath(environment: environment, codexHome: codexHome))
 }
 
 private func loadJSONDictionary(at path: URL?) -> [String: Any] {
@@ -153,8 +234,7 @@ private func lookupAutoCompactClampLimit(modelSlug: String, modelsCache: [String
 private func computeForcedIntegerOverride(
     modelSlug: String,
     key: String,
-    configPath: URL?,
-    profileKey: String?,
+    configuredValue: Int?,
     modelsCache: [String: Any]
 ) -> Int? {
     let clampLimit: Int?
@@ -167,8 +247,6 @@ private func computeForcedIntegerOverride(
         clampLimit = nil
     }
 
-    let configuredValue = profileKey.flatMap { readProfileInteger(from: configPath, profile: $0, key: key) }
-        ?? readTopLevelInteger(from: configPath, key: key)
     guard let clampLimit, clampLimit > 0, let configuredValue, configuredValue > clampLimit else {
         return nil
     }
@@ -182,9 +260,9 @@ private func stripTOMLComment(_ line: String) -> String {
 
     for index in line.indices {
         let character = line[index]
-        if character == "\"" && isInsideSingleQuotes == false && previousWasEscape == false {
+        if character == "\"", isInsideSingleQuotes == false, previousWasEscape == false {
             isInsideDoubleQuotes.toggle()
-        } else if character == "'" && isInsideDoubleQuotes == false {
+        } else if character == "'", isInsideDoubleQuotes == false {
             isInsideSingleQuotes.toggle()
         } else if character == "#", isInsideSingleQuotes == false, isInsideDoubleQuotes == false {
             return String(line[..<index])
@@ -246,37 +324,54 @@ private func readProfileValue(from configPath: URL?, profile: String, key: Strin
     return nil
 }
 
-private func normalizeIntegerLiteral(_ rawValue: String?) -> Int? {
-    guard let rawValue else {
-        return nil
-    }
-    let normalized = trimMatchingQuotes(rawValue)
-        .replacingOccurrences(of: "_", with: "")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard normalized.isEmpty == false, normalized.allSatisfy(\.isNumber) else {
-        return nil
-    }
-    return Int(normalized)
-}
-
-private func trimMatchingQuotes(_ value: String) -> String {
-    guard value.count >= 2, let first = value.first, let last = value.last, first == last else {
-        return value
-    }
-    if first == "\"" || first == "'" {
-        return String(value.dropFirst().dropLast())
-    }
-    return value
+private func readTopLevelString(from configPath: URL?, key: String) -> String? {
+    readTopLevelValue(from: configPath, key: key)
+        .map(trimMatchingQuotes)
+        .flatMap { $0.nilIfEmpty }
 }
 
 private func readTopLevelInteger(from configPath: URL?, key: String) -> Int? {
     normalizeIntegerLiteral(readTopLevelValue(from: configPath, key: key))
 }
 
-private func readProfileInteger(from configPath: URL?, profile: String, key: String) -> Int? {
-    normalizeIntegerLiteral(readProfileValue(from: configPath, profile: profile, key: key))
+private func readProfileString(from configPath: URL?, profile: String?, key: String) -> String? {
+    guard let profile else {
+        return nil
+    }
+    return readProfileValue(from: configPath, profile: profile, key: key)
+        .map(trimMatchingQuotes)
+        .flatMap { $0.nilIfEmpty }
 }
 
-private func readTopLevelString(from configPath: URL?, key: String) -> String? {
-    readTopLevelValue(from: configPath, key: key).map(trimMatchingQuotes).flatMap(\.nilIfEmpty)
+private func readProfileInteger(from configPath: URL?, profile: String?, key: String) -> Int? {
+    guard let profile else {
+        return nil
+    }
+    return normalizeIntegerLiteral(readProfileValue(from: configPath, profile: profile, key: key))
+}
+
+private func normalizeIntegerLiteral(_ rawValue: String?) -> Int? {
+    guard let rawValue else {
+        return nil
+    }
+    let normalized = trimMatchingQuotes(rawValue)
+        .replacingOccurrences(of: "_", with: "")
+        .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    guard normalized.isEmpty == false, normalized.allSatisfy({ $0.isNumber }) else {
+        return nil
+    }
+    return Int(normalized)
+}
+
+private func trimMatchingQuotes(_ value: String) -> String {
+    guard value.count >= 2 else {
+        return value
+    }
+    if value.hasPrefix("\""), value.hasSuffix("\"") {
+        return String(value.dropFirst().dropLast())
+    }
+    if value.hasPrefix("'"), value.hasSuffix("'") {
+        return String(value.dropFirst().dropLast())
+    }
+    return value
 }

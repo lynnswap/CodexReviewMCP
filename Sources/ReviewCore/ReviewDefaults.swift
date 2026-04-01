@@ -8,10 +8,6 @@ package struct ReviewDefaults: Codable, Sendable {
     }
 
     package struct Review: Codable, Sendable {
-        package var defaultModel: String
-        package var hideAgentReasoning: Bool
-        package var reasoningEffort: String
-        package var reasoningSummary: String
         package var autoCompactRatio: Double
     }
 
@@ -34,13 +30,7 @@ package struct ReviewDefaults: Codable, Sendable {
         else {
             return ReviewDefaults(
                 server: .init(defaultPort: 9417, endpointPath: "/mcp", sessionTimeoutSeconds: 3600),
-                review: .init(
-                    defaultModel: "gpt-5.4-mini",
-                    hideAgentReasoning: false,
-                    reasoningEffort: "xhigh",
-                    reasoningSummary: "detailed",
-                    autoCompactRatio: 0.9
-                ),
+                review: .init(autoCompactRatio: 0.9),
                 models: .init(
                     fallbackContextWindows: [
                         "gpt-5.4-mini": 272_000,

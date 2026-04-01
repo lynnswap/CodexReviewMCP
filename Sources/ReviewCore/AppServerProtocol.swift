@@ -110,6 +110,68 @@ package struct AppServerInitializeResponse: Decodable, Sendable {
 
 package struct AppServerInitializedParams: Codable, Sendable {}
 
+package struct AppServerConfigReadParams: Encodable, Sendable {
+    package var cwd: String
+    package var includeLayers: Bool
+}
+
+package struct AppServerConfigReadResponse: Decodable, Sendable {
+    package struct Config: Decodable, Sendable {
+        package var model: String?
+        package var reviewModel: String?
+        package var modelContextWindow: Int?
+        package var modelAutoCompactTokenLimit: Int?
+
+        package enum CodingKeys: String, CodingKey {
+            case model
+            case reviewModel = "review_model"
+            case modelContextWindow = "model_context_window"
+            case modelAutoCompactTokenLimit = "model_auto_compact_token_limit"
+        }
+
+        package init(
+            model: String? = nil,
+            reviewModel: String? = nil,
+            modelContextWindow: Int? = nil,
+            modelAutoCompactTokenLimit: Int? = nil
+        ) {
+            self.model = model
+            self.reviewModel = reviewModel
+            self.modelContextWindow = modelContextWindow
+            self.modelAutoCompactTokenLimit = modelAutoCompactTokenLimit
+        }
+
+        package init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            model = try container.decodeIfPresent(String.self, forKey: .model)
+            reviewModel = try container.decodeIfPresent(String.self, forKey: .reviewModel)
+            modelContextWindow = try Self.decodeFlexibleIntIfPresent(from: container, forKey: .modelContextWindow)
+            modelAutoCompactTokenLimit = try Self.decodeFlexibleIntIfPresent(from: container, forKey: .modelAutoCompactTokenLimit)
+        }
+
+        private static func decodeFlexibleIntIfPresent(
+            from container: KeyedDecodingContainer<CodingKeys>,
+            forKey key: CodingKeys
+        ) throws -> Int? {
+            guard container.contains(key) else {
+                return nil
+            }
+            if let value = try? container.decode(Int.self, forKey: key) {
+                return value
+            }
+            if let rawValue = try? container.decode(String.self, forKey: key) {
+                let normalized = rawValue
+                    .replacingOccurrences(of: "_", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return Int(normalized)
+            }
+            return nil
+        }
+    }
+
+    package var config: Config
+}
+
 package struct AppServerThreadStartParams: Encodable, Sendable {
     package var model: String?
     package var cwd: String?
@@ -126,6 +188,7 @@ package struct AppServerThreadStartResponse: Decodable, Sendable {
     }
 
     package var thread: Thread
+    package var model: String?
 }
 
 package struct AppServerReviewStartParams: Encodable, Sendable {
@@ -302,9 +365,20 @@ package struct AppServerCommandExecutionOutputDeltaNotification: Decodable, Send
     }
 }
 
-package struct AppServerResponseError: Decodable, Sendable {
+package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendable {
     package var code: Int?
     package var message: String
+
+    package var errorDescription: String? {
+        message
+    }
+
+    package var isUnsupportedMethod: Bool {
+        if code == -32601 {
+            return true
+        }
+        return message.range(of: "method not found", options: [.caseInsensitive]) != nil
+    }
 }
 
 package enum AppServerServerNotification: Sendable {

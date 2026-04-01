@@ -5,10 +5,6 @@
     "sessionTimeoutSeconds": 3600
   },
   "review": {
-    "defaultModel": "gpt-5.4-mini",
-    "hideAgentReasoning": false,
-    "reasoningEffort": "xhigh",
-    "reasoningSummary": "detailed",
     "autoCompactRatio": 0.9
   },
   "models": {

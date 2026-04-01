@@ -15,7 +15,6 @@ package extension ReviewJobRequest {
         var copy = self
         copy.cwd = trimmedCWD
         copy.target = try target.validated()
-        copy.model = model?.nilIfEmpty
         return copy
     }
 

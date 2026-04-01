@@ -4,12 +4,10 @@ import ReviewJobs
 package struct ReviewStartRequest: Codable, Hashable, Sendable {
     package var cwd: String
     package var target: ReviewTarget
-    package var model: String?
 
-    package init(cwd: String, target: ReviewTarget, model: String? = nil) {
+    package init(cwd: String, target: ReviewTarget) {
         self.cwd = cwd
         self.target = target
-        self.model = model
     }
 
     package func validated() throws -> Self {
@@ -20,11 +18,10 @@ package struct ReviewStartRequest: Codable, Hashable, Sendable {
         var copy = self
         copy.cwd = trimmedCWD
         copy.target = try target.validated()
-        copy.model = model?.nilIfEmpty
         return copy
     }
 
     package func reviewRequestOptions() -> ReviewRequestOptions {
-        ReviewRequestOptions(cwd: cwd, target: target, model: model)
+        ReviewRequestOptions(cwd: cwd, target: target)
     }
 }

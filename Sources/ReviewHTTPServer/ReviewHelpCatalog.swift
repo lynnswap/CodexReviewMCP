@@ -195,15 +195,15 @@ package enum ReviewHelpCatalog {
     }
 
     package static var reviewStartDescription: String {
-        "Run a repository review through `codex app-server` and wait for the terminal result. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`. The result includes `reviewThreadId`, `threadId`, `turnId`, `status`, `review`, and `error`. Use `review_read` to fetch detailed logs."
+        "Run a repository review through `codex app-server` and wait for the terminal result. The returned `model` is the effective resolved review model. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`."
     }
 
     package static var reviewReadDescription: String {
-        "Read the current or final state of a review job owned by the current MCP session. Returns the detailed review payload, including `lastAgentMessage`, ordered `logs`, and `rawLogText`. Read `\(toolURI("review_read"))` for details."
+        "Read the current or final state of a review job owned by the current MCP session. Returns the effective resolved review `model`, ordered `logs`, and `rawLogText`. Read `\(toolURI("review_read"))` for details."
     }
 
     package static var reviewListDescription: String {
-        "List review jobs owned by the current MCP session. Use this to discover active or recent jobs before calling `review_read` or selector-based `review_cancel`. Read `\(toolURI("review_list"))` for details."
+        "List review jobs owned by the current MCP session. `items[].model` is the effective resolved review model, not the raw thread model. Read `\(toolURI("review_list"))` for details."
     }
 
     package static var reviewCancelDescription: String {
@@ -297,11 +297,19 @@ package enum ReviewHelpCatalog {
             - `reviewThreadId`
             - `threadId`
             - `turnId`
+            - `model` (effective resolved review model)
             - `status`
             - `review`
             - `error`
 
             Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
+
+            ReviewMCP resolves the reported review model in this order:
+
+            1. `~/.codex_review/config.toml` `review_model`
+            2. app-server or local Codex config `review_model`
+            3. backend-reported `thread/start.model`
+            4. app-server or local Codex config `model` only as a pre-thread-start fallback when the backend does not report a model
 
             ## Common Mistakes
 
@@ -323,6 +331,8 @@ package enum ReviewHelpCatalog {
             ```
 
             Use `review_list` first if you do not know the ID.
+
+            The response includes `model`, which is the effective resolved review model.
             """
         case "review_list":
             return """
@@ -341,6 +351,8 @@ package enum ReviewHelpCatalog {
             - `cwd`
             - `statuses`
             - `limit`
+
+            `items[].model` is the effective resolved review model, not the raw thread model.
             """
         case "review_cancel":
             return """

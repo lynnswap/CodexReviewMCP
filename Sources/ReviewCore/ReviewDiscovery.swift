@@ -12,11 +12,19 @@ package struct ReviewDiscoveryRecord: Codable, Sendable {
 
 package enum ReviewDiscovery {
     package static var defaultFileURL: URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base
-            .appendingPathComponent("CodexReviewMCP", isDirectory: true)
-            .appendingPathComponent("endpoint.json")
+        ReviewHomePaths.discoveryFileURL()
+    }
+
+    package static func candidateFileURLs(for overrideURL: URL? = nil) -> [URL] {
+        if let overrideURL {
+            return [overrideURL]
+        }
+
+        let legacyURL = ReviewHomePaths.legacyDiscoveryFileURL()
+        if legacyURL.path == defaultFileURL.path {
+            return [defaultFileURL]
+        }
+        return [defaultFileURL, legacyURL]
     }
 
     package static func makeRecord(
@@ -52,7 +60,19 @@ package enum ReviewDiscovery {
     }
 
     package static func read(from overrideURL: URL? = nil) -> ReviewDiscoveryRecord? {
-        let fileURL = overrideURL ?? defaultFileURL
+        read(fromCandidateURLs: candidateFileURLs(for: overrideURL))
+    }
+
+    package static func read(fromCandidateURLs fileURLs: [URL]) -> ReviewDiscoveryRecord? {
+        for fileURL in fileURLs {
+            if let record = validatedRecord(from: fileURL) {
+                return record
+            }
+        }
+        return nil
+    }
+
+    private static func validatedRecord(from fileURL: URL) -> ReviewDiscoveryRecord? {
         guard let record = loadRecord(from: fileURL) else {
             return nil
         }
@@ -66,22 +86,32 @@ package enum ReviewDiscovery {
     }
 
     package static func remove(at overrideURL: URL? = nil) {
-        let fileURL = overrideURL ?? defaultFileURL
-        try? FileManager.default.removeItem(at: fileURL)
+        remove(atFileURLs: candidateFileURLs(for: overrideURL))
+    }
+
+    package static func remove(atFileURLs fileURLs: [URL]) {
+        for fileURL in fileURLs {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
     }
 
     package static func removeIfOwned(pid: Int, url: URL?, at overrideURL: URL? = nil) {
-        let fileURL = overrideURL ?? defaultFileURL
-        guard let record = loadRecord(from: fileURL) else {
-            return
+        removeIfOwned(pid: pid, url: url, atFileURLs: candidateFileURLs(for: overrideURL))
+    }
+
+    package static func removeIfOwned(pid: Int, url: URL?, atFileURLs fileURLs: [URL]) {
+        for fileURL in fileURLs {
+            guard let record = loadRecord(from: fileURL) else {
+                continue
+            }
+            guard record.pid == pid else {
+                continue
+            }
+            if let url, record.url != url.absoluteString {
+                continue
+            }
+            try? FileManager.default.removeItem(at: fileURL)
         }
-        guard record.pid == pid else {
-            return
-        }
-        if let url, record.url != url.absoluteString {
-            return
-        }
-        try? FileManager.default.removeItem(at: fileURL)
     }
 
     private static func ReviewCore_isProcessAlive(_ pid: Int) -> Bool {

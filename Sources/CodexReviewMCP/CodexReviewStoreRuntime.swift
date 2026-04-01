@@ -53,6 +53,7 @@ extension CodexReviewStore {
             reviewThreadID: publicReviewIdentifier(for: job),
             threadID: job.threadID,
             turnID: job.turnID,
+            model: job.model,
             status: job.status.state,
             review: job.isTerminal ? job.reviewText : (job.reviewText.nilIfEmpty ?? job.lastAgentMessage ?? ""),
             lastAgentMessage: job.lastAgentMessage ?? "",
@@ -71,6 +72,7 @@ extension CodexReviewStore {
             reviewThreadID: publicReviewIdentifier(for: job),
             threadID: job.threadID,
             turnID: job.turnID,
+            model: job.model,
             status: job.status.state,
             review: job.isTerminal ? job.reviewText : (job.reviewText.nilIfEmpty ?? job.lastAgentMessage ?? ""),
             lastAgentMessage: job.lastAgentMessage ?? "",
@@ -133,7 +135,8 @@ extension CodexReviewStore {
 
     package func enqueueReview(
         sessionID: String,
-        request: ReviewRequestOptions
+        request: ReviewRequestOptions,
+        initialModel: String? = nil
     ) throws -> String {
         let backend = try liveBackend()
         if backend.closedSessions.contains(sessionID) {
@@ -142,7 +145,7 @@ extension CodexReviewStore {
         let request = try request.validated()
         let jobID = UUID().uuidString
         appendQueuedJob(
-            .init(jobID: jobID, sessionID: sessionID, request: request)
+            .init(jobID: jobID, sessionID: sessionID, request: request, initialModel: initialModel)
         )
         return jobID
     }
@@ -170,11 +173,12 @@ extension CodexReviewStore {
                 job.summary = message
                 job.logEntries.append(.init(kind: .progress, text: message))
             }
-        case .reviewStarted(let reviewThreadID, let threadID, let turnID):
+        case .reviewStarted(let reviewThreadID, let threadID, let turnID, let model):
             updateJob(id: jobID) { job in
                 job.reviewThreadID = reviewThreadID
                 job.threadID = threadID
                 job.turnID = turnID
+                job.model = model
                 job.summary = "Review started: \(reviewThreadID)"
             }
         case .logEntry(let entry):
@@ -201,6 +205,7 @@ extension CodexReviewStore {
         updateJob(id: jobID) { job in
             job.status = .init(state: outcome.state)
             job.summary = outcome.summary
+            job.model = outcome.model ?? job.model
             job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
             job.errorMessage = outcome.errorMessage
             job.reviewThreadID = outcome.reviewThreadID ?? job.reviewThreadID
@@ -215,12 +220,14 @@ extension CodexReviewStore {
     package func failToStart(
         jobID: String,
         message: String,
+        model: String? = nil,
         startedAt: Date,
         endedAt: Date
     ) {
         updateJob(id: jobID) { job in
             job.status = .failed
             job.summary = "Failed to start review."
+            job.model = model ?? job.model
             job.errorMessage = message
             job.startedAt = startedAt
             job.endedAt = endedAt
@@ -233,12 +240,14 @@ extension CodexReviewStore {
     package func markBootstrapCancelled(
         jobID: String,
         reason: String,
+        model: String? = nil,
         startedAt: Date,
         endedAt: Date
     ) {
         updateJob(id: jobID) { job in
             job.status = .cancelled
             job.summary = "Review cancelled."
+            job.model = model ?? job.model
             job.errorMessage = reason.nilIfEmpty ?? job.errorMessage
             if job.startedAt == nil {
                 job.startedAt = startedAt
@@ -428,7 +437,7 @@ extension CodexReviewStore {
             cwd: queued.request.cwd,
             reviewThreadID: nil,
             targetSummary: queued.request.targetSummary,
-            model: queued.request.model,
+            model: queued.initialModel,
             threadID: nil,
             turnID: nil,
             status: .queued,
@@ -793,6 +802,7 @@ private struct ReviewQueuedJob {
     var jobID: String
     var sessionID: String
     var request: ReviewRequestOptions
+    var initialModel: String?
 }
 
 private func forceRestart(_ discovery: ReviewDiscoveryRecord) async throws {

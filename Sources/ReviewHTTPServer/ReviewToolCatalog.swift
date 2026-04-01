@@ -73,7 +73,6 @@ enum ReviewToolCatalog {
                     ],
                 ],
             ],
-            "model": ["type": "string", "description": "Optional review model override."],
         ],
         "required": ["cwd", "target"],
         "additionalProperties": false,

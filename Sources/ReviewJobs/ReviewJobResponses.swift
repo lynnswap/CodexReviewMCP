@@ -5,6 +5,7 @@ package struct ReviewReadResult: Sendable, Hashable {
     package var reviewThreadID: String?
     package var threadID: String?
     package var turnID: String?
+    package var model: String?
     package var status: ReviewJobState
     package var review: String
     package var lastAgentMessage: String
@@ -16,6 +17,7 @@ package struct ReviewReadResult: Sendable, Hashable {
         reviewThreadID: String?,
         threadID: String? = nil,
         turnID: String? = nil,
+        model: String? = nil,
         status: ReviewJobState,
         review: String,
         lastAgentMessage: String,
@@ -26,6 +28,7 @@ package struct ReviewReadResult: Sendable, Hashable {
         self.reviewThreadID = reviewThreadID
         self.threadID = threadID
         self.turnID = turnID
+        self.model = model
         self.status = status
         self.review = review
         self.lastAgentMessage = lastAgentMessage
@@ -52,6 +55,7 @@ package struct ReviewReadResult: Sendable, Hashable {
             object["threadId"] = .string(threadID)
         }
         object["turnId"] = turnID.map(Value.string) ?? .null
+        object["model"] = model.map(Value.string) ?? .null
         if includeDetails {
             object["logs"] = .array(logs.map { $0.structuredContent() })
             object["rawLogText"] = .string(rawLogText)
@@ -117,9 +121,7 @@ package struct ReviewJobListItem: Sendable, Hashable {
             "cancellable": .bool(cancellable),
         ]
         object["reviewThreadId"] = reviewThreadID.map(Value.string) ?? .null
-        if let model {
-            object["model"] = .string(model)
-        }
+        object["model"] = model.map(Value.string) ?? .null
         if let startedAt {
             object["startedAt"] = .string(startedAt.ISO8601Format())
         }

@@ -140,13 +140,11 @@ struct ReviewToolHandler {
 private struct ReviewStartArguments: Codable {
     var cwd: String
     var target: ReviewTarget
-    var model: String?
 
     func makeRequest() -> ReviewStartRequest {
         ReviewStartRequest(
             cwd: cwd,
-            target: target,
-            model: model
+            target: target
         )
     }
 }

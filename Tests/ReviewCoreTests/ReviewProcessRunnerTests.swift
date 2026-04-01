@@ -11,9 +11,7 @@ import Testing
         var runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
         runner.gracefulTerminationWait = .milliseconds(100)
@@ -31,12 +29,446 @@ import Testing
         #expect(result.state == .succeeded)
         #expect(result.reviewThreadID == "thr-review")
         #expect(result.turnID == "turn-review")
+        #expect(result.model == "gpt-5.4-mini")
         #expect(result.content == "Looks solid overall.")
         #expect(await recorder.reviewThreadID == "thr-review")
+        #expect(await recorder.reviewModel == "gpt-5.4-mini")
         #expect(await recorder.rawLines.contains("diagnostic: success path"))
         #expect(await recorder.logTexts.contains("$ git diff --stat"))
         #expect(await recorder.logTexts.contains("README.md | 1 +"))
         #expect(await recorder.agentMessages.contains("Looks solid overall."))
+    }
+
+    @Test func appServerReviewRunnerPrefersLocalReviewModelWhenNoPublicOverrideExists() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        let captureURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try writeReviewLocalConfig(
+            homeURL: tempHome,
+            content: #"review_model = "gpt-5.4-mini""#
+        )
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .success,
+            configuredReviewModel: nil,
+            threadStartModel: "gpt-5.4",
+            captureURL: captureURL
+        )
+        defer { try? FileManager.default.removeItem(at: captureURL) }
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: [
+                    "HOME": tempHome.path,
+                ]
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.model == "gpt-5.4-mini")
+        let threadStartParams = try #require(loadCapturedRequest(at: captureURL, method: "thread/start")?["params"] as? [String: Any])
+        let config = try #require(threadStartParams["config"] as? [String: Any])
+        #expect(config["review_model"] as? String == "gpt-5.4-mini")
+    }
+
+    @Test func appServerReviewRunnerUsesConfiguredReviewModelWhenLocalReviewModelIsMissing() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .success,
+            configuredReviewModel: "gpt-5.4-mini",
+            threadStartModel: "gpt-5.4"
+        )
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.model == "gpt-5.4-mini")
+    }
+
+    @Test func appServerReviewRunnerUsesBackendThreadModelWhenOnlyConfiguredBaseModelExists() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        let recorder = EventRecorder()
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .success,
+            configuredModel: "gpt-5.4",
+            configuredReviewModel: nil,
+            threadStartModel: "gpt-5.3-codex"
+        )
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: ["HOME": tempHome.path]
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { event in
+                await recorder.record(event)
+            },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.model == "gpt-5.3-codex")
+        #expect(await recorder.reviewModel == "gpt-5.3-codex")
+    }
+
+    @Test func appServerReviewRunnerFallsBackToThreadStartModelWhenNoPreThreadStartModelExists() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        let recorder = EventRecorder()
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .success,
+            configuredModel: "",
+            configuredReviewModel: nil,
+            threadStartModel: "gpt-5.4-mini-2026-02-01"
+        )
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: ["HOME": tempHome.path]
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { event in
+                await recorder.record(event)
+            },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.model == "gpt-5.4-mini-2026-02-01")
+        #expect(await recorder.reviewModel == "gpt-5.4-mini-2026-02-01")
+    }
+
+    @Test func appServerReviewRunnerFallsBackToLocalCodexConfigModelWhenBackendOmitsModel() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        try writeCodexConfig(
+            codexHomeURL: tempHome.appendingPathComponent(".codex", isDirectory: true),
+            content: #"model = "gpt-5.4-mini""#
+        )
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .success,
+            configuredModel: "",
+            configuredReviewModel: nil,
+            threadStartModel: ""
+        )
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: ["HOME": tempHome.path]
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.model == "gpt-5.4-mini")
+    }
+
+    @Test func appServerReviewRunnerSendsLocalNumericOverridesToThreadStartConfig() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        try writeReviewLocalConfig(
+            homeURL: tempHome,
+            content: """
+            model_reasoning_effort = "high"
+            model_context_window = 120000
+            model_auto_compact_token_limit = 110000
+            """
+        )
+        let captureURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .success,
+            configuredModel: "gpt-5.4-mini",
+            captureURL: captureURL
+        )
+        defer { try? FileManager.default.removeItem(at: captureURL) }
+
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: ["HOME": tempHome.path]
+            )
+        )
+
+        _ = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        let threadStartParams = try #require(loadCapturedRequest(at: captureURL, method: "thread/start")?["params"] as? [String: Any])
+        let config = try #require(threadStartParams["config"] as? [String: Any])
+
+        #expect(config["model_reasoning_effort"] as? String == "high")
+        #expect(config["model_context_window"] as? Int == 120_000)
+        #expect(config["model_auto_compact_token_limit"] as? Int == 110_000)
+    }
+
+    @Test func appServerReviewRunnerClampsThreadStartConfigUsingResolvedReviewModel() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let captureURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .success,
+            configuredModel: "gpt-5.4-mini",
+            configuredReviewModel: "gpt-5.4-mini",
+            threadStartModel: "gpt-5.4-mini",
+            configuredContextWindow: 999_999,
+            configuredAutoCompactTokenLimit: 999_999,
+            captureURL: captureURL
+        )
+        defer {
+            try? FileManager.default.removeItem(at: captureURL)
+        }
+
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        let threadStartParams = try #require(loadCapturedRequest(at: captureURL, method: "thread/start")?["params"] as? [String: Any])
+        let config = try #require(threadStartParams["config"] as? [String: Any])
+
+        #expect(result.model == "gpt-5.4-mini")
+        #expect(config["model_context_window"] as? Int == 272_000)
+        #expect(config["model_auto_compact_token_limit"] as? Int == 244_800)
+    }
+
+    @Test func appServerReviewRunnerFallsBackWhenConfigReadIsUnavailable() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        let appServerCodexHome = try makeTemporaryDirectory()
+        let captureURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try writeCodexConfig(
+            codexHomeURL: appServerCodexHome,
+            content: """
+            profile = "reviewer"
+
+            [profiles.reviewer]
+            model = "custom-review-model"
+            model_context_window = 200_000
+            model_auto_compact_token_limit = 190_000
+            """
+        )
+        try writeModelsCache(
+            codexHomeURL: appServerCodexHome,
+            content: try jsonString([
+                "models": [[
+                    "slug": "custom-review-model",
+                    "context_window": 150_000,
+                ]]
+            ])
+        )
+        let recorder = EventRecorder()
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .configReadUnsupported,
+            configuredModel: "gpt-5.4-mini",
+            threadStartModel: "custom-review-model",
+            captureURL: captureURL,
+            initializeCodexHome: appServerCodexHome.path
+        )
+        defer { try? FileManager.default.removeItem(at: captureURL) }
+
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: ["HOME": tempHome.path]
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { event in
+                await recorder.record(event)
+            },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        let threadStartParams = try #require(loadCapturedRequest(at: captureURL, method: "thread/start")?["params"] as? [String: Any])
+        let config = try #require(threadStartParams["config"] as? [String: Any])
+
+        #expect(result.state == .succeeded)
+        #expect(result.model == "custom-review-model")
+        #expect(config["model_context_window"] as? Int == 150_000)
+        #expect(config["model_auto_compact_token_limit"] as? Int == 135_000)
+        #expect(await recorder.logTexts.contains("Falling back to local config parsing because `config/read` is unavailable."))
+    }
+
+    @Test func appServerReviewRunnerThrowsWhenConfigReadFailsUnexpectedly() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        let captureURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try writeReviewLocalConfig(
+            homeURL: tempHome,
+            content: #"review_model = "gpt-5.4-mini""#
+        )
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .configReadFailure,
+            captureURL: captureURL
+        )
+        defer { try? FileManager.default.removeItem(at: captureURL) }
+
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: ["HOME": tempHome.path]
+            )
+        )
+
+        do {
+            _ = try await runner.run(
+                request: .init(cwd: cwd.path, target: .uncommittedChanges),
+                defaultTimeoutSeconds: nil as Int?,
+                onStart: { _, _ in },
+                onEvent: { _ in },
+                requestedTerminationReason: { nil as ReviewTerminationReason? }
+            )
+            Issue.record("expected bootstrap failure")
+        } catch let error as ReviewBootstrapFailure {
+            #expect(error.message.contains("Failed to read app-server config"))
+            #expect(error.model == "gpt-5.4-mini")
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+
+        #expect(try loadCapturedRequest(at: captureURL, method: "thread/start") == nil)
+    }
+
+    @Test func appServerReviewRunnerKeepsConfiguredModelWhenCancelledAfterConfigRead() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let cancellation = StepCancellation(triggerOnCall: 5, reason: "Cancelled after config/read.")
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .success,
+            configuredReviewModel: "gpt-5.4-mini",
+            threadStartModel: "gpt-5.4-mini"
+        )
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: {
+                await cancellation.reason()
+            }
+        )
+
+        #expect(result.state == .cancelled)
+        #expect(result.errorMessage == "Cancelled after config/read.")
+        #expect(result.model == "gpt-5.4-mini")
+    }
+
+    @Test func appServerReviewRunnerKeepsBackendThreadModelWhenCancelledAfterThreadStart() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        let cancellation = StepCancellation(triggerOnCall: 6, reason: "Cancelled after thread/start.")
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .success,
+            configuredModel: "gpt-5.4",
+            configuredReviewModel: nil,
+            threadStartModel: "gpt-5.3-codex"
+        )
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: ["HOME": tempHome.path]
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: {
+                await cancellation.reason()
+            }
+        )
+
+        #expect(result.state == .cancelled)
+        #expect(result.errorMessage == "Cancelled after thread/start.")
+        #expect(result.model == "gpt-5.3-codex")
+    }
+
+    @Test func appServerReviewRunnerKeepsResolvedModelWhenCancelledBeforeThreadStart() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        try writeReviewLocalConfig(
+            homeURL: tempHome,
+            content: #"review_model = "gpt-5.4""#
+        )
+        let cancellation = StepCancellation(triggerOnCall: 5, reason: "Cancelled during bootstrap.")
+        let scriptURL = try makeFakeAppServerScript(mode: .success)
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: ["HOME": tempHome.path]
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: {
+                await cancellation.reason()
+            }
+        )
+
+        #expect(result.state == .cancelled)
+        #expect(result.errorMessage == "Cancelled during bootstrap.")
+        #expect(result.model == "gpt-5.4")
     }
 
     @Test func appServerReviewRunnerCancelsViaTurnInterrupt() async throws {
@@ -47,9 +479,7 @@ import Testing
         var runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
         runner.gracefulTerminationWait = .milliseconds(100)
@@ -86,9 +516,7 @@ import Testing
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
 
@@ -118,10 +546,9 @@ import Testing
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: "codex",
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                    "PATH": "\(binDirectory.path):/usr/bin:/bin",
-                ]
+                environment: try isolatedHomeEnvironment(
+                    extra: ["PATH": "\(binDirectory.path):/usr/bin:/bin"]
+                )
             )
         )
 
@@ -144,10 +571,9 @@ import Testing
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: missingCommand,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                    "PATH": cwd.path,
-                ]
+                environment: try isolatedHomeEnvironment(
+                    extra: ["PATH": cwd.path]
+                )
             )
         )
 
@@ -168,13 +594,11 @@ import Testing
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
 
-        await #expect(throws: ReviewError.self) {
+        await #expect(throws: ReviewBootstrapFailure.self) {
             _ = try await runner.run(
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
@@ -185,15 +609,44 @@ import Testing
         }
     }
 
+    @Test func appServerReviewRunnerPreservesResolvedModelWhenBootstrapFailsBeforeThreadStart() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let tempHome = try makeTemporaryDirectory()
+        try writeReviewLocalConfig(
+            homeURL: tempHome,
+            content: #"review_model = "gpt-5.4-mini""#
+        )
+        let scriptURL = try makeFakeAppServerScript(mode: .bootstrapFailureBeforeThreadStart)
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: ["HOME": tempHome.path]
+            )
+        )
+
+        do {
+            _ = try await runner.run(
+                request: .init(cwd: cwd.path, target: .uncommittedChanges),
+                defaultTimeoutSeconds: nil as Int?,
+                onStart: { _, _ in },
+                onEvent: { _ in },
+                requestedTerminationReason: { nil as ReviewTerminationReason? }
+            )
+            Issue.record("expected bootstrap failure")
+        } catch let error as ReviewBootstrapFailure {
+            #expect(error.model == "gpt-5.4-mini")
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
     @Test func appServerReviewRunnerReturnsFailureWhenAppServerCrashesAfterReviewStart() async throws {
         let cwd = try makeTemporaryDirectory()
         let scriptURL = try makeFakeAppServerScript(mode: .postReviewCrash)
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
 
@@ -215,9 +668,7 @@ import Testing
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
 
@@ -239,9 +690,7 @@ import Testing
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
 
@@ -263,9 +712,7 @@ import Testing
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
 
@@ -287,9 +734,7 @@ import Testing
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
 
@@ -318,9 +763,7 @@ import Testing
         var runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: scriptURL.path,
-                environment: [
-                    "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-                ]
+                environment: try isolatedHomeEnvironment()
             )
         )
         runner.pollInterval = .milliseconds(50)
@@ -351,6 +794,9 @@ import Testing
 private enum FakeAppServerMode: String {
     case success
     case longRunning
+    case configReadUnsupported
+    case configReadFailure
+    case reviewStartFailure
     case bootstrapFailureBeforeThreadStart
     case postReviewCrash
     case missingExitedReviewMode
@@ -366,12 +812,42 @@ private func makeTemporaryDirectory() throws -> URL {
     return url
 }
 
+private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [String: String] {
+    var environment = ["HOME": try makeTemporaryDirectory().path]
+    for (key, value) in extra {
+        environment[key] = value
+    }
+    return environment
+}
+
 private func makeFakeAppServerScript(
     mode: FakeAppServerMode,
     at url: URL? = nil,
-    markerURL: URL? = nil
+    markerURL: URL? = nil,
+    configuredModel: String = "gpt-5.4-mini",
+    configuredReviewModel: String? = nil,
+    threadStartModel: String? = nil,
+    configuredContextWindow: Int? = nil,
+    configuredAutoCompactTokenLimit: Int? = nil,
+    captureURL: URL? = nil,
+    initializeCodexHome: String? = nil
 ) throws -> URL {
     let destination = url ?? FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    var config: [String: Any] = ["model": configuredModel]
+    if let configuredReviewModel {
+        config["review_model"] = configuredReviewModel
+    }
+    if let configuredContextWindow {
+        config["model_context_window"] = configuredContextWindow
+    }
+    if let configuredAutoCompactTokenLimit {
+        config["model_auto_compact_token_limit"] = configuredAutoCompactTokenLimit
+    }
+    let configReadResult = try jsonString(["config": config])
+    let resolvedThreadStartModel = threadStartModel ?? configuredReviewModel ?? configuredModel
+    let capturePathLiteral = try pythonLiteral(captureURL?.path)
+    let threadStartModelLiteral = try pythonLiteral(resolvedThreadStartModel)
+    let initializeCodexHomeLiteral = try pythonLiteral(initializeCodexHome)
     let script = """
     #!/usr/bin/env python3
     import json
@@ -382,10 +858,20 @@ private func makeFakeAppServerScript(
     thread_id = "thr-review"
     parent_thread_id = "thr-parent"
     turn_id = "turn-review"
+    capture_path = \(capturePathLiteral)
+    thread_start_model = \(threadStartModelLiteral)
+    initialize_codex_home = \(initializeCodexHomeLiteral)
+    config_read_result = json.loads(r'''\(configReadResult)''')
 
     def send(obj, stream=sys.stdout):
         stream.write(json.dumps(obj) + "\\n")
         stream.flush()
+
+    def capture(obj):
+        if capture_path is None:
+            return
+        with open(capture_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(obj) + "\\n")
 
     for raw in sys.stdin:
         if not raw.strip():
@@ -394,18 +880,40 @@ private func makeFakeAppServerScript(
         method = message.get("method")
 
         if method == "initialize":
-            send({"id": message["id"], "result": {"platformFamily": "macOS", "platformOs": "Darwin"}})
+            result = {"platformFamily": "macOS", "platformOs": "Darwin"}
+            if initialize_codex_home is not None:
+                result["codexHome"] = initialize_codex_home
+            send({"id": message["id"], "result": result})
         elif method == "initialized":
             continue
+        elif method == "config/read":
+            capture({"method": method, "params": message.get("params")})
+            if mode == "configReadUnsupported":
+                send({"id": message["id"], "error": {"code": -32601, "message": "Method not found"}})
+                continue
+            if mode == "configReadFailure":
+                send({"id": message["id"], "error": {"code": -32001, "message": "config read failed"}})
+                continue
+            send({"id": message["id"], "result": config_read_result})
         elif method == "thread/start":
+            capture({"method": method, "params": message.get("params")})
             if mode == "bootstrapFailureBeforeThreadStart":
                 sys.stderr.write("bootstrap failed before thread/start\\n")
                 sys.stderr.flush()
                 sys.exit(9)
             if mode == "slowThreadStart":
                 time.sleep(1)
-            send({"id": message["id"], "result": {"thread": {"id": parent_thread_id if mode == "detachedReviewLike" else thread_id}}})
+            send({
+                "id": message["id"],
+                "result": {
+                    "thread": {"id": parent_thread_id if mode == "detachedReviewLike" else thread_id},
+                    "model": thread_start_model
+                }
+            })
         elif method == "review/start":
+            if mode == "reviewStartFailure":
+                send({"id": message["id"], "error": {"code": -32002, "message": "review start failed"}})
+                continue
             if mode == "slowThreadStart":
                 open("\(markerURL?.path ?? "/tmp/review-start-marker")", "w").close()
             send({
@@ -465,6 +973,71 @@ private func makeFakeAppServerScript(
     return destination
 }
 
+private func jsonString(_ object: Any) throws -> String {
+    let data = try JSONSerialization.data(withJSONObject: object, options: [])
+    guard let encoded = String(data: data, encoding: .utf8) else {
+        throw CocoaError(.fileReadInapplicableStringEncoding)
+    }
+    return encoded
+}
+
+private func pythonLiteral(_ value: String?) throws -> String {
+    guard let value else {
+        return "None"
+    }
+    let escaped = value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
+    return "\"\(escaped)\""
+}
+
+private func loadCapturedRequest(at url: URL, method: String) throws -> [String: Any]? {
+    guard let data = try? Data(contentsOf: url),
+          let text = String(data: data, encoding: .utf8)
+    else {
+        return nil
+    }
+    for line in text.split(whereSeparator: \.isNewline) {
+        guard let lineData = line.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              object["method"] as? String == method
+        else {
+            continue
+        }
+        return object
+    }
+    return nil
+}
+
+private func writeReviewLocalConfig(homeURL: URL, content: String) throws {
+    let configDirectory = homeURL.appendingPathComponent(".codex_review", isDirectory: true)
+    try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+    try content.write(
+        to: configDirectory.appendingPathComponent("config.toml"),
+        atomically: true,
+        encoding: .utf8
+    )
+}
+
+private func writeCodexConfig(codexHomeURL: URL, content: String) throws {
+    try FileManager.default.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
+    try content.write(
+        to: codexHomeURL.appendingPathComponent("config.toml"),
+        atomically: true,
+        encoding: .utf8
+    )
+}
+
+private func writeModelsCache(codexHomeURL: URL, content: String) throws {
+    try FileManager.default.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
+    try content.write(
+        to: codexHomeURL.appendingPathComponent("models_cache.json"),
+        atomically: true,
+        encoding: .utf8
+    )
+}
+
 private func makeMarkerScript(markerURL: URL) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try """
@@ -478,14 +1051,16 @@ private func makeMarkerScript(markerURL: URL) throws -> URL {
 
 private actor EventRecorder {
     private(set) var reviewThreadID: String?
+    private(set) var reviewModel: String?
     private(set) var rawLines: [String] = []
     private(set) var logTexts: [String] = []
     private(set) var agentMessages: [String] = []
 
     func record(_ event: ReviewProcessEvent) {
         switch event {
-        case .reviewStarted(let reviewThreadID, _, _):
+        case .reviewStarted(let reviewThreadID, _, _, let model):
             self.reviewThreadID = reviewThreadID
+            self.reviewModel = model
         case .rawLine(let line):
             rawLines.append(line)
         case .logEntry(let entry):
@@ -507,6 +1082,25 @@ private actor CancellationFlag {
 
     func cancel(_ reason: String) {
         cancellationReason = .cancelled(reason)
+    }
+}
+
+private actor StepCancellation {
+    private let triggerOnCall: Int
+    private let text: String
+    private var callCount = 0
+
+    init(triggerOnCall: Int, reason: String) {
+        self.triggerOnCall = triggerOnCall
+        self.text = reason
+    }
+
+    func reason() -> ReviewTerminationReason? {
+        callCount += 1
+        guard callCount >= triggerOnCall else {
+            return nil
+        }
+        return .cancelled(text)
     }
 }
 

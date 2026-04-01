@@ -31,4 +31,20 @@ struct AppServerProtocolTests {
         #expect(AppServerRequestID(jsonObject: NSNumber(value: 11)) == .integer(11))
         #expect(AppServerRequestID(jsonObject: NSNumber(value: 3.5)) == .double(3.5))
     }
+
+    @Test func appServerConfigReadResponseDecodesStringNumericLimits() throws {
+        let data = Data("""
+        {
+          "config": {
+            "model_context_window": "120_000",
+            "model_auto_compact_token_limit": "110_000"
+          }
+        }
+        """.utf8)
+
+        let response = try JSONDecoder().decode(AppServerConfigReadResponse.self, from: data)
+
+        #expect(response.config.modelContextWindow == 120_000)
+        #expect(response.config.modelAutoCompactTokenLimit == 110_000)
+    }
 }

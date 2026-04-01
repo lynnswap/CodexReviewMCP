@@ -64,7 +64,7 @@ entry to include the timeout values.
   - JSON-RPC over STDIO adapter
   - Forwards to the HTTP/SSE server
 - Discovery
-  - Writes the resolved endpoint to `~/Library/Caches/CodexReviewMCP/endpoint.json`
+  - Writes the resolved endpoint to `~/.codex_review/endpoint.json`
 
 ## Installation
 
@@ -108,7 +108,7 @@ Defaults:
 - listen: `localhost:9417`
 - endpoint: `/mcp`
 - session timeout: `3600` seconds
-- discovery file: `~/Library/Caches/CodexReviewMCP/endpoint.json`
+- discovery file: `~/.codex_review/endpoint.json`
 
 Options:
 
@@ -138,7 +138,7 @@ Adapter endpoint resolution order:
 
 1. `--url`
 2. `CODEX_REVIEW_MCP_ENDPOINT`
-3. Discovery file: `~/Library/Caches/CodexReviewMCP/endpoint.json`
+3. Discovery file: `~/.codex_review/endpoint.json`
 4. Default: `http://localhost:9417/mcp`
 
 ## MCP Tools
@@ -151,7 +151,6 @@ Key inputs:
 
 - `cwd`
 - `target`
-- `model`
 
 `target` uses the app-server review target model:
 
@@ -165,6 +164,7 @@ Returns:
 - `reviewThreadId`
 - `threadId` when available
 - `turnId`
+- `model` effective resolved review model
 - `status`
 - `review`
 - `error`
@@ -172,6 +172,11 @@ Returns:
 Notes:
 
 - `review_start` is the primary client flow. It waits for terminal completion, so MCP clients should configure a sufficiently large tool timeout.
+- ReviewMCP resolves the reported review model in this order:
+  1. `~/.codex_review/config.toml` `review_model`
+  2. app-server or local Codex config `review_model`
+  3. backend-reported `thread/start.model`
+  4. app-server or local Codex config `model` only as a pre-thread-start fallback when the backend does not report a model
 - Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
 
 If you are unsure how to build the `target` object, read:
@@ -192,6 +197,7 @@ Returns:
 - `reviewThreadId`
 - `threadId` when available
 - `turnId`
+- `model` effective resolved review model
 - `status`
 - `review`
 - `logs`
@@ -215,7 +221,7 @@ Returns:
   - `reviewThreadId`
   - `cwd`
   - `targetSummary`
-  - `model`
+  - `model` effective resolved review model
   - `status`
   - `summary`
   - `startedAt`
@@ -255,5 +261,7 @@ This server also exposes MCP resource templates for tool-specific and target-spe
 ## Development Notes
 
 - The package depends on `swift-sdk` via a pinned release version in [Package.swift](Package.swift).
-- Default review model, clamp limits, and server defaults are loaded from [Sources/ReviewCore/Resources/defaults.json](Sources/ReviewCore/Resources/defaults.json).
+- Server defaults plus clamp fallback metadata are loaded from [Sources/ReviewCore/Resources/defaults.json](Sources/ReviewCore/Resources/defaults.json).
+- ReviewMCP-only overrides live in `~/.codex_review/config.toml` and currently support root-level `review_model`, `model_reasoning_effort`, `model_context_window`, and `model_auto_compact_token_limit`.
+- `models_cache.json` is not stored in `~/.codex_review`; when clamp metadata is needed, ReviewMCP resolves it the same way Codex does via `CODEX_HOME` or `$HOME/.codex/models_cache.json`.
 - Review jobs are isolated per MCP session.

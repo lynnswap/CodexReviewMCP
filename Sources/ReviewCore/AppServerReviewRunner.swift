@@ -2,12 +2,22 @@ import Darwin
 import Foundation
 import ReviewJobs
 
+package struct ReviewBootstrapFailure: Error, LocalizedError, Sendable {
+    package var message: String
+    package var model: String?
+
+    package var errorDescription: String? {
+        message
+    }
+}
+
 package struct ReviewProcessOutcome: Sendable {
     package var state: ReviewJobState
     package var exitCode: Int
     package var reviewThreadID: String?
     package var threadID: String?
     package var turnID: String?
+    package var model: String?
     package var lastAgentMessage: String
     package var errorMessage: String?
     package var summary: String
@@ -33,8 +43,10 @@ package struct AppServerReviewRunner: Sendable {
         requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?
     ) async throws -> ReviewProcessOutcome {
         let settings = try settingsBuilder.build(request: request)
+        let request = settings.request
+        var effectiveModel: String?
         if let cancelled = await cancelledOutcomeBeforeStart(
-            request: request,
+            requestedModel: effectiveModel,
             requestedTerminationReason: requestedTerminationReason,
             onEvent: onEvent
         ) {
@@ -94,6 +106,7 @@ package struct AppServerReviewRunner: Sendable {
                 reviewThreadID: nil,
                 threadID: nil,
                 turnID: nil,
+                model: effectiveModel,
                 lastAgentMessage: "",
                 errorMessage: cancellationReason,
                 summary: "Review cancelled.",
@@ -107,8 +120,9 @@ package struct AppServerReviewRunner: Sendable {
             return cancelled
         }
 
+        let initializeResponse: AppServerInitializeResponse
         do {
-            try await connection.initialize()
+            initializeResponse = try await connection.initialize()
         } catch {
             await cleanupForThrow()
             throw ReviewError.bootstrapFailed("Failed to initialize app-server: \(error.localizedDescription)")
@@ -118,23 +132,124 @@ package struct AppServerReviewRunner: Sendable {
             return cancelled
         }
 
+        let resolvedCodexHome = ReviewHomePaths.resolvedCodexHomeURL(
+            appServerCodexHome: initializeResponse.codexHome,
+            environment: settings.command.environment
+        )
+
+        let localConfig: ReviewLocalConfig
+        do {
+            localConfig = try loadReviewLocalConfig(environment: settings.command.environment)
+        } catch {
+            await cleanupForThrow()
+            throw ReviewError.bootstrapFailed("Failed to read ReviewMCP config: \(error.localizedDescription)")
+        }
+
+        let fallbackAppServerConfig = loadFallbackAppServerConfig(
+            environment: settings.command.environment,
+            codexHome: resolvedCodexHome
+        )
+        effectiveModel = resolveReviewModelSelection(
+            localConfig: localConfig,
+            resolvedConfig: fallbackAppServerConfig
+        ).reportedModelBeforeThreadStart
+
+        if let cancelled = await cancelledOutcomeDuringBootstrap() {
+            return cancelled
+        }
+
+        let resolvedConfig: AppServerConfigReadResponse.Config
+        do {
+            let configResponse: AppServerConfigReadResponse = try await connection.request(
+                method: "config/read",
+                params: AppServerConfigReadParams(
+                    cwd: request.cwd,
+                    includeLayers: false
+                ),
+                responseType: AppServerConfigReadResponse.self
+            )
+            resolvedConfig = mergeAppServerConfig(
+                primary: configResponse.config,
+                fallback: fallbackAppServerConfig
+            )
+        } catch {
+            guard shouldFallbackFromConfigReadError(error) else {
+                await cleanupForThrow()
+                throw ReviewBootstrapFailure(
+                    message: "Failed to read app-server config: \(error.localizedDescription)",
+                    model: effectiveModel
+                )
+            }
+            resolvedConfig = fallbackAppServerConfig
+            await onEvent(.logEntry(.init(
+                kind: .progress,
+                text: "Falling back to local config parsing because `config/read` is unavailable."
+            )))
+        }
+
+        let reviewSpecificModel = localConfig.reviewModel?.nilIfEmpty
+            ?? resolvedConfig.reviewModel?.nilIfEmpty
+        let resolvedModels = resolveReviewModelSelection(
+            localConfig: localConfig,
+            resolvedConfig: resolvedConfig
+        )
+        effectiveModel = resolvedModels.reportedModelBeforeThreadStart
+
+        if let cancelled = await cancelledOutcomeDuringBootstrap() {
+            return cancelled
+        }
+
+        let threadStart = AppServerThreadStartParams(
+            model: resolvedModels.threadStartModelHint,
+            cwd: request.cwd,
+            approvalPolicy: settings.overrides.approvalPolicy,
+            sandbox: settings.overrides.sandbox,
+            config: makeReviewThreadStartConfig(
+                reviewSpecificModel: reviewSpecificModel,
+                localConfig: localConfig,
+                resolvedConfig: resolvedConfig,
+                clampModel: resolvedModels.clampModel,
+                environment: settings.command.environment,
+                codexHome: resolvedCodexHome
+            ),
+            personality: settings.overrides.personality,
+            ephemeral: settings.overrides.ephemeral
+        )
+
         let threadResponse: AppServerThreadStartResponse
         do {
             threadResponse = try await connection.request(
                 method: "thread/start",
-                params: settings.threadStart,
+                params: threadStart,
                 responseType: AppServerThreadStartResponse.self
             )
         } catch {
             await cleanupForThrow()
-            throw ReviewError.bootstrapFailed("Failed to start review thread: \(error.localizedDescription)")
+            throw ReviewBootstrapFailure(
+                message: "Failed to start review thread: \(error.localizedDescription)",
+                model: effectiveModel
+            )
+        }
+
+        effectiveModel = if reviewSpecificModel != nil {
+            resolvedModels.reportedModelBeforeThreadStart
+                ?? threadResponse.model?.nilIfEmpty
+                ?? effectiveModel
+        } else {
+            threadResponse.model?.nilIfEmpty
+                ?? resolvedModels.reportedModelBeforeThreadStart
+                ?? effectiveModel
         }
 
         if let cancelled = await cancelledOutcomeDuringBootstrap() {
             return cancelled
         }
 
-        var reviewStart = settings.reviewStart
+        var reviewStart = AppServerReviewStartParams(
+            threadID: "",
+            target: request.target,
+            delivery: "inline"
+        )
         reviewStart.threadID = threadResponse.thread.id
 
         let reviewResponse: AppServerReviewStartResponse
@@ -146,7 +261,10 @@ package struct AppServerReviewRunner: Sendable {
             )
         } catch {
             await cleanupForThrow()
-            throw ReviewError.bootstrapFailed("Failed to start review: \(error.localizedDescription)")
+            throw ReviewBootstrapFailure(
+                message: "Failed to start review: \(error.localizedDescription)",
+                model: effectiveModel
+            )
         }
 
         let reviewThreadID = reviewResponse.reviewThreadID
@@ -159,7 +277,8 @@ package struct AppServerReviewRunner: Sendable {
         await onEvent(.reviewStarted(
             reviewThreadID: reviewThreadID,
             threadID: threadResponse.thread.id,
-            turnID: turnID
+            turnID: turnID,
+            model: effectiveModel
         ))
         await onEvent(.progress(.threadStarted, "Review started: \(reviewThreadID)"))
 
@@ -223,6 +342,7 @@ package struct AppServerReviewRunner: Sendable {
                             reviewThreadID: snapshot.reviewThreadID ?? reviewThreadID,
                             threadID: snapshot.threadID ?? threadResponse.thread.id,
                             turnID: snapshot.turnID ?? turnID,
+                            model: effectiveModel,
                             lastAgentMessage: snapshot.lastAgentMessage ?? "",
                             errorMessage: "Review completed without an `exitedReviewMode` item.",
                             summary: "Review failed.",
@@ -241,6 +361,7 @@ package struct AppServerReviewRunner: Sendable {
                         reviewThreadID: snapshot.reviewThreadID ?? reviewThreadID,
                         threadID: snapshot.threadID ?? threadResponse.thread.id,
                         turnID: snapshot.turnID ?? turnID,
+                        model: effectiveModel,
                         lastAgentMessage: review,
                         errorMessage: cancellationReason,
                         summary: summary,
@@ -258,6 +379,7 @@ package struct AppServerReviewRunner: Sendable {
                         reviewThreadID: snapshot.reviewThreadID ?? reviewThreadID,
                         threadID: snapshot.threadID ?? threadResponse.thread.id,
                         turnID: snapshot.turnID ?? turnID,
+                        model: effectiveModel,
                         lastAgentMessage: snapshot.lastAgentMessage ?? "",
                         errorMessage: reason,
                         summary: "Review cancelled.",
@@ -275,6 +397,7 @@ package struct AppServerReviewRunner: Sendable {
                         reviewThreadID: snapshot.reviewThreadID ?? reviewThreadID,
                         threadID: snapshot.threadID ?? threadResponse.thread.id,
                         turnID: snapshot.turnID ?? turnID,
+                        model: effectiveModel,
                         lastAgentMessage: snapshot.lastAgentMessage ?? "",
                         errorMessage: errorMessage,
                         summary: "Review failed.",
@@ -289,8 +412,9 @@ package struct AppServerReviewRunner: Sendable {
                 let snapshot = await state.snapshot()
                 if snapshot.reviewThreadID == nil {
                     await cleanupForThrow()
-                    throw ReviewError.bootstrapFailed(
-                        bootstrapFailureMessage(exitCode: exitCode, stderr: snapshot.stderrText)
+                    throw ReviewBootstrapFailure(
+                        message: bootstrapFailureMessage(exitCode: exitCode, stderr: snapshot.stderrText),
+                        model: effectiveModel
                     )
                 }
                 if snapshot.turnStatus == nil {
@@ -311,6 +435,7 @@ package struct AppServerReviewRunner: Sendable {
                     reviewThreadID: snapshot.reviewThreadID,
                     threadID: snapshot.threadID,
                     turnID: snapshot.turnID,
+                    model: effectiveModel,
                     lastAgentMessage: snapshot.lastAgentMessage ?? "",
                     errorMessage: reason,
                     summary: cancellationReason == nil ? "Review failed." : "Review cancelled.",
@@ -334,6 +459,7 @@ package struct AppServerReviewRunner: Sendable {
                     reviewThreadID: snapshot.reviewThreadID,
                     threadID: snapshot.threadID,
                     turnID: snapshot.turnID,
+                    model: effectiveModel,
                     lastAgentMessage: snapshot.lastAgentMessage ?? "",
                     errorMessage: "Review timed out after \(timeoutSeconds) seconds.",
                     summary: "Review timed out after \(timeoutSeconds) seconds.",
@@ -356,6 +482,7 @@ package struct AppServerReviewRunner: Sendable {
                     reviewThreadID: snapshot.reviewThreadID,
                     threadID: snapshot.threadID,
                     turnID: snapshot.turnID,
+                    model: effectiveModel,
                     lastAgentMessage: snapshot.lastAgentMessage ?? "",
                     errorMessage: reason,
                     summary: "Review cancelled.",
@@ -369,8 +496,15 @@ package struct AppServerReviewRunner: Sendable {
         }
     }
 
+    private func shouldFallbackFromConfigReadError(_ error: Error) -> Bool {
+        guard let responseError = error as? AppServerResponseError else {
+            return false
+        }
+        return responseError.isUnsupportedMethod
+    }
+
     private func cancelledOutcomeBeforeStart(
-        request: ReviewRequestOptions,
+        requestedModel: String?,
         requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
         onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void
     ) async -> ReviewProcessOutcome? {
@@ -394,6 +528,7 @@ package struct AppServerReviewRunner: Sendable {
             reviewThreadID: nil,
             threadID: nil,
             turnID: nil,
+            model: requestedModel,
             lastAgentMessage: "",
             errorMessage: cancellationReason,
             summary: "Review cancelled.",
@@ -773,8 +908,8 @@ private actor AppServerConnection {
         }
     }
 
-    func initialize() async throws {
-        let _ = try await request(
+    func initialize() async throws -> AppServerInitializeResponse {
+        let response: AppServerInitializeResponse = try await request(
             method: "initialize",
             params: AppServerInitializeParams(
                 clientInfo: .init(
@@ -786,6 +921,7 @@ private actor AppServerConnection {
             responseType: AppServerInitializeResponse.self
         )
         try await notify(method: "initialized", params: AppServerInitializedParams())
+        return response
     }
 
     func request<Params: Encodable, Response: Decodable>(
@@ -901,7 +1037,7 @@ private actor AppServerConnection {
                 return
             }
             if let error = parseResponseError(from: object) {
-                continuation.resume(throwing: ReviewError.io(error))
+                continuation.resume(throwing: error)
             } else {
                 continuation.resume(returning: data)
             }
@@ -942,11 +1078,14 @@ private actor AppServerConnection {
         continuation.resume(throwing: error)
     }
 
-    private func parseResponseError(from object: [String: Any]) -> String? {
+    private func parseResponseError(from object: [String: Any]) -> AppServerResponseError? {
         guard let error = object["error"] as? [String: Any] else {
             return nil
         }
-        return (error["message"] as? String)?.nilIfEmpty ?? "app-server request failed."
+        let code = (error["code"] as? Int)
+            ?? (error["code"] as? NSNumber)?.intValue
+        let message = (error["message"] as? String)?.nilIfEmpty ?? "app-server request failed."
+        return AppServerResponseError(code: code, message: message)
     }
 
     private func decodeNotification(method: String, data: Data) -> AppServerServerNotification {

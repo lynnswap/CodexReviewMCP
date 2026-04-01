@@ -40,14 +40,17 @@ package actor ReviewExecutionCoordinator {
     ) async throws -> ReviewReadResult {
         let request = try request.validated()
         let requestOptions = try request.reviewRequestOptions().validated()
+        let initialResolvedModel = resolveInitialReviewModel(environment: configuration.environment)
         let jobID = try await store.enqueueReview(
             sessionID: sessionID,
-            request: requestOptions
+            request: requestOptions,
+            initialModel: initialResolvedModel
         )
         let task = Task {
             try await self.runReview(
                 jobID: jobID,
                 request: requestOptions,
+                initialModel: initialResolvedModel,
                 store: store
             )
         }
@@ -123,6 +126,7 @@ package actor ReviewExecutionCoordinator {
     private func runReview(
         jobID: String,
         request: ReviewRequestOptions,
+        initialModel: String?,
         store: CodexReviewStore
     ) async throws {
         let now = Date()
@@ -152,11 +156,12 @@ package actor ReviewExecutionCoordinator {
                 }
             )
             await store.completeReview(jobID: jobID, outcome: outcome)
-        } catch let error as ReviewError where isBootstrapFailure(error) {
+        } catch let error as ReviewBootstrapFailure {
             if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
                 await store.markBootstrapCancelled(
                     jobID: jobID,
                     reason: reason,
+                    model: error.model ?? initialModel,
                     startedAt: now,
                     endedAt: Date()
                 )
@@ -164,6 +169,25 @@ package actor ReviewExecutionCoordinator {
                 await store.failToStart(
                     jobID: jobID,
                     message: error.errorDescription ?? "Failed to start review.",
+                    model: error.model ?? initialModel,
+                    startedAt: now,
+                    endedAt: Date()
+                )
+            }
+        } catch let error as ReviewError where isBootstrapFailure(error) {
+            if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
+                await store.markBootstrapCancelled(
+                    jobID: jobID,
+                    reason: reason,
+                    model: initialModel,
+                    startedAt: now,
+                    endedAt: Date()
+                )
+            } else {
+                await store.failToStart(
+                    jobID: jobID,
+                    message: error.errorDescription ?? "Failed to start review.",
+                    model: initialModel,
                     startedAt: now,
                     endedAt: Date()
                 )
@@ -173,6 +197,7 @@ package actor ReviewExecutionCoordinator {
             await store.failToStart(
                 jobID: jobID,
                 message: message,
+                model: initialModel,
                 startedAt: now,
                 endedAt: Date()
             )
