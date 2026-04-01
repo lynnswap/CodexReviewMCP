@@ -99,7 +99,12 @@ extension CodexReviewStore {
     }
 
     package func hasActiveJobs(for sessionID: String) -> Bool {
-        jobs.contains { $0.sessionID == sessionID && $0.isTerminal == false }
+        for workspace in workspaces {
+            if workspace.jobs.contains(where: { $0.sessionID == sessionID && $0.isTerminal == false }) {
+                return true
+            }
+        }
+        return false
     }
 
     package func closeSession(_ sessionID: String, reason: String) async {
@@ -130,7 +135,7 @@ extension CodexReviewStore {
         artifacts: ReviewArtifacts,
         startedAt: Date
     ) {
-        updateJob(id: jobID, resort: true) { job in
+        updateJob(id: jobID) { job in
             job.artifacts = artifacts
             job.startedAt = startedAt
             if job.status == .queued {
@@ -176,7 +181,7 @@ extension CodexReviewStore {
     }
 
     package func completeReview(jobID: String, outcome: ReviewProcessOutcome) {
-        updateJob(id: jobID, resort: true) { job in
+        updateJob(id: jobID) { job in
             job.status = .init(state: outcome.state)
             job.summary = outcome.summary
             job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
@@ -195,7 +200,7 @@ extension CodexReviewStore {
         startedAt: Date,
         endedAt: Date
     ) {
-        updateJob(id: jobID, resort: true) { job in
+        updateJob(id: jobID) { job in
             job.status = .failed
             job.summary = "Failed to start review."
             job.errorMessage = message
@@ -217,7 +222,7 @@ extension CodexReviewStore {
             return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: false)
         }
         let endedAt = job.startedAt == nil ? Date() : nil
-        updateJob(id: jobID, resort: true) { job in
+        updateJob(id: jobID) { job in
             job.status = .cancelled
             job.summary = "Cancellation requested."
             if reason.isEmpty == false {
@@ -235,18 +240,31 @@ extension CodexReviewStore {
             return []
         }
         backend.closedSessions.insert(sessionID)
-        let activeJobIDs = jobs
-            .filter { $0.sessionID == sessionID && $0.isTerminal == false }
-            .map(\.id)
-        jobs.removeAll { $0.sessionID == sessionID && $0.isTerminal }
+        var activeJobIDs: [String] = []
+        for workspace in workspaces {
+            activeJobIDs.append(
+                contentsOf: workspace.jobs
+                    .filter { $0.sessionID == sessionID && $0.isTerminal == false }
+                    .map(\.id)
+            )
+        }
+
+        for workspace in workspaces.reversed() {
+            workspace.jobs.removeAll { $0.sessionID == sessionID && $0.isTerminal }
+        }
+        workspaces.removeAll { $0.jobs.isEmpty }
         writeDiagnosticsIfNeeded()
         return activeJobIDs
     }
 
     package func pruneClosedJobIfNeeded(jobID: String) {
         guard let backend = backend as? CodexReviewEmbeddedServerBackend,
-              let job = job(id: jobID),
-              backend.closedSessions.contains(job.sessionID),
+              let location = jobLocation(id: jobID)
+        else {
+            return
+        }
+        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
+        guard backend.closedSessions.contains(job.sessionID),
               job.isTerminal
         else {
             return
@@ -347,48 +365,63 @@ extension CodexReviewStore {
     }
 
     private func appendQueuedJob(_ queued: ReviewQueuedJob) {
-        jobs.append(
-            CodexReviewJob(
-                id: queued.jobID,
-                sessionID: queued.sessionID,
-                cwd: queued.request.cwd,
-                targetSummary: queued.request.targetSummary,
-                model: queued.request.model,
-                threadID: nil,
-                turnID: nil,
-                status: .queued,
-                startedAt: nil,
-                endedAt: nil,
-                summary: "Queued.",
-                lastAgentMessage: nil,
-                logEntries: [],
-                rawLogLines: [],
-                errorMessage: nil,
-                exitCode: nil,
-                artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)
-            )
+        let job = CodexReviewJob(
+            id: queued.jobID,
+            sortOrder: nextJobSortOrder(in: queued.request.cwd),
+            sessionID: queued.sessionID,
+            cwd: queued.request.cwd,
+            targetSummary: queued.request.targetSummary,
+            model: queued.request.model,
+            threadID: nil,
+            turnID: nil,
+            status: .queued,
+            startedAt: nil,
+            endedAt: nil,
+            summary: "Queued.",
+            lastAgentMessage: nil,
+            logEntries: [],
+            rawLogLines: [],
+            errorMessage: nil,
+            exitCode: nil,
+            artifacts: .init(eventsPath: nil, logPath: nil, lastMessagePath: nil)
         )
-        sortJobs()
+
+        if let workspaceIndex = workspaces.firstIndex(where: { $0.cwd == queued.request.cwd }) {
+            let workspace = workspaces[workspaceIndex]
+            workspace.jobs = [job] + workspace.jobs
+        } else {
+            let workspace = CodexReviewWorkspace(
+                cwd: queued.request.cwd,
+                sortOrder: nextWorkspaceSortOrder(),
+                jobs: [job]
+            )
+            workspaces = [workspace] + workspaces
+        }
         writeDiagnosticsIfNeeded()
     }
 
     private func updateJob(
         id: String,
-        resort: Bool = false,
         _ update: (CodexReviewJob) -> Void
     ) {
-        guard let job = job(id: id) else {
+        guard let location = jobLocation(id: id) else {
             return
         }
+        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
         update(job)
-        if resort {
-            sortJobs()
-        }
         writeDiagnosticsIfNeeded()
     }
 
     private func removeJob(id: String) {
-        jobs.removeAll { $0.id == id }
+        guard let location = jobLocation(id: id) else {
+            return
+        }
+
+        let workspace = workspaces[location.workspaceIndex]
+        workspace.jobs.remove(at: location.jobIndex)
+        if workspace.jobs.isEmpty {
+            workspaces.remove(at: location.workspaceIndex)
+        }
         writeDiagnosticsIfNeeded()
     }
 
@@ -399,24 +432,47 @@ extension CodexReviewStore {
     ) -> [CodexReviewJob] {
         let normalizedCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         let allowedStatuses = statuses.map(Set.init)
-        return jobs
-            .filter { $0.sessionID == sessionID }
-            .filter { job in
+        var matches: [CodexReviewJob] = []
+        for workspace in workspaces {
+            for job in workspace.jobs where job.sessionID == sessionID {
                 if let normalizedCWD, job.cwd != normalizedCWD {
-                    return false
+                    continue
                 }
                 if let allowedStatuses, allowedStatuses.contains(job.status.state) == false {
-                    return false
+                    continue
                 }
-                return true
+                matches.append(job)
             }
-            .sorted(by: compareRuntimeJobs)
+        }
+        return matches.sorted(by: compareRuntimeJobs)
+    }
+
+    private func jobLocation(id: String) -> (workspaceIndex: Int, jobIndex: Int)? {
+        for (workspaceIndex, workspace) in workspaces.enumerated() {
+            guard let jobIndex = workspace.jobs.firstIndex(where: { $0.id == id }) else {
+                continue
+            }
+            return (workspaceIndex, jobIndex)
+        }
+        return nil
+    }
+
+    private func nextWorkspaceSortOrder() -> Int {
+        (workspaces.map(\.sortOrder).max() ?? 0) + 1
+    }
+
+    private func nextJobSortOrder(in cwd: String) -> Int {
+        guard let workspace = workspaces.first(where: { $0.cwd == cwd }) else {
+            return 1
+        }
+        return (workspace.jobs.map(\.sortOrder).max() ?? 0) + 1
     }
 
     private func authorizedJob(id: String, sessionID: String) throws -> CodexReviewJob {
-        guard let job = job(id: id) else {
+        guard let location = jobLocation(id: id) else {
             throw ReviewError.jobNotFound("Job \(id) was not found.")
         }
+        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
         guard job.sessionID == sessionID else {
             throw ReviewError.accessDenied("Job \(id) belongs to another MCP session.")
         }

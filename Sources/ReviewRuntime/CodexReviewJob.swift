@@ -6,8 +6,9 @@ import ReviewJobs
 @Observable
 public final class CodexReviewJob: Identifiable, Hashable {
     public nonisolated let id: String
+    public var sortOrder: Int
     public let sessionID: String
-    public var cwd: String
+    public let cwd: String
     public var targetSummary: String
     public var model: String?
     public var threadID: String?
@@ -59,6 +60,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
 
     package init(
         id: String,
+        sortOrder: Int,
         sessionID: String,
         cwd: String,
         targetSummary: String,
@@ -77,6 +79,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         artifacts: ReviewArtifacts
     ) {
         self.id = id
+        self.sortOrder = sortOrder
         self.sessionID = sessionID
         self.cwd = cwd
         self.targetSummary = targetSummary

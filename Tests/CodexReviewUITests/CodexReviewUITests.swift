@@ -30,8 +30,6 @@ struct CodexReviewUITests {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [])
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [])
 
         #expect(viewController.splitViewItems.count == 2)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
@@ -60,23 +58,58 @@ struct CodexReviewUITests {
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
     }
 
-    @Test func splitViewSeparatesActiveAndRecentJobs() {
+    @Test func splitViewSectionsByWorkspace() {
         guard #available(macOS 26.0, *) else {
             return
         }
-        let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
-        let recentJob = makeJob(status: .failed, targetSummary: "Base branch: main")
+        let workspaceAlphaJob = makeJob(
+            cwd: "/tmp/workspace-alpha",
+            startedAt: Date(timeIntervalSince1970: 200),
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let workspaceBetaJob = makeJob(
+            cwd: "/tmp/workspace-beta",
+            startedAt: Date(timeIntervalSince1970: 100),
+            status: .failed,
+            targetSummary: "Base branch: main"
+        )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, jobs: [activeJob, recentJob])
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+        )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
 
-        #expect(viewController.sidebarViewControllerForTesting.displayedSectionTitlesForTesting == ["Active", "Recent"])
+        #expect(viewController.sidebarViewControllerForTesting.displayedSectionTitlesForTesting == [
+            "workspace-alpha",
+            "workspace-beta",
+        ])
         #expect(viewController.splitViewItems.count == 2)
         #expect(viewController.splitViewItems[0].behavior == .sidebar)
         #expect(viewController.splitViewItems[1].behavior == .default)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
         #expect(viewController.contentAccessoryCountForTesting == 0)
+    }
+
+    @Test func jobsPresentOnInitialLoadStayUnselected() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        let recentJob = makeJob(status: .succeeded, targetSummary: "Commit: abc123")
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
+        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == nil)
     }
 
     @Test func selectingJobUpdatesDetailPane() async throws {
@@ -91,7 +124,10 @@ struct CodexReviewUITests {
             logText: "Findings ready\n"
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, jobs: [activeJob, recentJob])
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+        )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
 
@@ -136,7 +172,10 @@ struct CodexReviewUITests {
             logText: "Recent log\n"
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, jobs: [activeJob, recentJob])
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+        )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
         viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
@@ -162,7 +201,30 @@ struct CodexReviewUITests {
         }
     }
 
-    @Test func removingSelectedJobAutoSelectsNextVisibleJob() async throws {
+    @Test func newJobsArrivingWhileUnselectedDoNotAutoSelect() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: [])
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
+        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
+
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [activeJob])
+        )
+
+        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
+        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == nil)
+    }
+
+    @Test func removingSelectedJobClearsSelectionWithoutAutoSelectingReplacement() async throws {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -181,7 +243,10 @@ struct CodexReviewUITests {
             logText: "Recent log\n"
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, jobs: [activeJob, recentJob])
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+        )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
         viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
@@ -193,14 +258,18 @@ struct CodexReviewUITests {
             return true
         }
 
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [])
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [recentJob])
+        )
 
         let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
             let sidebar = viewController.sidebarViewControllerForTesting
             let transport = viewController.transportViewControllerForTesting
-            guard sidebar.selectedJobForTesting?.id == recentJob.id,
-                  transport.displayedTitleForTesting == recentJob.displayTitle,
-                  transport.displayedSummaryForTesting == recentJob.summary
+            guard sidebar.selectedJobForTesting == nil,
+                  transport.isShowingEmptyStateForTesting,
+                  transport.displayedTitleForTesting == nil,
+                  transport.displayedSummaryForTesting == nil
             else {
                 return nil
             }
@@ -220,8 +289,13 @@ struct CodexReviewUITests {
             logText: "Initial log\n"
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, jobs: [job])
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [job])
+        )
         let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
         viewController.loadViewIfNeeded()
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
@@ -266,7 +340,10 @@ struct CodexReviewUITests {
             logText: "Initial log\n"
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, jobs: [job])
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [job])
+        )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
 
@@ -283,8 +360,10 @@ struct CodexReviewUITests {
         job.summary = "Review completed successfully."
         job.logEntries = [.init(kind: .agentMessage, text: "Updated log")]
 
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.active, jobs: [])
-        viewController.sidebarViewControllerForTesting.applySectionForTesting(.recent, jobs: [job])
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [job])
+        )
 
         let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
             let sidebar = viewController.sidebarViewControllerForTesting
@@ -298,6 +377,7 @@ struct CodexReviewUITests {
             return true
         }
     }
+
 }
 
 @MainActor
@@ -319,6 +399,8 @@ private func waitUntilValue<T>(
 @MainActor
 private func makeJob(
     id: String = UUID().uuidString,
+    cwd: String = "/tmp/repo",
+    startedAt: Date = Date(),
     status: CodexReviewJobStatus,
     targetSummary: String,
     summary: String? = nil,
@@ -327,17 +409,38 @@ private func makeJob(
 ) -> CodexReviewJob {
     CodexReviewJob.makeForTesting(
         id: id,
+        cwd: cwd,
         targetSummary: targetSummary,
         threadID: status == .queued ? nil : UUID().uuidString,
         turnID: UUID().uuidString,
         status: status,
-        startedAt: Date(),
-        endedAt: status.isTerminal ? Date() : nil,
+        startedAt: startedAt,
+        endedAt: status.isTerminal ? startedAt.addingTimeInterval(1) : nil,
         summary: summary ?? status.displayText,
         lastAgentMessage: "",
         logEntries: logText.isEmpty ? [] : [.init(kind: .agentMessage, text: logText.trimmingCharacters(in: .newlines))],
         rawLogLines: rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     )
+}
+
+@MainActor
+private func makeWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspace] {
+    var buckets: [String: [CodexReviewJob]] = [:]
+    var order: [String] = []
+    for job in jobs {
+        if buckets[job.cwd] == nil {
+            order.insert(job.cwd, at: 0)
+            buckets[job.cwd] = []
+        }
+        buckets[job.cwd, default: []].insert(job, at: 0)
+    }
+    return order.enumerated().map { index, cwd in
+        CodexReviewWorkspace(
+            cwd: cwd,
+            sortOrder: index + 1,
+            jobs: buckets[cwd] ?? []
+        )
+    }
 }
 
 private struct TestFailure: Error {

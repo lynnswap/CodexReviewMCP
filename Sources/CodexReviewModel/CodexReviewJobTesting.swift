@@ -6,6 +6,7 @@ extension CodexReviewJob {
     @_spi(Testing)
     public static func makeForTesting(
         id: String = UUID().uuidString,
+        sortOrder: Int = 0,
         sessionID: String = "session-1",
         cwd: String = "/tmp/repo",
         targetSummary: String,
@@ -24,6 +25,7 @@ extension CodexReviewJob {
     ) -> CodexReviewJob {
         CodexReviewJob(
             id: id,
+            sortOrder: sortOrder,
             sessionID: sessionID,
             cwd: cwd,
             targetSummary: targetSummary,

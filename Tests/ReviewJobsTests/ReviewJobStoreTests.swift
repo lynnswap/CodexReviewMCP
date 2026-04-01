@@ -69,8 +69,9 @@ struct ReviewRuntimeTests {
         #expect(result.status == ReviewJobState.succeeded)
         #expect(result.review == "Review ok")
         #expect(result.reviewThreadID == result.jobID)
-        #expect(store.jobs.count == 1)
-        #expect(store.jobs.first?.status == .succeeded)
+        #expect(store.workspaces.count == 1)
+        #expect(store.workspaces.first?.jobs.count == 1)
+        #expect(store.workspaces.first?.jobs.first?.status == .succeeded)
     }
 
     @Test func codexReviewStoreReturnsCancelledAfterInFlightCancel() async throws {
@@ -168,7 +169,12 @@ private func waitUntilRunningJobID(
 ) async throws -> String {
     try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(100)) {
         await MainActor.run {
-            store.jobs(sessionID: sessionID).first(where: { $0.status == .running })?.id
+            for workspace in store.workspaces {
+                if let job = workspace.jobs.first(where: { $0.sessionID == sessionID && $0.status == .running }) {
+                    return job.id
+                }
+            }
+            return nil
         }
     }
 }

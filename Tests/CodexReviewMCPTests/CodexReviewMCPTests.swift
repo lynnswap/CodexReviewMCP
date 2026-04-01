@@ -27,7 +27,7 @@ struct CodexReviewMCPTests {
         await firstStore.stop()
         #expect(firstStore.serverState == .stopped)
         #expect(firstStore.serverURL == nil)
-        #expect(firstStore.jobs.isEmpty)
+        #expect(firstStore.workspaces.isEmpty)
 
         let secondStore = CodexReviewStore(
             configuration: .init(host: "127.0.0.1", port: secondPort, codexCommand: scriptURL.path)
@@ -38,11 +38,22 @@ struct CodexReviewMCPTests {
         await secondStore.stop()
     }
 
-    @Test func loadForTestingReplacesStoreSnapshotAndSortsJobs() {
+    @Test func loadForTestingBuildsWorkspaceSnapshot() {
         let store = CodexReviewStore(configuration: .init())
-        let recentJob = CodexReviewJob.makeForTesting(
-            id: "recent-job",
-            cwd: "/tmp/recent",
+        let newerWorkspaceJob = CodexReviewJob.makeForTesting(
+            id: "workspace-b-newer",
+            sortOrder: 2,
+            cwd: "/tmp/workspace-b",
+            targetSummary: "Branch: feature/previews",
+            status: .running,
+            startedAt: Date(timeIntervalSince1970: 300),
+            summary: "Running",
+            logEntries: [.init(kind: .agentMessage, text: "Running review")]
+        )
+        let olderWorkspaceJob = CodexReviewJob.makeForTesting(
+            id: "workspace-a-older",
+            sortOrder: 1,
+            cwd: "/tmp/workspace-a",
             targetSummary: "Commit: abc123",
             status: .succeeded,
             startedAt: Date(timeIntervalSince1970: 100),
@@ -50,27 +61,29 @@ struct CodexReviewMCPTests {
             summary: "Succeeded",
             logEntries: [.init(kind: .agentMessage, text: "Done")]
         )
-        let activeJob = CodexReviewJob.makeForTesting(
-            id: "active-job",
-            cwd: "/tmp/active",
-            targetSummary: "Branch: feature/previews",
-            status: .running,
+        let newerSiblingJob = CodexReviewJob.makeForTesting(
+            id: "workspace-a-newer",
+            sortOrder: 3,
+            cwd: "/tmp/workspace-a",
+            targetSummary: "Commit: def456",
+            status: .failed,
             startedAt: Date(timeIntervalSince1970: 200),
-            summary: "Running",
-            logEntries: [.init(kind: .agentMessage, text: "Running review")]
+            endedAt: Date(timeIntervalSince1970: 210),
+            summary: "Failed",
+            logEntries: [.init(kind: .agentMessage, text: "Failed review")]
         )
 
         store.loadForTesting(
             serverState: .running,
             serverURL: URL(string: "http://localhost:9417/mcp"),
-            jobs: [recentJob, activeJob]
+            workspaces: makeWorkspaces(from: [olderWorkspaceJob, newerWorkspaceJob, newerSiblingJob])
         )
 
         #expect(store.serverState == .running)
         #expect(store.serverURL?.absoluteString == "http://localhost:9417/mcp")
-        #expect(store.jobs.map(\.id) == ["active-job", "recent-job"])
-        #expect(store.activeJobs.map(\.id) == ["active-job"])
-        #expect(store.recentJobs.map(\.id) == ["recent-job"])
+        #expect(store.workspaces.map(\.cwd) == ["/tmp/workspace-b", "/tmp/workspace-a"])
+        #expect(store.workspaces.first?.jobs.map(\.id) == ["workspace-b-newer"])
+        #expect(store.workspaces.last?.jobs.map(\.id) == ["workspace-a-newer", "workspace-a-older"])
     }
 
     @Test func embeddedServerReviewStartProgressesViaHTTP() async throws {
@@ -109,16 +122,16 @@ struct CodexReviewMCPTests {
             #expect(structuredContent["rawLogText"] == nil)
             #expect(structuredContent["lastAgentMessage"] == nil)
 
-            try await waitUntil(timeout: .seconds(2)) {
+                try await waitUntil(timeout: .seconds(2)) {
                 await MainActor.run {
-                    guard let job = store.jobs.first else {
+                    guard let job = store.workspaces.first?.jobs.first else {
                         return false
                     }
                     return job.status == .succeeded && job.logText.isEmpty == false
                 }
             }
 
-            let job = try #require(store.jobs.first)
+            let job = try #require(store.workspaces.first?.jobs.first)
             #expect(job.status == .succeeded)
             #expect(job.logText.contains("$ git diff --stat"))
             #expect(job.logText.contains("Inspecting current changes"))
@@ -176,14 +189,14 @@ struct CodexReviewMCPTests {
 
                 try await waitUntil(timeout: .seconds(60), interval: .milliseconds(200)) {
                     await MainActor.run {
-                        guard let job = store.jobs.first else {
+                        guard let job = store.workspaces.first?.jobs.first else {
                             return false
                         }
                         return job.status == .succeeded && job.logText.isEmpty == false
                     }
                 }
 
-                let job = try #require(store.jobs.first)
+                let job = try #require(store.workspaces.first?.jobs.first)
                 #expect(job.status == .succeeded)
                 #expect(job.logText.isEmpty == false)
                 let readResponse = try await client.callTool(
@@ -220,9 +233,9 @@ struct CodexReviewMCPTests {
         )
 
         let firstJobID = try store.enqueueReview(sessionID: "session-1", request: queuedRequest)
-        let firstJob = try #require(store.jobs.first(where: { $0.id == firstJobID }))
-        #expect(store.activeJobs.map(\.id) == [firstJobID])
-        #expect(store.recentJobs.isEmpty)
+        let firstJob = try #require(findJob(id: firstJobID, in: store))
+        #expect(store.workspaces.map(\.cwd) == ["/tmp/repo"])
+        #expect(store.workspaces.first?.jobs.map(\.id) == [firstJobID])
 
         store.markStarted(
             jobID: firstJobID,
@@ -243,13 +256,13 @@ struct CodexReviewMCPTests {
             endedAt: Date(timeIntervalSince1970: 201)
         )
 
-        let updatedJob = try #require(store.jobs.first(where: { $0.id == firstJobID }))
+        let updatedJob = try #require(findJob(id: firstJobID, in: store))
         #expect(updatedJob === firstJob)
         #expect(updatedJob.status == .running)
         #expect(updatedJob.threadID == "thread-1")
         #expect(updatedJob.logText == "Running review")
-        #expect(store.activeJobs.map(\.id) == [firstJobID])
-        #expect(store.recentJobs.map(\.id) == [secondJobID])
+        #expect(store.workspaces.map(\.cwd) == ["/tmp/repo"])
+        #expect(store.workspaces.first?.jobs.map(\.id) == [secondJobID, firstJobID])
         #expect(updatedJob.startedAt == Date(timeIntervalSince1970: 123))
     }
 
@@ -511,6 +524,37 @@ private func runProcess(_ arguments: [String], in directoryURL: URL) throws {
         throw TestFailure("command failed: \(arguments.joined(separator: " "))")
     }
 }
+
+@MainActor
+private func makeWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspace] {
+    var buckets: [String: [CodexReviewJob]] = [:]
+    var order: [String] = []
+    for job in jobs {
+        if buckets[job.cwd] == nil {
+            order.insert(job.cwd, at: 0)
+            buckets[job.cwd] = []
+        }
+        buckets[job.cwd, default: []].insert(job, at: 0)
+    }
+    return order.enumerated().map { index, cwd in
+        CodexReviewWorkspace(
+            cwd: cwd,
+            sortOrder: index + 1,
+            jobs: buckets[cwd] ?? []
+        )
+    }
+}
+
+@MainActor
+private func findJob(id: String, in store: CodexReviewStore) -> CodexReviewJob? {
+    for workspace in store.workspaces {
+        if let job = workspace.jobs.first(where: { $0.id == id }) {
+            return job
+        }
+    }
+    return nil
+}
+
 
 private final class ReviewMCPHTTPTestClient: @unchecked Sendable {
     private let endpointURL: URL

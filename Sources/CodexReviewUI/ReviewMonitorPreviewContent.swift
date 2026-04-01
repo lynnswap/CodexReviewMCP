@@ -10,34 +10,40 @@ enum ReviewMonitorPreviewContent {
         store.loadForTesting(
             serverState: .running,
             serverURL: URL(string: "http://localhost:9417/mcp"),
-            jobs: makeJobs()
+            workspaces: makeWorkspaces()
         )
         return store
     }
 
-    private static func makeJobs() -> [CodexReviewJob] {
+    private static func makeWorkspaces() -> [CodexReviewWorkspace] {
         [
-            makeJob(
-                id: "preview-active-job",
-                status: .running,
-                targetSummary: "Branch: feature/previews",
-                summary: "Embedded server is ready. Waiting for a review request from the connected client.",
-                logText: """
-                Review session opened.
+            CodexReviewWorkspace(
+                cwd: "/path/to/CodexReviewMCP",
+                sortOrder: 1,
+                jobs: [
+                    makeJob(
+                        id: "preview-active-job",
+                        status: .running,
+                        targetSummary: "Branch: feature/previews",
+                        summary: "Embedded server is ready. Waiting for a review request from the connected client.",
+                        logText: """
+                        Review session opened.
 
-                No active review job is running yet.
-                """
-            ),
-            makeJob(
-                id: "preview-recent-job",
-                status: .succeeded,
-                targetSummary: "Commit: 8d3c7c2",
-                summary: "No correctness issues found in the latest review.",
-                logText: """
-                Review completed successfully.
+                        No review job is running yet.
+                        """
+                    ),
+                    makeJob(
+                        id: "preview-recent-job",
+                        status: .succeeded,
+                        targetSummary: "Commit: 8d3c7c2",
+                        summary: "No correctness issues found in the latest review.",
+                        logText: """
+                        Review completed successfully.
 
-                Result: no findings.
-                """
+                        Result: no findings.
+                        """
+                    ),
+                ]
             ),
         ]
     }

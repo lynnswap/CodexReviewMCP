@@ -38,7 +38,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private let uiState: ReviewMonitorUIState
     private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
         title: "Select a job",
-        description: "Choose a running or recent review from the list."
+        description: "Choose a review from the list."
     )
     private var uiStateObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationHandles: Set<ObservationHandle> = []
@@ -143,7 +143,6 @@ final class ReviewMonitorTransportViewController: NSViewController {
             [
                 \.targetSummary,
                 \.status,
-                \.cwd,
                 \.model,
                 \.summary,
                 \.threadID,

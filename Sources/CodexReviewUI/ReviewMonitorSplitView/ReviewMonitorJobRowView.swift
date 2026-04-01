@@ -50,8 +50,14 @@ extension CodexReviewJobStatus {
 #Preview {
     @Previewable @State var store = ReviewMonitorPreviewContent.makeStore()
     NavigationSplitView {
-        List(store.jobs) { job in
-            ReviewMonitorJobRowView(job: job)
+        List {
+            ForEach(store.workspaces, id: \.cwd) { workspace in
+                Section(workspace.displayTitle) {
+                    ForEach(workspace.jobs) { job in
+                        ReviewMonitorJobRowView(job: job)
+                    }
+                }
+            }
         }
         .frame(minWidth: 320)
     } detail: {
