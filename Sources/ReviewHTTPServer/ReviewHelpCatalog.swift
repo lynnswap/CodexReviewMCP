@@ -195,7 +195,7 @@ package enum ReviewHelpCatalog {
     }
 
     package static var reviewStartDescription: String {
-        "Run a repository review through `codex app-server` and wait for the terminal result. The returned `model` is the effective resolved review model. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`."
+        "Run a repository review through `codex app-server` and wait for the terminal result. Compatibility shorthand also accepts `target: \"uncommitted\"` or `{ \"type\": \"uncommitted\" }`, but prefer the canonical object form. The returned `model` is the effective resolved review model. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`."
     }
 
     package static var reviewReadDescription: String {
@@ -256,6 +256,7 @@ package enum ReviewHelpCatalog {
         Check these first:
 
         - `target.type` must be one of `\(targetTypes.joined(separator: "`, `"))`.
+        - Compatibility shorthand also accepts `target: "uncommitted"` and `{ "type": "uncommitted" }`.
         - `baseBranch` requires `branch`.
         - `commit` requires `sha`.
         - `custom` requires `instructions`.
@@ -292,6 +293,12 @@ package enum ReviewHelpCatalog {
             - `commit`
             - `custom`
 
+            Compatibility shorthand also accepts:
+
+            - `target: "uncommitted"`
+            - `target: "uncommittedChanges"`
+            - `target: { "type": "uncommitted" }`
+
             ## Returns
 
             - `reviewThreadId`
@@ -313,7 +320,7 @@ package enum ReviewHelpCatalog {
 
             ## Common Mistakes
 
-            - Using old values like `uncommitted` or `branch`
+            - `uncommitted` is accepted as compatibility shorthand, but `branch` is not
             - Omitting `branch`, `sha`, or `instructions` for the selected target
             """
         case "review_read":

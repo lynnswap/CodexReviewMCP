@@ -33,12 +33,25 @@ enum ReviewToolCatalog {
         "properties": [
             "cwd": ["type": "string", "description": "Absolute repository path to review."],
             "target": [
-                "description": "Review target. Use exactly one variant. If you are unsure, read `\(ReviewHelpCatalog.toolURI("review_start"))` and then one of `\(ReviewHelpCatalog.targetURI("uncommittedChanges"))`, `\(ReviewHelpCatalog.targetURI("baseBranch"))`, `\(ReviewHelpCatalog.targetURI("commit"))`, or `\(ReviewHelpCatalog.targetURI("custom"))`.",
+                "description": "Review target. Use exactly one variant. Compatibility shorthand also accepts `\"uncommitted\"` or `{ \"type\": \"uncommitted\" }`, but prefer the canonical object form. If you are unsure, read `\(ReviewHelpCatalog.toolURI("review_start"))` and then one of `\(ReviewHelpCatalog.targetURI("uncommittedChanges"))`, `\(ReviewHelpCatalog.targetURI("baseBranch"))`, `\(ReviewHelpCatalog.targetURI("commit"))`, or `\(ReviewHelpCatalog.targetURI("custom"))`.",
                 "oneOf": [
+                    [
+                        "type": "string",
+                        "enum": ["uncommitted", "uncommittedChanges"],
+                        "description": "Compatibility shorthand for uncommitted changes. Prefer `{ \"type\": \"uncommittedChanges\" }`.",
+                    ],
                     [
                         "type": "object",
                         "properties": [
                             "type": ["const": "uncommittedChanges", "description": "Review staged, unstaged, and untracked local changes."],
+                        ],
+                        "required": ["type"],
+                        "additionalProperties": false,
+                    ],
+                    [
+                        "type": "object",
+                        "properties": [
+                            "type": ["const": "uncommitted", "description": "Compatibility alias for `uncommittedChanges`. Prefer the canonical object form."],
                         ],
                         "required": ["type"],
                         "additionalProperties": false,

@@ -349,6 +349,7 @@ struct CodexReviewMCPTests {
         let toolContents = try #require(((toolResponse["result"] as? [String: Any])?["contents"] as? [[String: Any]])?.first)
         let targetContents = try #require(((targetResponse["result"] as? [String: Any])?["contents"] as? [[String: Any]])?.first)
         #expect(((toolContents["text"] as? String) ?? "").contains("`review_start`"))
+        #expect(((toolContents["text"] as? String) ?? "").contains("Compatibility shorthand also accepts"))
         #expect(((targetContents["text"] as? String) ?? "").contains("`target.type = \"uncommittedChanges\"`"))
     }
 
@@ -368,18 +369,98 @@ struct CodexReviewMCPTests {
         #expect(message.contains("Allowed values: uncommittedChanges, baseBranch, commit, custom"))
     }
 
+    @Test func monitorServerListsReviewStartSchemaWithUncommittedCompatibilityAliases() async throws {
+        let server = makeMonitorServer()
+        let sessionID = try await initializeMonitorSession(server: server)
+        let response = try await callMonitorMethod(
+            server: server,
+            sessionID: sessionID,
+            requestID: 16,
+            method: "tools/list",
+            params: nil
+        )
+
+        let result = try #require(response["result"] as? [String: Any])
+        let tools = try #require(result["tools"] as? [[String: Any]])
+        let reviewStartTool = try #require(tools.first { ($0["name"] as? String) == "review_start" })
+        let inputSchema = try #require(reviewStartTool["inputSchema"] as? [String: Any])
+        let properties = try #require(inputSchema["properties"] as? [String: Any])
+        let target = try #require(properties["target"] as? [String: Any])
+        let variants = try #require(target["oneOf"] as? [[String: Any]])
+
+        let stringVariant = try #require(variants.first { ($0["type"] as? String) == "string" })
+        let stringEnum = try #require(stringVariant["enum"] as? [String])
+        #expect(stringEnum == ["uncommitted", "uncommittedChanges"])
+
+        let objectVariants = variants.filter { ($0["type"] as? String) == "object" }
+        let compatibilityAlias = objectVariants.first { variant in
+            guard let properties = variant["properties"] as? [String: Any],
+                  let type = properties["type"] as? [String: Any]
+            else {
+                return false
+            }
+            return (type["const"] as? String) == "uncommitted"
+        }
+        #expect(compatibilityAlias != nil)
+    }
+
+    @Test func monitorServerReviewStartAcceptsUncommittedShorthand() async throws {
+        let server = makeMonitorServer(
+            startReview: { _, request in
+                #expect(request.target == .uncommittedChanges)
+                return ReviewReadResult(
+                    reviewThreadID: "job-1",
+                    status: .succeeded,
+                    review: "ok",
+                    lastAgentMessage: "ok",
+                    logs: [],
+                    rawLogText: ""
+                )
+            }
+        )
+        let sessionID = try await initializeMonitorSession(server: server)
+        let shorthandTargets: [Any] = [
+            "uncommitted",
+            "uncommittedChanges",
+            [
+                "type": "uncommitted",
+            ],
+        ]
+
+        for (index, target) in shorthandTargets.enumerated() {
+            let response = try await callMonitorTool(
+                server: server,
+                sessionID: sessionID,
+                requestID: 17 + index,
+                name: "review_start",
+                arguments: [
+                    "cwd": "/tmp/repo",
+                    "target": target,
+                ]
+            )
+
+            let result = try #require(response["result"] as? [String: Any])
+            let structuredContent = try #require(result["structuredContent"] as? [String: Any])
+            #expect((result["isError"] as? Bool) == false)
+            #expect(structuredContent["status"] as? String == "succeeded")
+            #expect(structuredContent["reviewThreadId"] as? String == "job-1")
+            #expect(structuredContent["review"] as? String == "ok")
+        }
+    }
+
     @Test func monitorServerReviewStartInvalidTargetReturnsGuidance() async throws {
         let server = makeMonitorServer()
         let sessionID = try await initializeMonitorSession(server: server)
         let response = try await callMonitorTool(
             server: server,
             sessionID: sessionID,
-            requestID: 16,
+            requestID: 21,
             name: "review_start",
             arguments: [
                 "cwd": "/tmp/repo",
                 "target": [
-                    "type": "uncommitted",
+                    "type": "branch",
+                    "branch": "main",
                 ],
             ]
         )
@@ -842,19 +923,21 @@ private func callMonitorMethod(
     return try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
 }
 
-private func makeMonitorServer() -> ReviewMCPHTTPServer {
+private func makeMonitorServer(
+    startReview: @escaping ReviewMCPHTTPServer.StartReviewHandler = { _, _ in
+        ReviewReadResult(
+            reviewThreadID: "job-1",
+            status: .succeeded,
+            review: "ok",
+            lastAgentMessage: "ok",
+            logs: [],
+            rawLogText: ""
+        )
+    }
+) -> ReviewMCPHTTPServer {
     ReviewMCPHTTPServer(
         configuration: .init(),
-        startReview: { _, _ in
-            ReviewReadResult(
-                reviewThreadID: "job-1",
-                status: .succeeded,
-                review: "ok",
-                lastAgentMessage: "ok",
-                logs: [],
-                rawLogText: ""
-            )
-        },
+        startReview: startReview,
         readReview: { _, _ in
             ReviewReadResult(
                 reviewThreadID: "job-1",

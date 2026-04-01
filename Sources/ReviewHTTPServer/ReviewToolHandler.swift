@@ -28,7 +28,10 @@ struct ReviewToolHandler {
 
     private func handleReviewStart(params: CallTool.Parameters) async -> CallTool.Result {
         do {
-            let arguments = try decodeArguments(params.arguments, as: ReviewStartArguments.self)
+            let arguments = try decodeArguments(
+                normalizeReviewStartArguments(params.arguments),
+                as: ReviewStartArguments.self
+            )
             let result = try await startReview(arguments.makeRequest())
             return try CallTool.Result(
                 content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
@@ -175,6 +178,48 @@ private struct ReviewListArguments: Codable {
     var cwd: String?
     var statuses: [ReviewJobState]?
     var limit: Int?
+}
+
+private func normalizeReviewStartArguments(_ arguments: [String: Value]?) -> [String: Value]? {
+    guard var arguments else {
+        return nil
+    }
+    guard let target = arguments["target"] else {
+        return arguments
+    }
+    arguments["target"] = normalizeReviewStartTarget(target)
+    return arguments
+}
+
+private func normalizeReviewStartTarget(_ target: Value) -> Value {
+    switch target {
+    case .string(let value):
+        guard let canonicalType = normalizedReviewStartTargetType(value) else {
+            return target
+        }
+        return .object([
+            "type": .string(canonicalType),
+        ])
+    case .object(var object):
+        guard case .string(let value)? = object["type"],
+              let canonicalType = normalizedReviewStartTargetType(value)
+        else {
+            return target
+        }
+        object["type"] = .string(canonicalType)
+        return .object(object)
+    default:
+        return target
+    }
+}
+
+private func normalizedReviewStartTargetType(_ value: String) -> String? {
+    switch value {
+    case "uncommitted", "uncommittedChanges":
+        return "uncommittedChanges"
+    default:
+        return nil
+    }
 }
 
 private func decodeArguments<T: Decodable>(_ arguments: [String: Value]?, as type: T.Type) throws -> T {
