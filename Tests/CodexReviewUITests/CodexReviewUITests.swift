@@ -201,6 +201,49 @@ struct CodexReviewUITests {
         }
     }
 
+    @Test func clickingSidebarBlankAreaKeepsSelectionAndDetailPane() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-selected",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Review is still running.",
+            logText: "Selected log\n"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            let transport = viewController.transportViewControllerForTesting
+            guard transport.displayedTitleForTesting == job.displayTitle,
+                  transport.displayedSummaryForTesting == job.summary,
+                  transport.displayedLogForTesting == job.logText
+            else {
+                return nil
+            }
+            return true
+        }
+
+        viewController.sidebarViewControllerForTesting.clickBlankAreaForTesting()
+
+        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting?.id == job.id)
+        #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == job.displayTitle)
+        #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == job.summary)
+        #expect(viewController.transportViewControllerForTesting.displayedLogForTesting == job.logText)
+    }
+
     @Test func newJobsArrivingWhileUnselectedDoNotAutoSelect() {
         guard #available(macOS 26.0, *) else {
             return

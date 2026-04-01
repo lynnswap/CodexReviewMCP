@@ -13,7 +13,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSCollectionVi
     private weak var store: CodexReviewStore?
     private let uiState: ReviewMonitorUIState
     private let scrollView = NSScrollView()
-    private let collectionView = NSCollectionView()
+    private let collectionView = ReviewMonitorSidebarCollectionView()
     private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
         title: "No review jobs",
         description: "Start a review through the embedded server to see workspaces here."
@@ -415,8 +415,70 @@ extension ReviewMonitorSidebarViewController {
         collectionView.deselectItems(at: collectionView.selectionIndexPaths)
         uiState.selectedJobEntry = nil
     }
+
+    func clickBlankAreaForTesting() {
+        view.layoutSubtreeIfNeeded()
+        let point = blankPointForTesting()
+        precondition(
+            collectionView.suppressesSelectionClearingForTesting(at: point),
+            "Expected a blank click target outside any job item."
+        )
+        collectionView.mouseDown(with: mouseEventForTesting(at: point))
+    }
+
+    private func blankPointForTesting() -> NSPoint {
+        let layoutHeight = collectionView.collectionViewLayout?.collectionViewContentSize.height ?? 0
+        let x = min(collectionView.bounds.maxX - 1, max(1, collectionView.bounds.midX))
+        let y = min(collectionView.bounds.maxY - 1, max(1, layoutHeight + 10))
+        return NSPoint(x: x, y: y)
+    }
+
+    private func mouseEventForTesting(at point: NSPoint) -> NSEvent {
+        guard let window = view.window else {
+            fatalError("Sidebar view controller must be attached to a window for click testing.")
+        }
+        let locationInWindow = collectionView.convert(point, to: nil)
+        guard let event = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: locationInWindow,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ) else {
+            fatalError("Failed to create a synthetic mouse event.")
+        }
+        return event
+    }
 }
 #endif
+
+@MainActor
+private final class ReviewMonitorSidebarCollectionView: NSCollectionView {
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard shouldSuppressSelectionClearing(at: point) == false else {
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    private func shouldSuppressSelectionClearing(at point: NSPoint) -> Bool {
+        guard selectionIndexPaths.isEmpty == false else {
+            return false
+        }
+        return indexPathForItem(at: point) == nil
+    }
+
+#if DEBUG
+    func suppressesSelectionClearingForTesting(at point: NSPoint) -> Bool {
+        shouldSuppressSelectionClearing(at: point)
+    }
+#endif
+}
 
 @MainActor
 private final class ReviewMonitorJobItem: NSCollectionViewItem {
