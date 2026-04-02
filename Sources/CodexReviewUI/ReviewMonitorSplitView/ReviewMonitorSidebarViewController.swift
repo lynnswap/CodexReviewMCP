@@ -255,6 +255,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
     private func requestCancellation(for job: CodexReviewJob) async throws {
         guard job.isTerminal == false,
+              job.cancellationRequested == false,
               let store
         else {
             return

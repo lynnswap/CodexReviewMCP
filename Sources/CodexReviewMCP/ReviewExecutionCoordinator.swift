@@ -243,15 +243,18 @@ package actor ReviewExecutionCoordinator {
             sessionID: sessionID,
             reason: normalizedReason
         )
-        var cancelled = result.state == .cancelled
+        var cancelled = result.state == .cancelled || result.signalled
         if let handle = executions[job.id] {
             if let processController = handle.controller {
-                cancelled = await processController.terminateGracefully(grace: .seconds(2)) || cancelled
+                _ = await processController.terminateGracefully(grace: .seconds(2))
             }
         }
         let resolvedReviewThreadID = await job.reviewThreadID
         let resolvedThreadID = await job.threadID
         let status = await job.status.state
+        cancelled = result.state == .cancelled
+            || status == .cancelled
+            || (result.signalled && status == .running)
         return ReviewCancelOutcome(
             reviewThreadID: resolvedReviewThreadID ?? job.id,
             threadID: resolvedThreadID,

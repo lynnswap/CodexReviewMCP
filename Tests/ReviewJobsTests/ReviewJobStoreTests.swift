@@ -197,7 +197,8 @@ struct ReviewRuntimeTests {
         )
         let result = try await reviewTask.value
 
-        #expect(cancelOutcome.status == ReviewJobState.cancelled)
+        #expect(cancelOutcome.cancelled)
+        #expect([ReviewJobState.running, .cancelled].contains(cancelOutcome.status))
         #expect(cancelOutcome.reviewThreadID == reviewThreadID)
         #expect(result.status == ReviewJobState.cancelled)
         #expect(result.error == "test cancel")
@@ -233,7 +234,8 @@ struct ReviewRuntimeTests {
         let result = try await reviewTask.value
 
         #expect(cancelOutcome.reviewThreadID == reviewThreadID)
-        #expect(cancelOutcome.status == .cancelled)
+        #expect(cancelOutcome.cancelled)
+        #expect([ReviewJobState.running, .cancelled].contains(cancelOutcome.status))
         #expect(result.status == .cancelled)
     }
 
@@ -351,7 +353,7 @@ struct ReviewRuntimeTests {
     }
 
     @MainActor
-    @Test func codexReviewStoreRequestCancellationStampsEndedAtForStartedJobs() throws {
+    @Test func codexReviewStoreRequestCancellationKeepsStartedJobsActiveUntilTermination() throws {
         let store = CodexReviewStore(configuration: .init())
         let jobID = try store.enqueueReview(
             sessionID: "session-started-cancel",
@@ -370,9 +372,43 @@ struct ReviewRuntimeTests {
         )
 
         let job = try store.resolveJob(jobID: jobID, sessionID: "session-started-cancel")
-        #expect(job.status == .cancelled)
+        #expect(job.status == .running)
+        #expect(job.cancellationRequested)
+        #expect(job.summary == "Cancellation requested.")
+        #expect(job.errorMessage == "user cancel")
         #expect(job.startedAt == startedAt)
-        #expect(job.endedAt != nil)
+        #expect(job.endedAt == nil)
+    }
+
+    @MainActor
+    @Test func codexReviewStoreCloseSessionKeepsCancellationRequestedJobsTracked() throws {
+        let store = CodexReviewStore(configuration: .init())
+        let jobID = try store.enqueueReview(
+            sessionID: "session-closing-cancel",
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                target: .uncommittedChanges
+            )
+        )
+        store.markStarted(
+            jobID: jobID,
+            startedAt: Date(timeIntervalSince1970: 10)
+        )
+
+        _ = try store.requestCancellation(
+            jobID: jobID,
+            sessionID: "session-closing-cancel",
+            reason: "session closing"
+        )
+
+        #expect(store.hasActiveJobs(for: "session-closing-cancel"))
+
+        let activeJobIDs = store.closeSessionState("session-closing-cancel")
+        #expect(activeJobIDs == [jobID])
+
+        let job = try store.resolveJob(jobID: jobID, sessionID: "session-closing-cancel")
+        #expect(job.status == .running)
+        #expect(job.cancellationRequested)
     }
 
     @MainActor

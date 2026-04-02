@@ -34,6 +34,7 @@ extension CodexReviewStore {
             return
         }
 
+        job.cancellationRequested = false
         job.status = .cancelled
         job.summary = "Review cancelled."
         job.hasFinalReview = false

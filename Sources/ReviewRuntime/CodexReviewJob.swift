@@ -25,6 +25,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public var threadID: String?
     public var turnID: String?
     public var status: CodexReviewJobStatus
+    public var cancellationRequested: Bool
     public var startedAt: Date?
     public var endedAt: Date?
     public var summary: String
@@ -115,6 +116,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         threadID: String?,
         turnID: String?,
         status: CodexReviewJobStatus,
+        cancellationRequested: Bool = false,
         startedAt: Date?,
         endedAt: Date?,
         summary: String,
@@ -134,6 +136,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         self.threadID = threadID
         self.turnID = turnID
         self.status = status
+        self.cancellationRequested = cancellationRequested
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.summary = summary

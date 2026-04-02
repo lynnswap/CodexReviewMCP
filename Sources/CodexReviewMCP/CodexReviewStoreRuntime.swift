@@ -156,6 +156,7 @@ extension CodexReviewStore {
     ) {
         updateJob(id: jobID) { job in
             job.startedAt = startedAt
+            job.cancellationRequested = false
             if job.status == .queued {
                 job.status = .running
                 job.summary = "Running."
@@ -207,6 +208,7 @@ extension CodexReviewStore {
     package func completeReview(jobID: String, outcome: ReviewProcessOutcome) {
         updateJob(id: jobID) { job in
             job.status = .init(state: outcome.state)
+            job.cancellationRequested = false
             job.summary = outcome.summary
             job.model = outcome.model ?? job.model
             job.hasFinalReview = outcome.hasFinalReview
@@ -248,6 +250,7 @@ extension CodexReviewStore {
         endedAt: Date
     ) {
         updateJob(id: jobID) { job in
+            job.cancellationRequested = false
             job.status = .failed
             job.summary = "Failed to start review."
             job.model = model ?? job.model
@@ -269,6 +272,7 @@ extension CodexReviewStore {
         endedAt: Date
     ) {
         updateJob(id: jobID) { job in
+            job.cancellationRequested = false
             job.status = .cancelled
             job.summary = "Review cancelled."
             job.model = model ?? job.model
@@ -300,17 +304,38 @@ extension CodexReviewStore {
         if job.isTerminal {
             return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: false)
         }
-        let endedAt = Date()
-        updateJob(id: jobID) { job in
-            job.status = .cancelled
-            job.summary = "Cancellation requested."
-            job.hasFinalReview = false
-            if reason.isEmpty == false {
-                job.errorMessage = reason
-            }
-            job.endedAt = endedAt
+
+        if job.cancellationRequested {
+            return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: true)
         }
-        return ReviewCancelResult(jobID: jobID, state: .cancelled, signalled: false)
+
+        switch job.status {
+        case .queued:
+            let endedAt = Date()
+            updateJob(id: jobID) { job in
+                job.cancellationRequested = false
+                job.status = .cancelled
+                job.summary = "Review cancelled."
+                job.hasFinalReview = false
+                if reason.isEmpty == false {
+                    job.errorMessage = reason
+                }
+                job.endedAt = endedAt
+            }
+            return ReviewCancelResult(jobID: jobID, state: .cancelled, signalled: false)
+        case .running:
+            updateJob(id: jobID) { job in
+                job.cancellationRequested = true
+                job.summary = "Cancellation requested."
+                job.hasFinalReview = false
+                if reason.isEmpty == false {
+                    job.errorMessage = reason
+                }
+            }
+            return ReviewCancelResult(jobID: jobID, state: .running, signalled: true)
+        case .succeeded, .failed, .cancelled:
+            return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: false)
+        }
     }
 
     package func discardQueuedOrRunningJob(jobID: String) {
@@ -465,6 +490,7 @@ extension CodexReviewStore {
             threadID: nil,
             turnID: nil,
             status: .queued,
+            cancellationRequested: false,
             startedAt: nil,
             endedAt: nil,
             summary: "Queued.",
@@ -589,7 +615,7 @@ extension CodexReviewStore {
             elapsedSeconds: elapsedSeconds(for: job),
             threadID: job.threadID,
             lastAgentMessage: job.lastAgentMessage ?? "",
-            cancellable: job.isTerminal == false
+            cancellable: job.isTerminal == false && job.cancellationRequested == false
         )
     }
 

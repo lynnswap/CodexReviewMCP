@@ -4,6 +4,19 @@ import MCP
 @preconcurrency import NIOCore
 @preconcurrency import NIOHTTP1
 
+final class ReviewHTTPRequestQueue {
+    private var tailTask: Task<Void, Never>?
+
+    func enqueue(_ operation: @escaping @Sendable () async -> Void) {
+        let previousTask = tailTask
+        let task = Task {
+            _ = await previousTask?.result
+            await operation()
+        }
+        tailTask = task
+    }
+}
+
 final class ReviewHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
@@ -15,6 +28,7 @@ final class ReviewHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private weak var app: ReviewHTTPApplication?
     private let endpoint: String
+    private let requestQueue = ReviewHTTPRequestQueue()
     private var requestState: RequestState?
 
     init(app: ReviewHTTPApplication?, endpoint: String) {
@@ -35,7 +49,7 @@ final class ReviewHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             }
             requestState = nil
             nonisolated(unsafe) let ctx = context
-            Task { [weak self] in
+            requestQueue.enqueue { [weak self] in
                 await self?.handleRequest(state: state, context: ctx)
             }
         }

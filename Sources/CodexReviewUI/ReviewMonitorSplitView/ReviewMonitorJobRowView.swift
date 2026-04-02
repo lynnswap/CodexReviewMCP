@@ -49,7 +49,7 @@ struct ReviewMonitorJobRowView: View {
             Button(role: .cancel, action: onCancel) {
                 Text("Cancel")
             }
-            .disabled(job.isTerminal)
+            .disabled(job.isTerminal || job.cancellationRequested)
         }
     }
     @ViewBuilder
