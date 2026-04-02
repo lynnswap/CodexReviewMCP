@@ -31,6 +31,7 @@ package struct AppServerReviewRunner: Sendable {
     package var settingsBuilder: ReviewExecutionSettingsBuilder
     package var gracefulTerminationWait: Duration = .seconds(2)
     package var pollInterval: Duration = .milliseconds(100)
+    package var exitMonitorPollTimeout: Duration = .seconds(600)
 
     package init(settingsBuilder: ReviewExecutionSettingsBuilder = .init()) {
         self.settingsBuilder = settingsBuilder
@@ -65,6 +66,7 @@ package struct AppServerReviewRunner: Sendable {
             controller: controller,
             stdoutHandle: startedProcess.stdoutHandle,
             stderrHandle: startedProcess.stderrHandle,
+            exitMonitorPollTimeout: exitMonitorPollTimeout,
             onNotification: { notification in
                 await handle(notification: notification, state: state, onEvent: onEvent)
             },
@@ -1115,13 +1117,22 @@ package actor AppServerProcessController {
         return nil
     }
 
-    package func waitForExit(timeout: Duration) async -> Int? {
+    package func waitForExit(
+        timeout: Duration,
+        observeCancellation: Bool = false
+    ) async -> Int? {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
+            if observeCancellation && Task.isCancelled {
+                return nil
+            }
             if let exitCode = pollExitStatus() {
                 return exitCode
             }
             try? await Task.sleep(for: .milliseconds(100))
+        }
+        if observeCancellation && Task.isCancelled {
+            return nil
         }
         return pollExitStatus()
     }
@@ -1148,6 +1159,7 @@ private actor AppServerConnection {
     private let controller: AppServerProcessController
     private let stdoutHandle: FileHandle
     private let stderrHandle: FileHandle
+    private let exitMonitorPollTimeout: Duration
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
     private let onNotification: @Sendable (AppServerServerNotification) async -> Void
@@ -1165,12 +1177,14 @@ private actor AppServerConnection {
         controller: AppServerProcessController,
         stdoutHandle: FileHandle,
         stderrHandle: FileHandle,
+        exitMonitorPollTimeout: Duration,
         onNotification: @escaping @Sendable (AppServerServerNotification) async -> Void,
         onStderrLine: @escaping @Sendable (String) async -> Void
     ) {
         self.controller = controller
         self.stdoutHandle = stdoutHandle
         self.stderrHandle = stderrHandle
+        self.exitMonitorPollTimeout = exitMonitorPollTimeout
         self.onNotification = onNotification
         self.onStderrLine = onStderrLine
     }
@@ -1199,10 +1213,9 @@ private actor AppServerConnection {
                 }
             }
         }
-        exitMonitorTask = Task.detached { [weak self] in
+        exitMonitorTask = Task { [weak self] in
             guard let self else { return }
-            _ = await self.controller.waitForExit(timeout: .seconds(600))
-            await self.handleProcessExit()
+            await self.monitorProcessExit()
         }
     }
 
@@ -1300,6 +1313,22 @@ private actor AppServerConnection {
                 await processStdoutMessage(message)
             }
             failPendingResponses(message: "app-server stdout closed unexpectedly.")
+        }
+    }
+
+    private func monitorProcessExit() async {
+        while stopped == false {
+            guard await controller.waitForExit(
+                timeout: exitMonitorPollTimeout,
+                observeCancellation: true
+            ) != nil else {
+                if Task.isCancelled {
+                    return
+                }
+                continue
+            }
+            handleProcessExit()
+            return
         }
     }
 

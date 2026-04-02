@@ -338,6 +338,30 @@ import Testing
         #expect(await recorder.logTexts.contains("Falling back to local config parsing because `config/read` is unavailable."))
     }
 
+    @Test func appServerReviewRunnerKeepsPendingRequestsAliveWhenExitMonitorOnlyTimesOut() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let scriptURL = try makeFakeAppServerScript(mode: .slowConfigReadResponse)
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.exitMonitorPollTimeout = .milliseconds(100)
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.reviewThreadID == "thr-review")
+        #expect(result.content == "Looks solid overall.")
+    }
+
     @Test func appServerReviewRunnerCapturesPlanReasoningToolAndCompactionLogs() async throws {
         let cwd = try makeTemporaryDirectory()
         let recorder = EventRecorder()
@@ -927,6 +951,7 @@ private enum FakeAppServerMode: String {
     case partialPlanCompletion
     case longRunning
     case detachedLongRunning
+    case slowConfigReadResponse
     case configReadUnsupported
     case configReadFailure
     case reviewStartFailure
@@ -1027,6 +1052,8 @@ private func makeFakeAppServerScript(
             if mode == "configReadFailure":
                 send({"id": message["id"], "error": {"code": -32001, "message": "config read failed"}})
                 continue
+            if mode == "slowConfigReadResponse":
+                time.sleep(0.25)
             send({"id": message["id"], "result": config_read_result})
         elif method == "thread/start":
             capture({"method": method, "params": message.get("params")})
