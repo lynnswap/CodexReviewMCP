@@ -6,40 +6,40 @@ struct ReviewMonitorJobRowView: View {
     var job: CodexReviewJob
 
     var body: some View {
-        LabeledContent {
-            elapsedTimeTextLabel
-        } label: {
-            Label {
-                VStack {
-                    HStack {
-                        Text(job.displayTitle)
-                        Spacer(minLength: 0)
-                    }
-                    HStack{
-                        if let model = job.model{
-                            Text(model)
-                        }
-                        if let lastAgentMessage = job.lastAgentMessage{
-                            Text(lastAgentMessage)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .textScale(.secondary)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        Label {
+            VStack {
+                HStack {
+                    Text(job.displayTitle)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    elapsedTimeTextLabel
+                        .foregroundStyle(.secondary)
+                        .layoutPriority(1)
                 }
-            } icon: {
-                Group {
-                    if job.status == .running {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "circle.fill")
-                            .foregroundStyle(job.status.color)
+                .lineLimit(1)
+                HStack{
+                    if let model = job.model{
+                        Text(model)
                     }
+                    if let lastAgentMessage = job.lastAgentMessage{
+                        Text(lastAgentMessage)
+                    }
+                    Spacer(minLength: 0)
                 }
-                .controlSize(.mini)
-                .animation(.default, value: job.status)
+                .textScale(.secondary)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
+        } icon: {
+            ZStack {
+                Image(systemName: "circle.fill")
+                    .foregroundStyle(job.status.color)
+                if job.status == .running {
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+            }
+            .animation(.default, value: job.status)
         }
     }
     @ViewBuilder
@@ -80,14 +80,11 @@ struct ReviewMonitorJobRowView: View {
 extension CodexReviewJobStatus {
     var color: Color {
         switch self {
-        case .queued, .running:
-            .gray
-        case .succeeded:
-            .green
-        case .failed:
-            .red
-        case .cancelled:
-            .yellow
+        case .queued: .gray
+        case .running: .clear
+        case .succeeded: .green
+        case .failed: .red
+        case .cancelled: .yellow
         }
     }
 }
@@ -100,7 +97,11 @@ extension CodexReviewJobStatus {
             ForEach(store.workspaces, id: \.cwd) { workspace in
                 Section(workspace.displayTitle) {
                     ForEach(workspace.jobs) { job in
-                        ReviewMonitorJobRowView(job: job)
+                        NavigationLink{
+                            
+                        }label:{
+                            ReviewMonitorJobRowView(job: job)
+                        }
                     }
                 }
             }
