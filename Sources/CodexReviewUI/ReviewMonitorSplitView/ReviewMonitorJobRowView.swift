@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import ReviewRuntime
 
@@ -5,29 +6,74 @@ struct ReviewMonitorJobRowView: View {
     var job: CodexReviewJob
 
     var body: some View {
-        Label {
-            VStack {
-                HStack {
-                    Text("Hello, World!")
-                    Spacer(minLength: 0)
-                }
-                Text("Hello, World!")
+        LabeledContent {
+            elapsedTimeTextLabel
+        } label: {
+            Label {
+                VStack {
+                    HStack {
+                        Text(job.displayTitle)
+                        Spacer(minLength: 0)
+                    }
+                    HStack{
+                        if let model = job.model{
+                            Text(model)
+                        }
+                        if let lastAgentMessage = job.lastAgentMessage{
+                            Text(lastAgentMessage)
+                        }
+                        Spacer(minLength: 0)
+                    }
                     .textScale(.secondary)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+                }
+            } icon: {
+                Group {
+                    if job.status == .running {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "circle.fill")
+                            .foregroundStyle(job.status.color)
+                    }
+                }
+                .controlSize(.mini)
+                .animation(.default, value: job.status)
             }
-        } icon: {
-            Group {
-                if job.status == .running {
-                    ProgressView()
-                } else {
-                    Image(systemName: "circle.fill")
-                        .foregroundStyle(job.status.color)
+        }
+    }
+    @ViewBuilder
+    private var elapsedTimeTextLabel:some View{
+        if let startedAt = job.startedAt {
+            if let endedAt = job.endedAt {
+                elapsedTimeText(
+                    startedAt: startedAt,
+                    referenceDate: endedAt
+                )
+            } else {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    elapsedTimeText(
+                        startedAt: startedAt,
+                        referenceDate: context.date
+                    )
                 }
             }
-            .controlSize(.mini)
-            .animation(.default, value: job.status)
         }
+    }
+
+    private func elapsedTimeText(startedAt: Date, referenceDate: Date) -> some View {
+        let elapsedSeconds = max(0, referenceDate.timeIntervalSince(startedAt).rounded(.down))
+        return Text(
+            Duration.seconds(elapsedSeconds),
+            format: .time(pattern: elapsedTimePattern(for: elapsedSeconds))
+        )
+        .monospacedDigit()
+        .contentTransition(.numericText(value: elapsedSeconds))
+        .animation(.default, value: elapsedSeconds)
+    }
+
+    private func elapsedTimePattern(for elapsedSeconds: TimeInterval) -> Duration.TimeFormatStyle.Pattern {
+        elapsedSeconds >= 3600 ? .hourMinute : .minuteSecond
     }
 }
 
