@@ -6,7 +6,10 @@ package func resolveCodexCommand(
     currentDirectory: String
 ) -> String? {
     if requestedCommand.contains("/") {
-        return requestedCommand
+        return resolveExplicitCommandPath(
+            requestedCommand,
+            currentDirectory: currentDirectory
+        )
     }
 
     let searchPaths = searchPathsForExecutableLookup(
@@ -23,6 +26,18 @@ package func resolveCodexCommand(
     }
 
     return nil
+}
+
+private func resolveExplicitCommandPath(
+    _ requestedCommand: String,
+    currentDirectory: String
+) -> String {
+    URL(
+        fileURLWithPath: requestedCommand,
+        relativeTo: URL(fileURLWithPath: currentDirectory, isDirectory: true)
+    )
+    .standardizedFileURL
+    .path
 }
 
 private func searchPathsForExecutableLookup(

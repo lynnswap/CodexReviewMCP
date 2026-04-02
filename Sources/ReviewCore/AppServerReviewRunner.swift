@@ -1550,10 +1550,6 @@ private struct AppServerResponseEnvelope<Result: Decodable>: Decodable {
 }
 
 private func resolveExecutable(for command: AppServerCommand) throws -> String {
-    if command.executable.contains("/") {
-        return command.executable
-    }
-
     guard let resolved = resolveCodexCommand(
         requestedCommand: command.executable,
         environment: command.environment,

@@ -676,6 +676,33 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: executableURL.path))
     }
 
+    @Test func appServerReviewRunnerResolvesRelativeCodexPathAgainstRequestCWD() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let toolsDirectory = cwd.appendingPathComponent("tools", isDirectory: true)
+        try FileManager.default.createDirectory(at: toolsDirectory, withIntermediateDirectories: true)
+        let executableURL = try makeFakeAppServerScript(mode: .success, at: toolsDirectory.appendingPathComponent("codex"))
+
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: "tools/codex",
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+
+        #expect(FileManager.default.currentDirectoryPath != cwd.path)
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(FileManager.default.fileExists(atPath: executableURL.path))
+    }
+
     @Test func appServerReviewRunnerFailsWithReadableErrorWhenCodexIsMissing() async throws {
         let cwd = try makeTemporaryDirectory()
         let missingCommand = "codex-missing"
