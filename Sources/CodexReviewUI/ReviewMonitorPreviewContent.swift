@@ -72,8 +72,7 @@ enum ReviewMonitorPreviewContent {
                     kind: .agentMessage,
                     text: logText
                 )
-            ],
-            rawLogLines: logText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            ]
         )
     }
 }

@@ -318,8 +318,10 @@ package struct AppServerReviewRunner: Sendable {
 
             let snapshot = await state.snapshot()
             if let turnStatus = snapshot.turnStatus {
+                await connection.synchronize()
+                let synchronizedSnapshot = await state.snapshot()
                 if turnStatus == .completed,
-                   snapshot.finalReview?.nilIfEmpty == nil
+                   synchronizedSnapshot.finalReview?.nilIfEmpty == nil
                 {
                     let observedAt = completedWithoutReviewObservedAt ?? Date()
                     completedWithoutReviewObservedAt = observedAt
@@ -332,6 +334,8 @@ package struct AppServerReviewRunner: Sendable {
                 }
                 let endedAt = Date()
                 let exitCode = await stopAppServer(controller: controller)
+                await connection.synchronize()
+                let snapshot = await state.snapshot()
                 switch turnStatus {
                 case .completed:
                     guard let review = snapshot.finalReview?.nilIfEmpty else {
@@ -556,7 +560,16 @@ private func handle(
             await onEvent(.logEntry(.init(kind: .progress, text: "Reviewing \(review)")))
         case .commandExecution(_, let command, _, _, _):
             await onEvent(.logEntry(.init(kind: .command, text: "$ \(command)")))
-        case .exitedReviewMode, .agentMessage, .unsupported:
+        case .mcpToolCall(let itemID, let server, let tool, _, _, _):
+            await state.noteToolCall(itemID: itemID, server: server, tool: tool)
+            await onEvent(.logEntry(.init(
+                kind: .toolCall,
+                groupID: itemID,
+                text: "MCP \(server).\(tool) started."
+            )))
+        case .contextCompaction:
+            await onEvent(.logEntry(.init(kind: .event, text: "Context compaction started.")))
+        case .exitedReviewMode, .agentMessage, .plan, .reasoning, .unsupported:
             break
         }
     case .itemCompleted(let payload):
@@ -564,27 +577,122 @@ private func handle(
         case .exitedReviewMode(_, let review):
             await state.noteFinalReview(review)
             await onEvent(.agentMessage(review))
-            await onEvent(.logEntry(.init(kind: .agentMessage, text: review)))
-        case .agentMessage(_, let text):
-            let latest = await state.noteCompletedAgentMessage(text)
-            await onEvent(.agentMessage(latest))
+            await onEvent(.logEntry(.init(kind: .agentMessage, groupID: payload.turnID, text: review)))
+        case .agentMessage(let itemID, let text):
+            let completed = await state.noteCompletedAgentMessage(itemID: itemID, text: text)
+            await onEvent(.agentMessage(completed.latestText))
+            if let logUpdate = completed.logUpdate {
+                await onEvent(.logEntry(.init(
+                    kind: .agentMessage,
+                    groupID: itemID,
+                    replacesGroup: logUpdate.replacesGroup,
+                    text: logUpdate.text
+                )))
+            }
         case .commandExecution(let itemID, _, let output, _, _):
             if let output = await state.noteCommandCompleted(itemID: itemID, aggregatedOutput: output),
                output.isEmpty == false
             {
-                await onEvent(.logEntry(.init(kind: .commandOutput, text: output)))
+                await onEvent(.logEntry(.init(kind: .commandOutput, groupID: itemID, text: output)))
             }
+        case .plan(let itemID, let text):
+            if let finalUpdate = await state.notePlanCompleted(itemID: itemID, text: text) {
+                await onEvent(.logEntry(.init(
+                    kind: .plan,
+                    groupID: itemID,
+                    replacesGroup: finalUpdate.replacesGroup,
+                    text: finalUpdate.text
+                )))
+            }
+        case .reasoning(let itemID, let summary, let content):
+            let completed = await state.noteReasoningCompleted(
+                itemID: itemID,
+                summary: summary,
+                content: content
+            )
+            for summaryEntry in completed.summaryEntries where summaryEntry.update.text.isEmpty == false {
+                await onEvent(.logEntry(.init(
+                    kind: .reasoningSummary,
+                    groupID: summaryEntry.groupID,
+                    replacesGroup: summaryEntry.update.replacesGroup,
+                    text: summaryEntry.update.text
+                )))
+            }
+            for rawEntry in completed.rawEntries where rawEntry.update.text.isEmpty == false {
+                await onEvent(.logEntry(.init(
+                    kind: .rawReasoning,
+                    groupID: rawEntry.groupID,
+                    replacesGroup: rawEntry.update.replacesGroup,
+                    text: rawEntry.update.text
+                )))
+            }
+        case .mcpToolCall(let itemID, let server, let tool, let status, let error, let result):
+            await state.noteToolCall(itemID: itemID, server: server, tool: tool)
+            var text = "MCP \(server).\(tool) \(status)."
+            if let error = error?.nilIfEmpty {
+                text += " Error: \(error)"
+            } else if let result = result?.nilIfEmpty {
+                text += " Result: \(result)"
+            }
+            await onEvent(.logEntry(.init(kind: .toolCall, groupID: itemID, text: text)))
+        case .contextCompaction:
+            await onEvent(.logEntry(.init(kind: .event, text: "Context compacted.")))
         case .enteredReviewMode, .unsupported:
             break
         }
     case .agentMessageDelta(let payload):
-        let latest = await state.appendAgentMessageDelta(itemID: payload.itemID, delta: payload.delta)
-        await onEvent(.agentMessage(latest))
+        if let latest = await state.appendAgentMessageDelta(itemID: payload.itemID, delta: payload.delta) {
+            await onEvent(.agentMessage(latest))
+            await onEvent(.logEntry(.init(kind: .agentMessage, groupID: payload.itemID, text: payload.delta)))
+        }
+    case .planDelta(let payload):
+        if await state.notePlanDelta(itemID: payload.itemID, delta: payload.delta) {
+            await onEvent(.logEntry(.init(kind: .plan, groupID: payload.itemID, text: payload.delta)))
+        }
     case .commandExecutionOutputDelta(let payload):
         await state.noteCommandOutput(itemID: payload.itemID, delta: payload.delta)
         if payload.delta.isEmpty == false {
-            await onEvent(.logEntry(.init(kind: .commandOutput, text: payload.delta)))
+            await onEvent(.logEntry(.init(kind: .commandOutput, groupID: payload.itemID, text: payload.delta)))
         }
+    case .reasoningSummaryTextDelta(let payload):
+        if await state.noteReasoningSummaryDelta(
+            itemID: payload.itemID,
+            summaryIndex: payload.summaryIndex,
+            delta: payload.delta
+        ) {
+            await onEvent(.logEntry(.init(
+                kind: .reasoningSummary,
+                groupID: reasoningSummaryGroupID(itemID: payload.itemID, summaryIndex: payload.summaryIndex),
+                text: payload.delta
+            )))
+        }
+    case .reasoningSummaryPartAdded(let payload):
+        _ = await state.noteReasoningSummaryPartAdded(
+            itemID: payload.itemID,
+            summaryIndex: payload.summaryIndex
+        )
+    case .reasoningTextDelta(let payload):
+        if await state.noteRawReasoningDelta(
+            itemID: payload.itemID,
+            contentIndex: payload.contentIndex,
+            delta: payload.delta
+        ),
+           payload.delta.isEmpty == false
+        {
+            await onEvent(.logEntry(.init(
+                kind: .rawReasoning,
+                groupID: rawReasoningGroupID(itemID: payload.itemID, contentIndex: payload.contentIndex),
+                text: payload.delta
+            )))
+        }
+    case .mcpToolCallProgress(let payload):
+        let label = await state.toolCallLabel(itemID: payload.itemID)
+        let prefix = label.map { "MCP \($0): " } ?? "MCP: "
+        await onEvent(.logEntry(.init(
+            kind: .toolCall,
+            groupID: payload.itemID,
+            text: prefix + payload.message
+        )))
     case .ignored:
         break
     }
@@ -597,6 +705,14 @@ private func bootstrapFailureMessage(exitCode: Int, stderr: String) -> String {
     return "app-server exited before the review started (exit=\(exitCode))."
 }
 
+private func rawReasoningGroupID(itemID: String, contentIndex: Int) -> String {
+    "\(itemID):\(contentIndex)"
+}
+
+private func reasoningSummaryGroupID(itemID: String, summaryIndex: Int) -> String {
+    "\(itemID):summary:\(summaryIndex)"
+}
+
 private func stopAppServer(controller: AppServerProcessController) async -> Int {
     await controller.closeStandardInput()
     if let exitCode = await controller.waitForExit(timeout: .milliseconds(500)) {
@@ -607,6 +723,40 @@ private func stopAppServer(controller: AppServerProcessController) async -> Int 
 }
 
 private actor AppServerReviewState {
+    enum GroupTextUpdate: Sendable {
+        case append(String)
+        case replace(String)
+
+        var text: String {
+            switch self {
+            case .append(let text), .replace(let text):
+                return text
+            }
+        }
+
+        var replacesGroup: Bool {
+            if case .replace = self {
+                return true
+            }
+            return false
+        }
+    }
+
+    struct ReasoningCompletion: Sendable {
+        struct SummaryEntry: Sendable {
+            var groupID: String
+            var update: GroupTextUpdate
+        }
+
+        struct RawEntry: Sendable {
+            var groupID: String
+            var update: GroupTextUpdate
+        }
+
+        var summaryEntries: [SummaryEntry]
+        var rawEntries: [RawEntry]
+    }
+
     struct Snapshot: Sendable {
         var reviewThreadID: String?
         var threadID: String?
@@ -627,7 +777,14 @@ private actor AppServerReviewState {
     private var errorMessage: String?
     private var stderrLines: [String] = []
     private var agentMessagesByItemID: [String: String] = [:]
+    private var completedAgentMessageItemIDs = Set<String>()
     private var commandOutputSeen = Set<String>()
+    private var streamedPlanByItemID: [String: String] = [:]
+    private var completedPlanItemIDs = Set<String>()
+    private var streamedReasoningSummaryByItemID: [String: [Int: String]] = [:]
+    private var streamedRawReasoningByItemID: [String: [Int: String]] = [:]
+    private var completedReasoningItemIDs = Set<String>()
+    private var toolCallLabelsByItemID: [String: String] = [:]
 
     func markReviewStarted(reviewThreadID: String, threadID: String, turnID: String) {
         self.reviewThreadID = reviewThreadID
@@ -641,7 +798,15 @@ private actor AppServerReviewState {
         }
     }
 
-    func appendAgentMessageDelta(itemID: String, delta: String) -> String {
+    struct CompletedAgentMessage: Sendable {
+        var latestText: String
+        var logUpdate: GroupTextUpdate?
+    }
+
+    func appendAgentMessageDelta(itemID: String, delta: String) -> String? {
+        guard completedAgentMessageItemIDs.contains(itemID) == false else {
+            return nil
+        }
         let current = agentMessagesByItemID[itemID, default: ""]
         let updated = current + delta
         agentMessagesByItemID[itemID] = updated
@@ -649,9 +814,15 @@ private actor AppServerReviewState {
         return updated
     }
 
-    func noteCompletedAgentMessage(_ text: String) -> String {
+    func noteCompletedAgentMessage(itemID: String, text: String) -> CompletedAgentMessage {
+        completedAgentMessageItemIDs.insert(itemID)
+        let streamedText = agentMessagesByItemID[itemID]
+        agentMessagesByItemID[itemID] = text
         lastAgentMessage = text
-        return text
+        return CompletedAgentMessage(
+            latestText: text,
+            logUpdate: completionGroupUpdate(streamedText: streamedText, finalText: text)
+        )
     }
 
     func noteFinalReview(_ review: String) {
@@ -678,6 +849,93 @@ private actor AppServerReviewState {
         return aggregatedOutput?.nilIfEmpty
     }
 
+    func noteToolCall(itemID: String, server: String, tool: String) {
+        toolCallLabelsByItemID[itemID] = "\(server).\(tool)"
+    }
+
+    func toolCallLabel(itemID: String) -> String? {
+        toolCallLabelsByItemID[itemID]
+    }
+
+    func notePlanDelta(itemID: String, delta: String) -> Bool {
+        guard completedPlanItemIDs.contains(itemID) == false else {
+            return false
+        }
+        streamedPlanByItemID[itemID, default: ""] += delta
+        return true
+    }
+
+    func notePlanCompleted(itemID: String, text: String) -> GroupTextUpdate? {
+        completedPlanItemIDs.insert(itemID)
+        return completionGroupUpdate(streamedText: streamedPlanByItemID[itemID], finalText: text)
+    }
+
+    func noteReasoningSummaryDelta(itemID: String, summaryIndex: Int, delta: String) -> Bool {
+        guard completedReasoningItemIDs.contains(itemID) == false else {
+            return false
+        }
+        streamedReasoningSummaryByItemID[itemID, default: [:]][summaryIndex, default: ""] += delta
+        return true
+    }
+
+    func noteReasoningSummaryPartAdded(itemID: String, summaryIndex: Int) -> Bool {
+        guard completedReasoningItemIDs.contains(itemID) == false else {
+            return false
+        }
+        return true
+    }
+
+    func noteRawReasoningDelta(itemID: String, contentIndex: Int, delta: String) -> Bool {
+        guard completedReasoningItemIDs.contains(itemID) == false else {
+            return false
+        }
+        streamedRawReasoningByItemID[itemID, default: [:]][contentIndex, default: ""] += delta
+        return true
+    }
+
+    func noteReasoningCompleted(
+        itemID: String,
+        summary: [String],
+        content: [String]
+    ) -> ReasoningCompletion {
+        completedReasoningItemIDs.insert(itemID)
+        let streamedSummary = streamedReasoningSummaryByItemID[itemID] ?? [:]
+        var summaryEntries: [ReasoningCompletion.SummaryEntry] = []
+
+        for (index, finalText) in summary.enumerated() {
+            guard let remainder = completionGroupUpdate(
+                streamedText: streamedSummary[index],
+                finalText: finalText
+            ) else {
+                continue
+            }
+            summaryEntries.append(.init(
+                groupID: reasoningSummaryGroupID(itemID: itemID, summaryIndex: index),
+                update: remainder
+            ))
+        }
+
+        var rawEntries: [ReasoningCompletion.RawEntry] = []
+        let streamedRaw = streamedRawReasoningByItemID[itemID] ?? [:]
+        for (index, finalText) in content.enumerated() {
+            guard let remainder = completionGroupUpdate(
+                streamedText: streamedRaw[index],
+                finalText: finalText
+            ) else {
+                continue
+            }
+            rawEntries.append(.init(
+                groupID: rawReasoningGroupID(itemID: itemID, contentIndex: index),
+                update: remainder
+            ))
+        }
+
+        return ReasoningCompletion(
+            summaryEntries: summaryEntries,
+            rawEntries: rawEntries
+        )
+    }
+
     func appendStandardError(_ line: String) {
         stderrLines.append(line)
     }
@@ -693,6 +951,25 @@ private actor AppServerReviewState {
             errorMessage: errorMessage,
             stderrText: stderrLines.joined(separator: "\n")
         )
+    }
+
+    private func completionGroupUpdate(streamedText: String?, finalText: String) -> GroupTextUpdate? {
+        guard finalText.isEmpty == false else {
+            return nil
+        }
+        guard let streamedText else {
+            return .append(finalText)
+        }
+        if streamedText.isEmpty {
+            return .append(finalText)
+        }
+        if finalText.hasPrefix(streamedText) {
+            guard let suffix = String(finalText.dropFirst(streamedText.count)).nilIfEmpty else {
+                return nil
+            }
+            return .append(suffix)
+        }
+        return .replace(finalText)
     }
 }
 
@@ -868,6 +1145,8 @@ private actor AppServerConnection {
     private var pendingResponses: [AppServerRequestID: CheckedContinuation<Data, Error>] = [:]
     private var stdoutFramer = AppServerJSONLFramer()
     private var stderrFramer = AppServerJSONLFramer()
+    private var stdoutReadTask: Task<Void, Never>?
+    private var stderrReadTask: Task<Void, Never>?
     private var exitMonitorTask: Task<Void, Never>?
     private var stopped = false
 
@@ -889,16 +1168,24 @@ private actor AppServerConnection {
         guard stopped == false else {
             return
         }
-        stdoutHandle.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            Task {
-                await self?.consumeStdoutData(data)
+        stdoutReadTask = Task.detached { [weak self] in
+            guard let self else { return }
+            while true {
+                let data = self.stdoutHandle.availableData
+                await self.consumeStdoutData(data)
+                if data.isEmpty {
+                    return
+                }
             }
         }
-        stderrHandle.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            Task {
-                await self?.consumeStderrData(data)
+        stderrReadTask = Task.detached { [weak self] in
+            guard let self else { return }
+            while true {
+                let data = self.stderrHandle.availableData
+                await self.consumeStderrData(data)
+                if data.isEmpty {
+                    return
+                }
             }
         }
         exitMonitorTask = Task.detached { [weak self] in
@@ -966,16 +1253,24 @@ private actor AppServerConnection {
             return
         }
         stopped = true
-        stdoutHandle.readabilityHandler = nil
-        stderrHandle.readabilityHandler = nil
         exitMonitorTask?.cancel()
         exitMonitorTask = nil
         try? stdoutHandle.close()
         try? stderrHandle.close()
+        await stdoutReadTask?.value
+        await stderrReadTask?.value
+        stdoutReadTask = nil
+        stderrReadTask = nil
         for (_, continuation) in pendingResponses {
             continuation.resume(throwing: ReviewError.io("app-server connection stopped."))
         }
         pendingResponses.removeAll()
+    }
+
+    func synchronize() async {
+        // Reader loops run in detached tasks; yield once so any just-read chunk can
+        // enter the actor queue before this barrier returns.
+        await Task.yield()
     }
 
     private func consumeStdoutData(_ data: Data) async {
@@ -1017,7 +1312,7 @@ private actor AppServerConnection {
     }
 
     private func emitStderrLine(_ line: Data) async {
-        guard let text = String(data: line, encoding: .utf8)?.nilIfEmpty else {
+        guard let text = String(data: line, encoding: .utf8) else {
             return
         }
         await onStderrLine(text)
@@ -1125,12 +1420,47 @@ private actor AppServerConnection {
             ) {
                 return .agentMessageDelta(notification.params)
             }
+        case "item/plan/delta":
+            if let notification = try? decoder.decode(
+                AppServerIncomingNotificationEnvelope<AppServerPlanDeltaNotification>.self,
+                from: data
+            ) {
+                return .planDelta(notification.params)
+            }
         case "item/commandExecution/outputDelta":
             if let notification = try? decoder.decode(
                 AppServerIncomingNotificationEnvelope<AppServerCommandExecutionOutputDeltaNotification>.self,
                 from: data
             ) {
                 return .commandExecutionOutputDelta(notification.params)
+            }
+        case "item/reasoning/summaryTextDelta":
+            if let notification = try? decoder.decode(
+                AppServerIncomingNotificationEnvelope<AppServerReasoningSummaryTextDeltaNotification>.self,
+                from: data
+            ) {
+                return .reasoningSummaryTextDelta(notification.params)
+            }
+        case "item/reasoning/summaryPartAdded":
+            if let notification = try? decoder.decode(
+                AppServerIncomingNotificationEnvelope<AppServerReasoningSummaryPartAddedNotification>.self,
+                from: data
+            ) {
+                return .reasoningSummaryPartAdded(notification.params)
+            }
+        case "item/reasoning/textDelta":
+            if let notification = try? decoder.decode(
+                AppServerIncomingNotificationEnvelope<AppServerReasoningTextDeltaNotification>.self,
+                from: data
+            ) {
+                return .reasoningTextDelta(notification.params)
+            }
+        case "item/mcpToolCall/progress":
+            if let notification = try? decoder.decode(
+                AppServerIncomingNotificationEnvelope<AppServerMcpToolCallProgressNotification>.self,
+                from: data
+            ) {
+                return .mcpToolCallProgress(notification.params)
             }
         default:
             break

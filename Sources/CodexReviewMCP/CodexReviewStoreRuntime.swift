@@ -184,11 +184,14 @@ extension CodexReviewStore {
         case .logEntry(let entry):
             updateJob(id: jobID) { job in
                 job.logEntries.append(entry)
+                if cappedLogKinds.contains(entry.kind) {
+                    trimDiagnosticEntries(job: job)
+                }
             }
         case .rawLine(let line):
             updateJob(id: jobID) { job in
-                job.rawLogLines.append(line)
-                trimRawLines(job: job)
+                job.logEntries.append(.init(kind: .diagnostic, text: line))
+                trimDiagnosticEntries(job: job)
             }
         case .agentMessage(let message):
             updateJob(id: jobID) { job in
@@ -233,6 +236,7 @@ extension CodexReviewStore {
             job.endedAt = endedAt
             if message.isEmpty == false {
                 job.logEntries.append(.init(kind: .error, text: message))
+                trimDiagnosticEntries(job: job)
             }
         }
     }
@@ -446,7 +450,6 @@ extension CodexReviewStore {
             summary: "Queued.",
             lastAgentMessage: nil,
             logEntries: [],
-            rawLogLines: [],
             errorMessage: nil,
             exitCode: nil
         )
@@ -580,12 +583,195 @@ extension CodexReviewStore {
         return Int(endedAt.timeIntervalSince(startedAt))
     }
 
-    private func trimRawLines(job: CodexReviewJob) {
-        while job.rawLogLines.joined(separator: "\n").utf8.count > reviewLogLimitBytes,
-              job.rawLogLines.isEmpty == false
-        {
-            job.rawLogLines.removeFirst()
+    private func trimDiagnosticEntries(job: CodexReviewJob) {
+        var currentBytes = cappedLogBytes(for: job.logEntries)
+
+        while currentBytes > reviewLogLimitBytes {
+            guard let index = job.logEntries.firstIndex(where: {
+                trimmableCappedKinds.contains($0.kind)
+            }) else {
+                guard let errorIndex = job.logEntries.firstIndex(where: { $0.kind == .error }) else {
+                    return
+                }
+                truncateEntry(at: errorIndex, in: job, keeping: .suffix, overflowBytes: currentBytes - reviewLogLimitBytes)
+                currentBytes = cappedLogBytes(for: job.logEntries)
+                continue
+            }
+            let entry = job.logEntries[index]
+            let overflowBytes = currentBytes - reviewLogLimitBytes
+            if entry.text.utf8.count > overflowBytes {
+                truncateEntry(at: index, in: job, keeping: .prefix, overflowBytes: overflowBytes)
+            } else {
+                job.logEntries.remove(at: index)
+            }
+            currentBytes = cappedLogBytes(for: job.logEntries)
         }
+    }
+
+    private enum TruncationDirection {
+        case prefix
+        case suffix
+    }
+
+    private func truncateEntry(
+        at index: Int,
+        in job: CodexReviewJob,
+        keeping direction: TruncationDirection,
+        overflowBytes: Int
+    ) {
+        let entry = job.logEntries[index]
+        let retainedBytes = max(0, entry.text.utf8.count - overflowBytes)
+        let truncatedText = switch direction {
+        case .prefix:
+            truncateTextKeepingUTF8Prefix(entry.text, bytes: retainedBytes)
+        case .suffix:
+            truncateTextKeepingUTF8Suffix(entry.text, bytes: retainedBytes)
+        }
+
+        if truncatedText.isEmpty {
+            job.logEntries.remove(at: index)
+            return
+        }
+
+        job.logEntries[index] = .init(
+            id: entry.id,
+            kind: entry.kind,
+            groupID: entry.groupID,
+            replacesGroup: entry.replacesGroup,
+            text: truncatedText,
+            timestamp: entry.timestamp
+        )
+    }
+
+    private func truncateTextKeepingUTF8Prefix(_ text: String, bytes maxBytes: Int) -> String {
+        guard maxBytes > 0 else {
+            return ""
+        }
+
+        var result = ""
+        var usedBytes = 0
+        for character in text {
+            let characterBytes = String(character).utf8.count
+            if usedBytes + characterBytes > maxBytes {
+                break
+            }
+            result.append(character)
+            usedBytes += characterBytes
+        }
+        return result
+    }
+
+    private func truncateTextKeepingUTF8Suffix(_ text: String, bytes maxBytes: Int) -> String {
+        guard maxBytes > 0 else {
+            return ""
+        }
+
+        var reversedCharacters: [Character] = []
+        var usedBytes = 0
+        for character in text.reversed() {
+            let characterBytes = String(character).utf8.count
+            if usedBytes + characterBytes > maxBytes {
+                break
+            }
+            reversedCharacters.append(character)
+            usedBytes += characterBytes
+        }
+        return String(reversedCharacters.reversed())
+    }
+
+    private func cappedLogBytes(for entries: [ReviewLogEntry]) -> Int {
+        renderedBytesForGroupedEntries(
+            entries.filter { cappedLogKinds.contains($0.kind) }
+        )
+    }
+
+    private func renderedBytesForGroupedEntries(_ entries: [ReviewLogEntry]) -> Int {
+        struct GroupKey: Hashable {
+            var kind: ReviewLogEntry.Kind
+            var groupID: String
+        }
+
+        struct RenderedBlock {
+            var kind: ReviewLogEntry.Kind
+            var text: String
+        }
+
+        var blocks: [RenderedBlock] = []
+        var indexByGroup: [GroupKey: Int] = [:]
+
+        for entry in entries {
+            if groupedCappedKinds.contains(entry.kind),
+               let groupID = entry.groupID,
+               groupID.isEmpty == false
+            {
+                let key = GroupKey(kind: entry.kind, groupID: groupID)
+                if let index = indexByGroup[key] {
+                    if entry.replacesGroup {
+                        blocks[index].text = entry.text
+                    } else {
+                        blocks[index].text.append(entry.text)
+                    }
+                    continue
+                }
+                indexByGroup[key] = blocks.count
+            }
+
+            blocks.append(.init(kind: entry.kind, text: entry.text))
+        }
+
+        return joinedSectionBytes(blocks.map(\.text).filter { $0.isEmpty == false })
+    }
+
+    private func joinedSectionBytes(_ sections: [String]) -> Int {
+        guard var result = sections.first else {
+            return 0
+        }
+
+        for next in sections.dropFirst() {
+            if next.isEmpty {
+                result += "\n\n"
+                continue
+            }
+            if result.hasSuffix("\n\n") {
+                result += next
+                continue
+            }
+            if result.hasSuffix("\n") || next.hasPrefix("\n") {
+                result += "\n"
+            } else {
+                result += "\n\n"
+            }
+            result += next
+        }
+
+        return result.utf8.count
+    }
+
+    private var cappedLogKinds: Set<ReviewLogEntry.Kind> {
+        [
+            .agentMessage,
+            .commandOutput,
+            .toolCall,
+            .plan,
+            .reasoningSummary,
+            .rawReasoning,
+            .diagnostic,
+            .error,
+        ]
+    }
+
+    private var groupedCappedKinds: Set<ReviewLogEntry.Kind> {
+        [
+            .agentMessage,
+            .commandOutput,
+            .plan,
+            .reasoningSummary,
+            .rawReasoning,
+        ]
+    }
+
+    private var trimmableCappedKinds: Set<ReviewLogEntry.Kind> {
+        cappedLogKinds.subtracting([.error])
     }
 
     private func jobLocation(reviewThreadID: String) -> (workspaceIndex: Int, jobIndex: Int)? {

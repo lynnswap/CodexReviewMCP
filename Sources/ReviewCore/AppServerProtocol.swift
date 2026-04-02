@@ -4,6 +4,7 @@ import ReviewJobs
 package enum AppServerJSONValue: Codable, Sendable, Equatable {
     case string(String)
     case int(Int)
+    case double(Double)
     case bool(Bool)
     case object([String: AppServerJSONValue])
     case array([AppServerJSONValue])
@@ -17,6 +18,8 @@ package enum AppServerJSONValue: Codable, Sendable, Equatable {
             self = .string(value)
         } else if let value = try? container.decode(Int.self) {
             self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
         } else if let value = try? container.decode(Bool.self) {
             self = .bool(value)
         } else if let value = try? container.decode([String: AppServerJSONValue].self) {
@@ -33,6 +36,8 @@ package enum AppServerJSONValue: Codable, Sendable, Equatable {
             try container.encode(value)
         case .int(let value):
             try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
         case .bool(let value):
             try container.encode(value)
         case .object(let value):
@@ -41,6 +46,60 @@ package enum AppServerJSONValue: Codable, Sendable, Equatable {
             try container.encode(value)
         case .null:
             try container.encodeNil()
+        }
+    }
+
+    package var debugText: String {
+        switch self {
+        case .string(let value):
+            return value
+        case .int(let value):
+            return String(value)
+        case .double(let value):
+            return String(value)
+        case .bool(let value):
+            return String(value)
+        case .object(let value):
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: value.mapValues(\.foundationObject),
+                options: [.sortedKeys]
+            ),
+                  let text = String(data: data, encoding: .utf8)
+            else {
+                return "{}"
+            }
+            return text
+        case .array(let value):
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: value.map(\.foundationObject),
+                options: [.sortedKeys]
+            ),
+                  let text = String(data: data, encoding: .utf8)
+            else {
+                return "[]"
+            }
+            return text
+        case .null:
+            return "null"
+        }
+    }
+
+    private var foundationObject: Any {
+        switch self {
+        case .string(let value):
+            return value
+        case .int(let value):
+            return value
+        case .double(let value):
+            return value
+        case .bool(let value):
+            return value
+        case .object(let value):
+            return value.mapValues(\.foundationObject)
+        case .array(let value):
+            return value.map(\.foundationObject)
+        case .null:
+            return NSNull()
         }
     }
 }
@@ -262,11 +321,15 @@ package struct AppServerTurnCompletedNotification: Decodable, Sendable {
     }
 }
 
-package enum AppServerThreadItem: Decodable, Sendable {
+package enum AppServerThreadItem: Decodable, Sendable, Equatable {
     case enteredReviewMode(id: String, review: String)
     case exitedReviewMode(id: String, review: String)
     case commandExecution(id: String, command: String, aggregatedOutput: String?, exitCode: Int?, status: String)
     case agentMessage(id: String, text: String)
+    case plan(id: String, text: String)
+    case reasoning(id: String, summary: [String], content: [String])
+    case mcpToolCall(id: String, server: String, tool: String, status: String, error: String?, result: String?)
+    case contextCompaction(id: String)
     case unsupported(type: String)
 
     private enum CodingKeys: String, CodingKey {
@@ -278,6 +341,12 @@ package enum AppServerThreadItem: Decodable, Sendable {
         case exitCode
         case status
         case text
+        case summary
+        case content
+        case server
+        case tool
+        case error
+        case result
     }
 
     package init(from decoder: Decoder) throws {
@@ -307,9 +376,44 @@ package enum AppServerThreadItem: Decodable, Sendable {
                 id: try container.decode(String.self, forKey: .id),
                 text: try container.decode(String.self, forKey: .text)
             )
+        case "plan":
+            self = .plan(
+                id: try container.decode(String.self, forKey: .id),
+                text: try container.decode(String.self, forKey: .text)
+            )
+        case "reasoning":
+            self = .reasoning(
+                id: try container.decode(String.self, forKey: .id),
+                summary: try container.decodeIfPresent([String].self, forKey: .summary) ?? [],
+                content: try container.decodeIfPresent([String].self, forKey: .content) ?? []
+            )
+        case "mcpToolCall":
+            let rawError = try container.decodeIfPresent(AppServerJSONValue.self, forKey: .error)
+            let rawResult = try container.decodeIfPresent(AppServerJSONValue.self, forKey: .result)
+            self = .mcpToolCall(
+                id: try container.decode(String.self, forKey: .id),
+                server: try container.decode(String.self, forKey: .server),
+                tool: try container.decode(String.self, forKey: .tool),
+                status: try container.decode(String.self, forKey: .status),
+                error: rawError?.nonNullDebugText,
+                result: rawResult?.nonNullDebugText
+            )
+        case "contextCompaction":
+            self = .contextCompaction(
+                id: try container.decode(String.self, forKey: .id)
+            )
         default:
             self = .unsupported(type: type)
         }
+    }
+}
+
+private extension AppServerJSONValue {
+    var nonNullDebugText: String? {
+        if case .null = self {
+            return nil
+        }
+        return debugText
     }
 }
 
@@ -365,6 +469,80 @@ package struct AppServerCommandExecutionOutputDeltaNotification: Decodable, Send
     }
 }
 
+package struct AppServerPlanDeltaNotification: Decodable, Sendable {
+    package var threadID: String
+    package var turnID: String
+    package var itemID: String
+    package var delta: String
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case turnID = "turnId"
+        case itemID = "itemId"
+        case delta
+    }
+}
+
+package struct AppServerReasoningSummaryTextDeltaNotification: Decodable, Sendable {
+    package var threadID: String
+    package var turnID: String
+    package var itemID: String
+    package var delta: String
+    package var summaryIndex: Int
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case turnID = "turnId"
+        case itemID = "itemId"
+        case delta
+        case summaryIndex
+    }
+}
+
+package struct AppServerReasoningSummaryPartAddedNotification: Decodable, Sendable {
+    package var threadID: String
+    package var turnID: String
+    package var itemID: String
+    package var summaryIndex: Int
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case turnID = "turnId"
+        case itemID = "itemId"
+        case summaryIndex
+    }
+}
+
+package struct AppServerReasoningTextDeltaNotification: Decodable, Sendable {
+    package var threadID: String
+    package var turnID: String
+    package var itemID: String
+    package var delta: String
+    package var contentIndex: Int
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case turnID = "turnId"
+        case itemID = "itemId"
+        case delta
+        case contentIndex
+    }
+}
+
+package struct AppServerMcpToolCallProgressNotification: Decodable, Sendable {
+    package var threadID: String
+    package var turnID: String
+    package var itemID: String
+    package var message: String
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case turnID = "turnId"
+        case itemID = "itemId"
+        case message
+    }
+}
+
 package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendable {
     package var code: Int?
     package var message: String
@@ -387,7 +565,12 @@ package enum AppServerServerNotification: Sendable {
     case itemStarted(AppServerItemStartedNotification)
     case itemCompleted(AppServerItemCompletedNotification)
     case agentMessageDelta(AppServerAgentMessageDeltaNotification)
+    case planDelta(AppServerPlanDeltaNotification)
     case commandExecutionOutputDelta(AppServerCommandExecutionOutputDeltaNotification)
+    case reasoningSummaryTextDelta(AppServerReasoningSummaryTextDeltaNotification)
+    case reasoningSummaryPartAdded(AppServerReasoningSummaryPartAddedNotification)
+    case reasoningTextDelta(AppServerReasoningTextDeltaNotification)
+    case mcpToolCallProgress(AppServerMcpToolCallProgressNotification)
     case ignored
 }
 

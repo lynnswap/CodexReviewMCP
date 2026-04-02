@@ -461,8 +461,11 @@ private func makeJob(
         endedAt: status.isTerminal ? startedAt.addingTimeInterval(1) : nil,
         summary: summary ?? status.displayText,
         lastAgentMessage: "",
-        logEntries: logText.isEmpty ? [] : [.init(kind: .agentMessage, text: logText.trimmingCharacters(in: .newlines))],
-        rawLogLines: rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        logEntries:
+            (logText.isEmpty ? [] : [.init(kind: .agentMessage, text: logText.trimmingCharacters(in: .newlines))])
+            + (rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map {
+                .init(kind: .diagnostic, text: String($0))
+            })
     )
 }
 

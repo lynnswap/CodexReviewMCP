@@ -338,6 +338,94 @@ import Testing
         #expect(await recorder.logTexts.contains("Falling back to local config parsing because `config/read` is unavailable."))
     }
 
+    @Test func appServerReviewRunnerCapturesPlanReasoningToolAndCompactionLogs() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let recorder = EventRecorder()
+        let scriptURL = try makeFakeAppServerScript(mode: .richLogs)
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { event in
+                await recorder.record(event)
+            },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(await recorder.logEntries.contains { $0.kind == .plan && $0.text.contains("- step 1") })
+        #expect(await recorder.logEntries.contains { $0.kind == .reasoningSummary && $0.text.contains("thinking") })
+        #expect(await recorder.logEntries.contains { $0.kind == .rawReasoning && $0.text.contains("raw chain") })
+        #expect(await recorder.logEntries.contains { $0.kind == .toolCall && $0.text.contains("github.search") })
+        #expect(await recorder.logEntries.contains { $0.kind == .toolCall && $0.text.contains("Fetching schema") })
+        #expect(await recorder.logEntries.contains { $0.kind == .rawReasoning && $0.groupID == "rsn_1:1" && $0.text.contains("second chain") })
+        #expect(await recorder.logEntries.contains { $0.kind == .event && $0.text.contains("Context compacted") })
+    }
+
+    @Test func appServerReviewRunnerPreservesIncompleteReasoningAtCompletion() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let recorder = EventRecorder()
+        let scriptURL = try makeFakeAppServerScript(mode: .partialReasoningCompletion)
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { event in
+                await recorder.record(event)
+            },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        let rawReasoningEntries = await recorder.logEntries.filter { $0.kind == .rawReasoning }
+        let rawReasoningZeroTexts = rawReasoningEntries
+            .filter { $0.groupID == "rsn_1:0" }
+            .map(\.text)
+        #expect(result.state == .succeeded)
+        #expect(await recorder.logEntries.contains { $0.kind == .reasoningSummary && $0.text.contains("carefully") })
+        #expect(await recorder.logEntries.contains { $0.kind == .reasoningSummary && $0.text.contains("second summary") })
+        #expect(rawReasoningEntries.contains { $0.groupID == "rsn_1:1" && $0.text.contains("second raw") })
+        #expect(rawReasoningZeroTexts.last?.contains("extended") == true)
+    }
+
+    @Test func appServerReviewRunnerPreservesIncompletePlanAtCompletion() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let recorder = EventRecorder()
+        let scriptURL = try makeFakeAppServerScript(mode: .partialPlanCompletion)
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { event in
+                await recorder.record(event)
+            },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(await recorder.logEntries.contains { $0.kind == .plan && $0.text.contains(" step 2") })
+    }
+
     @Test func appServerReviewRunnerThrowsWhenConfigReadFailsUnexpectedly() async throws {
         let cwd = try makeTemporaryDirectory()
         let tempHome = try makeTemporaryDirectory()
@@ -793,6 +881,9 @@ import Testing
 
 private enum FakeAppServerMode: String {
     case success
+    case richLogs
+    case partialReasoningCompletion
+    case partialPlanCompletion
     case longRunning
     case configReadUnsupported
     case configReadFailure
@@ -941,6 +1032,41 @@ private func makeFakeAppServerScript(
                 time.sleep(0.2)
                 sys.exit(1)
 
+            if mode == "richLogs":
+                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "mcpToolCall", "id": "tool_1", "server": "github", "tool": "search", "status": "inProgress"}}})
+                send({"method": "item/mcpToolCall/progress", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "tool_1", "message": "Fetching schema"}})
+                send({"method": "item/plan/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "plan_1", "delta": "- step 1\\n"}})
+                send({"method": "item/plan/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "plan_1", "delta": "- step 2\\n"}})
+                send({"method": "item/reasoning/summaryTextDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "rsn_1", "delta": "thinking", "summaryIndex": 0}})
+                send({"method": "item/reasoning/summaryPartAdded", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "rsn_1", "summaryIndex": 1}})
+                send({"method": "item/reasoning/summaryTextDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "rsn_1", "delta": " carefully", "summaryIndex": 1}})
+                send({"method": "item/reasoning/textDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "rsn_1", "delta": "raw chain", "contentIndex": 0}})
+                send({"method": "item/reasoning/textDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "rsn_1", "delta": "second chain", "contentIndex": 1}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "mcpToolCall", "id": "tool_1", "server": "github", "tool": "search", "status": "completed", "result": {"ok": True}}}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "contextCompaction", "id": "ctx_1"}}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "exitedReviewMode", "id": turn_id, "review": "Looks solid overall."}}})
+                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "error": None}}})
+                time.sleep(0.2)
+                sys.exit(0)
+
+            if mode == "partialReasoningCompletion":
+                send({"method": "item/reasoning/summaryTextDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "rsn_1", "delta": "thinking", "summaryIndex": 0}})
+                send({"method": "item/reasoning/textDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "rsn_1", "delta": "raw chain", "contentIndex": 0}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "reasoning", "id": "rsn_1", "summary": ["thinking carefully", "second summary"], "content": ["raw chain extended", "second raw"]}}})
+                time.sleep(0.05)
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "exitedReviewMode", "id": turn_id, "review": "Looks solid overall."}}})
+                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "error": None}}})
+                time.sleep(0.2)
+                sys.exit(0)
+
+            if mode == "partialPlanCompletion":
+                send({"method": "item/plan/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "plan_1", "delta": "- step 1\\n"}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "plan", "id": "plan_1", "text": "- step 1\\n- step 2"}}})
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "exitedReviewMode", "id": turn_id, "review": "Looks solid overall."}}})
+                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "error": None}}})
+                time.sleep(0.2)
+                sys.exit(0)
+
             send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "inProgress", "aggregatedOutput": None, "exitCode": None}}})
             send({"method": "item/commandExecution/outputDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "cmd_1", "delta": "README.md | 1 +"}})
             send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "completed", "aggregatedOutput": "README.md | 1 +", "exitCode": 0}}})
@@ -1053,6 +1179,7 @@ private actor EventRecorder {
     private(set) var reviewThreadID: String?
     private(set) var reviewModel: String?
     private(set) var rawLines: [String] = []
+    private(set) var logEntries: [ReviewLogEntry] = []
     private(set) var logTexts: [String] = []
     private(set) var agentMessages: [String] = []
 
@@ -1064,6 +1191,7 @@ private actor EventRecorder {
         case .rawLine(let line):
             rawLines.append(line)
         case .logEntry(let entry):
+            logEntries.append(entry)
             logTexts.append(entry.text)
         case .agentMessage(let message):
             agentMessages.append(message)

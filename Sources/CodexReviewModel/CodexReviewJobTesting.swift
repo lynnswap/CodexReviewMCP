@@ -19,7 +19,6 @@ extension CodexReviewJob {
         summary: String,
         lastAgentMessage: String? = "",
         logEntries: [ReviewLogEntry] = [],
-        rawLogLines: [String] = [],
         errorMessage: String? = nil,
         exitCode: Int? = nil
     ) -> CodexReviewJob {
@@ -39,7 +38,6 @@ extension CodexReviewJob {
             summary: summary,
             lastAgentMessage: lastAgentMessage,
             logEntries: logEntries,
-            rawLogLines: rawLogLines,
             errorMessage: errorMessage,
             exitCode: exitCode
         )
