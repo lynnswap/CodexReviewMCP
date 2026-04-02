@@ -361,12 +361,11 @@ package struct AppServerReviewRunner: Sendable {
                             content: snapshot.lastAgentMessage ?? "Review failed."
                         )
                     }
-                    let stateValue: ReviewJobState = cancellationReason == nil ? .succeeded : .cancelled
-                    let summary = cancellationReason == nil ? "Review completed successfully." : "Review cancelled."
+                    let summary = "Review completed successfully."
                     await onEvent(.progress(.completed, summary))
                     await cleanupForReturn()
                     return ReviewProcessOutcome(
-                        state: stateValue,
+                        state: .succeeded,
                         exitCode: exitCode,
                         reviewThreadID: snapshot.reviewThreadID ?? reviewThreadID,
                         threadID: snapshot.threadID ?? threadResponse.thread.id,
@@ -374,7 +373,7 @@ package struct AppServerReviewRunner: Sendable {
                         model: effectiveModel,
                         hasFinalReview: true,
                         lastAgentMessage: review,
-                        errorMessage: cancellationReason,
+                        errorMessage: nil,
                         summary: summary,
                         startedAt: startedAt,
                         endedAt: endedAt,

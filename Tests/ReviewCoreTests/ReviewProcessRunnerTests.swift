@@ -818,6 +818,39 @@ import Testing
         #expect(result.content == "Looks solid overall.")
     }
 
+    @Test func appServerReviewRunnerKeepsCompletedTurnSucceededWhenCancellationArrivesLate() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let scriptURL = try makeFakeAppServerScript(mode: .lateCancellationAfterCompletion)
+        let recorder = EventRecorder()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.pollInterval = .milliseconds(20)
+
+        let result = try await runner.run(
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _, _ in },
+            onEvent: { event in
+                await recorder.record(event)
+            },
+            requestedTerminationReason: {
+                if await recorder.agentMessages.contains("Looks solid overall.") {
+                    return .cancelled("Late cancellation.")
+                }
+                return nil
+            }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.summary == "Review completed successfully.")
+        #expect(result.errorMessage == nil)
+        #expect(result.content == "Looks solid overall.")
+    }
+
     @Test func appServerReviewRunnerPreservesParentThreadIDWhenReviewThreadDiffers() async throws {
         let cwd = try makeTemporaryDirectory()
         let scriptURL = try makeFakeAppServerScript(mode: .detachedReviewLike)
@@ -959,6 +992,7 @@ private enum FakeAppServerMode: String {
     case postReviewCrash
     case missingExitedReviewMode
     case outOfOrderTurnCompletion
+    case lateCancellationAfterCompletion
     case detachedReviewLike
     case stderrNoiseAfterFailure
     case slowThreadStart
@@ -1150,6 +1184,12 @@ private func makeFakeAppServerScript(
                 time.sleep(0.5)
                 sys.exit(0)
 
+            if mode == "lateCancellationAfterCompletion":
+                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "error": None}}})
+                time.sleep(0.05)
+                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "exitedReviewMode", "id": turn_id, "review": "Looks solid overall."}}})
+                continue
+
             if mode != "missingExitedReviewMode":
                 send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "exitedReviewMode", "id": turn_id, "review": "Looks solid overall."}}})
 
@@ -1158,6 +1198,9 @@ private func makeFakeAppServerScript(
             sys.exit(0)
         elif method == "turn/interrupt":
             capture({"method": method, "params": message.get("params")})
+            if mode == "lateCancellationAfterCompletion":
+                send({"id": message["id"], "result": {}})
+                continue
             if mode == "detachedLongRunning" and message.get("params", {}).get("threadId") != parent_thread_id:
                 continue
             send({"id": message["id"], "result": {}})

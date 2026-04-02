@@ -238,6 +238,41 @@ struct ReviewRuntimeTests {
     }
 
     @MainActor
+    @Test func codexReviewStoreSelectorLatestPrefersNewestQueuedJobOrder() throws {
+        let store = CodexReviewStore(configuration: .init())
+        let olderQueued = CodexReviewJob.makeForTesting(
+            id: "z-older",
+            sortOrder: 1,
+            sessionID: "session-selector",
+            cwd: "/tmp/older",
+            targetSummary: "older",
+            status: .queued,
+            summary: "Queued."
+        )
+        let newerQueued = CodexReviewJob.makeForTesting(
+            id: "a-newer",
+            sortOrder: 2,
+            sessionID: "session-selector",
+            cwd: "/tmp/newer",
+            targetSummary: "newer",
+            status: .queued,
+            summary: "Queued."
+        )
+        store.workspaces = [
+            CodexReviewWorkspace(cwd: "/tmp/newer", sortOrder: 2, jobs: [newerQueued]),
+            CodexReviewWorkspace(cwd: "/tmp/older", sortOrder: 1, jobs: [olderQueued]),
+        ]
+
+        let selected = try store.resolveJob(
+            sessionID: "session-selector",
+            selector: .init(latest: true)
+        )
+
+        #expect(selected.id == "a-newer")
+        #expect(selected.cwd == "/tmp/newer")
+    }
+
+    @MainActor
     @Test func codexReviewStoreCloseSessionCancelsActiveReviews() async throws {
         let scriptURL = try makeFakeAppServerScript(mode: .longRunning)
         defer { try? FileManager.default.removeItem(at: scriptURL) }

@@ -456,7 +456,7 @@ extension CodexReviewStore {
     private func appendQueuedJob(_ queued: ReviewQueuedJob) {
         let job = CodexReviewJob(
             id: queued.jobID,
-            sortOrder: nextJobSortOrder(in: queued.request.cwd),
+            sortOrder: nextJobSortOrder(),
             sessionID: queued.sessionID,
             cwd: queued.request.cwd,
             reviewThreadID: nil,
@@ -550,11 +550,8 @@ extension CodexReviewStore {
         (workspaces.map(\.sortOrder).max() ?? 0) + 1
     }
 
-    private func nextJobSortOrder(in cwd: String) -> Int {
-        guard let workspace = workspaces.first(where: { $0.cwd == cwd }) else {
-            return 1
-        }
-        return (workspace.jobs.map(\.sortOrder).max() ?? 0) + 1
+    private func nextJobSortOrder() -> Int {
+        (workspaces.flatMap(\.jobs).map(\.sortOrder).max() ?? 0) + 1
     }
 
     private func authorizedJob(reviewThreadID: String, sessionID: String) throws -> CodexReviewJob {
@@ -1041,15 +1038,22 @@ private func compareRuntimeJobs(_ left: CodexReviewJob, _ right: CodexReviewJob)
     default:
         switch (left.startedAt, right.startedAt) {
         case let (lhs?, rhs?):
-            return lhs > rhs
+            if lhs != rhs {
+                return lhs > rhs
+            }
         case (.some, .none):
             return true
         case (.none, .some):
             return false
         case (.none, .none):
-            return left.id > right.id
+            break
         }
     }
+
+    if left.sortOrder != right.sortOrder {
+        return left.sortOrder > right.sortOrder
+    }
+    return left.id > right.id
 }
 
 private struct ReviewQueuedJob {
