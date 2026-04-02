@@ -292,6 +292,55 @@ struct ReviewRuntimeTests {
     }
 
     @MainActor
+    @Test func codexReviewStoreRequestCancellationPreservesCapturedReviewText() throws {
+        let store = CodexReviewStore(configuration: .init())
+        let jobID = try store.enqueueReview(
+            sessionID: "session-pre-close",
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                target: .uncommittedChanges
+            )
+        )
+        store.handle(jobID: jobID, event: .agentMessage("partial review"))
+
+        _ = try store.requestCancellation(
+            jobID: jobID,
+            sessionID: "session-pre-close",
+            reason: "closed before spawn"
+        )
+        let result = try store.readReview(jobID: jobID, sessionID: "session-pre-close")
+
+        #expect(result.status == .cancelled)
+        #expect(result.lastAgentMessage == "partial review")
+        #expect(result.review == "closed before spawn")
+    }
+
+    @MainActor
+    @Test func codexReviewStoreRequestCancellationStampsEndedAtForStartedJobs() throws {
+        let store = CodexReviewStore(configuration: .init())
+        let jobID = try store.enqueueReview(
+            sessionID: "session-started-cancel",
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                target: .uncommittedChanges
+            )
+        )
+        let startedAt = Date(timeIntervalSince1970: 10)
+        store.markStarted(jobID: jobID, startedAt: startedAt)
+
+        _ = try store.requestCancellation(
+            jobID: jobID,
+            sessionID: "session-started-cancel",
+            reason: "user cancel"
+        )
+
+        let job = try store.resolveJob(jobID: jobID, sessionID: "session-started-cancel")
+        #expect(job.status == .cancelled)
+        #expect(job.startedAt == startedAt)
+        #expect(job.endedAt != nil)
+    }
+
+    @MainActor
     @Test func codexReviewStorePreservesCancelledBootstrapJobs() async throws {
         let store = CodexReviewStore(configuration: .init())
         let jobID = try store.enqueueReview(
@@ -318,6 +367,77 @@ struct ReviewRuntimeTests {
         #expect(result.reviewThreadID == jobID)
         #expect(result.error == "cancel during bootstrap")
         #expect(result.model == "gpt-5.4-mini")
+    }
+
+    @MainActor
+    @Test func codexReviewStoreCompleteCancelledReviewPreservesFinalReviewText() throws {
+        let store = CodexReviewStore(configuration: .init())
+        let jobID = try store.enqueueReview(
+            sessionID: "session-complete-cancel",
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                target: .uncommittedChanges
+            )
+        )
+        store.handle(jobID: jobID, event: .agentMessage("partial review"))
+        store.completeReview(
+            jobID: jobID,
+            outcome: .init(
+                state: .cancelled,
+                exitCode: 130,
+                reviewThreadID: nil,
+                threadID: nil,
+                turnID: nil,
+                model: nil,
+                hasFinalReview: true,
+                lastAgentMessage: "partial review",
+                errorMessage: "test cancel",
+                summary: "Review cancelled.",
+                startedAt: Date(timeIntervalSince1970: 10),
+                endedAt: Date(timeIntervalSince1970: 11),
+                content: "final review"
+            )
+        )
+        let result = try store.readReview(jobID: jobID, sessionID: "session-complete-cancel")
+
+        #expect(result.status == .cancelled)
+        #expect(result.lastAgentMessage == "final review")
+        #expect(result.review == "final review")
+    }
+
+    @MainActor
+    @Test func codexReviewStoreCompleteFailedReviewPreservesFinalReviewText() throws {
+        let store = CodexReviewStore(configuration: .init())
+        let jobID = try store.enqueueReview(
+            sessionID: "session-complete-failed",
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                target: .uncommittedChanges
+            )
+        )
+        store.completeReview(
+            jobID: jobID,
+            outcome: .init(
+                state: .failed,
+                exitCode: 1,
+                reviewThreadID: nil,
+                threadID: nil,
+                turnID: nil,
+                model: nil,
+                hasFinalReview: true,
+                lastAgentMessage: "partial review",
+                errorMessage: "runner failed",
+                summary: "Review failed.",
+                startedAt: Date(timeIntervalSince1970: 10),
+                endedAt: Date(timeIntervalSince1970: 11),
+                content: "final review"
+            )
+        )
+        let result = try store.readReview(jobID: jobID, sessionID: "session-complete-failed")
+
+        #expect(result.status == .failed)
+        #expect(result.lastAgentMessage == "final review")
+        #expect(result.review == "final review")
     }
 
     @MainActor

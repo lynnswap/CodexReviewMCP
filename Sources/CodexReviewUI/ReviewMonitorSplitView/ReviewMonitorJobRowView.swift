@@ -4,6 +4,7 @@ import ReviewRuntime
 
 struct ReviewMonitorJobRowView: View {
     var job: CodexReviewJob
+    var onCancel: () -> Void = {}
 
     var body: some View {
         Label {
@@ -21,8 +22,8 @@ struct ReviewMonitorJobRowView: View {
                     if let model = job.model{
                         Text(model)
                     }
-                    if let lastAgentMessage = job.lastAgentMessage{
-                        Text(lastAgentMessage)
+                    if let subtitle = subtitleText {
+                        Text(subtitle)
                     }
                     Spacer(minLength: 0)
                 }
@@ -40,6 +41,12 @@ struct ReviewMonitorJobRowView: View {
                 }
             }
             .animation(.default, value: job.status)
+        }
+        .contextMenu{
+            Button(role: .cancel, action: onCancel) {
+                Text("Cancel")
+            }
+            .disabled(job.isTerminal)
         }
     }
     @ViewBuilder
@@ -59,6 +66,31 @@ struct ReviewMonitorJobRowView: View {
                 }
             }
         }
+    }
+
+    private var subtitleText: String? {
+        if job.hasFinalReview,
+           let finalReview = job.lastAgentMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+           finalReview.isEmpty == false
+        {
+            return finalReview
+        }
+        if job.status == .cancelled {
+            let reviewText = job.reviewText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return reviewText.isEmpty ? nil : reviewText
+        }
+        if let errorMessage = job.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+           errorMessage.isEmpty == false
+        {
+            let summary = job.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            return summary.isEmpty ? errorMessage : summary
+        }
+        guard let lastAgentMessage = job.lastAgentMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+              lastAgentMessage.isEmpty == false
+        else {
+            return nil
+        }
+        return lastAgentMessage
     }
 
     private func elapsedTimeText(startedAt: Date, referenceDate: Date) -> some View {

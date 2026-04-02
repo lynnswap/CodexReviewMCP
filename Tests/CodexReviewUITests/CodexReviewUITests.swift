@@ -121,6 +121,63 @@ struct CodexReviewUITests {
         #expect(sidebar.jobRowUsesReviewMonitorJobRowViewForTesting(job))
     }
 
+    @Test func cancellingRunningJobFromSidebarMarksJobCancelled() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let startedAt = Date(timeIntervalSince1970: 200)
+        let job = makeJob(
+            id: "job-running",
+            cwd: "/tmp/workspace-alpha",
+            startedAt: startedAt,
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review."
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        await viewController.sidebarViewControllerForTesting.cancelJobForTesting(job)
+
+        #expect(job.status == .cancelled)
+        #expect(job.summary == "Review cancelled.")
+        #expect(job.errorMessage == "Cancellation requested.")
+        #expect(job.startedAt == startedAt)
+        #expect(job.endedAt != nil)
+    }
+
+    @Test func cancellationFailureUpdatesJobErrorState() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-running",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review."
+        )
+        let store = CodexReviewStore(backend: FailingCancellationBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        await viewController.sidebarViewControllerForTesting.cancelJobForTesting(job)
+
+        #expect(job.status == .running)
+        #expect(job.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(job.errorMessage == "Cancellation failed.")
+        #expect(job.endedAt == nil)
+    }
+
     @Test func jobsPresentOnInitialLoadStayUnselected() {
         guard #available(macOS 26.0, *) else {
             return
@@ -571,5 +628,37 @@ private struct TestFailure: Error {
 
     init(_ message: String) {
         self.message = message
+    }
+}
+
+@MainActor
+private final class FailingCancellationBackend: CodexReviewStoreBackend {
+    var isActive: Bool = false
+
+    func start(
+        store: CodexReviewStore,
+        forceRestartIfNeeded: Bool
+    ) async {
+        _ = store
+        _ = forceRestartIfNeeded
+    }
+
+    func stop(store: CodexReviewStore) async {
+        _ = store
+    }
+
+    func waitUntilStopped() async {}
+
+    func cancelReview(
+        jobID: String,
+        sessionID: String,
+        reason: String,
+        store: CodexReviewStore
+    ) async throws {
+        _ = jobID
+        _ = sessionID
+        _ = reason
+        _ = store
+        throw ReviewError.io("Cancellation failed.")
     }
 }

@@ -28,6 +28,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public var startedAt: Date?
     public var endedAt: Date?
     public var summary: String
+    public var hasFinalReview: Bool
     public var lastAgentMessage: String?
     public var logEntries: [ReviewLogEntry]
     public var errorMessage: String?
@@ -82,6 +83,18 @@ public final class CodexReviewJob: Identifiable, Hashable {
     }
 
     public var reviewText: String {
+        if status == .cancelled {
+            if hasFinalReview,
+               let lastAgentMessage,
+               lastAgentMessage.isEmpty == false
+            {
+                return lastAgentMessage
+            }
+            if let errorMessage, errorMessage.isEmpty == false {
+                return errorMessage
+            }
+            return summary
+        }
         if let lastAgentMessage, lastAgentMessage.isEmpty == false {
             return lastAgentMessage
         }
@@ -105,6 +118,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         startedAt: Date?,
         endedAt: Date?,
         summary: String,
+        hasFinalReview: Bool,
         lastAgentMessage: String?,
         logEntries: [ReviewLogEntry],
         errorMessage: String?,
@@ -123,6 +137,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.summary = summary
+        self.hasFinalReview = hasFinalReview
         self.lastAgentMessage = lastAgentMessage
         self.logEntries = logEntries
         self.errorMessage = errorMessage

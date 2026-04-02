@@ -244,6 +244,78 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         uiState.selectedJobEntry = job(atRow: outlineView.selectedRow)
     }
 
+    private func triggerCancellation(for job: CodexReviewJob) {
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await performCancellation(for: job)
+        }
+    }
+
+    private func requestCancellation(for job: CodexReviewJob) async throws {
+        guard job.isTerminal == false,
+              let store
+        else {
+            return
+        }
+        try await store.cancelReview(
+            jobID: job.id,
+            sessionID: job.sessionID
+        )
+    }
+
+    private func performCancellation(for job: CodexReviewJob) async {
+        do {
+            try await requestCancellation(for: job)
+        } catch {
+            handleCancellationFailure(error, for: job)
+        }
+    }
+
+    private func handleCancellationFailure(_ error: Error, for job: CodexReviewJob) {
+        let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = description.isEmpty ? "Failed to cancel review." : description
+        if let store {
+            do {
+                try store.recordCancellationFailure(
+                    jobID: job.id,
+                    sessionID: job.sessionID,
+                    message: message
+                )
+            } catch {
+                applyCancellationFailure(message: message, to: job)
+            }
+        } else {
+            applyCancellationFailure(message: message, to: job)
+        }
+
+        guard view.window != nil else {
+            return
+        }
+
+        let presentedError: any Error
+        if description.isEmpty {
+            presentedError = NSError(
+                domain: "CodexReviewUI.ReviewMonitorSidebarViewController",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        } else {
+            presentedError = error
+        }
+        _ = presentError(presentedError)
+    }
+
+    private func applyCancellationFailure(message: String, to job: CodexReviewJob) {
+        if message == "Failed to cancel review." {
+            job.summary = message
+        } else {
+            job.summary = "Failed to cancel review: \(message)"
+        }
+        job.errorMessage = message
+    }
+
     private func updateEmptyState(itemCount: Int) {
         let hasJobs = itemCount > 0
         scrollView.isHidden = hasJobs == false
@@ -447,7 +519,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             let view = (outlineView.makeView(withIdentifier: Identifier.jobCell, owner: self) as? ReviewMonitorJobCellView)
                 ?? ReviewMonitorJobCellView()
             view.identifier = Identifier.jobCell
-            view.configure(with: job)
+            view.configure(with: job) { [weak self] in
+                self?.triggerCancellation(for: job)
+            }
             return view
         }
     }
@@ -501,6 +575,10 @@ extension ReviewMonitorSidebarViewController {
             return false
         }
         return cellView.isHostingReviewMonitorJobRowViewForTesting
+    }
+
+    func cancelJobForTesting(_ job: CodexReviewJob) async {
+        await performCancellation(for: job)
     }
 
     func clickBlankAreaForTesting() {
@@ -606,13 +684,21 @@ private final class ReviewMonitorJobCellView: NSTableCellView {
         nil
     }
 
-    func configure(with job: CodexReviewJob) {
+    func configure(with job: CodexReviewJob, onCancel: @escaping () -> Void) {
         objectValue = job
         toolTip = job.cwd
         if let hostingView {
-            hostingView.rootView = ReviewMonitorJobRowView(job: job)
+            hostingView.rootView = ReviewMonitorJobRowView(
+                job: job,
+                onCancel: onCancel
+            )
         } else {
-            let hostingView = NSHostingView(rootView: ReviewMonitorJobRowView(job: job))
+            let hostingView = NSHostingView(
+                rootView: ReviewMonitorJobRowView(
+                    job: job,
+                    onCancel: onCancel
+                )
+            )
             hostingView.translatesAutoresizingMaskIntoConstraints = false
             hostingView.setAccessibilityIdentifier("review-monitor.job-row")
             addSubview(hostingView)

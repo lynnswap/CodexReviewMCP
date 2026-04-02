@@ -18,6 +18,7 @@ package struct ReviewProcessOutcome: Sendable {
     package var threadID: String?
     package var turnID: String?
     package var model: String?
+    package var hasFinalReview: Bool
     package var lastAgentMessage: String
     package var errorMessage: String?
     package var summary: String
@@ -107,6 +108,7 @@ package struct AppServerReviewRunner: Sendable {
                 threadID: nil,
                 turnID: nil,
                 model: effectiveModel,
+                hasFinalReview: false,
                 lastAgentMessage: "",
                 errorMessage: cancellationReason,
                 summary: "Review cancelled.",
@@ -347,6 +349,7 @@ package struct AppServerReviewRunner: Sendable {
                             threadID: snapshot.threadID ?? threadResponse.thread.id,
                             turnID: snapshot.turnID ?? turnID,
                             model: effectiveModel,
+                            hasFinalReview: false,
                             lastAgentMessage: snapshot.lastAgentMessage ?? "",
                             errorMessage: "Review completed without an `exitedReviewMode` item.",
                             summary: "Review failed.",
@@ -366,6 +369,7 @@ package struct AppServerReviewRunner: Sendable {
                         threadID: snapshot.threadID ?? threadResponse.thread.id,
                         turnID: snapshot.turnID ?? turnID,
                         model: effectiveModel,
+                        hasFinalReview: true,
                         lastAgentMessage: review,
                         errorMessage: cancellationReason,
                         summary: summary,
@@ -384,6 +388,7 @@ package struct AppServerReviewRunner: Sendable {
                         threadID: snapshot.threadID ?? threadResponse.thread.id,
                         turnID: snapshot.turnID ?? turnID,
                         model: effectiveModel,
+                        hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
                         lastAgentMessage: snapshot.lastAgentMessage ?? "",
                         errorMessage: reason,
                         summary: "Review cancelled.",
@@ -402,6 +407,7 @@ package struct AppServerReviewRunner: Sendable {
                         threadID: snapshot.threadID ?? threadResponse.thread.id,
                         turnID: snapshot.turnID ?? turnID,
                         model: effectiveModel,
+                        hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
                         lastAgentMessage: snapshot.lastAgentMessage ?? "",
                         errorMessage: errorMessage,
                         summary: "Review failed.",
@@ -440,6 +446,7 @@ package struct AppServerReviewRunner: Sendable {
                     threadID: snapshot.threadID,
                     turnID: snapshot.turnID,
                     model: effectiveModel,
+                    hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
                     lastAgentMessage: snapshot.lastAgentMessage ?? "",
                     errorMessage: reason,
                     summary: cancellationReason == nil ? "Review failed." : "Review cancelled.",
@@ -464,6 +471,7 @@ package struct AppServerReviewRunner: Sendable {
                     threadID: snapshot.threadID,
                     turnID: snapshot.turnID,
                     model: effectiveModel,
+                    hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
                     lastAgentMessage: snapshot.lastAgentMessage ?? "",
                     errorMessage: "Review timed out after \(timeoutSeconds) seconds.",
                     summary: "Review timed out after \(timeoutSeconds) seconds.",
@@ -487,6 +495,7 @@ package struct AppServerReviewRunner: Sendable {
                     threadID: snapshot.threadID,
                     turnID: snapshot.turnID,
                     model: effectiveModel,
+                    hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
                     lastAgentMessage: snapshot.lastAgentMessage ?? "",
                     errorMessage: reason,
                     summary: "Review cancelled.",
@@ -533,6 +542,7 @@ package struct AppServerReviewRunner: Sendable {
             threadID: nil,
             turnID: nil,
             model: requestedModel,
+            hasFinalReview: false,
             lastAgentMessage: "",
             errorMessage: cancellationReason,
             summary: "Review cancelled.",

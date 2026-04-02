@@ -209,7 +209,27 @@ extension CodexReviewStore {
             job.status = .init(state: outcome.state)
             job.summary = outcome.summary
             job.model = outcome.model ?? job.model
-            job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
+            job.hasFinalReview = outcome.hasFinalReview
+            if outcome.hasFinalReview {
+                job.lastAgentMessage = outcome.content.nilIfEmpty
+                    ?? outcome.lastAgentMessage.nilIfEmpty
+                    ?? job.lastAgentMessage
+            } else if outcome.state == .cancelled {
+                let preservedContent = outcome.content.nilIfEmpty
+                let preservedMessage = outcome.lastAgentMessage.nilIfEmpty
+                let cancellationMessage = outcome.errorMessage?.nilIfEmpty
+                if let preservedContent,
+                   preservedContent != cancellationMessage
+                {
+                    job.lastAgentMessage = preservedContent
+                } else if let preservedMessage,
+                          preservedMessage != cancellationMessage
+                {
+                    job.lastAgentMessage = preservedMessage
+                }
+            } else {
+                job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
+            }
             job.errorMessage = outcome.errorMessage
             job.reviewThreadID = outcome.reviewThreadID ?? job.reviewThreadID
             job.threadID = outcome.threadID ?? job.threadID
@@ -252,6 +272,7 @@ extension CodexReviewStore {
             job.status = .cancelled
             job.summary = "Review cancelled."
             job.model = model ?? job.model
+            job.hasFinalReview = false
             job.errorMessage = reason.nilIfEmpty ?? job.errorMessage
             if job.startedAt == nil {
                 job.startedAt = startedAt
@@ -279,16 +300,15 @@ extension CodexReviewStore {
         if job.isTerminal {
             return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: false)
         }
-        let endedAt = job.startedAt == nil ? Date() : nil
+        let endedAt = Date()
         updateJob(id: jobID) { job in
             job.status = .cancelled
             job.summary = "Cancellation requested."
+            job.hasFinalReview = false
             if reason.isEmpty == false {
                 job.errorMessage = reason
             }
-            if let endedAt {
-                job.endedAt = endedAt
-            }
+            job.endedAt = endedAt
         }
         return ReviewCancelResult(jobID: jobID, state: .cancelled, signalled: false)
     }
@@ -448,6 +468,7 @@ extension CodexReviewStore {
             startedAt: nil,
             endedAt: nil,
             summary: "Queued.",
+            hasFinalReview: false,
             lastAgentMessage: nil,
             logEntries: [],
             errorMessage: nil,
@@ -867,6 +888,20 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             return
         }
         _ = await waitTask.value
+    }
+
+    func cancelReview(
+        jobID: String,
+        sessionID: String,
+        reason: String,
+        store: CodexReviewStore
+    ) async throws {
+        let job = try store.resolveJob(jobID: jobID, sessionID: sessionID)
+        _ = try await store.cancelReview(
+            reviewThreadID: job.reviewThreadID ?? job.id,
+            sessionID: sessionID,
+            reason: reason
+        )
     }
 
     private func makeServer(store: CodexReviewStore) -> ReviewMCPHTTPServer {
