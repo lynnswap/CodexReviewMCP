@@ -42,6 +42,9 @@ struct ReviewMonitorJobRowView: View {
             }
             .animation(.default, value: job.status)
         }
+        .transaction(value: job.id) { transaction in
+            transaction.disablesAnimations = true
+        }
         .contextMenu{
             Button(role: .cancel, action: onCancel) {
                 Text("Cancel")
