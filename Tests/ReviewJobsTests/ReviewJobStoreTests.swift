@@ -442,8 +442,15 @@ struct ReviewRuntimeTests {
 
     @MainActor
     @Test func codexReviewStoreCancelReturnsUnderlyingThreadIDWhenReviewThreadDiffers() async throws {
-        let scriptURL = try makeFakeAppServerScript(mode: .detachedLikeLongRunning)
-        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let captureURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let scriptURL = try makeFakeAppServerScript(
+            mode: .detachedLikeLongRunning,
+            captureURL: captureURL
+        )
+        defer {
+            try? FileManager.default.removeItem(at: scriptURL)
+            try? FileManager.default.removeItem(at: captureURL)
+        }
 
         let store = CodexReviewStore(
             configuration: .init(
@@ -473,6 +480,10 @@ struct ReviewRuntimeTests {
         #expect(cancelOutcome.reviewThreadID == "thr-store")
         #expect(cancelOutcome.threadID == "thr-parent")
         #expect(result.threadID == "thr-parent")
+
+        let interruptParams = try #require(loadCapturedRequest(at: captureURL, method: "turn/interrupt")?["params"] as? [String: Any])
+        #expect(interruptParams["threadId"] as? String == "thr-parent")
+        #expect(interruptParams["turnId"] as? String == "turn-store")
     }
 
     @MainActor
@@ -581,8 +592,12 @@ private enum FakeStoreAppServerMode: String {
     case configReadFailure
 }
 
-private func makeFakeAppServerScript(mode: FakeStoreAppServerMode) throws -> URL {
+private func makeFakeAppServerScript(
+    mode: FakeStoreAppServerMode,
+    captureURL: URL? = nil
+) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let capturePathLiteral = try pythonLiteral(captureURL?.path)
     let script = """
     #!/usr/bin/env python3
     import json
@@ -593,10 +608,17 @@ private func makeFakeAppServerScript(mode: FakeStoreAppServerMode) throws -> URL
     parent_thread_id = "thr-parent"
     turn_id = "turn-store"
     mode = "\(mode.rawValue)"
+    capture_path = \(capturePathLiteral)
 
     def send(obj):
         sys.stdout.write(json.dumps(obj) + "\\n")
         sys.stdout.flush()
+
+    def capture(obj):
+        if capture_path is None:
+            return
+        with open(capture_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(obj) + "\\n")
 
     for raw in sys.stdin:
         if not raw.strip():
@@ -608,11 +630,13 @@ private func makeFakeAppServerScript(mode: FakeStoreAppServerMode) throws -> URL
         elif method == "initialized":
             continue
         elif method == "config/read":
+            capture({"method": method, "params": message.get("params")})
             if mode == "configReadFailure":
                 send({"id": message["id"], "error": {"code": -32001, "message": "config read failed"}})
                 continue
             send({"id": message["id"], "result": {"config": {"model": "gpt-5.4-mini"}}})
         elif method == "thread/start":
+            capture({"method": method, "params": message.get("params")})
             if mode == "bootstrapFailureBeforeThreadStart":
                 sys.stderr.write("bootstrap failed before thread/start\\n")
                 sys.stderr.flush()
@@ -643,6 +667,7 @@ private func makeFakeAppServerScript(mode: FakeStoreAppServerMode) throws -> URL
             time.sleep(0.5)
             sys.exit(0)
         elif method == "turn/interrupt":
+            capture({"method": method, "params": message.get("params")})
             send({"id": message["id"], "result": {}})
             send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "interrupted", "error": {"message": "test cancel"}}}})
             time.sleep(0.2)
@@ -675,6 +700,35 @@ private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [S
         environment[key] = value
     }
     return environment
+}
+
+private func loadCapturedRequest(at url: URL, method: String) throws -> [String: Any]? {
+    guard let data = try? Data(contentsOf: url),
+          let text = String(data: data, encoding: .utf8)
+    else {
+        return nil
+    }
+    for line in text.split(whereSeparator: \.isNewline) {
+        guard let lineData = line.data(using: .utf8),
+              let object = try JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              object["method"] as? String == method
+        else {
+            continue
+        }
+        return object
+    }
+    return nil
+}
+
+private func pythonLiteral(_ value: String?) throws -> String {
+    guard let value else {
+        return "None"
+    }
+    let escaped = value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
+    return "\"\(escaped)\""
 }
 
 @MainActor

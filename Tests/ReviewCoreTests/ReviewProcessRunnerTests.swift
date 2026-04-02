@@ -816,6 +816,47 @@ import Testing
         #expect(result.threadID == "thr-parent")
     }
 
+    @Test func appServerReviewRunnerInterruptsParentThreadWhenReviewThreadDiffers() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let scriptURL = try makeFakeAppServerScript(mode: .detachedLongRunning)
+
+        let recorder = EventRecorder()
+        let cancellation = CancellationFlag()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                codexCommand: scriptURL.path,
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.pollInterval = .milliseconds(50)
+
+        let task = Task {
+            try await runner.run(
+                request: .init(cwd: cwd.path, target: .uncommittedChanges),
+                defaultTimeoutSeconds: 1,
+                onStart: { _, _ in },
+                onEvent: { event in
+                    await recorder.record(event)
+                },
+                requestedTerminationReason: {
+                    await cancellation.reason
+                }
+            )
+        }
+
+        try await waitUntil(timeout: .seconds(2), interval: .milliseconds(20)) {
+            await recorder.reviewThreadID != nil
+        }
+        await cancellation.cancel("Cancelled from detached test.")
+
+        let result = try await task.value
+
+        #expect(result.state == .cancelled)
+        #expect(result.reviewThreadID == "thr-review")
+        #expect(result.threadID == "thr-parent")
+        #expect(result.errorMessage == "Cancelled from detached test.")
+    }
+
     @Test func appServerReviewRunnerKeepsTurnFailureMessageWhenStderrContainsErrorWord() async throws {
         let cwd = try makeTemporaryDirectory()
         let scriptURL = try makeFakeAppServerScript(mode: .stderrNoiseAfterFailure)
@@ -885,6 +926,7 @@ private enum FakeAppServerMode: String {
     case partialReasoningCompletion
     case partialPlanCompletion
     case longRunning
+    case detachedLongRunning
     case configReadUnsupported
     case configReadFailure
     case reviewStartFailure
@@ -997,7 +1039,7 @@ private func makeFakeAppServerScript(
             send({
                 "id": message["id"],
                 "result": {
-                    "thread": {"id": parent_thread_id if mode == "detachedReviewLike" else thread_id},
+                    "thread": {"id": parent_thread_id if mode in ("detachedReviewLike", "detachedLongRunning") else thread_id},
                     "model": thread_start_model
                 }
             })
@@ -1017,7 +1059,7 @@ private func makeFakeAppServerScript(
             send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "error": None}}})
             send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "enteredReviewMode", "id": turn_id, "review": "current changes"}}})
 
-            if mode == "longRunning":
+            if mode == "longRunning" or mode == "detachedLongRunning":
                 continue
 
             if mode == "postReviewCrash":
@@ -1088,6 +1130,9 @@ private func makeFakeAppServerScript(
             time.sleep(0.5)
             sys.exit(0)
         elif method == "turn/interrupt":
+            capture({"method": method, "params": message.get("params")})
+            if mode == "detachedLongRunning" and message.get("params", {}).get("threadId") != parent_thread_id:
+                continue
             send({"id": message["id"], "result": {}})
             send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "interrupted", "error": {"message": "Cancelled from test."}}}})
             time.sleep(0.2)

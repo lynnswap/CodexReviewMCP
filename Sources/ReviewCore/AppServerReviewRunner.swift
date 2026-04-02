@@ -306,7 +306,8 @@ package struct AppServerReviewRunner: Sendable {
                     let _: AppServerEmptyResponse = try await connection.request(
                         method: "turn/interrupt",
                         params: AppServerTurnInterruptParams(
-                            threadID: snapshot.reviewThreadID ?? reviewThreadID,
+                            // `turn/interrupt` targets the conversation thread, not the review job handle.
+                            threadID: snapshot.threadID ?? threadResponse.thread.id,
                             turnID: snapshot.turnID ?? turnID
                         ),
                         responseType: AppServerEmptyResponse.self
