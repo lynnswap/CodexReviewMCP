@@ -608,25 +608,58 @@ extension CodexReviewStore {
         var currentBytes = cappedLogBytes(for: job.logEntries)
 
         while currentBytes > reviewLogLimitBytes {
-            guard let index = job.logEntries.firstIndex(where: {
-                trimmableCappedKinds.contains($0.kind)
-            }) else {
-                guard let errorIndex = job.logEntries.firstIndex(where: { $0.kind == .error }) else {
-                    return
-                }
-                truncateEntry(at: errorIndex, in: job, keeping: .suffix, overflowBytes: currentBytes - reviewLogLimitBytes)
-                currentBytes = cappedLogBytes(for: job.logEntries)
-                continue
-            }
-            let entry = job.logEntries[index]
             let overflowBytes = currentBytes - reviewLogLimitBytes
-            if entry.text.utf8.count > overflowBytes {
-                truncateEntry(at: index, in: job, keeping: .prefix, overflowBytes: overflowBytes)
+
+            if let index = job.logEntries.firstIndex(where: { $0.kind == .diagnostic }) {
+                trimWholeEntryPreferringNewest(
+                    at: index,
+                    kind: .diagnostic,
+                    in: job,
+                    overflowBytes: overflowBytes
+                )
+            } else if let index = job.logEntries.firstIndex(where: { $0.kind == .rawReasoning }) {
+                let entry = job.logEntries[index]
+                if entry.text.utf8.count > overflowBytes {
+                    truncateEntry(at: index, in: job, keeping: .prefix, overflowBytes: overflowBytes)
+                } else {
+                    job.logEntries.remove(at: index)
+                }
+            } else if let index = job.logEntries.firstIndex(where: {
+                prefixTrimmableCappedKinds.contains($0.kind)
+            }) {
+                let entry = job.logEntries[index]
+                if entry.text.utf8.count > overflowBytes {
+                    truncateEntry(at: index, in: job, keeping: .prefix, overflowBytes: overflowBytes)
+                } else {
+                    job.logEntries.remove(at: index)
+                }
+            } else if let errorIndex = job.logEntries.firstIndex(where: { $0.kind == .error }) {
+                truncateEntry(at: errorIndex, in: job, keeping: .suffix, overflowBytes: overflowBytes)
             } else {
-                job.logEntries.remove(at: index)
+                return
             }
             currentBytes = cappedLogBytes(for: job.logEntries)
         }
+    }
+
+    private func trimWholeEntryPreferringNewest(
+        at index: Int,
+        kind: ReviewLogEntry.Kind,
+        in job: CodexReviewJob,
+        overflowBytes: Int
+    ) {
+        let entry = job.logEntries[index]
+        let hasNewerEntryOfSameKind = job.logEntries.dropFirst(index + 1).contains { $0.kind == kind }
+        let hasOtherCappedEntries = job.logEntries.contains {
+            $0.id != entry.id && cappedLogKinds.contains($0.kind)
+        }
+
+        if hasNewerEntryOfSameKind || hasOtherCappedEntries {
+            job.logEntries.remove(at: index)
+            return
+        }
+
+        truncateEntry(at: index, in: job, keeping: .prefix, overflowBytes: overflowBytes)
     }
 
     private enum TruncationDirection {
@@ -791,8 +824,8 @@ extension CodexReviewStore {
         ]
     }
 
-    private var trimmableCappedKinds: Set<ReviewLogEntry.Kind> {
-        cappedLogKinds.subtracting([.error])
+    private var prefixTrimmableCappedKinds: Set<ReviewLogEntry.Kind> {
+        cappedLogKinds.subtracting([.rawReasoning, .diagnostic, .error])
     }
 
     private func jobLocation(reviewThreadID: String) -> (workspaceIndex: Int, jobIndex: Int)? {

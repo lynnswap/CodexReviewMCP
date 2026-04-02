@@ -6,6 +6,8 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct CodexReviewMonitorTests {
+    private static let fixtureReviewText = "Fixture app-server review completed."
+
     @Test func launchModeTreatsPreviewEnvironmentAsPreview() {
         let environment = [
             CodexReviewMonitorLaunchEnvironment.xcodeRunningForPlaygroundsKey: "1",
@@ -93,13 +95,15 @@ struct CodexReviewMonitorTests {
     }
 
     @Test func launchedAppEmbeddedReviewStartProgressesViaMCP() async throws {
-        guard ProcessInfo.processInfo.environment["CODEX_REVIEW_MCP_LIVE_TESTS"] == "1" else {
-            return
-        }
         let repository = try TemporaryReviewRepository.make()
         defer { repository.cleanup() }
-        let scriptURL = try makeFakeExecReviewScript(mode: .success)
+        let markerURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let scriptURL = try makeFakeAppServerScript(
+            reviewText: Self.fixtureReviewText,
+            markerURL: markerURL
+        )
         defer { try? FileManager.default.removeItem(at: scriptURL) }
+        defer { try? FileManager.default.removeItem(at: markerURL) }
         let port = try nextAvailableTestPort(in: 39501 ... 39510)
 
         let launchedApp = try LaunchedMonitorApp.start(codexCommand: scriptURL.path, port: port)
@@ -124,11 +128,10 @@ struct CodexReviewMonitorTests {
         let result = try #require(response["result"] as? [String: Any])
         let structuredContent = try #require(result["structuredContent"] as? [String: Any])
         let reviewThreadID = try #require(structuredContent["reviewThreadId"] as? String)
-        let jobID = try #require(structuredContent["jobId"] as? String)
-        #expect(reviewThreadID == jobID)
         #expect(reviewThreadID.isEmpty == false)
         #expect(structuredContent["status"] as? String == "succeeded")
-        #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
+        #expect(structuredContent["review"] as? String == Self.fixtureReviewText)
+        #expect(FileManager.default.fileExists(atPath: markerURL.path))
 
         let diagnostics: MonitorAppDiagnostics = try await waitUntilValue(timeout: .seconds(30), interval: .milliseconds(200)) {
             guard let diagnostics = try launchedApp.readDiagnostics(),
@@ -143,7 +146,7 @@ struct CodexReviewMonitorTests {
 
         let job = try #require(diagnostics.jobs.first)
         #expect(job.status == "succeeded")
-        #expect(job.logText.isEmpty == false)
+        #expect(job.logText.contains(Self.fixtureReviewText))
         #expect(diagnostics.childRuntimePath == nil)
 
         let readResponse = try await client.callTool(
@@ -155,14 +158,19 @@ struct CodexReviewMonitorTests {
         let readResult = try #require(readResponse["result"] as? [String: Any])
         let readStructuredContent = try #require(readResult["structuredContent"] as? [String: Any])
         #expect(readStructuredContent["status"] as? String == "succeeded")
-        #expect(((readStructuredContent["review"] as? String) ?? "").isEmpty == false)
+        #expect(readStructuredContent["review"] as? String == Self.fixtureReviewText)
     }
 
     @Test func launchedAppResolvesCodexFromPATHWithoutExplicitOverride() async throws {
         let repository = try TemporaryReviewRepository.make()
         defer { repository.cleanup() }
-        let scriptURL = try makeFakeExecReviewScript(mode: .success)
+        let markerURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let scriptURL = try makeFakeAppServerScript(
+            reviewText: Self.fixtureReviewText,
+            markerURL: markerURL
+        )
         defer { try? FileManager.default.removeItem(at: scriptURL) }
+        defer { try? FileManager.default.removeItem(at: markerURL) }
         let executableDirectory = try makeExecutableDirectory(named: "codex", from: scriptURL)
         defer { try? FileManager.default.removeItem(at: executableDirectory) }
         let port = try nextAvailableTestPort(in: 39511 ... 39520)
@@ -193,25 +201,35 @@ struct CodexReviewMonitorTests {
         let result = try #require(response["result"] as? [String: Any])
         let structuredContent = try #require(result["structuredContent"] as? [String: Any])
         #expect(structuredContent["status"] as? String == "succeeded")
-        #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
+        #expect(structuredContent["review"] as? String == Self.fixtureReviewText)
+        #expect(FileManager.default.fileExists(atPath: markerURL.path))
     }
 
     @Test func relaunchedAppRecoversEmbeddedServerAutomatically() async throws {
-        guard ProcessInfo.processInfo.environment["CODEX_REVIEW_MCP_LIVE_TESTS"] == "1" else {
-            return
-        }
-        let scriptURL = try makeFakeExecReviewScript(mode: .success)
+        let scriptURL = try makeFakeAppServerScript(reviewText: Self.fixtureReviewText)
         defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let sharedHomeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexReviewMonitorHome-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: sharedHomeURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sharedHomeURL) }
         let port = try nextAvailableTestPort(in: 39521 ... 39530)
 
-        let firstApp = try LaunchedMonitorApp.start(codexCommand: scriptURL.path, port: port)
+        let firstApp = try LaunchedMonitorApp.start(
+            codexCommand: scriptURL.path,
+            port: port,
+            homeURL: sharedHomeURL
+        )
         defer { firstApp.terminate() }
 
         _ = try await waitUntilValue(timeout: .seconds(20), interval: .milliseconds(200)) {
             try firstApp.readDiagnostics()?.serverURL.flatMap(URL.init(string:))
         } as URL
 
-        let secondApp = try LaunchedMonitorApp.start(codexCommand: scriptURL.path, port: port)
+        let secondApp = try LaunchedMonitorApp.start(
+            codexCommand: scriptURL.path,
+            port: port,
+            homeURL: sharedHomeURL
+        )
         defer { secondApp.terminate() }
 
         let diagnostics: MonitorAppDiagnostics = try await waitUntilValue(
@@ -327,7 +345,12 @@ private final class LaunchedMonitorApp {
         self.stderrHandle = stderrHandle
     }
 
-    static func start(codexCommand: String?, port: Int, path: String = "/usr/bin:/bin:/usr/sbin:/sbin") throws -> LaunchedMonitorApp {
+    static func start(
+        codexCommand: String?,
+        port: Int,
+        path: String = "/usr/bin:/bin:/usr/sbin:/sbin",
+        homeURL sharedHomeURL: URL? = nil
+    ) throws -> LaunchedMonitorApp {
         guard let sourceBundleURL = Bundle.main.bundleURL.pathExtension == "app"
             ? Bundle.main.bundleURL
             : nil
@@ -350,8 +373,10 @@ private final class LaunchedMonitorApp {
         let stdoutURL = tempDirectory.appendingPathComponent("stdout.log")
         let stderrURL = tempDirectory.appendingPathComponent("stderr.log")
         let appBundleURL = tempDirectory.appendingPathComponent("CodexReviewMonitor.app", isDirectory: true)
+        let homeURL = sharedHomeURL ?? tempDirectory.appendingPathComponent("home", isDirectory: true)
         FileManager.default.createFile(atPath: stdoutURL.path, contents: Data())
         FileManager.default.createFile(atPath: stderrURL.path, contents: Data())
+        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
         try FileManager.default.copyItem(at: sourceBundleURL, to: appBundleURL)
         guard let executableURL = Bundle(url: appBundleURL)?.executableURL else {
             throw TestFailure("Missing copied app executable URL.")
@@ -362,11 +387,8 @@ private final class LaunchedMonitorApp {
         let stderrHandle = try FileHandle(forWritingTo: stderrURL)
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.executableURL = executableURL
         process.arguments = [
-            "-na",
-            appBundleURL.path,
-            "--args",
             MonitorAppTestEnvironment.portArgument,
             "\(port)",
         ]
@@ -380,11 +402,12 @@ private final class LaunchedMonitorApp {
             MonitorAppTestEnvironment.diagnosticsPathArgument,
             diagnosticsURL.path,
         ])
-        process.environment = [
-            "HOME": NSHomeDirectory(),
-            "TMPDIR": NSTemporaryDirectory(),
-            "PATH": path,
-        ]
+        process.environment = makeEnvironment(
+            homeURL: homeURL,
+            tempDirectory: tempDirectory,
+            path: path
+        )
+        process.currentDirectoryURL = tempDirectory
         process.standardOutput = stdoutHandle
         process.standardError = stderrHandle
         try process.run()
@@ -441,6 +464,29 @@ private final class LaunchedMonitorApp {
         Thread.sleep(forTimeInterval: 0.5)
     }
 
+    private static func makeEnvironment(
+        homeURL: URL,
+        tempDirectory: URL,
+        path: String
+    ) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        for key in [
+            "CODEX_HOME",
+            "CODEX_REVIEW_MCP_LIVE_TESTS",
+            "DYLD_INSERT_LIBRARIES",
+            "XCInjectBundle",
+            "XCInjectBundleInto",
+            "XCTestBundlePath",
+            "XCTestConfigurationFilePath",
+        ] {
+            environment.removeValue(forKey: key)
+        }
+        environment["HOME"] = homeURL.path
+        environment["TMPDIR"] = tempDirectory.path
+        environment["PATH"] = path
+        return environment
+    }
+
     private static func terminateMonitorProcesses(executableURL: URL) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
@@ -466,42 +512,107 @@ private final class LaunchedMonitorApp {
     }
 }
 
-private enum FakeExecReviewMode {
-    case success
-}
-
-private func makeFakeExecReviewScript(mode: FakeExecReviewMode) throws -> URL {
+private func makeFakeAppServerScript(
+    reviewText: String,
+    markerURL: URL? = nil
+) throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let body: String
-    switch mode {
-    case .success:
-        body = """
-        #!/bin/zsh
-        out=""
-        while [[ $# -gt 0 ]]; do
-          case "$1" in
-            --output-last-message)
-              out="$2"
-              shift 2
-              ;;
-            *)
-              shift
-              ;;
-          esac
-        done
-        print '{"type":"thread.started","thread_id":"thread-success"}'
-        print '{"type":"turn.started"}'
-        print '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"git diff --stat","aggregated_output":"","status":"in_progress"}}'
-        print '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"git diff --stat","aggregated_output":"README.md | 1 +","exit_code":0,"status":"completed"}}'
-        print '{"type":"item.completed","item":{"id":"item_2","type":"reasoning","text":"Inspecting current changes"}}'
-        print '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"No functional issues found."}}'
-        print '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
-        [[ -n "$out" ]] && print -n 'No functional issues found.' > "$out"
-        """
-    }
-    try body.write(to: url, atomically: true, encoding: .utf8)
+    let markerPathLiteral = try pythonLiteral(markerURL?.path)
+    let reviewTextLiteral = try pythonLiteral(reviewText)
+    let script = """
+    #!/usr/bin/env python3
+    import json
+    import os
+    import sys
+    import time
+
+    marker_path = \(markerPathLiteral)
+    review_text = \(reviewTextLiteral)
+    thread_id = "thr-review"
+    turn_id = "turn-review"
+
+    if sys.argv[1:] != ["app-server", "--listen", "stdio://"]:
+        sys.stderr.write("unexpected args: " + " ".join(sys.argv[1:]) + "\\n")
+        sys.stderr.flush()
+        sys.exit(2)
+
+    def send(obj, stream=sys.stdout):
+        stream.write(json.dumps(obj) + "\\n")
+        stream.flush()
+
+    for raw in sys.stdin:
+        if not raw.strip():
+            continue
+        message = json.loads(raw)
+        method = message.get("method")
+
+        if method == "initialize":
+            send({
+                "id": message["id"],
+                "result": {
+                    "platformFamily": "macOS",
+                    "platformOs": "Darwin"
+                }
+            })
+        elif method == "initialized":
+            continue
+        elif method == "config/read":
+            send({
+                "id": message["id"],
+                "result": {
+                    "config": {
+                        "model": "gpt-5.4-mini",
+                        "review_model": "gpt-5.4-mini"
+                    }
+                }
+            })
+        elif method == "thread/start":
+            send({
+                "id": message["id"],
+                "result": {
+                    "thread": {"id": thread_id},
+                    "model": "gpt-5.4-mini"
+                }
+            })
+        elif method == "review/start":
+            if marker_path is not None:
+                open(marker_path, "w", encoding="utf-8").close()
+            send({
+                "id": message["id"],
+                "result": {
+                    "turn": {"id": turn_id, "status": "inProgress", "error": None},
+                    "reviewThreadId": thread_id
+                }
+            })
+            send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "error": None}}})
+            send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "enteredReviewMode", "id": turn_id, "review": "current changes"}}})
+            send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "inProgress", "aggregatedOutput": None, "exitCode": None}}})
+            send({"method": "item/commandExecution/outputDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "cmd_1", "delta": "README.md | 1 +"}})
+            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "completed", "aggregatedOutput": "README.md | 1 +", "exitCode": 0}}})
+            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "reasoning", "id": "rsn_1", "summary": ["Inspecting current changes"], "content": []}}})
+            send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "msg_1", "delta": review_text}})
+            sys.stderr.write("diagnostic: fake app-server\\n")
+            sys.stderr.flush()
+            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "exitedReviewMode", "id": turn_id, "review": review_text}}})
+            send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "error": None}}})
+            time.sleep(0.2)
+            sys.exit(0)
+    """.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+
+    try script.write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
     return url
+}
+
+private func pythonLiteral(_ value: String?) throws -> String {
+    guard let value else {
+        return "None"
+    }
+    let escaped = value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
+    return "\"\(escaped)\""
 }
 
 private func makeExecutableDirectory(named name: String, from executableURL: URL) throws -> URL {

@@ -75,7 +75,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
             sections: [
                 Self.renderedText(
                     from: logEntries,
-                    kinds: [.error, .rawReasoning]
+                    kinds: [.error]
                 ),
                 rawLogText,
             ]

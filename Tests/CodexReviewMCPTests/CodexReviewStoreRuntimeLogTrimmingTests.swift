@@ -33,7 +33,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         #expect(updatedJob.rawLogText == String(repeating: "b", count: halfLimit))
     }
 
-    @Test func storeTrimsRawReasoningEntriesWhenDiagnosticsOverflow() throws {
+    @Test func storeTruncatesOversizedRawReasoningWhenItIsTheOnlyCappedEntry() throws {
         let store = CodexReviewStore(configuration: .init())
         let job = CodexReviewJob.makeForTesting(
             id: "job-2",
@@ -58,7 +58,37 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         )
 
         let updatedJob = try #require(findJob(id: job.id, in: store))
-        #expect(updatedJob.logEntries.contains { $0.kind == .rawReasoning } == false)
+        #expect(updatedJob.logEntries.contains { $0.kind == .rawReasoning } == true)
+        #expect(updatedJob.reviewOutputText.utf8.count <= reviewLogLimitBytes)
+        #expect(updatedJob.diagnosticText.isEmpty)
+    }
+
+    @Test func diagnosticTextExcludesUnderLimitRawReasoningEntries() throws {
+        let store = CodexReviewStore(configuration: .init())
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-2a",
+            cwd: "/tmp/repo",
+            targetSummary: "Uncommitted changes",
+            status: .running,
+            summary: "Running."
+        )
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [
+                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+            ]
+        )
+
+        store.handle(
+            jobID: job.id,
+            event: .logEntry(.init(
+                kind: .rawReasoning,
+                text: "thinking out loud"
+            ))
+        )
+
+        let updatedJob = try #require(findJob(id: job.id, in: store))
+        #expect(updatedJob.logEntries.contains { $0.kind == .rawReasoning && $0.text == "thinking out loud" })
         #expect(updatedJob.diagnosticText.isEmpty)
     }
 
@@ -91,7 +121,40 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
 
         let updatedJob = try #require(findJob(id: job.id, in: store))
         #expect(updatedJob.logEntries.contains { $0.kind == .error && $0.text == "bootstrap failed" })
-        #expect(updatedJob.logEntries.contains { $0.kind == .rawReasoning } == false)
+        #expect(updatedJob.logEntries.contains { $0.kind == .rawReasoning } == true)
+        #expect(updatedJob.logText.utf8.count <= reviewLogLimitBytes)
+    }
+
+    @Test func storeDropsDiagnosticsBeforeTruncatingRawReasoning() throws {
+        let store = CodexReviewStore(configuration: .init())
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-3a",
+            cwd: "/tmp/repo",
+            targetSummary: "Uncommitted changes",
+            status: .running,
+            summary: "Running."
+        )
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [
+                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+            ]
+        )
+
+        let halfLimit = reviewLogLimitBytes / 2
+        store.handle(jobID: job.id, event: .rawLine(String(repeating: "d", count: halfLimit)))
+        store.handle(
+            jobID: job.id,
+            event: .logEntry(.init(
+                kind: .rawReasoning,
+                text: String(repeating: "r", count: halfLimit)
+            ))
+        )
+
+        let updatedJob = try #require(findJob(id: job.id, in: store))
+        let rawReasoning = try #require(updatedJob.logEntries.first(where: { $0.kind == .rawReasoning }))
+        #expect(updatedJob.logEntries.contains { $0.kind == .diagnostic } == false)
+        #expect(rawReasoning.text == String(repeating: "r", count: halfLimit))
     }
 
     @Test func storeTruncatesOversizedErrorEntriesToRespectDiagnosticCap() throws {
