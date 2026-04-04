@@ -16,6 +16,12 @@ package enum MockAppServerMode: Sendable {
         turnID: String = "turn-review",
         model: String = "gpt-5.4-mini"
     )
+    case longRunningWithoutTurnStarted(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini"
+    )
     case detachedLongRunning(
         reviewThreadID: String = "thr-review",
         parentThreadID: String = "thr-parent",
@@ -34,6 +40,77 @@ package enum MockAppServerMode: Sendable {
         model: String = "gpt-5.4-mini"
     )
     case turnFailure(message: String = "turn failed")
+    case threadClosedWithoutTurnCompletion(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini"
+    )
+    case threadClosedBeforeCompletedNotifications(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall."
+    )
+    case detachedParentThreadClosedBeforeCompletedNotifications(
+        reviewThreadID: String = "thr-review",
+        parentThreadID: String = "thr-parent",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall."
+    )
+    case unrelatedNonRetryErrorThenSuccess(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall."
+    )
+    case nonRetryErrorWithoutTurnCompletion(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        message: String = "review failed hard"
+    )
+    case completedThenNonRetryError(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall.",
+        message: String = "review failed after completion"
+    )
+    case nonRetryErrorThenCompleted(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall.",
+        message: String = "review failed before completion"
+    )
+    case finalReviewWithoutTurnCompletionAfterThreadUnavailable(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall."
+    )
+    case turnCompletedBeforeFinalReviewThenThreadUnavailable(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall."
+    )
+    case batchedSuccess(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall."
+    )
 }
 
 package actor MockAppServerSessionTransport: AppServerSessionTransport {
@@ -45,6 +122,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
     private let mode: MockAppServerMode
     private let initialize: AppServerInitializeResponse
     private var notifications: [AppServerServerNotification] = []
+    private var delayedNotifications: [AppServerServerNotification] = []
     private var requests: [RecordedRequest] = []
     private var requestCounts: [String: Int] = [:]
     private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
@@ -122,6 +200,12 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                     ["thread": ["id": parentThreadID], "model": model],
                     as: responseType
                 )
+            case .detachedParentThreadClosedBeforeCompletedNotifications(_, let parentThreadID, _, let model, _):
+                currentThreadID = parentThreadID
+                return try decodeResponse(
+                    ["thread": ["id": parentThreadID], "model": model],
+                    as: responseType
+                )
             case .success(_, let threadID, _, let model, _):
                 currentThreadID = threadID
                 return try decodeResponse(
@@ -178,6 +262,15 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                     ],
                     as: responseType
                 )
+            case .longRunningWithoutTurnStarted(let reviewThreadID, _, let turnID, _):
+                currentTurnID = turnID
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
             case .interruptIgnoredLongRunning(let reviewThreadID, _, let turnID, _):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
@@ -210,6 +303,193 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                     ],
                     as: responseType
                 )
+            case .detachedParentThreadClosedBeforeCompletedNotifications(
+                let reviewThreadID,
+                let parentThreadID,
+                let turnID,
+                _,
+                let finalReview
+            ):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                notifications.append(
+                    .threadStatusChanged(
+                        .init(
+                            threadID: parentThreadID,
+                            status: .init(type: "notLoaded")
+                        )
+                    )
+                )
+                notifications.append(.threadClosed(.init(threadID: parentThreadID)))
+                enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .unrelatedNonRetryErrorThenSuccess(let reviewThreadID, _, let turnID, _, let finalReview):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let unrelatedError: AppServerErrorNotification = try decodeResponse(
+                    [
+                        "error": [
+                            "message": "unrelated failure",
+                            "additionalDetails": NSNull(),
+                        ],
+                        "willRetry": false,
+                        "threadId": "thr-unrelated",
+                        "turnId": "turn-unrelated",
+                    ],
+                    as: AppServerErrorNotification.self
+                )
+                notifications.append(
+                    AppServerServerNotification.error(unrelatedError)
+                )
+                enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .nonRetryErrorWithoutTurnCompletion(let reviewThreadID, _, let turnID, _, let message):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let failure: AppServerErrorNotification = try decodeResponse(
+                    [
+                        "error": [
+                            "message": message,
+                            "additionalDetails": NSNull(),
+                        ],
+                        "willRetry": false,
+                        "threadId": reviewThreadID,
+                        "turnId": turnID,
+                    ],
+                    as: AppServerErrorNotification.self
+                )
+                notifications.append(.error(failure))
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .completedThenNonRetryError(let reviewThreadID, _, let turnID, _, let finalReview, let message):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                let failure: AppServerErrorNotification = try decodeResponse(
+                    [
+                        "error": [
+                            "message": message,
+                            "additionalDetails": NSNull(),
+                        ],
+                        "willRetry": false,
+                        "threadId": reviewThreadID,
+                        "turnId": turnID,
+                    ],
+                    as: AppServerErrorNotification.self
+                )
+                notifications.append(.error(failure))
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .nonRetryErrorThenCompleted(let reviewThreadID, _, let turnID, _, let finalReview, let message):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let failure: AppServerErrorNotification = try decodeResponse(
+                    [
+                        "error": [
+                            "message": message,
+                            "additionalDetails": NSNull(),
+                        ],
+                        "willRetry": false,
+                        "threadId": reviewThreadID,
+                        "turnId": turnID,
+                    ],
+                    as: AppServerErrorNotification.self
+                )
+                notifications.append(.error(failure))
+                enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .finalReviewWithoutTurnCompletionAfterThreadUnavailable(let reviewThreadID, _, let turnID, _, let finalReview):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                notifications.append(
+                    .threadStatusChanged(
+                        .init(
+                            threadID: reviewThreadID,
+                            status: .init(type: "notLoaded")
+                        )
+                    )
+                )
+                notifications.append(.threadClosed(.init(threadID: reviewThreadID)))
+                notifications.append(
+                    .itemCompleted(
+                        .init(
+                            item: .exitedReviewMode(id: turnID, review: finalReview),
+                            threadID: reviewThreadID,
+                            turnID: turnID
+                        )
+                    )
+                )
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .turnCompletedBeforeFinalReviewThenThreadUnavailable(let reviewThreadID, _, let turnID, _, let finalReview):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                notifications.append(
+                    .turnCompleted(
+                        .init(
+                            threadID: reviewThreadID,
+                            turn: .init(id: turnID, status: .completed, error: nil)
+                        )
+                    )
+                )
+                notifications.append(
+                    .threadStatusChanged(
+                        .init(
+                            threadID: reviewThreadID,
+                            status: .init(type: "notLoaded")
+                        )
+                    )
+                )
+                notifications.append(.threadClosed(.init(threadID: reviewThreadID)))
+                delayedNotifications.append(
+                    .itemCompleted(
+                        .init(
+                            item: .exitedReviewMode(id: turnID, review: finalReview),
+                            threadID: reviewThreadID,
+                            turnID: turnID
+                        )
+                    )
+                )
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
             case .turnFailure(let message):
                 let reviewThreadID = "thr-review"
                 let turnID = "turn-review"
@@ -222,6 +502,61 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                             turn: .init(id: turnID, status: .failed, error: .init(message: message))
                         )
                     )
+                )
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .threadClosedWithoutTurnCompletion(let reviewThreadID, _, let turnID, _):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                notifications.append(
+                    .threadStatusChanged(
+                        .init(
+                            threadID: reviewThreadID,
+                            status: .init(type: "notLoaded")
+                        )
+                    )
+                )
+                notifications.append(.threadClosed(.init(threadID: reviewThreadID)))
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .threadClosedBeforeCompletedNotifications(let reviewThreadID, _, let turnID, _, let finalReview):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                notifications.append(
+                    .threadStatusChanged(
+                        .init(
+                            threadID: reviewThreadID,
+                            status: .init(type: "notLoaded")
+                        )
+                    )
+                )
+                notifications.append(.threadClosed(.init(threadID: reviewThreadID)))
+                enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .batchedSuccess(let reviewThreadID, _, let turnID, _, let finalReview):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                enqueueSuccessReview(
+                    reviewThreadID: reviewThreadID,
+                    turnID: turnID,
+                    finalReview: finalReview,
+                    into: &delayedNotifications
                 )
                 return try decodeResponse(
                     [
@@ -285,6 +620,10 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
     }
 
     package func drainNotifications() async -> [AppServerServerNotification] {
+        if notifications.isEmpty, delayedNotifications.isEmpty == false {
+            notifications = delayedNotifications
+            delayedNotifications.removeAll(keepingCapacity: false)
+        }
         defer { notifications.removeAll(keepingCapacity: true) }
         return notifications
     }
@@ -346,7 +685,21 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
     }
 
     private func enqueueSuccessReview(reviewThreadID: String, turnID: String, finalReview: String) {
-        notifications.append(
+        enqueueSuccessReview(
+            reviewThreadID: reviewThreadID,
+            turnID: turnID,
+            finalReview: finalReview,
+            into: &notifications
+        )
+    }
+
+    private func enqueueSuccessReview(
+        reviewThreadID: String,
+        turnID: String,
+        finalReview: String,
+        into destination: inout [AppServerServerNotification]
+    ) {
+        destination.append(
             .itemCompleted(
                 .init(
                     item: .exitedReviewMode(id: turnID, review: finalReview),
@@ -355,7 +708,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 )
             )
         )
-        notifications.append(
+        destination.append(
             .turnCompleted(
                 .init(
                     threadID: reviewThreadID,

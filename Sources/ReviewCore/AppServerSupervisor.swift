@@ -40,6 +40,7 @@ package actor AppServerSupervisor: AppServerManaging {
         var runtimeState: AppServerRuntimeState
         var execution: Execution
         var tokenFileURL: URL
+        var isolatedCodexHomeURL: URL?
     }
 
     private enum State {
@@ -130,6 +131,9 @@ package actor AppServerSupervisor: AppServerManaging {
             await lifetimeTask?.value
             lifetimeTask = nil
             try? FileManager.default.removeItem(at: current.tokenFileURL)
+            if let isolatedCodexHomeURL = current.isolatedCodexHomeURL {
+                try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
+            }
         case .starting(_, let waiters):
             let task = lifetimeTask
             let startingRuntimeState = self.startingRuntimeState
@@ -225,6 +229,10 @@ package actor AppServerSupervisor: AppServerManaging {
             let authToken = UUID().uuidString
             var launchedProcessIdentity: ProcessIdentity?
             let websocketURL = try reserveLoopbackWebSocketURL()
+            let isolatedCodexHomeURL = try prepareIsolatedCodexHome(
+                launchID: launchID,
+                environment: self.configuration.environment
+            )
             try FileManager.default.createDirectory(
                 at: tokenFileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
@@ -235,7 +243,8 @@ package actor AppServerSupervisor: AppServerManaging {
                 codexCommand: self.configuration.codexCommand,
                 environment: self.configuration.environment,
                 listenAddress: websocketURL.absoluteString,
-                tokenFileURL: tokenFileURL
+                tokenFileURL: tokenFileURL,
+                isolatedCodexHomeURL: isolatedCodexHomeURL
             )
 
             let outcome = try await Subprocess.run(
@@ -256,16 +265,16 @@ package actor AppServerSupervisor: AppServerManaging {
                     processGroupLeaderPID: Int(processGroupLeaderPID),
                     processGroupLeaderStartTime: processGroupLeaderStartTime
                 )
-                await self.noteStartingRuntimeState(runtimeState)
+                self.noteStartingRuntimeState(runtimeState)
 
-                let stderrTask = await self.startCapturingStandardError(from: errorSequence)
+                let stderrTask = self.startCapturingStandardError(from: errorSequence)
                 do {
                     try await self.waitUntilReady(
                         processIdentity: .init(pid: pid, startTime: startTime),
                         websocketURL: websocketURL
                     )
 
-                    await self.finishStarting(
+                    self.finishStarting(
                         launchID: launchID,
                         .success(
                         RunningProcess(
@@ -274,7 +283,8 @@ package actor AppServerSupervisor: AppServerManaging {
                             authToken: authToken,
                             runtimeState: runtimeState,
                             execution: execution,
-                            tokenFileURL: tokenFileURL
+                            tokenFileURL: tokenFileURL,
+                            isolatedCodexHomeURL: isolatedCodexHomeURL
                         )
                     ))
 
@@ -297,7 +307,8 @@ package actor AppServerSupervisor: AppServerManaging {
                 handleProcessExit(
                     launchID: launchID,
                     processIdentity: launchedProcessIdentity,
-                    tokenFileURL: tokenFileURL
+                    tokenFileURL: tokenFileURL,
+                    isolatedCodexHomeURL: isolatedCodexHomeURL
                 )
             }
         } catch {
@@ -306,6 +317,8 @@ package actor AppServerSupervisor: AppServerManaging {
                 lifetimeTask = nil
             }
             try? FileManager.default.removeItem(at: tokenFileURL)
+            try? FileManager.default.removeItem(at: ReviewHomePaths.reviewHomeURL(environment: configuration.environment)
+                .appendingPathComponent("app-server-codex-home-\(launchID.uuidString)", isDirectory: true))
         }
     }
 
@@ -421,7 +434,8 @@ package actor AppServerSupervisor: AppServerManaging {
     private func handleProcessExit(
         launchID: UUID,
         processIdentity: ProcessIdentity,
-        tokenFileURL: URL
+        tokenFileURL: URL,
+        isolatedCodexHomeURL: URL?
     ) {
         startingRuntimeState = nil
         if case .running(let running) = state,
@@ -433,6 +447,9 @@ package actor AppServerSupervisor: AppServerManaging {
             lifetimeTask = nil
         }
         try? FileManager.default.removeItem(at: tokenFileURL)
+        if let isolatedCodexHomeURL {
+            try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
+        }
     }
 
     private func noteStartingRuntimeState(_ runtimeState: AppServerRuntimeState) {
@@ -492,7 +509,8 @@ private func makeAppServerConfiguration(
     codexCommand: String,
     environment: [String: String],
     listenAddress: String,
-    tokenFileURL: URL
+    tokenFileURL: URL,
+    isolatedCodexHomeURL: URL?
 ) throws -> Configuration {
     guard let resolvedExecutable = resolveCodexCommand(
         requestedCommand: codexCommand,
@@ -508,8 +526,13 @@ private func makeAppServerConfiguration(
     platformOptions.processGroupID = 0
     platformOptions.createSession = false
 
+    var effectiveEnvironment = environment
+    if let isolatedCodexHomeURL {
+        effectiveEnvironment["CODEX_HOME"] = isolatedCodexHomeURL.path
+    }
+
     let subprocessEnvironment = Environment.custom(
-        environment.reduce(into: [Environment.Key: String]()) { partialResult, entry in
+        effectiveEnvironment.reduce(into: [Environment.Key: String]()) { partialResult, entry in
             partialResult[Environment.Key(stringLiteral: entry.key)] = entry.value
         }
     )
@@ -526,6 +549,78 @@ private func makeAppServerConfiguration(
         workingDirectory: FilePath(FileManager.default.currentDirectoryPath),
         platformOptions: platformOptions
     )
+}
+
+private func prepareIsolatedCodexHome(
+    launchID: UUID,
+    environment: [String: String]
+) throws -> URL? {
+    let isolatedCodexHomeURL = ReviewHomePaths.reviewHomeURL(environment: environment)
+        .appendingPathComponent("app-server-codex-home-\(launchID.uuidString)", isDirectory: true)
+    let fileManager = FileManager.default
+    if fileManager.fileExists(atPath: isolatedCodexHomeURL.path) {
+        try fileManager.removeItem(at: isolatedCodexHomeURL)
+    }
+    try fileManager.createDirectory(at: isolatedCodexHomeURL, withIntermediateDirectories: true)
+
+    guard let sourceCodexHomeURL = ReviewHomePaths.codexHomeURL(environment: environment),
+          fileManager.fileExists(atPath: sourceCodexHomeURL.path)
+    else {
+        return isolatedCodexHomeURL
+    }
+
+    for filename in ["auth.json", "models_cache.json", ".credentials.json"] {
+        let sourceURL = sourceCodexHomeURL.appendingPathComponent(filename)
+        guard fileManager.fileExists(atPath: sourceURL.path) else {
+            continue
+        }
+        let destinationURL = isolatedCodexHomeURL.appendingPathComponent(filename)
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    let sourceConfigURL = sourceCodexHomeURL.appendingPathComponent("config.toml")
+    if fileManager.fileExists(atPath: sourceConfigURL.path) {
+        let configText = try String(contentsOf: sourceConfigURL, encoding: .utf8)
+        let filteredConfigText = isolatedCodexHomeConfigText(from: configText)
+        try filteredConfigText.write(
+            to: isolatedCodexHomeURL.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    return isolatedCodexHomeURL
+}
+
+package func isolatedCodexHomeConfigText(from configText: String) -> String {
+    let lines = configText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    var keptLines: [String] = []
+    var inCodexReviewSection = false
+
+    for line in lines {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("["),
+           let closingBracketIndex = trimmed.firstIndex(of: "]")
+        {
+            let sectionName = String(trimmed[trimmed.index(after: trimmed.startIndex)..<closingBracketIndex])
+            inCodexReviewSection = sectionName == "mcp_servers.codex_review"
+                || sectionName == "mcp_servers.\"codex_review\""
+                || sectionName == "mcp_servers.'codex_review'"
+            if inCodexReviewSection {
+                continue
+            }
+        }
+
+        if inCodexReviewSection {
+            continue
+        }
+        keptLines.append(line)
+    }
+
+    return keptLines.joined(separator: "\n")
 }
 
 private func makeReadyURL(from websocketURL: URL) throws -> URL {

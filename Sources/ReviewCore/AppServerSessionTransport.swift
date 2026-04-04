@@ -111,6 +111,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
 
         let id = AppServerRequestID.integer(nextRequestID)
         nextRequestID += 1
+        appServerTransportDebug("sending websocket request \(id): \(method)")
         let payload = try encoder.encode(
             AppServerRequestEnvelope(
                 id: id,
@@ -134,7 +135,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
                     do {
                         try await self.send(payload)
                     } catch {
-                        await self.failPendingResponseIfPresent(id: id, error: error)
+                        self.failPendingResponseIfPresent(id: id, error: error)
                     }
                 }
             }
@@ -153,6 +154,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         if closed {
             throw ReviewError.io("app-server websocket session is closed.")
         }
+        appServerTransportDebug("sending websocket notification: \(method)")
         let payload = try encoder.encode(
             AppServerOutgoingNotificationEnvelope(
                 method: method,
@@ -231,18 +233,22 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
     private func processIncomingText(_ text: String) async {
         let data = Data(text.utf8)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            appServerTransportDebug("non-JSON websocket payload: \(String(text.prefix(400)))")
             return
         }
 
         if let idObject = object["id"], let requestID = AppServerRequestID(jsonObject: idObject) {
             if let method = object["method"] as? String {
+                appServerTransportDebug("server request over websocket: \(method)")
                 await rejectServerRequest(id: requestID, method: method)
                 return
             }
             guard let continuation = pendingResponses.removeValue(forKey: requestID) else {
+                appServerTransportDebug("response for unknown request id: \(requestID)")
                 return
             }
             if let error = parseResponseError(from: object) {
+                appServerTransportDebug("response error for request id \(requestID): \(error.message)")
                 continuation.resume(throwing: error)
             } else {
                 continuation.resume(returning: data)
@@ -251,9 +257,16 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         }
 
         guard let method = object["method"] as? String else {
+            appServerTransportDebug("websocket notification missing method: \(String(text.prefix(400)))")
             return
         }
-        notifications.append(decodeNotification(method: method, data: data))
+        let notification = decodeNotification(method: method, data: data)
+        if case .ignored = notification {
+            appServerTransportDebug("ignored websocket notification \(method): \(String(text.prefix(400)))")
+        } else {
+            appServerTransportDebug("websocket notification \(method)")
+        }
+        notifications.append(notification)
     }
 
     private func send(_ data: Data) async throws {
@@ -344,6 +357,20 @@ private struct AppServerResponseEnvelope<Result: Decodable>: Decodable {
 private func decodeNotification(method: String, data: Data) -> AppServerServerNotification {
     let decoder = JSONDecoder()
     switch method {
+    case "thread/status/changed":
+        if let notification = try? decoder.decode(
+            AppServerIncomingNotificationEnvelope<AppServerThreadStatusChangedNotification>.self,
+            from: data
+        ) {
+            return .threadStatusChanged(notification.params)
+        }
+    case "thread/closed":
+        if let notification = try? decoder.decode(
+            AppServerIncomingNotificationEnvelope<AppServerThreadClosedNotification>.self,
+            from: data
+        ) {
+            return .threadClosed(notification.params)
+        }
     case "turn/started":
         if let notification = try? decoder.decode(
             AppServerIncomingNotificationEnvelope<AppServerTurnStartedNotification>.self,
@@ -421,11 +448,37 @@ private func decodeNotification(method: String, data: Data) -> AppServerServerNo
         ) {
             return .mcpToolCallProgress(notification.params)
         }
+    case "error":
+        if let notification = try? decoder.decode(
+            AppServerIncomingNotificationEnvelope<AppServerErrorNotification>.self,
+            from: data
+        ) {
+            return .error(notification.params)
+        }
     default:
         break
     }
     return .ignored
 }
+
+private func appServerTransportDebug(_ message: String) {
+    guard codexReviewMCPWebSocketDebugEnabled else {
+        return
+    }
+    fputs("[codex-review-mcp.ws] \(message)\n", stderr)
+}
+
+private let codexReviewMCPWebSocketDebugEnabled: Bool = {
+    let value = ProcessInfo.processInfo.environment["CODEX_REVIEW_MCP_DEBUG_WS"]?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+    switch value {
+    case "1", "true", "yes", "on":
+        return true
+    default:
+        return false
+    }
+}()
 
 private struct AppServerIncomingNotificationEnvelope<Params: Decodable>: Decodable {
     var method: String

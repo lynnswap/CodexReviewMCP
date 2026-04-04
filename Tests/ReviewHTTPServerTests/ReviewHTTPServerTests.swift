@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MCP
 @testable import ReviewHTTPServer
 
 @Suite
@@ -52,6 +53,68 @@ struct ReviewHTTPServerTests {
         await secondFinished.wait()
         #expect(await recorder.snapshot() == ["start-1", "finish-1", "start-2", "finish-2"])
     }
+
+    @Test func busySessionClosureIsDeferredUntilWorkCompletes() async throws {
+        let busyFlag = BusyFlag()
+        let recorder = ClosedSessionRecorder()
+        let app = ReviewHTTPApplication(
+            configuration: .init(
+                host: "localhost",
+                port: 0,
+                endpoint: "/mcp",
+                sessionTimeoutSeconds: 3600
+            ),
+            serverFactory: { _, _ in
+                Server(
+                    name: "test",
+                    version: "0",
+                    capabilities: .init(resources: .init(), tools: .init())
+                )
+            },
+            onSessionClosed: { sessionID in
+                await recorder.record(sessionID)
+            },
+            isSessionBusy: { _ in
+                await busyFlag.isBusy
+            }
+        )
+
+        let response = await app.handleHTTPRequest(
+            HTTPRequest(
+                method: "POST",
+                headers: [
+                    HTTPHeaderName.accept: "application/json, text/event-stream",
+                    HTTPHeaderName.contentType: "application/json",
+                    HTTPHeaderName.protocolVersion: "2025-11-25",
+                ],
+                body: try JSONSerialization.data(withJSONObject: [
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": [
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": [:],
+                        "clientInfo": [
+                            "name": "test-client",
+                            "version": "0.0.1",
+                        ],
+                    ],
+                ]),
+                path: "/mcp"
+            )
+        )
+
+        let sessionID = try #require(response.headers[HTTPHeaderName.sessionID])
+        await busyFlag.setBusy(true)
+        await app.closeSession(sessionID)
+        #expect(await recorder.snapshot().isEmpty)
+        #expect(await app.hasSession(sessionID))
+
+        await busyFlag.setBusy(false)
+        await app.flushDeferredSessionClosures()
+        #expect(await recorder.snapshot() == [sessionID])
+        #expect(await app.hasSession(sessionID) == false)
+    }
 }
 
 private actor AsyncGate {
@@ -86,5 +149,25 @@ private actor EventRecorder {
 
     func snapshot() -> [String] {
         events
+    }
+}
+
+private actor BusyFlag {
+    private(set) var isBusy = false
+
+    func setBusy(_ value: Bool) {
+        isBusy = value
+    }
+}
+
+private actor ClosedSessionRecorder {
+    private var sessionIDs: [String] = []
+
+    func record(_ sessionID: String) {
+        sessionIDs.append(sessionID)
+    }
+
+    func snapshot() -> [String] {
+        sessionIDs
     }
 }

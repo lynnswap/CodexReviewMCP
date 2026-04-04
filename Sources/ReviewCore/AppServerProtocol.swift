@@ -400,6 +400,43 @@ package struct AppServerTurnCompletedNotification: Decodable, Sendable {
     }
 }
 
+package struct AppServerThreadStatus: Decodable, Sendable {
+    package var type: String
+    package var activeFlags: [String]?
+
+    package init(type: String, activeFlags: [String]? = nil) {
+        self.type = type
+        self.activeFlags = activeFlags
+    }
+}
+
+package struct AppServerThreadStatusChangedNotification: Decodable, Sendable {
+    package var threadID: String
+    package var status: AppServerThreadStatus
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case status
+    }
+
+    package init(threadID: String, status: AppServerThreadStatus) {
+        self.threadID = threadID
+        self.status = status
+    }
+}
+
+package struct AppServerThreadClosedNotification: Decodable, Sendable {
+    package var threadID: String
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+    }
+
+    package init(threadID: String) {
+        self.threadID = threadID
+    }
+}
+
 package enum AppServerThreadItem: Decodable, Sendable, Equatable {
     case enteredReviewMode(id: String, review: String)
     case exitedReviewMode(id: String, review: String)
@@ -634,6 +671,30 @@ package struct AppServerMcpToolCallProgressNotification: Decodable, Sendable {
     }
 }
 
+package struct AppServerErrorNotification: Decodable, Sendable {
+    package struct TurnError: Decodable, Sendable {
+        package var message: String
+        package var additionalDetails: String?
+
+        package init(message: String, additionalDetails: String? = nil) {
+            self.message = message
+            self.additionalDetails = additionalDetails
+        }
+    }
+
+    package var error: TurnError
+    package var willRetry: Bool
+    package var threadID: String
+    package var turnID: String
+
+    package enum CodingKeys: String, CodingKey {
+        case error
+        case willRetry
+        case threadID = "threadId"
+        case turnID = "turnId"
+    }
+}
+
 package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendable {
     package var code: Int?
     package var message: String
@@ -656,6 +717,8 @@ package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendabl
 }
 
 package enum AppServerServerNotification: Sendable {
+    case threadStatusChanged(AppServerThreadStatusChangedNotification)
+    case threadClosed(AppServerThreadClosedNotification)
     case turnStarted(AppServerTurnStartedNotification)
     case turnCompleted(AppServerTurnCompletedNotification)
     case itemStarted(AppServerItemStartedNotification)
@@ -667,6 +730,7 @@ package enum AppServerServerNotification: Sendable {
     case reasoningSummaryPartAdded(AppServerReasoningSummaryPartAddedNotification)
     case reasoningTextDelta(AppServerReasoningTextDeltaNotification)
     case mcpToolCallProgress(AppServerMcpToolCallProgressNotification)
+    case error(AppServerErrorNotification)
     case ignored
 }
 

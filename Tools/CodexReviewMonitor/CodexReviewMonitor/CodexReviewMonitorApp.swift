@@ -76,7 +76,7 @@ enum CodexReviewMonitorLaunchEnvironment {
         }
     }
 }
-
+@MainActor
 final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private var shouldManageEmbeddedServer = true
 

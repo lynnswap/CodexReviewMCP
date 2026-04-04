@@ -34,6 +34,7 @@ actor ReviewHTTPApplication {
     private var channel: Channel?
     private var cleanupTask: Task<Void, Never>?
     private var sessions: [String: SessionContext] = [:]
+    private var deferredSessionClosures: Set<String> = []
 
     init(
         configuration: Configuration,
@@ -72,8 +73,7 @@ actor ReviewHTTPApplication {
 
         let channel = try await bootstrap.bind(host: configuration.host, port: configuration.port).get()
         self.channel = channel
-        cleanupTask?.cancel()
-        cleanupTask = Task { await self.sessionCleanupLoop() }
+        restartCleanupLoop()
         let localAddress = channel.localAddress
         return (
             localAddress?.ipAddress ?? configuration.host,
@@ -93,8 +93,9 @@ actor ReviewHTTPApplication {
         _ = await cleanupTask?.value
         cleanupTask = nil
         for sessionID in Array(sessions.keys) {
-            await closeSession(sessionID)
+            await closeSession(sessionID, force: true)
         }
+        deferredSessionClosures.removeAll()
         try? await channel?.close()
         channel = nil
         try? await group.shutdownGracefully()
@@ -111,9 +112,13 @@ actor ReviewHTTPApplication {
                 updatedSession.activeRequestCount = max(0, updatedSession.activeRequestCount - 1)
                 updatedSession.lastAccessedAt = Date()
                 sessions[sessionID] = updatedSession
+                if updatedSession.activeRequestCount == 0 {
+                    await flushDeferredSessionClosures()
+                }
             }
             if shouldCloseSessionAfterDelete(method: request.method, statusCode: response.statusCode) {
                 await closeSession(sessionID)
+                await flushDeferredSessionClosures()
             }
             return response
         }
@@ -166,6 +171,7 @@ actor ReviewHTTPApplication {
             }
             if case .error = response {
                 sessions.removeValue(forKey: sessionID)
+                deferredSessionClosures.remove(sessionID)
                 await transport.disconnect()
                 await onSessionClosed(sessionID)
             }
@@ -177,7 +183,27 @@ actor ReviewHTTPApplication {
         }
     }
 
-    private func closeSession(_ sessionID: String) async {
+    func closeSession(_ sessionID: String, force: Bool = false) async {
+        if force == false, await isSessionBusy(sessionID) {
+            deferredSessionClosures.insert(sessionID)
+            if var session = sessions[sessionID] {
+                session.lastAccessedAt = Date()
+                sessions[sessionID] = session
+            }
+            logger.info("Deferring MCP session closure while review is running", metadata: ["sessionID": "\(sessionID)"])
+            restartCleanupLoop()
+            return
+        }
+        if force == false, let currentSession = sessions[sessionID], currentSession.activeRequestCount > 0 {
+            deferredSessionClosures.insert(sessionID)
+            var session = currentSession
+            session.lastAccessedAt = Date()
+            sessions[sessionID] = session
+            logger.info("Deferring MCP session closure while requests are still in flight", metadata: ["sessionID": "\(sessionID)"])
+            restartCleanupLoop()
+            return
+        }
+        deferredSessionClosures.remove(sessionID)
         guard let session = sessions.removeValue(forKey: sessionID) else {
             return
         }
@@ -185,9 +211,35 @@ actor ReviewHTTPApplication {
         await onSessionClosed(sessionID)
     }
 
+    func hasSession(_ sessionID: String) -> Bool {
+        sessions[sessionID] != nil
+    }
+
+    func flushDeferredSessionClosures() async {
+        for sessionID in Array(deferredSessionClosures) {
+            guard let session = sessions[sessionID] else {
+                deferredSessionClosures.remove(sessionID)
+                continue
+            }
+            if session.activeRequestCount > 0 {
+                continue
+            }
+            if await isSessionBusy(sessionID) {
+                continue
+            }
+            guard let refreshedSession = sessions[sessionID], refreshedSession.activeRequestCount == 0 else {
+                continue
+            }
+            logger.info("Finishing deferred MCP session closure", metadata: ["sessionID": "\(sessionID)"])
+            await closeSession(sessionID, force: true)
+        }
+    }
+
     private func sessionCleanupLoop() async {
         while channel != nil {
-            let sleepSeconds = min(60.0, max(1.0, configuration.sessionTimeoutSeconds / 2))
+            let sleepSeconds = deferredSessionClosures.isEmpty
+                ? min(60.0, max(1.0, configuration.sessionTimeoutSeconds / 2))
+                : 1.0
             try? await Task.sleep(for: .seconds(sleepSeconds))
             if Task.isCancelled {
                 break
@@ -215,8 +267,14 @@ actor ReviewHTTPApplication {
                 expiredIDs.append(sessionID)
             }
             for sessionID in expiredIDs {
-                await closeSession(sessionID)
+                await closeSession(sessionID, force: true)
             }
+            await flushDeferredSessionClosures()
         }
+    }
+
+    private func restartCleanupLoop() {
+        cleanupTask?.cancel()
+        cleanupTask = Task { await self.sessionCleanupLoop() }
     }
 }

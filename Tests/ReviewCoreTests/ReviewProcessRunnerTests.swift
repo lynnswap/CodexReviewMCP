@@ -68,6 +68,30 @@ struct AppServerReviewRunnerTests {
         #expect(result.model == "gpt-5.4-mini")
     }
 
+    @Test func appServerReviewRunnerWaitsForSecondNotificationBatchBeforeCleaningUp() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = MockAppServerSessionTransport(mode: .batchedSuccess(finalReview: "Looks solid overall."))
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.content == "Looks solid overall.")
+        #expect(await session.backgroundCleanCount == 1)
+        #expect(await session.unsubscribeCount == 1)
+    }
+
     @Test func appServerReviewRunnerThrowsWhenConfigReadFailsUnexpectedly() async throws {
         let cwd = try makeTemporaryDirectory()
         let runner = AppServerReviewRunner(
@@ -122,6 +146,43 @@ struct AppServerReviewRunnerTests {
         let result = try await task.value
 
         #expect(result.state == ReviewJobState.cancelled)
+        #expect(await session.backgroundCleanCount >= 1)
+        #expect(await session.unsubscribeCount >= 1)
+    }
+
+    @Test func appServerReviewRunnerCancelsBeforeFirstTurnStatusArrives() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let cancellation = CancellationFlag()
+        let reviewStarted = ReviewStartedProbe()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.pollInterval = .milliseconds(20)
+        let session = MockAppServerSessionTransport(mode: .longRunningWithoutTurnStarted())
+
+        let task = Task {
+            try await runner.run(
+                session: session,
+                request: .init(cwd: cwd.path, target: .uncommittedChanges),
+                defaultTimeoutSeconds: nil as Int?,
+                onStart: { _ in },
+                onEvent: { event in
+                    await reviewStarted.record(event)
+                },
+                requestedTerminationReason: {
+                    await cancellation.reason
+                }
+            )
+        }
+
+        await Task.yield()
+        await reviewStarted.wait()
+        await cancellation.cancel("Cancellation requested before turn/started.")
+        let result = try await task.value
+
+        #expect(result.state == .cancelled)
         #expect(await session.backgroundCleanCount >= 1)
         #expect(await session.unsubscribeCount >= 1)
     }
@@ -283,6 +344,243 @@ struct AppServerReviewRunnerTests {
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
             )
         }
+    }
+
+    @Test func appServerReviewRunnerFailsWhenReviewThreadClosesBeforeTurnCompletes() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let recorder = EventRecorder()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.threadUnavailableGracePeriod = .zero
+        let session = MockAppServerSessionTransport(mode: .threadClosedWithoutTurnCompletion())
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { event in
+                await recorder.record(event)
+            },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .failed)
+        #expect(result.errorMessage == "Review thread closed before the review completed.")
+    }
+
+    @Test func appServerReviewRunnerWaitsForTerminalEventsAfterThreadCloses() async throws {
+        let cwd = try makeTemporaryDirectory()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.threadUnavailableGracePeriod = .seconds(1)
+        let session = MockAppServerSessionTransport(mode: .threadClosedBeforeCompletedNotifications())
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.content == "Looks solid overall.")
+    }
+
+    @Test func appServerReviewRunnerIgnoresUnrelatedNonRetryErrorNotifications() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = MockAppServerSessionTransport(mode: .unrelatedNonRetryErrorThenSuccess())
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.content == "Looks solid overall.")
+    }
+
+    @Test func appServerReviewRunnerIgnoresParentThreadClosureForDetachedReviews() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = MockAppServerSessionTransport(
+            mode: .detachedParentThreadClosedBeforeCompletedNotifications()
+        )
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.reviewThreadID == "thr-review")
+        #expect(result.threadID == "thr-parent")
+        #expect(result.content == "Looks solid overall.")
+    }
+
+    @Test func appServerReviewRunnerFailsImmediatelyOnTrackedNonRetryErrorNotification() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = MockAppServerSessionTransport(mode: .nonRetryErrorWithoutTurnCompletion())
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .failed)
+        #expect(result.errorMessage == "review failed hard")
+    }
+
+    @Test func appServerReviewRunnerLetsTerminalErrorOverrideCompletedTurn() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = MockAppServerSessionTransport(mode: .completedThenNonRetryError())
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .failed)
+        #expect(result.errorMessage == "review failed after completion")
+    }
+
+    @Test func appServerReviewRunnerPreservesFailureWhenTurnCompletesAfterError() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = MockAppServerSessionTransport(mode: .nonRetryErrorThenCompleted())
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .failed)
+        #expect(result.errorMessage == "review failed before completion")
+    }
+
+    @Test func appServerReviewRunnerFailsWhenFinalReviewArrivesWithoutTurnCompletionAfterThreadUnload() async throws {
+        let cwd = try makeTemporaryDirectory()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.threadUnavailableGracePeriod = .zero
+        let session = MockAppServerSessionTransport(
+            mode: .finalReviewWithoutTurnCompletionAfterThreadUnavailable()
+        )
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .failed)
+        #expect(result.errorMessage == "Review thread closed before the review completed.")
+    }
+
+    @Test func appServerReviewRunnerAcceptsLateFinalReviewAfterCompletedTurnAndThreadUnload() async throws {
+        let cwd = try makeTemporaryDirectory()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.threadUnavailableGracePeriod = .seconds(1)
+        let session = MockAppServerSessionTransport(
+            mode: .turnCompletedBeforeFinalReviewThenThreadUnavailable()
+        )
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.content == "Looks solid overall.")
+    }
+
+    @Test func appServerReviewRunnerPrefersTimeoutOverThreadUnavailableFailure() async throws {
+        let cwd = try makeTemporaryDirectory()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.threadUnavailableGracePeriod = .zero
+        let session = MockAppServerSessionTransport(mode: .threadClosedWithoutTurnCompletion())
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: 0,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .failed)
+        #expect(result.exitCode == 124)
+        #expect(result.errorMessage == "Review timed out after 0 seconds.")
     }
 }
 
