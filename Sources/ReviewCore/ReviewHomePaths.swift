@@ -28,12 +28,19 @@ package enum ReviewHomePaths {
             .appendingPathComponent("endpoint.json")
     }
 
-    package static func legacyDiscoveryFileURL() -> URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base
-            .appendingPathComponent("CodexReviewMCP", isDirectory: true)
-            .appendingPathComponent("endpoint.json")
+    package static func runtimeStateFileURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        reviewHomeURL(environment: environment)
+            .appendingPathComponent("runtime-state.json")
+    }
+
+    package static func appServerWebSocketTokenFileURL(
+        filename: String = "app-server-ws-token",
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        reviewHomeURL(environment: environment)
+            .appendingPathComponent(filename)
     }
 
     package static func codexHomeURL(

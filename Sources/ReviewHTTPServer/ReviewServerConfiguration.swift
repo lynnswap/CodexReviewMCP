@@ -41,7 +41,11 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
     package let configuration: ReviewServerConfiguration
     private let logger = Logger(label: "codex-review-mcp.http")
     private let app: ReviewHTTPApplication
+    private var endpointRecord: LiveEndpointRecord?
     private var startedURL: URL?
+    private var discoveryFileURL: URL {
+        ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
+    }
 
     package init(
         configuration: ReviewServerConfiguration = .init(),
@@ -103,7 +107,10 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
             pid: Int(ProcessInfo.processInfo.processIdentifier),
             endpointPath: configuration.endpoint
         ) {
-            try? ReviewDiscovery.write(record)
+            try? ReviewDiscovery.write(record, to: discoveryFileURL)
+            endpointRecord = record
+        } else {
+            endpointRecord = nil
         }
         guard let url = ReviewDiscovery.makeURL(
             host: discoveryHost,
@@ -127,11 +134,24 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
     }
 
     package func stop() async {
+        let record = endpointRecord
+        let url = startedURL
         await app.stop()
-        ReviewDiscovery.removeIfOwned(
-            pid: Int(ProcessInfo.processInfo.processIdentifier),
-            url: startedURL
-        )
+        if let record {
+            ReviewDiscovery.removeIfOwned(
+                pid: record.pid,
+                url: url,
+                serverStartTime: record.serverStartTime,
+                at: discoveryFileURL
+            )
+        } else if let url,
+                  let persistedRecord = ReviewDiscovery.read(from: discoveryFileURL),
+                  persistedRecord.url == url.absoluteString
+                    || persistedRecord.pid == Int(ProcessInfo.processInfo.processIdentifier)
+        {
+            ReviewDiscovery.remove(at: discoveryFileURL)
+        }
+        endpointRecord = nil
         startedURL = nil
     }
 
@@ -141,6 +161,10 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
 
     package func url() -> URL? {
         startedURL
+    }
+
+    package func currentEndpointRecord() -> LiveEndpointRecord? {
+        endpointRecord
     }
 }
 

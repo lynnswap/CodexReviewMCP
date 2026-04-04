@@ -2,8 +2,10 @@
 
 An MCP server and STDIO adapter for Codex reviews backed by `codex app-server`.
 
-`codex-review-mcp-server` runs as a persistent HTTP/SSE MCP server and executes
-session-scoped review jobs through a per-review `codex app-server --listen stdio://` session.
+`codex-review-mcp-server` runs as a persistent HTTP/SSE MCP server and keeps a
+single long-lived `codex app-server` backend process alive over loopback
+websocket transport. Review jobs are scoped per MCP session and share that
+backend through one websocket connection per session.
 `codex-review-mcp` is a thin STDIO adapter for clients that require STDIO transport.
 
 ## Quick Start
@@ -59,12 +61,19 @@ entry to include the timeout values.
   - Persistent HTTP/SSE MCP server
   - Multi-session
   - Session-scoped review jobs
-  - `codex app-server` backend
+  - One long-lived `codex app-server` backend process
+  - One websocket connection per MCP session
+  - Reviews serialize within a session and may run concurrently across sessions
 - `codex-review-mcp`
   - JSON-RPC over STDIO adapter
   - Forwards to the HTTP/SSE server
 - Discovery
   - Writes the resolved endpoint to `~/.codex_review/endpoint.json`
+  - Stores internal supervisor state in `~/.codex_review/runtime-state.json`
+
+Pre-1.0 note:
+
+- Discovery schema, runtime-state layout, and other internal file formats may change without migration before the first release.
 
 ## Installation
 
@@ -145,7 +154,7 @@ Adapter endpoint resolution order:
 
 ### `review_start`
 
-Runs a review through `codex app-server` and blocks until the final result is ready.
+Runs a review through the shared long-lived `codex app-server` backend and blocks until the final result is ready.
 
 Key inputs:
 

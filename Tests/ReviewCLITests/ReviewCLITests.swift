@@ -33,11 +33,12 @@ import Testing
     }
 
     @Test func discoveryMatchesListenAddressRequiresMatchingPort() {
-        let discovery = ReviewDiscoveryRecord(
+        let discovery = LiveEndpointRecord(
             url: "http://localhost:9417/mcp",
             host: "localhost",
             port: 9417,
             pid: 1,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
             updatedAt: Date(),
             executableName: "codex-review-mcp-server"
         )
@@ -49,11 +50,12 @@ import Testing
     }
 
     @Test func discoveryMatchesListenAddressResolvesConfiguredHostname() {
-        let discovery = ReviewDiscoveryRecord(
+        let discovery = LiveEndpointRecord(
             url: "http://192.0.2.15:9417/mcp",
             host: "192.0.2.15",
             port: 9417,
             pid: 1,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
             updatedAt: Date(),
             executableName: "codex-review-mcp-server"
         )

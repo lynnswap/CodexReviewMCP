@@ -1,13 +1,32 @@
 import Darwin
 import Foundation
 
-package struct ReviewDiscoveryRecord: Codable, Sendable {
+package struct LiveEndpointRecord: Codable, Sendable, Equatable {
     package var url: String
     package var host: String
     package var port: Int
     package var pid: Int
+    package var serverStartTime: ProcessStartTime
     package var updatedAt: Date
     package var executableName: String?
+
+    package init(
+        url: String,
+        host: String,
+        port: Int,
+        pid: Int,
+        serverStartTime: ProcessStartTime,
+        updatedAt: Date,
+        executableName: String?
+    ) {
+        self.url = url
+        self.host = host
+        self.port = port
+        self.pid = pid
+        self.serverStartTime = serverStartTime
+        self.updatedAt = updatedAt
+        self.executableName = executableName
+    }
 }
 
 package enum ReviewDiscovery {
@@ -15,107 +34,114 @@ package enum ReviewDiscovery {
         ReviewHomePaths.discoveryFileURL()
     }
 
-    package static func candidateFileURLs(for overrideURL: URL? = nil) -> [URL] {
-        if let overrideURL {
-            return [overrideURL]
-        }
-
-        let legacyURL = ReviewHomePaths.legacyDiscoveryFileURL()
-        if legacyURL.path == defaultFileURL.path {
-            return [defaultFileURL]
-        }
-        return [defaultFileURL, legacyURL]
-    }
-
     package static func makeRecord(
         host: String,
         port: Int,
         pid: Int,
         endpointPath: String = ReviewDefaults.shared.server.endpointPath
-    ) -> ReviewDiscoveryRecord? {
-        guard port > 0 else { return nil }
-        guard let url = makeURL(host: host, port: port, endpointPath: endpointPath) else {
+    ) -> LiveEndpointRecord? {
+        guard port > 0 else {
             return nil
         }
-        return ReviewDiscoveryRecord(
+        guard let url = makeURL(host: host, port: port, endpointPath: endpointPath),
+              let serverStartTime = processStartTime(of: pid_t(pid))
+        else {
+            return nil
+        }
+        return LiveEndpointRecord(
             url: url.absoluteString,
             host: host,
             port: port,
             pid: pid,
+            serverStartTime: serverStartTime,
             updatedAt: Date(),
             executableName: currentExecutableName()
         )
     }
 
-    package static func write(_ record: ReviewDiscoveryRecord, to overrideURL: URL? = nil) throws {
+    package static func write(_ record: LiveEndpointRecord, to overrideURL: URL? = nil) throws {
         let fileURL = overrideURL ?? defaultFileURL
         try FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(record).write(to: fileURL, options: [.atomic])
+        try makeEncoder().encode(record).write(to: fileURL, options: [.atomic])
     }
 
-    package static func read(from overrideURL: URL? = nil) -> ReviewDiscoveryRecord? {
-        read(fromCandidateURLs: candidateFileURLs(for: overrideURL))
-    }
-
-    package static func read(fromCandidateURLs fileURLs: [URL]) -> ReviewDiscoveryRecord? {
-        for fileURL in fileURLs {
-            if let record = validatedRecord(from: fileURL) {
-                return record
-            }
+    @discardableResult
+    package static func writeIfOwned(
+        _ record: LiveEndpointRecord,
+        to overrideURL: URL? = nil
+    ) throws -> Bool {
+        let fileURL = overrideURL ?? defaultFileURL
+        guard let current = loadRecord(from: fileURL),
+              ownsRecord(
+                current,
+                pid: record.pid,
+                serverStartTime: record.serverStartTime
+              )
+        else {
+            return false
         }
-        return nil
+        try write(record, to: fileURL)
+        return true
     }
 
-    private static func validatedRecord(from fileURL: URL) -> ReviewDiscoveryRecord? {
-        guard let record = loadRecord(from: fileURL) else {
+    package static func read(from overrideURL: URL? = nil) -> LiveEndpointRecord? {
+        guard let record = loadRecord(from: overrideURL ?? defaultFileURL),
+              isLiveRecord(record)
+        else {
             return nil
         }
-        guard ReviewCore_isProcessAlive(record.pid) else {
-            return nil
-        }
-        guard isMatchingExecutable(record.pid, expectedName: record.executableName) else {
+        return record
+    }
+
+    package static func readPersisted(from overrideURL: URL? = nil) -> LiveEndpointRecord? {
+        loadRecord(from: overrideURL ?? defaultFileURL)
+    }
+
+    package static func readOwnedRecord(
+        pid: Int,
+        serverStartTime: ProcessStartTime,
+        from overrideURL: URL? = nil
+    ) -> LiveEndpointRecord? {
+        let fileURL = overrideURL ?? defaultFileURL
+        guard let record = loadRecord(from: fileURL),
+              ownsRecord(
+                record,
+                pid: pid,
+                serverStartTime: serverStartTime
+              )
+        else {
             return nil
         }
         return record
     }
 
     package static func remove(at overrideURL: URL? = nil) {
-        remove(atFileURLs: candidateFileURLs(for: overrideURL))
+        try? FileManager.default.removeItem(at: overrideURL ?? defaultFileURL)
     }
 
-    package static func remove(atFileURLs fileURLs: [URL]) {
-        for fileURL in fileURLs {
-            try? FileManager.default.removeItem(at: fileURL)
+    package static func removeIfOwned(
+        pid: Int,
+        url: URL?,
+        serverStartTime: ProcessStartTime,
+        at overrideURL: URL? = nil
+    ) {
+        let fileURL = overrideURL ?? defaultFileURL
+        guard let record = loadRecord(from: fileURL) else {
+            return
         }
-    }
-
-    package static func removeIfOwned(pid: Int, url: URL?, at overrideURL: URL? = nil) {
-        removeIfOwned(pid: pid, url: url, atFileURLs: candidateFileURLs(for: overrideURL))
-    }
-
-    package static func removeIfOwned(pid: Int, url: URL?, atFileURLs fileURLs: [URL]) {
-        for fileURL in fileURLs {
-            guard let record = loadRecord(from: fileURL) else {
-                continue
-            }
-            guard record.pid == pid else {
-                continue
-            }
-            if let url, record.url != url.absoluteString {
-                continue
-            }
-            try? FileManager.default.removeItem(at: fileURL)
+        guard record.pid == pid else {
+            return
         }
-    }
-
-    private static func ReviewCore_isProcessAlive(_ pid: Int) -> Bool {
-        isProcessAlive(pid_t(pid))
+        if let url, record.url != url.absoluteString {
+            return
+        }
+        guard record.serverStartTime == serverStartTime else {
+            return
+        }
+        try? FileManager.default.removeItem(at: fileURL)
     }
 
     package static func makeURL(host: String, port: Int, endpointPath: String) -> URL? {
@@ -132,22 +158,7 @@ package enum ReviewDiscovery {
         return URL(string: "http://\(normalizedHost):\(port)\(normalizedPath)")
     }
 
-    private static func loadRecord(from fileURL: URL) -> ReviewDiscoveryRecord? {
-        guard let data = try? Data(contentsOf: fileURL) else {
-            return nil
-        }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(ReviewDiscoveryRecord.self, from: data)
-    }
-
-    private static func currentExecutableName() -> String? {
-        ProcessInfo.processInfo.arguments.first.map {
-            URL(fileURLWithPath: $0).lastPathComponent
-        }
-    }
-
-    private static func isMatchingExecutable(_ pid: Int, expectedName: String?) -> Bool {
+    package static func isMatchingExecutable(_ pid: Int, expectedName: String?) -> Bool {
         guard let expectedName, expectedName.isEmpty == false else {
             return true
         }
@@ -158,5 +169,36 @@ package enum ReviewDiscovery {
         }
         let path = String(decoding: buffer.prefix { $0 != 0 }.map(UInt8.init), as: UTF8.self)
         return URL(fileURLWithPath: path).lastPathComponent == expectedName
+    }
+
+    private static func isLiveRecord(_ record: LiveEndpointRecord) -> Bool {
+        guard isProcessAlive(pid_t(record.pid)) else {
+            return false
+        }
+        if processStartTime(of: pid_t(record.pid)) != record.serverStartTime {
+            return false
+        }
+        return isMatchingExecutable(record.pid, expectedName: record.executableName)
+    }
+
+    private static func loadRecord(from fileURL: URL) -> LiveEndpointRecord? {
+        guard let data = try? Data(contentsOf: fileURL) else {
+            return nil
+        }
+        return try? makeDecoder().decode(LiveEndpointRecord.self, from: data)
+    }
+
+    private static func currentExecutableName() -> String? {
+        ProcessInfo.processInfo.arguments.first.map {
+            URL(fileURLWithPath: $0).lastPathComponent
+        }
+    }
+
+    private static func ownsRecord(
+        _ record: LiveEndpointRecord,
+        pid: Int,
+        serverStartTime: ProcessStartTime
+    ) -> Bool {
+        record.pid == pid && record.serverStartTime == serverStartTime
     }
 }

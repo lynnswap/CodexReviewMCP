@@ -25,10 +25,14 @@ extension CodexReviewStore {
 
     package convenience init(
         configuration: ReviewServerConfiguration,
-        diagnosticsURL: URL? = nil
+        diagnosticsURL: URL? = nil,
+        appServerManager: (any AppServerManaging)? = nil
     ) {
         self.init(
-            backend: CodexReviewEmbeddedServerBackend(configuration: configuration),
+            backend: CodexReviewEmbeddedServerBackend(
+                configuration: configuration,
+                appServerManager: appServerManager
+            ),
             diagnosticsURL: diagnosticsURL
         )
     }
@@ -349,6 +353,33 @@ extension CodexReviewStore {
         try authorizedJob(jobID: jobID, sessionID: sessionID)
     }
 
+    package func pendingTerminationReason(
+        jobID: String,
+        sessionID: String
+    ) -> ReviewTerminationReason? {
+        let defaultReason = "Cancellation requested."
+        let closedSessionReason: ReviewTerminationReason? = {
+            guard let backend = backend as? CodexReviewEmbeddedServerBackend,
+                  backend.closedSessions.contains(sessionID)
+            else {
+                return nil
+            }
+            return .cancelled(defaultReason)
+        }()
+
+        guard let location = jobLocation(id: jobID) else {
+            return closedSessionReason
+        }
+        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
+        guard job.sessionID == sessionID else {
+            return .cancelled(defaultReason)
+        }
+        if job.status == .cancelled || job.cancellationRequested {
+            return .cancelled(job.errorMessage?.nilIfEmpty ?? defaultReason)
+        }
+        return closedSessionReason
+    }
+
     package func closeSessionState(_ sessionID: String) -> [String] {
         guard let backend = backend as? CodexReviewEmbeddedServerBackend else {
             return []
@@ -362,12 +393,6 @@ extension CodexReviewStore {
                     .map(\.id)
             )
         }
-
-        for workspace in workspaces.reversed() {
-            workspace.jobs.removeAll { $0.sessionID == sessionID && $0.isTerminal }
-        }
-        workspaces.removeAll { $0.jobs.isEmpty }
-        writeDiagnosticsIfNeeded()
         return activeJobIDs
     }
 
@@ -384,6 +409,27 @@ extension CodexReviewStore {
             return
         }
         removeJob(id: jobID)
+    }
+
+    package func pruneClosedSessionJobs(
+        sessionID: String,
+        excludingJobIDs: Set<String> = []
+    ) {
+        guard let backend = backend as? CodexReviewEmbeddedServerBackend,
+              backend.closedSessions.contains(sessionID)
+        else {
+            return
+        }
+
+        for workspace in workspaces.reversed() {
+            workspace.jobs.removeAll { job in
+                job.sessionID == sessionID
+                    && job.isTerminal
+                    && excludingJobIDs.contains(job.id) == false
+            }
+        }
+        workspaces.removeAll { $0.jobs.isEmpty }
+        writeDiagnosticsIfNeeded()
     }
 
     package func resolveJob(
@@ -871,19 +917,48 @@ extension CodexReviewStore {
 @MainActor
 private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
-    let executionCoordinator: ReviewExecutionCoordinator
+    let appServerManager: any AppServerManaging
+    lazy var executionCoordinator: ReviewExecutionCoordinator = {
+        ReviewExecutionCoordinator(
+            configuration: .init(
+                codexCommand: configuration.codexCommand,
+                environment: configuration.environment
+            ),
+            appServerManager: appServerManager,
+            runtimeStateDidChange: { [weak self] runtimeState in
+                await MainActor.run { [weak self] in
+                    guard let self, let server = self.server else {
+                        return
+                    }
+                    self.writeRuntimeState(
+                        endpointRecord: server.currentEndpointRecord(),
+                        appServerRuntimeState: runtimeState
+                    )
+                }
+            }
+        )
+    }()
 
     private var server: ReviewMCPHTTPServer?
     private var waitTask: Task<Void, Never>?
     var closedSessions: Set<String> = []
+    private var discoveryFileURL: URL {
+        ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
+    }
+    private var runtimeStateFileURL: URL {
+        ReviewHomePaths.runtimeStateFileURL(environment: configuration.environment)
+    }
 
     var isActive: Bool {
         server != nil || waitTask != nil
     }
 
-    init(configuration: ReviewServerConfiguration) {
+    init(
+        configuration: ReviewServerConfiguration,
+        appServerManager: (any AppServerManaging)? = nil
+    ) {
         self.configuration = configuration
-        self.executionCoordinator = ReviewExecutionCoordinator(
+        self.appServerManager = appServerManager ?? AppServerSupervisor(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
                 environment: configuration.environment
@@ -904,25 +979,25 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 url = try await server.start()
             } catch {
                 guard forceRestartIfNeeded,
-                      isAddressInUse(error),
-                      let discovery = ReviewDiscovery.read(),
-                      discoveryMatchesListenAddress(
-                        discovery,
-                        host: configuration.host,
-                        port: configuration.port
-                      )
+                      isAddressInUse(error)
                 else {
                     throw error
                 }
-                try await forceRestart(discovery)
+                try await replayAddressInUseCleanup()
                 url = try await server.start()
             }
 
+            let appServerRuntimeState = try await appServerManager.prepare()
             self.server = server
+            writeRuntimeState(
+                endpointRecord: server.currentEndpointRecord(),
+                appServerRuntimeState: appServerRuntimeState
+            )
             store.transitionToRunning(serverURL: url)
             observeServerLifecycle(server: server, store: store)
         } catch {
             await server.stop()
+            await appServerManager.shutdown()
             self.server = nil
             store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
         }
@@ -931,12 +1006,17 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func stop(store: CodexReviewStore) async {
         waitTask?.cancel()
         waitTask = nil
+        await executionCoordinator.shutdown(reason: "Review server stopped.", store: store)
         if let server {
+            let endpointRecord = server.currentEndpointRecord()
             await server.stop()
+            await appServerManager.shutdown()
+            removeRuntimeState(endpointRecord: endpointRecord)
+        } else {
+            await appServerManager.shutdown()
         }
         self.server = nil
         closedSessions = []
-        _ = store
     }
 
     func waitUntilStopped() async {
@@ -1024,6 +1104,61 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         )
     }
 
+    private func replayAddressInUseCleanup() async throws {
+        let runtimeState = ReviewRuntimeStateStore.read(from: runtimeStateFileURL)
+        if let endpointRecord = addressInUseCleanupRecord(runtimeState: runtimeState) {
+            try await forceRestart(
+                endpointRecord: endpointRecord,
+                runtimeState: runtimeState
+            )
+            ReviewDiscovery.removeIfOwned(
+                pid: endpointRecord.pid,
+                url: URL(string: endpointRecord.url),
+                serverStartTime: endpointRecord.serverStartTime,
+                at: discoveryFileURL
+            )
+            ReviewRuntimeStateStore.removeIfOwned(
+                serverPID: endpointRecord.pid,
+                serverStartTime: endpointRecord.serverStartTime,
+                at: runtimeStateFileURL
+            )
+        }
+    }
+
+    private func addressInUseCleanupRecord(
+        runtimeState: ReviewRuntimeStateRecord?
+    ) -> LiveEndpointRecord? {
+        if let endpointRecord = ReviewDiscovery.readPersisted(from: discoveryFileURL),
+           discoveryMatchesListenAddress(
+            endpointRecord,
+            host: configuration.host,
+            port: configuration.port
+           )
+        {
+            return endpointRecord
+        }
+
+        guard let runtimeState,
+              let url = ReviewDiscovery.makeURL(
+                host: configuration.host,
+                port: configuration.port,
+                endpointPath: configuration.endpoint
+              )
+        else {
+            return nil
+        }
+
+        return LiveEndpointRecord(
+            url: url.absoluteString,
+            host: configuration.host,
+            port: configuration.port,
+            pid: runtimeState.serverPID,
+            serverStartTime: runtimeState.serverStartTime,
+            updatedAt: runtimeState.updatedAt,
+            executableName: nil
+        )
+    }
+
     private func observeServerLifecycle(
         server: ReviewMCPHTTPServer,
         store: CodexReviewStore
@@ -1035,6 +1170,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 guard let self, let store, self.server === server else {
                     return
                 }
+                await self.executionCoordinator.shutdown(reason: "Review server stopped.", store: store)
+                let endpointRecord = server.currentEndpointRecord()
+                await server.stop()
+                await self.appServerManager.shutdown()
+                self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
                 self.closedSessions = []
                 store.transitionToStopped()
@@ -1043,6 +1183,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 guard let self, let store, self.server === server else {
                     return
                 }
+                await self.executionCoordinator.shutdown(reason: "Review server failed.", store: store)
+                let endpointRecord = server.currentEndpointRecord()
+                await server.stop()
+                await self.appServerManager.shutdown()
+                self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
                 self.closedSessions = []
                 store.transitionToFailed(
@@ -1051,6 +1196,36 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 )
             }
         }
+    }
+
+    private func writeRuntimeState(
+        endpointRecord: LiveEndpointRecord?,
+        appServerRuntimeState: AppServerRuntimeState
+    ) {
+        guard let endpointRecord else {
+            return
+        }
+        let runtimeState = ReviewRuntimeStateRecord(
+            serverPID: endpointRecord.pid,
+            serverStartTime: endpointRecord.serverStartTime,
+            appServerPID: appServerRuntimeState.pid,
+            appServerStartTime: appServerRuntimeState.startTime,
+            appServerProcessGroupLeaderPID: appServerRuntimeState.processGroupLeaderPID,
+            appServerProcessGroupLeaderStartTime: appServerRuntimeState.processGroupLeaderStartTime,
+            updatedAt: Date()
+        )
+        try? ReviewRuntimeStateStore.write(runtimeState, to: runtimeStateFileURL)
+    }
+
+    private func removeRuntimeState(endpointRecord: LiveEndpointRecord?) {
+        guard let endpointRecord else {
+            return
+        }
+        ReviewRuntimeStateStore.removeIfOwned(
+            serverPID: endpointRecord.pid,
+            serverStartTime: endpointRecord.serverStartTime,
+            at: runtimeStateFileURL
+        )
     }
 }
 
@@ -1089,33 +1264,43 @@ private struct ReviewQueuedJob {
     var initialModel: String?
 }
 
-private func forceRestart(_ discovery: ReviewDiscoveryRecord) async throws {
-    let pid = pid_t(discovery.pid)
-    let signalResult = kill(pid, SIGTERM)
-    if signalResult == -1, errno != ESRCH {
-        throw ReviewError.io("failed to stop existing server process \(discovery.pid): \(String(cString: strerror(errno)))")
-    }
+package func forceRestart(
+    _ discovery: LiveEndpointRecord,
+    runtimeState: ReviewRuntimeStateRecord? = nil,
+    terminateGracePeriod: Duration = .seconds(10),
+    killGracePeriod: Duration = .seconds(2)
+) async throws {
+    try await forceRestart(
+        discovery,
+        runtimeState: runtimeState,
+        terminateGracePeriod: terminateGracePeriod,
+        killGracePeriod: killGracePeriod,
+        clock: ContinuousClock()
+    )
+}
 
-    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-    while isProcessAlive(pid), ContinuousClock.now < deadline {
-        try? await Task.sleep(for: .milliseconds(100))
-    }
-
-    if isProcessAlive(pid) {
-        _ = kill(pid, SIGKILL)
-        let killDeadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while isProcessAlive(pid), ContinuousClock.now < killDeadline {
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-    }
-
-    if isProcessAlive(pid) {
-        throw ReviewError.io("existing server process \(discovery.pid) did not stop within 12 seconds")
+package func forceRestart<C: Clock>(
+    _ discovery: LiveEndpointRecord,
+    runtimeState: ReviewRuntimeStateRecord? = nil,
+    terminateGracePeriod: Duration = .seconds(10),
+    killGracePeriod: Duration = .seconds(2),
+    clock: C
+) async throws where C.Duration == Duration {
+    do {
+        try await forceStopDiscoveredServerProcess(
+            discovery,
+            terminateGracePeriod: terminateGracePeriod,
+            killGracePeriod: killGracePeriod,
+            runtimeState: runtimeState,
+            clock: clock
+        )
+    } catch let error as ForcedRestartError {
+        throw ReviewError.io(error.message)
     }
 }
 
 private func discoveryMatchesListenAddress(
-    _ discovery: ReviewDiscoveryRecord,
+    _ discovery: LiveEndpointRecord,
     host: String,
     port: Int
 ) -> Bool {

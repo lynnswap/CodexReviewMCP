@@ -1,1112 +1,951 @@
 import Foundation
-import MCP
 import Testing
+import ReviewTestSupport
 @_spi(Testing) @testable import CodexReviewMCP
 @testable import ReviewCore
-@testable import ReviewHTTPServer
-@testable import ReviewJobs
-@testable import ReviewRuntime
-import Darwin
 
 @Suite(.serialized)
 @MainActor
 struct CodexReviewMCPTests {
-    @Test func storeTransitionsThroughStartStopAndRestart() async throws {
-        let firstPort = try nextAvailableTestPort(in: 39411 ... 39420)
-        let secondPort = try nextAvailableTestPort(in: 39421 ... 39430)
-        let scriptURL = try makeFakeAppServerScript(mode: .success)
-        defer { try? FileManager.default.removeItem(at: scriptURL) }
-        let firstStore = CodexReviewStore(
-            configuration: .init(host: "127.0.0.1", port: firstPort, codexCommand: scriptURL.path)
-        )
-
-        await firstStore.start()
-        #expect(firstStore.serverState == .running)
-        #expect(firstStore.serverURL != nil)
-
-        await firstStore.stop()
-        #expect(firstStore.serverState == .stopped)
-        #expect(firstStore.serverURL == nil)
-        #expect(firstStore.workspaces.isEmpty)
-
-        let secondStore = CodexReviewStore(
-            configuration: .init(host: "127.0.0.1", port: secondPort, codexCommand: scriptURL.path)
-        )
-        await secondStore.start()
-        #expect(secondStore.serverState == .running)
-        #expect(secondStore.serverURL != nil)
-        await secondStore.stop()
-    }
-
-    @Test func loadForTestingBuildsWorkspaceSnapshot() {
-        let store = CodexReviewStore(configuration: .init())
-        let newerWorkspaceJob = CodexReviewJob.makeForTesting(
-            id: "workspace-b-newer",
-            sortOrder: 2,
-            cwd: "/tmp/workspace-b",
-            targetSummary: "Branch: feature/previews",
-            status: .running,
-            startedAt: Date(timeIntervalSince1970: 300),
-            summary: "Running",
-            logEntries: [.init(kind: .agentMessage, text: "Running review")]
-        )
-        let olderWorkspaceJob = CodexReviewJob.makeForTesting(
-            id: "workspace-a-older",
-            sortOrder: 1,
-            cwd: "/tmp/workspace-a",
-            targetSummary: "Commit: abc123",
-            status: .succeeded,
-            startedAt: Date(timeIntervalSince1970: 100),
-            endedAt: Date(timeIntervalSince1970: 110),
-            summary: "Succeeded",
-            logEntries: [.init(kind: .agentMessage, text: "Done")]
-        )
-        let newerSiblingJob = CodexReviewJob.makeForTesting(
-            id: "workspace-a-newer",
-            sortOrder: 3,
-            cwd: "/tmp/workspace-a",
-            targetSummary: "Commit: def456",
-            status: .failed,
-            startedAt: Date(timeIntervalSince1970: 200),
-            endedAt: Date(timeIntervalSince1970: 210),
-            summary: "Failed",
-            logEntries: [.init(kind: .agentMessage, text: "Failed review")]
-        )
-
-        store.loadForTesting(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp"),
-            workspaces: makeWorkspaces(from: [olderWorkspaceJob, newerWorkspaceJob, newerSiblingJob])
-        )
-
-        #expect(store.serverState == .running)
-        #expect(store.serverURL?.absoluteString == "http://localhost:9417/mcp")
-        #expect(store.workspaces.map(\.cwd) == ["/tmp/workspace-b", "/tmp/workspace-a"])
-        #expect(store.workspaces.first?.jobs.map(\.id) == ["workspace-b-newer"])
-        #expect(store.workspaces.last?.jobs.map(\.id) == ["workspace-a-newer", "workspace-a-older"])
-    }
-
-    @Test func embeddedServerReviewStartProgressesViaHTTP() async throws {
-        let port = try nextAvailableTestPort(in: 39421 ... 39430)
-        let scriptURL = try makeFakeAppServerScript(mode: .success)
-        defer { try? FileManager.default.removeItem(at: scriptURL) }
-        let repository = try TemporaryReviewRepository.make()
-        defer { repository.cleanup() }
-        let store = CodexReviewStore(
-            configuration: .init(host: "127.0.0.1", port: port, codexCommand: scriptURL.path)
-        )
-
-        do {
-            await store.start()
-            #expect(store.serverState == .running)
-            let endpointURL = try #require(store.serverURL)
-            let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 5)
-
-            let response = try await client.callTool(
-                name: "review_start",
-                arguments: [
-                    "cwd": repository.url.path,
-                    "target": [
-                        "type": "uncommittedChanges",
-                    ],
-                ]
-            )
-
-            let result = try #require(response["result"] as? [String: Any])
-            let structuredContent = try #require(result["structuredContent"] as? [String: Any])
-            let reviewThreadID = try #require(structuredContent["reviewThreadId"] as? String)
-            #expect(reviewThreadID == "thr-monitor")
-            #expect(structuredContent["model"] as? String == "gpt-5.4-mini")
-            #expect(structuredContent["status"] as? String == "succeeded")
-            #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
-            #expect(structuredContent["logs"] == nil)
-            #expect(structuredContent["rawLogText"] == nil)
-            #expect(structuredContent["lastAgentMessage"] == nil)
-
-                try await waitUntil(timeout: .seconds(2)) {
-                await MainActor.run {
-                    guard let job = store.workspaces.first?.jobs.first else {
-                        return false
-                    }
-                    return job.status == .succeeded && job.logText.isEmpty == false
-                }
-            }
-
-            let job = try #require(store.workspaces.first?.jobs.first)
-            #expect(job.status == .succeeded)
-            #expect(job.logText.contains("$ git diff --stat"))
-            #expect(job.logText.contains("README.md | 1 +"))
-            #expect(job.reviewThreadID == "thr-monitor")
-        } catch {
-            await store.stop()
-            throw error
+    @Test func startingStoreWritesDiscoveryAndRuntimeState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
+        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
+        ReviewDiscovery.remove(at: discoveryFileURL)
+        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        defer {
+            ReviewDiscovery.remove(at: discoveryFileURL)
+            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
         }
 
-        await store.stop()
-    }
-
-    @Test func embeddedServerLiveReviewStartProgressesViaHTTP() async throws {
-        guard ProcessInfo.processInfo.environment["CODEX_REVIEW_MCP_LIVE_TESTS"] == "1" else {
-            return
-        }
-        let repository = try TemporaryReviewRepository.make()
-        defer { repository.cleanup() }
-        let port = try nextAvailableTestPort(in: 39431 ... 39440)
-
+        let runtimeState = AppServerRuntimeState(
+            pid: 200,
+            startTime: .init(seconds: 2, microseconds: 0),
+            processGroupLeaderPID: 200,
+            processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
+        )
+        let manager = MockAppServerManager(modeProvider: { _ in .success() }, runtimeState: runtimeState)
         let store = CodexReviewStore(
             configuration: .init(
-                host: "127.0.0.1",
-                port: port,
+                port: 0,
                 codexCommand: "codex",
-                environment: liveReviewEnvironment()
-            )
+                environment: environment
+            ),
+            appServerManager: manager
         )
 
-        do {
-            try await withTestTimeout(seconds: 1500) { @MainActor in
-                await store.start()
-                #expect(store.serverState == .running)
-                let endpointURL = try #require(store.serverURL)
-                let client = ReviewMCPHTTPTestClient(endpointURL: endpointURL, timeoutInterval: 1200)
+        await store.start()
+        defer { Task { await store.stop() } }
 
-                let response = try await client.callTool(
-                    name: "review_start",
-                    arguments: [
-                        "cwd": repository.url.path,
-                        "target": [
-                            "type": "uncommittedChanges",
-                        ],
-                    ]
-                )
+        #expect(store.serverState == .running)
+        let discovery = try #require(ReviewDiscovery.read(from: discoveryFileURL))
+        let persistedRuntimeState = try #require(ReviewRuntimeStateStore.read(from: runtimeStateFileURL))
+        #expect(persistedRuntimeState.serverPID == discovery.pid)
+        #expect(persistedRuntimeState.serverStartTime == discovery.serverStartTime)
+        #expect(persistedRuntimeState.appServerPID == runtimeState.pid)
+    }
 
-                let result = try #require(response["result"] as? [String: Any])
-                let structuredContent = try #require(result["structuredContent"] as? [String: Any])
-                let reviewThreadID = try #require(structuredContent["reviewThreadId"] as? String)
-                #expect(structuredContent["status"] as? String == "succeeded")
-                #expect(((structuredContent["review"] as? String) ?? "").isEmpty == false)
-                #expect(reviewThreadID.isEmpty == false)
-                #expect(structuredContent["logs"] == nil)
-                #expect(structuredContent["rawLogText"] == nil)
-                #expect(structuredContent["lastAgentMessage"] == nil)
-
-                try await waitUntil(timeout: .seconds(60), interval: .milliseconds(200)) {
-                    await MainActor.run {
-                        guard let job = store.workspaces.first?.jobs.first else {
-                            return false
-                        }
-                        return job.status == .succeeded && job.logText.isEmpty == false
-                    }
-                }
-
-                let job = try #require(store.workspaces.first?.jobs.first)
-                #expect(job.status == .succeeded)
-                #expect(job.logText.isEmpty == false)
-                let readResponse = try await client.callTool(
-                    name: "review_read",
-                    arguments: [
-                        "reviewThreadId": reviewThreadID,
-                    ]
-                )
-                let readResult = try #require(readResponse["result"] as? [String: Any])
-                let readStructuredContent = try #require(readResult["structuredContent"] as? [String: Any])
-                let lastAgentMessage = try #require(readStructuredContent["lastAgentMessage"] as? String)
-                let readLogs = try #require(readStructuredContent["logs"] as? [[String: Any]])
-                let rawLogText = try #require(readStructuredContent["rawLogText"] as? String)
-                #expect(readStructuredContent["status"] as? String == "succeeded")
-                #expect(readStructuredContent["model"] as? String == "gpt-5.4-mini")
-                #expect(((readStructuredContent["review"] as? String) ?? "").isEmpty == false)
-                #expect(lastAgentMessage.isEmpty == false)
-                #expect(readLogs.isEmpty == false)
-                #expect(rawLogText.isEmpty == false || rawLogText.isEmpty == true)
-            }
-        } catch {
-            await store.stop()
-            throw error
+    @Test func stoppingStoreRemovesDiscoveryAndRuntimeState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
+        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
+        ReviewDiscovery.remove(at: discoveryFileURL)
+        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        defer {
+            ReviewDiscovery.remove(at: discoveryFileURL)
+            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
         }
 
+        let manager = MockAppServerManager { _ in .success() }
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager
+        )
+
+        await store.start()
         await store.stop()
+
+        #expect(ReviewDiscovery.read(from: discoveryFileURL) == nil)
+        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
     }
 
-    @Test func codexReviewStoreAppliesMutationsInPlace() throws {
-        let store = CodexReviewStore(configuration: .init())
-        let queuedRequest = ReviewRequestOptions(
-            cwd: "/tmp/repo",
-            target: .uncommittedChanges
-        )
+    @Test func stopKeepsRuntimeStateUntilAppServerShutdownFinishes() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
+        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
 
-        let firstJobID = try store.enqueueReview(sessionID: "session-1", request: queuedRequest, initialModel: "gpt-5")
-        let firstJob = try #require(findJob(id: firstJobID, in: store))
-        #expect(store.workspaces.map(\.cwd) == ["/tmp/repo"])
-        #expect(store.workspaces.first?.jobs.map(\.id) == [firstJobID])
-        #expect(firstJob.model == "gpt-5")
-
-        store.markStarted(
-            jobID: firstJobID,
-            startedAt: Date(timeIntervalSince1970: 123)
-        )
-        store.handle(
-            jobID: firstJobID,
-            event: .reviewStarted(
-                reviewThreadID: "thread-1",
-                threadID: "thread-1",
-                turnID: "turn-1",
-                model: "gpt-5.4-mini"
+        let manager = DelayedShutdownAppServerManager(
+            runtimeState: .init(
+                pid: 200,
+                startTime: .init(seconds: 2, microseconds: 0),
+                processGroupLeaderPID: 200,
+                processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
             )
         )
-        store.handle(jobID: firstJobID, event: .logEntry(.init(kind: .agentMessage, text: "Running review")))
-
-        let secondJobID = try store.enqueueReview(
-            sessionID: "session-1",
-            request: .init(cwd: "/tmp/repo", target: .baseBranch("main"))
-        )
-        store.failToStart(
-            jobID: secondJobID,
-            message: "boom",
-            startedAt: Date(timeIntervalSince1970: 200),
-            endedAt: Date(timeIntervalSince1970: 201)
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager
         )
 
-        let updatedJob = try #require(findJob(id: firstJobID, in: store))
-        #expect(updatedJob === firstJob)
-        #expect(updatedJob.status == .running)
-        #expect(updatedJob.reviewThreadID == "thread-1")
-        #expect(updatedJob.threadID == "thread-1")
-        #expect(updatedJob.turnID == "turn-1")
-        #expect(updatedJob.model == "gpt-5.4-mini")
-        #expect(updatedJob.logText == "Running review")
-        #expect(store.workspaces.map(\.cwd) == ["/tmp/repo"])
-        #expect(store.workspaces.first?.jobs.map(\.id) == [secondJobID, firstJobID])
-        #expect(updatedJob.startedAt == Date(timeIntervalSince1970: 123))
+        await store.start()
+        let stopTask = Task { await store.stop() }
+        await manager.waitForShutdownStart()
+
+        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) != nil)
+
+        await manager.resumeShutdown()
+        _ = await stopTask.value
+
+        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
     }
 
-    @Test func initializeAdvertisesResourcesCapability() async throws {
-        let server = makeMonitorServer()
-        let initialized = try await initializeMonitorSessionAndReadInitializeResponse(server: server)
-        let result = try #require(initialized.response["result"] as? [String: Any])
-        let capabilities = try #require(result["capabilities"] as? [String: Any])
-        #expect(capabilities["resources"] as? [String: Any] != nil)
-    }
+    @Test func sessionTransportFailureDoesNotDropOtherSessionsOrRuntimeState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
+        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
 
-    @Test func monitorServerListsReviewHelpResources() async throws {
-        let server = makeMonitorServer()
-        let sessionID = try await initializeMonitorSession(server: server)
-        let response = try await callMonitorMethod(
-            server: server,
-            sessionID: sessionID,
-            requestID: 11,
-            method: "resources/list",
-            params: [:]
-        )
-
-        let result = try #require(response["result"] as? [String: Any])
-        let resources = try #require(result["resources"] as? [[String: Any]])
-        let uris = resources.compactMap { $0["uri"] as? String }
-        #expect(uris == [
-            "codex-review://help/overview",
-            "codex-review://help/troubleshooting",
-        ])
-    }
-
-    @Test func monitorServerListsReviewHelpTemplates() async throws {
-        let server = makeMonitorServer()
-        let sessionID = try await initializeMonitorSession(server: server)
-        let response = try await callMonitorMethod(
-            server: server,
-            sessionID: sessionID,
-            requestID: 12,
-            method: "resources/templates/list",
-            params: [:]
-        )
-
-        let result = try #require(response["result"] as? [String: Any])
-        let templates = try #require(result["resourceTemplates"] as? [[String: Any]])
-        let uris = templates.compactMap { $0["uriTemplate"] as? String }
-        #expect(uris == [
-            "codex-review://help/tools/{toolName}",
-            "codex-review://help/targets/{targetType}",
-        ])
-    }
-
-    @Test func monitorServerReadsConcreteHelpResources() async throws {
-        let server = makeMonitorServer()
-        let sessionID = try await initializeMonitorSession(server: server)
-
-        let toolResponse = try await callMonitorMethod(
-            server: server,
-            sessionID: sessionID,
-            requestID: 13,
-            method: "resources/read",
-            params: ["uri": "codex-review://help/tools/review_start"]
-        )
-        let targetResponse = try await callMonitorMethod(
-            server: server,
-            sessionID: sessionID,
-            requestID: 14,
-            method: "resources/read",
-            params: ["uri": "codex-review://help/targets/uncommittedChanges"]
-        )
-
-        let toolContents = try #require(((toolResponse["result"] as? [String: Any])?["contents"] as? [[String: Any]])?.first)
-        let targetContents = try #require(((targetResponse["result"] as? [String: Any])?["contents"] as? [[String: Any]])?.first)
-        #expect(((toolContents["text"] as? String) ?? "").contains("`review_start`"))
-        #expect(((toolContents["text"] as? String) ?? "").contains("Compatibility shorthand also accepts"))
-        #expect(((targetContents["text"] as? String) ?? "").contains("`target.type = \"uncommittedChanges\"`"))
-    }
-
-    @Test func monitorServerRejectsUnknownTargetHelpResource() async throws {
-        let server = makeMonitorServer()
-        let sessionID = try await initializeMonitorSession(server: server)
-        let response = try await callMonitorMethod(
-            server: server,
-            sessionID: sessionID,
-            requestID: 15,
-            method: "resources/read",
-            params: ["uri": "codex-review://help/targets/bogus"]
-        )
-
-        let error = try #require(response["error"] as? [String: Any])
-        let message = try #require(error["message"] as? String)
-        #expect(message.contains("Allowed values: uncommittedChanges, baseBranch, commit, custom"))
-    }
-
-    @Test func monitorServerListsReviewStartSchemaWithUncommittedCompatibilityAliases() async throws {
-        let server = makeMonitorServer()
-        let sessionID = try await initializeMonitorSession(server: server)
-        let response = try await callMonitorMethod(
-            server: server,
-            sessionID: sessionID,
-            requestID: 16,
-            method: "tools/list",
-            params: nil
-        )
-
-        let result = try #require(response["result"] as? [String: Any])
-        let tools = try #require(result["tools"] as? [[String: Any]])
-        let reviewStartTool = try #require(tools.first { ($0["name"] as? String) == "review_start" })
-        let inputSchema = try #require(reviewStartTool["inputSchema"] as? [String: Any])
-        let properties = try #require(inputSchema["properties"] as? [String: Any])
-        let target = try #require(properties["target"] as? [String: Any])
-        let variants = try #require(target["oneOf"] as? [[String: Any]])
-
-        let stringVariant = try #require(variants.first { ($0["type"] as? String) == "string" })
-        let stringEnum = try #require(stringVariant["enum"] as? [String])
-        #expect(stringEnum == ["uncommitted", "uncommittedChanges"])
-
-        let objectVariants = variants.filter { ($0["type"] as? String) == "object" }
-        let compatibilityAlias = objectVariants.first { variant in
-            guard let properties = variant["properties"] as? [String: Any],
-                  let type = properties["type"] as? [String: Any]
-            else {
-                return false
-            }
-            return (type["const"] as? String) == "uncommitted"
+        let manager = MockAppServerManager { sessionID in
+            sessionID == "session-a" ? .interruptFailure() : .longRunning()
         }
-        #expect(compatibilityAlias != nil)
-    }
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager
+        )
 
-    @Test func monitorServerReviewStartAcceptsUncommittedShorthand() async throws {
-        let server = makeMonitorServer(
-            startReview: { _, request in
-                #expect(request.target == .uncommittedChanges)
-                return ReviewReadResult(
-                    reviewThreadID: "job-1",
-                    status: .succeeded,
-                    review: "ok",
-                    lastAgentMessage: "ok",
-                    logs: [],
-                    rawLogText: ""
+        await store.start()
+        defer { Task { await store.stop() } }
+
+        let sessionAReview = Task {
+            try await store.startReview(
+                sessionID: "session-a",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
                 )
-            }
-        )
-        let sessionID = try await initializeMonitorSession(server: server)
-        let shorthandTargets: [Any] = [
-            "uncommitted",
-            "uncommittedChanges",
-            [
-                "type": "uncommitted",
-            ],
-        ]
-
-        for (index, target) in shorthandTargets.enumerated() {
-            let response = try await callMonitorTool(
-                server: server,
-                sessionID: sessionID,
-                requestID: 17 + index,
-                name: "review_start",
-                arguments: [
-                    "cwd": "/tmp/repo",
-                    "target": target,
-                ]
             )
-
-            let result = try #require(response["result"] as? [String: Any])
-            let structuredContent = try #require(result["structuredContent"] as? [String: Any])
-            #expect((result["isError"] as? Bool) == false)
-            #expect(structuredContent["status"] as? String == "succeeded")
-            #expect(structuredContent["reviewThreadId"] as? String == "job-1")
-            #expect(structuredContent["review"] as? String == "ok")
         }
-    }
-
-    @Test func monitorServerReviewStartInvalidTargetReturnsGuidance() async throws {
-        let server = makeMonitorServer()
-        let sessionID = try await initializeMonitorSession(server: server)
-        let response = try await callMonitorTool(
-            server: server,
-            sessionID: sessionID,
-            requestID: 21,
-            name: "review_start",
-            arguments: [
-                "cwd": "/tmp/repo",
-                "target": [
-                    "type": "branch",
-                    "branch": "main",
-                ],
-            ]
-        )
-
-        let result = try #require(response["result"] as? [String: Any])
-        let content = try #require(result["content"] as? [[String: Any]])
-        let text = try #require(content.first?["text"] as? String)
-        let structuredContent = try #require(result["structuredContent"] as? [String: Any])
-        let acceptedTargetTypes = try #require(structuredContent["acceptedTargetTypes"] as? [String])
-        let helpResources = try #require(structuredContent["helpResources"] as? [String])
-        let helpTemplates = try #require(structuredContent["helpTemplates"] as? [String])
-
-        #expect((result["isError"] as? Bool) == true)
-        #expect(text.contains("Accepted `target.type` values: uncommittedChanges, baseBranch, commit, custom"))
-        #expect(text.contains("codex-review://help/overview"))
-        #expect(text.contains("codex-review://help/tools/review_start"))
-        #expect(text.contains("codex-review://help/targets/uncommittedChanges"))
-        #expect(text.contains("codex-review://help/targets/baseBranch"))
-        #expect(text.contains("codex-review://help/targets/commit"))
-        #expect(text.contains("codex-review://help/targets/custom"))
-        #expect(acceptedTargetTypes == ["uncommittedChanges", "baseBranch", "commit", "custom"])
-        #expect(helpResources == ["codex-review://help/overview", "codex-review://help/troubleshooting"])
-        #expect(helpTemplates == ["codex-review://help/tools/{toolName}", "codex-review://help/targets/{targetType}"])
-    }
-
-}
-
-private struct TemporaryReviewRepository {
-    let url: URL
-
-    static func make() throws -> TemporaryReviewRepository {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CodexReviewMCPTests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: url,
-            withIntermediateDirectories: true,
-            attributes: nil
-        )
-        try "# Live Fixture\n".write(
-            to: url.appendingPathComponent("README.md"),
-            atomically: true,
-            encoding: .utf8
-        )
-        try runProcess(["/usr/bin/git", "init", "-q"], in: url)
-        try runProcess(["/usr/bin/git", "config", "user.name", "Codex Review Test"], in: url)
-        try runProcess(["/usr/bin/git", "config", "user.email", "codex-review@example.com"], in: url)
-        try runProcess(["/usr/bin/git", "add", "README.md"], in: url)
-        try runProcess(["/usr/bin/git", "commit", "-qm", "Initial commit"], in: url)
-        try """
-        # Live Fixture
-
-        This line is intentionally uncommitted.
-        """.write(
-            to: url.appendingPathComponent("README.md"),
-            atomically: true,
-            encoding: .utf8
-        )
-        return TemporaryReviewRepository(url: url)
-    }
-
-    func cleanup() {
-        try? FileManager.default.removeItem(at: url)
-    }
-}
-
-private enum FakeAppServerMode {
-    case success
-    case long
-}
-
-private func makeFakeAppServerScript(mode: FakeAppServerMode) throws -> URL {
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let body: String
-    switch mode {
-    case .success:
-        body = """
-        #!/usr/bin/env python3
-        import json
-        import sys
-        import time
-
-        thread_id = "thr-monitor"
-        turn_id = "turn-monitor"
-
-        def send(obj):
-            sys.stdout.write(json.dumps(obj) + "\\n")
-            sys.stdout.flush()
-
-        for raw in sys.stdin:
-            if not raw.strip():
-                continue
-            message = json.loads(raw)
-            method = message.get("method")
-            if method == "initialize":
-                send({"id": message["id"], "result": {"platformFamily": "macOS"}})
-            elif method == "initialized":
-                continue
-            elif method == "config/read":
-                send({"id": message["id"], "result": {"config": {"model": "gpt-5.4-mini"}}})
-            elif method == "thread/start":
-                send({"id": message["id"], "result": {"thread": {"id": thread_id}, "model": "gpt-5.4-mini"}})
-            elif method == "review/start":
-                send({"id": message["id"], "result": {"turn": {"id": turn_id, "status": "inProgress", "error": None}, "reviewThreadId": thread_id}})
-                send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "error": None}}})
-                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "enteredReviewMode", "id": turn_id, "review": "current changes"}}})
-                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "inProgress", "aggregatedOutput": None, "exitCode": None}}})
-                send({"method": "item/commandExecution/outputDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "cmd_1", "delta": "README.md | 1 +"}})
-                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "completed", "aggregatedOutput": "README.md | 1 +", "exitCode": 0}}})
-                send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "exitedReviewMode", "id": turn_id, "review": "No functional issues found."}}})
-                sys.stderr.write("diagnostic: success path\\n")
-                sys.stderr.flush()
-                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "error": None}}})
-                time.sleep(0.5)
-                sys.exit(0)
-        """
-    case .long:
-        body = """
-        #!/usr/bin/env python3
-        import json
-        import sys
-        import time
-
-        thread_id = "thr-monitor"
-        turn_id = "turn-monitor"
-
-        def send(obj):
-            sys.stdout.write(json.dumps(obj) + "\\n")
-            sys.stdout.flush()
-
-        for raw in sys.stdin:
-            if not raw.strip():
-                continue
-            message = json.loads(raw)
-            method = message.get("method")
-            if method == "initialize":
-                send({"id": message["id"], "result": {"platformFamily": "macOS"}})
-            elif method == "initialized":
-                continue
-            elif method == "config/read":
-                send({"id": message["id"], "result": {"config": {"model": "gpt-5.4-mini"}}})
-            elif method == "thread/start":
-                send({"id": message["id"], "result": {"thread": {"id": thread_id}, "model": "gpt-5.4-mini"}})
-            elif method == "review/start":
-                send({"id": message["id"], "result": {"turn": {"id": turn_id, "status": "inProgress", "error": None}, "reviewThreadId": thread_id}})
-                send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "error": None}}})
-                send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "enteredReviewMode", "id": turn_id, "review": "current changes"}}})
-            elif method == "turn/interrupt":
-                send({"id": message["id"], "result": {}})
-                send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "interrupted", "error": {"message": "Cancellation requested."}}}})
-                time.sleep(0.2)
-                sys.exit(0)
-        """
-    }
-    try body.write(to: url, atomically: true, encoding: .utf8)
-    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
-    return url
-}
-
-private func liveReviewEnvironment() -> [String: String] {
-    let source = ProcessInfo.processInfo.environment
-    let allowedKeys: Set<String> = [
-        "HOME",
-        "CODEX_HOME",
-        "TMPDIR",
-        "PATH",
-        "LANG",
-        "TERM",
-        "SHELL",
-        "USER",
-        "LOGNAME",
-        "SSH_AUTH_SOCK",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GITHUB_MCP_API_TOKEN",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "NO_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "no_proxy",
-    ]
-
-    return source.reduce(into: [:]) { partialResult, entry in
-        let (key, value) = entry
-        if allowedKeys.contains(key) || key.hasPrefix("LC_") {
-            partialResult[key] = value
-        }
-    }
-}
-
-private func runProcess(_ arguments: [String], in directoryURL: URL) throws {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: arguments[0])
-    process.arguments = Array(arguments.dropFirst())
-    process.currentDirectoryURL = directoryURL
-    try process.run()
-    process.waitUntilExit()
-    if process.terminationStatus != 0 {
-        throw TestFailure("command failed: \(arguments.joined(separator: " "))")
-    }
-}
-
-@MainActor
-private func makeWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspace] {
-    var buckets: [String: [CodexReviewJob]] = [:]
-    var order: [String] = []
-    for job in jobs {
-        if buckets[job.cwd] == nil {
-            order.insert(job.cwd, at: 0)
-            buckets[job.cwd] = []
-        }
-        buckets[job.cwd, default: []].insert(job, at: 0)
-    }
-    return order.enumerated().map { index, cwd in
-        CodexReviewWorkspace(
-            cwd: cwd,
-            sortOrder: index + 1,
-            jobs: buckets[cwd] ?? []
-        )
-    }
-}
-
-@MainActor
-private func findJob(id: String, in store: CodexReviewStore) -> CodexReviewJob? {
-    for workspace in store.workspaces {
-        if let job = workspace.jobs.first(where: { $0.id == id }) {
-            return job
-        }
-    }
-    return nil
-}
-
-
-private final class ReviewMCPHTTPTestClient: @unchecked Sendable {
-    private let endpointURL: URL
-    private let session: URLSession
-    private let timeoutInterval: TimeInterval
-    private var sessionID: String?
-
-    init(endpointURL: URL, timeoutInterval: TimeInterval) {
-        self.endpointURL = endpointURL
-        self.timeoutInterval = timeoutInterval
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = timeoutInterval
-        configuration.timeoutIntervalForResource = timeoutInterval
-        self.session = URLSession(configuration: configuration)
-    }
-
-    func callTool(
-        name: String,
-        arguments: [String: Any]
-    ) async throws -> [String: Any] {
-        let sessionID = try await initializeIfNeeded()
-        let payload = try await postSSEPayload(
-            body: [
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": [
-                    "name": name,
-                    "arguments": arguments,
-                ],
-            ],
-            sessionID: sessionID
-        )
-        return try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
-    }
-
-    private func initializeIfNeeded() async throws -> String {
-        if let sessionID {
-            return sessionID
-        }
-
-        let (payload, response) = try await postSSE(
-            body: [
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": [
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": [:],
-                    "clientInfo": [
-                        "name": "test",
-                        "version": "0.0.1",
-                    ],
-                ],
-            ],
-            sessionID: nil
-        )
-        let httpResponse = try #require(response as? HTTPURLResponse)
-        let newSessionID = try #require(httpResponse.value(forHTTPHeaderField: "MCP-Session-Id"))
-        let object = try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
-        #expect((object["id"] as? Int) == 1)
-
-        try await postNotificationInitialized(sessionID: newSessionID)
-        sessionID = newSessionID
-        return newSessionID
-    }
-
-    private func postNotificationInitialized(sessionID: String) async throws {
-        var request = URLRequest(url: endpointURL)
-        request.httpMethod = "POST"
-        request.timeoutInterval = timeoutInterval
-        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2025-11-25", forHTTPHeaderField: "Mcp-Protocol-Version")
-        request.setValue(sessionID, forHTTPHeaderField: "MCP-Session-Id")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-            "params": [:],
-        ])
-        let finalRequest = request
-        let (_, response) = try await withTestTimeout(seconds: timeoutInterval) {
-            try await self.session.data(for: finalRequest)
-        }
-        let httpResponse = try #require(response as? HTTPURLResponse)
-        #expect(httpResponse.statusCode == 202)
-    }
-
-    private func postSSEPayload(
-        body: [String: Any],
-        sessionID: String?
-    ) async throws -> Data {
-        let (payload, _) = try await postSSE(body: body, sessionID: sessionID)
-        return payload
-    }
-
-    private func postSSE(
-        body: [String: Any],
-        sessionID: String?
-    ) async throws -> (Data, URLResponse) {
-        var request = URLRequest(url: endpointURL)
-        request.httpMethod = "POST"
-        request.timeoutInterval = timeoutInterval
-        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("2025-11-25", forHTTPHeaderField: "Mcp-Protocol-Version")
-        if let sessionID {
-            request.setValue(sessionID, forHTTPHeaderField: "MCP-Session-Id")
-        }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let finalRequest = request
-
-        let (data, response) = try await withTestTimeout(seconds: timeoutInterval) {
-            try await self.session.data(for: finalRequest)
-        }
-        return (try decodeFirstSSEPayload(from: data), response)
-    }
-}
-
-private func initializeMonitorSession(server: ReviewMCPHTTPServer) async throws -> String {
-    try await initializeMonitorSessionAndReadInitializeResponse(server: server).sessionID
-}
-
-private func initializeMonitorSessionAndReadInitializeResponse(
-    server: ReviewMCPHTTPServer
-) async throws -> (sessionID: String, response: [String: Any]) {
-    let initializeData = try JSONSerialization.data(withJSONObject: [
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": [
-            "protocolVersion": "2025-11-25",
-            "capabilities": [:],
-            "clientInfo": ["name": "test", "version": "0.0.1"],
-        ],
-    ])
-    let response = await server.handleHTTPRequest(
-        HTTPRequest(
-            method: "POST",
-            headers: [
-                HTTPHeaderName.accept: "application/json, text/event-stream",
-                HTTPHeaderName.contentType: "application/json",
-                HTTPHeaderName.protocolVersion: Version.latest,
-                HTTPHeaderName.host: "localhost:9417",
-            ],
-            body: initializeData,
-            path: "/mcp"
-        )
-    )
-    let sessionID = try #require(response.headers[HTTPHeaderName.sessionID])
-    let payload = try await firstMonitorStreamPayload(response)
-    let object = try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
-    #expect((object["id"] as? Int) == 1)
-
-    let initializedData = try JSONSerialization.data(withJSONObject: [
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-        "params": [:],
-    ])
-    let initializedResponse = await server.handleHTTPRequest(
-        HTTPRequest(
-            method: "POST",
-            headers: [
-                HTTPHeaderName.sessionID: sessionID,
-                HTTPHeaderName.accept: "application/json, text/event-stream",
-                HTTPHeaderName.contentType: "application/json",
-                HTTPHeaderName.protocolVersion: Version.latest,
-                HTTPHeaderName.host: "localhost:9417",
-            ],
-            body: initializedData,
-            path: "/mcp"
-        )
-    )
-    #expect(initializedResponse.statusCode == 202)
-    return (sessionID, object)
-}
-
-private func callMonitorTool(
-    server: ReviewMCPHTTPServer,
-    sessionID: String,
-    requestID: Int,
-    name: String,
-    arguments: [String: Any]
-) async throws -> [String: Any] {
-    try await callMonitorMethod(
-        server: server,
-        sessionID: sessionID,
-        requestID: requestID,
-        method: "tools/call",
-        params: [
-            "name": name,
-            "arguments": arguments,
-        ]
-    )
-}
-
-private func callMonitorMethod(
-    server: ReviewMCPHTTPServer,
-    sessionID: String,
-    requestID: Int,
-    method: String,
-    params: [String: Any]?
-) async throws -> [String: Any] {
-    var requestObject: [String: Any] = [
-        "jsonrpc": "2.0",
-        "id": requestID,
-        "method": method,
-    ]
-    if let params {
-        requestObject["params"] = params
-    }
-    let body = try JSONSerialization.data(withJSONObject: requestObject)
-    let response = await server.handleHTTPRequest(
-        HTTPRequest(
-            method: "POST",
-            headers: [
-                HTTPHeaderName.sessionID: sessionID,
-                HTTPHeaderName.accept: "application/json, text/event-stream",
-                HTTPHeaderName.contentType: "application/json",
-                HTTPHeaderName.protocolVersion: Version.latest,
-                HTTPHeaderName.host: "localhost:9417",
-            ],
-            body: body,
-            path: "/mcp"
-        )
-    )
-    let payload = try await firstMonitorStreamPayload(response)
-    return try #require((try JSONSerialization.jsonObject(with: payload)) as? [String: Any])
-}
-
-private func makeMonitorServer(
-    startReview: @escaping ReviewMCPHTTPServer.StartReviewHandler = { _, _ in
-        ReviewReadResult(
-            reviewThreadID: "job-1",
-            status: .succeeded,
-            review: "ok",
-            lastAgentMessage: "ok",
-            logs: [],
-            rawLogText: ""
-        )
-    }
-) -> ReviewMCPHTTPServer {
-    ReviewMCPHTTPServer(
-        configuration: .init(),
-        startReview: startReview,
-        readReview: { _, _ in
-            ReviewReadResult(
-                reviewThreadID: "job-1",
-                status: .succeeded,
-                review: "ok",
-                lastAgentMessage: "ok",
-                logs: [],
-                rawLogText: ""
+        let sessionBReview = Task {
+            try await store.startReview(
+                sessionID: "session-b",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
             )
-        },
-        listReviews: { _, _, _, _ in
-            ReviewListResult(items: [])
-        },
-        cancelReviewByID: { _, _ in
-            ReviewCancelOutcome(
-                reviewThreadID: "job-1",
-                cancelled: true,
-                status: .cancelled
-            )
-        },
-        cancelReviewBySelector: { _, _, _, _ in
-            ReviewCancelOutcome(
-                reviewThreadID: "job-1",
-                cancelled: true,
-                status: .cancelled
-            )
-        },
-        closeSession: { _ in },
-        hasActiveJobs: { _ in false }
-    )
-}
-
-private func firstMonitorStreamPayload(_ response: HTTPResponse) async throws -> Data {
-    guard case .stream(let stream, _) = response else {
-        throw TestFailure("expected stream response")
-    }
-    var decoder = LocalMonitorSSEDecoder()
-    for try await chunk in stream {
-        let text = String(decoding: chunk, as: UTF8.self)
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            if let payload = decoder.feed(line: String(line)), payload.isEmpty == false {
-                return payload
-            }
         }
+
+        let sessionATransport = await manager.waitForTransport(sessionID: "session-a")
+        let sessionBTransport = await manager.waitForTransport(sessionID: "session-b")
+        await sessionATransport.waitForRequest("review/start")
+        await sessionBTransport.waitForRequest("review/start")
+
+        _ = try await store.cancelReview(
+            selector: .init(reviewThreadID: nil, cwd: nil, statuses: [.running], latest: true),
+            sessionID: "session-a"
+        )
+        let cancelledResult = try await sessionAReview.value
+
+        #expect(cancelledResult.status == .cancelled)
+        #expect(await sessionATransport.isClosed())
+        #expect(await sessionBTransport.isClosed() == false)
+        #expect(await manager.shutdownCount() == 0)
+        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) != nil)
+
+        await store.closeSession("session-b", reason: "test cleanup")
+        let sessionBResult = try await sessionBReview.value
+        #expect(sessionBResult.status == .cancelled)
     }
-    if let payload = decoder.flushIfNeeded(), payload.isEmpty == false {
-        return payload
+
+    @Test func closeSessionClosesTransportThatFinishesConnectingLater() async throws {
+        let manager = DelayedConnectAppServerManager(
+            runtimeState: .init(
+                pid: 200,
+                startTime: .init(seconds: 2, microseconds: 0),
+                processGroupLeaderPID: 200,
+                processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: try isolatedHomeEnvironment()
+            ),
+            appServerManager: manager
+        )
+
+        await store.start()
+        defer { Task { await store.stop() } }
+
+        let reviewTask = Task {
+            try await store.startReview(
+                sessionID: "session-delayed-connect",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
+            )
+        }
+
+        await manager.waitForConnectStart()
+        await store.closeSession("session-delayed-connect", reason: "session closed")
+        await manager.resumeConnect()
+
+        let result = try await reviewTask.value
+        let transport = try #require(await manager.createdTransport())
+        #expect(result.status == .cancelled)
+        #expect(await transport.isClosed())
     }
-    throw TestFailure("missing stream payload")
+
+    @Test func forceRestartStopsServerAndRecordedAppServerGroup() async throws {
+        let endpointRecord = LiveEndpointRecord(
+            url: "http://localhost:9417/mcp",
+            host: "localhost",
+            port: 9417,
+            pid: 100,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            updatedAt: Date(),
+            executableName: nil
+        )
+        let runtimeState = ReviewRuntimeStateRecord(
+            serverPID: 100,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            appServerPID: 200,
+            appServerStartTime: .init(seconds: 2, microseconds: 0),
+            appServerProcessGroupLeaderPID: 200,
+            appServerProcessGroupLeaderStartTime: .init(seconds: 2, microseconds: 0),
+            updatedAt: Date()
+        )
+        let environment = FakeForcedRestartEnvironment()
+        environment.addProcess(pid: 100, startTime: .init(seconds: 1, microseconds: 0), termAction: .exit)
+        environment.addProcess(pid: 200, startTime: .init(seconds: 2, microseconds: 0), groupLeaderPID: 200, termAction: .ignore)
+
+        let clock = TestRestartClock()
+        try await runWithRestartClock(clock) {
+            try await forceRestart(
+                endpointRecord: endpointRecord,
+                runtimeState: runtimeState,
+                terminateGracePeriod: .milliseconds(100),
+                killGracePeriod: .seconds(2),
+                clock: clock,
+                runtime: environment.runtime()
+            )
+        }
+
+        #expect(environment.isAlive(100) == false)
+        #expect(environment.isAlive(200) == false)
+    }
+
+    @Test func forceRestartIgnoresRuntimeStateWhenServerIdentityMismatches() async throws {
+        let endpointRecord = LiveEndpointRecord(
+            url: "http://localhost:9417/mcp",
+            host: "localhost",
+            port: 9417,
+            pid: 100,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            updatedAt: Date(),
+            executableName: nil
+        )
+        let runtimeState = ReviewRuntimeStateRecord(
+            serverPID: 999,
+            serverStartTime: .init(seconds: 9, microseconds: 0),
+            appServerPID: 200,
+            appServerStartTime: .init(seconds: 2, microseconds: 0),
+            appServerProcessGroupLeaderPID: 200,
+            appServerProcessGroupLeaderStartTime: .init(seconds: 2, microseconds: 0),
+            updatedAt: Date()
+        )
+        let environment = FakeForcedRestartEnvironment()
+        environment.addProcess(pid: 100, startTime: .init(seconds: 1, microseconds: 0), termAction: .exit)
+        environment.addProcess(pid: 200, startTime: .init(seconds: 2, microseconds: 0), groupLeaderPID: 200, termAction: .ignore)
+
+        let clock = TestRestartClock()
+        try await runWithRestartClock(clock) {
+            try await forceRestart(
+                endpointRecord: endpointRecord,
+                runtimeState: runtimeState,
+                terminateGracePeriod: .milliseconds(100),
+                killGracePeriod: .seconds(2),
+                clock: clock,
+                runtime: environment.runtime()
+            )
+        }
+
+        #expect(environment.isAlive(100) == false)
+        #expect(environment.isAlive(200))
+    }
+
+    @Test func forceRestartDoesNotScanDescendantsOfReusedServerPID() async throws {
+        let endpointRecord = LiveEndpointRecord(
+            url: "http://localhost:9417/mcp",
+            host: "localhost",
+            port: 9417,
+            pid: 100,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            updatedAt: Date(),
+            executableName: nil
+        )
+        let environment = FakeForcedRestartEnvironment()
+        environment.addProcess(
+            pid: 100,
+            startTime: .init(seconds: 9, microseconds: 0),
+            termAction: .ignore
+        )
+        environment.addProcess(
+            pid: 200,
+            parentPID: 100,
+            startTime: .init(seconds: 10, microseconds: 0),
+            groupLeaderPID: 200,
+            termAction: .ignore
+        )
+
+        let clock = TestRestartClock()
+        try await runWithRestartClock(clock) {
+            try await forceRestart(
+                endpointRecord: endpointRecord,
+                runtimeState: nil,
+                terminateGracePeriod: .milliseconds(100),
+                killGracePeriod: .seconds(2),
+                clock: clock,
+                runtime: environment.runtime()
+            )
+        }
+
+        #expect(environment.isAlive(100))
+        #expect(environment.isAlive(200))
+    }
+
+    @Test func forceRestartMergesPersistedRuntimeStateWithLiveDescendantGroups() async throws {
+        let endpointRecord = LiveEndpointRecord(
+            url: "http://localhost:9417/mcp",
+            host: "localhost",
+            port: 9417,
+            pid: 100,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            updatedAt: Date(),
+            executableName: nil
+        )
+        let runtimeState = ReviewRuntimeStateRecord(
+            serverPID: 100,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            appServerPID: 200,
+            appServerStartTime: .init(seconds: 2, microseconds: 0),
+            appServerProcessGroupLeaderPID: 200,
+            appServerProcessGroupLeaderStartTime: .init(seconds: 2, microseconds: 0),
+            updatedAt: Date()
+        )
+        let environment = FakeForcedRestartEnvironment()
+        environment.addProcess(
+            pid: 100,
+            startTime: .init(seconds: 1, microseconds: 0),
+            termAction: .exit
+        )
+        environment.addProcess(
+            pid: 200,
+            parentPID: 100,
+            startTime: .init(seconds: 2, microseconds: 0),
+            groupLeaderPID: 200,
+            termAction: .ignore
+        )
+        environment.addProcess(
+            pid: 300,
+            parentPID: 100,
+            startTime: .init(seconds: 3, microseconds: 0),
+            groupLeaderPID: 300,
+            termAction: .ignore
+        )
+
+        let clock = TestRestartClock()
+        try await runWithRestartClock(clock) {
+            try await forceRestart(
+                endpointRecord: endpointRecord,
+                runtimeState: runtimeState,
+                terminateGracePeriod: .milliseconds(100),
+                killGracePeriod: .seconds(2),
+                clock: clock,
+                runtime: environment.runtime()
+            )
+        }
+
+        #expect(environment.isAlive(100) == false)
+        #expect(environment.isAlive(200) == false)
+        #expect(environment.isAlive(300) == false)
+    }
+
+    @Test func forceRestartFallsBackToLiveChildProcessGroupWhenRuntimeStateIsMissing() async throws {
+        let endpointRecord = LiveEndpointRecord(
+            url: "http://localhost:9417/mcp",
+            host: "localhost",
+            port: 9417,
+            pid: 100,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            updatedAt: Date(),
+            executableName: nil
+        )
+        let environment = FakeForcedRestartEnvironment()
+        environment.addProcess(
+            pid: 100,
+            startTime: .init(seconds: 1, microseconds: 0),
+            termAction: .exit
+        )
+        environment.addProcess(
+            pid: 200,
+            parentPID: 100,
+            startTime: .init(seconds: 2, microseconds: 0),
+            groupLeaderPID: 200,
+            termAction: .ignore
+        )
+        environment.addProcess(
+            pid: 300,
+            parentPID: 200,
+            startTime: .init(seconds: 3, microseconds: 0),
+            groupLeaderPID: 300,
+            termAction: .ignore
+        )
+
+        let clock = TestRestartClock()
+        try await runWithRestartClock(clock) {
+            try await forceRestart(
+                endpointRecord: endpointRecord,
+                runtimeState: nil,
+                terminateGracePeriod: .milliseconds(100),
+                killGracePeriod: .seconds(2),
+                clock: clock,
+                runtime: environment.runtime()
+            )
+        }
+
+        #expect(environment.isAlive(100) == false)
+        #expect(environment.isAlive(200) == false)
+        #expect(environment.isAlive(300) == false)
+    }
+
+    @Test func forceRestartFallsBackToServersProcessGroupWhenChildrenShareIt() async throws {
+        let endpointRecord = LiveEndpointRecord(
+            url: "http://localhost:9417/mcp",
+            host: "localhost",
+            port: 9417,
+            pid: 100,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            updatedAt: Date(),
+            executableName: nil
+        )
+        let environment = FakeForcedRestartEnvironment()
+        environment.addProcess(
+            pid: 100,
+            startTime: .init(seconds: 1, microseconds: 0),
+            termAction: .exit
+        )
+        environment.addProcess(
+            pid: 200,
+            parentPID: 100,
+            startTime: .init(seconds: 2, microseconds: 0),
+            groupLeaderPID: 100,
+            termAction: .ignore
+        )
+
+        let clock = TestRestartClock()
+        try await runWithRestartClock(clock) {
+            try await forceRestart(
+                endpointRecord: endpointRecord,
+                runtimeState: nil,
+                terminateGracePeriod: .milliseconds(100),
+                killGracePeriod: .seconds(2),
+                clock: clock,
+                runtime: environment.runtime()
+            )
+        }
+
+        #expect(environment.isAlive(100) == false)
+        #expect(environment.isAlive(200) == false)
+    }
+
+    @Test func forceRestartKeepsTrackingFallbackProcessGroupAfterLeaderExits() async throws {
+        let endpointRecord = LiveEndpointRecord(
+            url: "http://localhost:9417/mcp",
+            host: "localhost",
+            port: 9417,
+            pid: 100,
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            updatedAt: Date(),
+            executableName: nil
+        )
+        let environment = FakeForcedRestartEnvironment()
+        environment.addProcess(
+            pid: 100,
+            startTime: .init(seconds: 1, microseconds: 0),
+            termAction: .exit
+        )
+        environment.addProcess(
+            pid: 200,
+            parentPID: 100,
+            startTime: .init(seconds: 2, microseconds: 0),
+            groupLeaderPID: 200,
+            termAction: .exit
+        )
+        environment.addProcess(
+            pid: 201,
+            parentPID: 200,
+            startTime: .init(seconds: 3, microseconds: 0),
+            groupLeaderPID: 200,
+            termAction: .ignore
+        )
+
+        let clock = TestRestartClock()
+        try await runWithRestartClock(clock) {
+            try await forceRestart(
+                endpointRecord: endpointRecord,
+                runtimeState: nil,
+                terminateGracePeriod: .milliseconds(100),
+                killGracePeriod: .seconds(2),
+                clock: clock,
+                runtime: environment.runtime()
+            )
+        }
+
+        #expect(environment.isAlive(100) == false)
+        #expect(environment.isAlive(200) == false)
+        #expect(environment.isAlive(201) == false)
+    }
 }
 
-private func waitUntil(
-    timeout: Duration = .seconds(2),
-    interval: Duration = .milliseconds(20),
-    condition: @escaping @Sendable () async -> Bool
-) async throws {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if await condition() {
+private final class TestRestartClock: Clock, @unchecked Sendable {
+    typealias Instant = ContinuousClock.Instant
+    typealias Duration = Swift.Duration
+
+    private struct SleepWaiter {
+        let deadline: Instant
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private struct State {
+        var now: Instant
+        var sleepers: [UInt64: SleepWaiter] = [:]
+        var nextSleepToken: UInt64 = 0
+    }
+
+    private let lock = NSLock()
+    private var state: State
+
+    init(now: Instant = ContinuousClock().now) {
+        state = State(now: now)
+    }
+
+    var now: Instant {
+        lock.withLock { state.now }
+    }
+
+    var minimumResolution: Duration { .nanoseconds(1) }
+
+    var hasSleepers: Bool {
+        lock.withLock { state.sleepers.isEmpty == false }
+    }
+
+    func sleep(until deadline: Instant, tolerance _: Duration? = nil) async throws {
+        if deadline <= now {
             return
         }
-        try await Task.sleep(for: interval)
-    }
-    throw TestFailure("timed out")
-}
+        try Task.checkCancellation()
 
-private func waitUntilValue<T>(
-    timeout: Duration = .seconds(2),
-    interval: Duration = .milliseconds(20),
-    action: @escaping @Sendable () async throws -> T?
-) async throws -> T {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if let value = try await action() {
-            return value
+        let sleepToken = lock.withLock { () -> UInt64 in
+            let token = state.nextSleepToken
+            state.nextSleepToken &+= 1
+            return token
         }
-        try await Task.sleep(for: interval)
-    }
-    throw TestFailure("timed out")
-}
 
-private func decodeFirstSSEPayload(from data: Data) throws -> Data {
-    var decoder = LocalMonitorSSEDecoder()
-    let text = String(decoding: data, as: UTF8.self)
-    for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-        if let payload = decoder.feed(line: String(line)), payload.isEmpty == false {
-            return payload
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let shouldResumeImmediately = lock.withLock { () -> Bool in
+                    if deadline <= state.now {
+                        return true
+                    }
+                    state.sleepers[sleepToken] = SleepWaiter(
+                        deadline: deadline,
+                        continuation: continuation
+                    )
+                    return false
+                }
+
+                if shouldResumeImmediately {
+                    continuation.resume(returning: ())
+                }
+            }
+        } onCancel: {
+            let continuation = lock.withLock { state.sleepers.removeValue(forKey: sleepToken)?.continuation }
+            continuation?.resume(throwing: CancellationError())
         }
     }
-    if let payload = decoder.flushIfNeeded(), payload.isEmpty == false {
-        return payload
-    }
-    throw TestFailure("missing SSE payload")
-}
 
-private func nextAvailableTestPort(in range: ClosedRange<Int>) throws -> Int {
-    for port in range {
-        let socketFD = socket(AF_INET, SOCK_STREAM, 0)
-        guard socketFD >= 0 else {
-            continue
-        }
-        defer { close(socketFD) }
-
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = in_port_t(port).bigEndian
-        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-
-        let bindResult = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                bind(socketFD, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+    func advance(by duration: Duration) {
+        precondition(duration >= .zero)
+        let readyContinuations: [CheckedContinuation<Void, Error>] = lock.withLock {
+            state.now = state.now.advanced(by: duration)
+            let readyTokens = state.sleepers.compactMap { token, waiter in
+                waiter.deadline <= state.now ? token : nil
+            }
+            return readyTokens.compactMap { token in
+                state.sleepers.removeValue(forKey: token)?.continuation
             }
         }
-        if bindResult == 0 {
-            return port
+
+        for continuation in readyContinuations {
+            continuation.resume(returning: ())
         }
     }
-    throw TestFailure("No available test port in range \(range.lowerBound)...\(range.upperBound)")
 }
 
-private func withTestTimeout<T: Sendable>(
-    seconds: TimeInterval,
-    operation: @escaping @Sendable () async throws -> T
-) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask {
+private actor RestartTaskResultBox {
+    private var result: Result<Void, Error>?
+
+    func store(_ result: Result<Void, Error>) {
+        self.result = result
+    }
+
+    func current() -> Result<Void, Error>? {
+        result
+    }
+}
+
+private actor DelayedShutdownAppServerManager: AppServerManaging {
+    private let runtimeState: AppServerRuntimeState
+    private var shutdownStarted = false
+    private var shutdownWaiters: [CheckedContinuation<Void, Never>] = []
+    private var resumeWaiters: [CheckedContinuation<Void, Never>] = []
+    private var resumeRequested = false
+
+    init(runtimeState: AppServerRuntimeState) {
+        self.runtimeState = runtimeState
+    }
+
+    func prepare() async throws -> AppServerRuntimeState {
+        runtimeState
+    }
+
+    func makeSessionTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
+    func currentRuntimeState() async -> AppServerRuntimeState? {
+        runtimeState
+    }
+
+    func diagnosticsTail() async -> String {
+        ""
+    }
+
+    func shutdown() async {
+        shutdownStarted = true
+        let waiters = shutdownWaiters
+        shutdownWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters {
+            waiter.resume()
+        }
+        if resumeRequested {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            resumeWaiters.append(continuation)
+        }
+    }
+
+    func waitForShutdownStart() async {
+        if shutdownStarted {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if shutdownStarted {
+                continuation.resume()
+            } else {
+                shutdownWaiters.append(continuation)
+            }
+        }
+    }
+
+    func resumeShutdown() {
+        resumeRequested = true
+        let waiters = resumeWaiters
+        resumeWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+}
+
+private actor DelayedConnectAppServerManager: AppServerManaging {
+    private let runtimeState: AppServerRuntimeState
+    private var connectStarted = false
+    private var connectStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var connectResumeWaiters: [CheckedContinuation<Void, Never>] = []
+    private var connectResumed = false
+    private var transport: MockAppServerSessionTransport?
+
+    init(runtimeState: AppServerRuntimeState) {
+        self.runtimeState = runtimeState
+    }
+
+    func prepare() async throws -> AppServerRuntimeState {
+        runtimeState
+    }
+
+    func makeSessionTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        connectStarted = true
+        let startWaiters = connectStartWaiters
+        connectStartWaiters.removeAll(keepingCapacity: false)
+        for waiter in startWaiters {
+            waiter.resume()
+        }
+        if connectResumed == false {
+            await withCheckedContinuation { continuation in
+                connectResumeWaiters.append(continuation)
+            }
+        }
+        let transport = MockAppServerSessionTransport(mode: .success())
+        self.transport = transport
+        return transport
+    }
+
+    func currentRuntimeState() async -> AppServerRuntimeState? {
+        runtimeState
+    }
+
+    func diagnosticsTail() async -> String {
+        ""
+    }
+
+    func shutdown() async {}
+
+    func waitForConnectStart() async {
+        if connectStarted {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if connectStarted {
+                continuation.resume()
+            } else {
+                connectStartWaiters.append(continuation)
+            }
+        }
+    }
+
+    func resumeConnect() {
+        connectResumed = true
+        let waiters = connectResumeWaiters
+        connectResumeWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func createdTransport() -> MockAppServerSessionTransport? {
+        transport
+    }
+}
+
+private func runWithRestartClock(
+    _ clock: TestRestartClock,
+    maxSteps: Int = 40,
+    step: Duration = .milliseconds(100),
+    operation: @escaping @Sendable () async throws -> Void
+) async throws {
+    let resultBox = RestartTaskResultBox()
+    let task = Task {
+        do {
             try await operation()
+            await resultBox.store(.success(()))
+        } catch {
+            await resultBox.store(.failure(error))
         }
-        group.addTask {
-            try await Task.sleep(for: .seconds(seconds))
-            throw TestFailure("timed out after \(seconds) seconds")
+    }
+    defer { task.cancel() }
+
+    for _ in 0..<maxSteps {
+        if let result = await resultBox.current() {
+            try result.get()
+            return
         }
-        let result = try await group.next()
-        group.cancelAll()
-        return try #require(result)
+        var yieldAttempts = 0
+        while clock.hasSleepers == false, yieldAttempts < 100 {
+            if let result = await resultBox.current() {
+                try result.get()
+                return
+            }
+            await Task.yield()
+            yieldAttempts += 1
+        }
+        clock.advance(by: step)
+    }
+    throw TestFailure("timed out driving restart clock")
+}
+
+private final class FakeForcedRestartEnvironment: @unchecked Sendable {
+    enum TermAction {
+        case ignore
+        case exit
+    }
+
+    private struct ProcessState {
+        var parentPID: pid_t?
+        var startTime: ProcessStartTime
+        var groupLeaderPID: pid_t
+        var termAction: TermAction
+        var isAlive = true
+    }
+
+    private let lock = NSLock()
+    private var processes: [pid_t: ProcessState] = [:]
+
+    func addProcess(
+        pid: pid_t,
+        parentPID: pid_t? = nil,
+        startTime: ProcessStartTime,
+        groupLeaderPID: pid_t? = nil,
+        termAction: TermAction
+    ) {
+        lock.withLock {
+            processes[pid] = ProcessState(
+                parentPID: parentPID,
+                startTime: startTime,
+                groupLeaderPID: groupLeaderPID ?? pid,
+                termAction: termAction
+            )
+        }
+    }
+
+    func isAlive(_ pid: pid_t) -> Bool {
+        lock.withLock { processes[pid]?.isAlive == true }
+    }
+
+    func runtime() -> ForcedRestartRuntime {
+        ForcedRestartRuntime(
+            isProcessAlive: { [weak self] pid in
+                self?.isAlive(pid) ?? false
+            },
+            processStartTime: { [weak self] pid in
+                self?.lock.withLock {
+                    guard let process = self?.processes[pid], process.isAlive else {
+                        return nil
+                    }
+                    return process.startTime
+                }
+            },
+            isMatchingExecutable: { [weak self] pid, _ in
+                self?.isAlive(pid) ?? false
+            },
+            childProcessIDs: { [weak self] pid in
+                self?.lock.withLock {
+                    self?.processes.compactMap { childPID, process in
+                        process.isAlive && process.parentPID == pid ? childPID : nil
+                    } ?? []
+                } ?? []
+            },
+            currentProcessGroupID: { [weak self] pid in
+                self?.lock.withLock {
+                    guard let process = self?.processes[pid], process.isAlive else {
+                        return nil
+                    }
+                    return process.groupLeaderPID
+                }
+            },
+            signalProcess: { [weak self] pid, signal in
+                self?.signalProcess(pid: pid, signal: signal) ?? .init(result: -1, errorNumber: ESRCH)
+            },
+            signalProcessGroup: { [weak self] groupLeaderPID, signal in
+                self?.signalProcessGroup(groupLeaderPID: groupLeaderPID, signal: signal) ?? .init(result: -1, errorNumber: ESRCH)
+            }
+        )
+    }
+
+    private func signalProcess(pid: pid_t, signal: Int32) -> ForcedRestartSignalResult {
+        lock.withLock {
+            guard var process = processes[pid], process.isAlive else {
+                return .init(result: -1, errorNumber: ESRCH)
+            }
+            switch signal {
+            case 0:
+                return .init(result: 0, errorNumber: 0)
+            case SIGKILL:
+                process.isAlive = false
+            case SIGTERM:
+                if case .exit = process.termAction {
+                    process.isAlive = false
+                }
+            default:
+                break
+            }
+            processes[pid] = process
+            return .init(result: 0, errorNumber: 0)
+        }
+    }
+
+    private func signalProcessGroup(
+        groupLeaderPID: pid_t,
+        signal: Int32
+    ) -> ForcedRestartSignalResult {
+        lock.withLock {
+            let memberPIDs = processes.compactMap { pid, process in
+                process.isAlive && process.groupLeaderPID == groupLeaderPID ? pid : nil
+            }
+            guard memberPIDs.isEmpty == false else {
+                return .init(result: -1, errorNumber: ESRCH)
+            }
+            if signal == 0 {
+                return .init(result: 0, errorNumber: 0)
+            }
+            for pid in memberPIDs {
+                guard var process = processes[pid] else {
+                    continue
+                }
+                switch signal {
+                case SIGKILL:
+                    process.isAlive = false
+                case SIGTERM:
+                    if case .exit = process.termAction {
+                        process.isAlive = false
+                    }
+                default:
+                    break
+                }
+                processes[pid] = process
+            }
+            return .init(result: 0, errorNumber: 0)
+        }
     }
 }
 
-private func jsonLine(_ value: Value) -> String {
-    guard let data = try? JSONEncoder().encode(value) else {
-        assertionFailure("Failed to encode JSON line payload.")
-        return ""
+private extension NSLock {
+    func withLock<T>(_ body: () -> T) -> T {
+        lock()
+        defer { unlock() }
+        return body()
     }
-    return String(decoding: data, as: UTF8.self)
 }
 
-private struct LocalMonitorSSEDecoder {
-    private var dataLines: [String] = []
-
-    mutating func feed(line: String) -> Data? {
-        if line.isEmpty {
-            return flushIfNeeded()
-        }
-        if line.hasPrefix("data:") {
-            let payload = line.dropFirst(5)
-            dataLines.append(String(payload).trimmingCharacters(in: .whitespaces))
-        }
-        return nil
+private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [String: String] {
+    var environment = ["HOME": try makeTemporaryDirectory().path]
+    for (key, value) in extra {
+        environment[key] = value
     }
+    return environment
+}
 
-    mutating func flushIfNeeded() -> Data? {
-        guard dataLines.isEmpty == false else {
-            return nil
-        }
-        let payload = dataLines.joined(separator: "\n")
-        dataLines.removeAll(keepingCapacity: true)
-        return Data(payload.utf8)
-    }
+private func makeTemporaryDirectory() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
 }
 
 private struct TestFailure: Error {

@@ -2,197 +2,137 @@ import Foundation
 import Testing
 @testable import ReviewCore
 
-@Suite struct ReviewDiscoveryTests {
+@Suite
+struct ReviewDiscoveryTests {
     @Test func discoveryDefaultFileURLUsesReviewMCPHome() {
         #expect(ReviewDiscovery.defaultFileURL.path.hasSuffix("/.codex_review/endpoint.json"))
     }
 
-    @Test func discoveryUsesURLComponentsForIPv6AndCustomEndpoint() {
-        let record = ReviewDiscovery.makeRecord(
-            host: "::1",
-            port: 9417,
-            pid: Int(ProcessInfo.processInfo.processIdentifier),
-            endpointPath: "/custom"
-        )
-
-        #expect(record?.url == "http://[::1]:9417/custom")
+    @Test func runtimeStateFileURLUsesReviewMCPHome() {
+        #expect(ReviewRuntimeStateStore.defaultFileURL.path.hasSuffix("/.codex_review/runtime-state.json"))
     }
 
-    @Test func discoveryRejectsMismatchedExecutableName() throws {
+    @Test func discoveryReadsMatchingLiveRecord() throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let record = ReviewDiscoveryRecord(
+        let record = LiveEndpointRecord(
             url: "http://localhost:9417/mcp",
             host: "localhost",
             port: 9417,
             pid: Int(ProcessInfo.processInfo.processIdentifier),
-            updatedAt: Date(),
-            executableName: "definitely-not-\(UUID().uuidString)"
-        )
-
-        try ReviewDiscovery.write(record, to: tempURL)
-        defer { ReviewDiscovery.remove(at: tempURL) }
-
-        let loaded = ReviewDiscovery.read(from: tempURL)
-        #expect(loaded == nil)
-    }
-
-    @Test func discoveryReadsMatchingNonLoopbackRecord() throws {
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let record = ReviewDiscoveryRecord(
-            url: "http://192.168.0.10:9417/mcp",
-            host: "192.168.0.10",
-            port: 9417,
-            pid: Int(ProcessInfo.processInfo.processIdentifier),
+            serverStartTime: try #require(processStartTime(of: pid_t(ProcessInfo.processInfo.processIdentifier))),
             updatedAt: Date(),
             executableName: URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0]).lastPathComponent
         )
 
         try ReviewDiscovery.write(record, to: tempURL)
-        defer { ReviewDiscovery.remove(at: tempURL) }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        let loaded = ReviewDiscovery.read(from: tempURL)
-        #expect(loaded?.host == "192.168.0.10")
+        let loaded = try #require(ReviewDiscovery.read(from: tempURL))
+        #expect(loaded.pid == record.pid)
+        #expect(loaded.url == record.url)
     }
 
-    @Test func discoveryFallsBackToLegacyCandidateWhenPrimaryRecordIsInvalid() throws {
-        let primaryURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let legacyURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let invalidPrimary = ReviewDiscoveryRecord(
-            url: "http://localhost:9417/mcp",
-            host: "localhost",
-            port: 9417,
-            pid: Int(ProcessInfo.processInfo.processIdentifier) + 1,
-            updatedAt: Date(),
-            executableName: "codex-review-mcp-server"
-        )
-        let legacyRecord = ReviewDiscoveryRecord(
-            url: "http://192.168.0.10:9417/mcp",
-            host: "192.168.0.10",
-            port: 9417,
-            pid: Int(ProcessInfo.processInfo.processIdentifier),
-            updatedAt: Date(),
-            executableName: URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0]).lastPathComponent
-        )
-
-        try ReviewDiscovery.write(invalidPrimary, to: primaryURL)
-        try ReviewDiscovery.write(legacyRecord, to: legacyURL)
-        defer {
-            ReviewDiscovery.remove(at: primaryURL)
-            ReviewDiscovery.remove(at: legacyURL)
-        }
-
-        let loaded = ReviewDiscovery.read(fromCandidateURLs: [primaryURL, legacyURL])
-        #expect(loaded?.host == "192.168.0.10")
-    }
-
-    @Test func discoveryRemoveIfOwnedKeepsForeignRecord() throws {
+    @Test func discoverySkipsDeadProcessRecord() throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let record = ReviewDiscoveryRecord(
+        let record = LiveEndpointRecord(
             url: "http://localhost:9417/mcp",
             host: "localhost",
             port: 9417,
-            pid: Int(ProcessInfo.processInfo.processIdentifier) + 1,
+            pid: Int(Int32.max),
+            serverStartTime: .init(seconds: 1, microseconds: 0),
             updatedAt: Date(),
             executableName: "codex-review-mcp-server"
         )
 
         try ReviewDiscovery.write(record, to: tempURL)
-        ReviewDiscovery.removeIfOwned(
-            pid: Int(ProcessInfo.processInfo.processIdentifier),
-            url: URL(string: record.url),
-            at: tempURL
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        #expect(ReviewDiscovery.read(from: tempURL) == nil)
+    }
+
+    @Test func discoveryReadPersistedReturnsStaleRecord() throws {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let record = LiveEndpointRecord(
+            url: "http://localhost:9417/mcp",
+            host: "localhost",
+            port: 9417,
+            pid: Int(Int32.max),
+            serverStartTime: .init(seconds: 1, microseconds: 0),
+            updatedAt: Date(),
+            executableName: "codex-review-mcp-server"
         )
 
-        #expect(FileManager.default.fileExists(atPath: tempURL.path))
-        ReviewDiscovery.remove(at: tempURL)
+        try ReviewDiscovery.write(record, to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        #expect(ReviewDiscovery.read(from: tempURL) == nil)
+        let persisted = try #require(ReviewDiscovery.readPersisted(from: tempURL))
+        #expect(persisted.pid == record.pid)
+        #expect(persisted.url == record.url)
+        #expect(persisted.serverStartTime == record.serverStartTime)
     }
 
     @Test func discoveryRemoveIfOwnedDeletesMatchingRecord() throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let record = ReviewDiscoveryRecord(
+        let record = LiveEndpointRecord(
             url: "http://localhost:9417/mcp",
             host: "localhost",
             port: 9417,
             pid: Int(ProcessInfo.processInfo.processIdentifier),
+            serverStartTime: try #require(processStartTime(of: pid_t(ProcessInfo.processInfo.processIdentifier))),
             updatedAt: Date(),
-            executableName: "codex-review-mcp-server"
+            executableName: URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0]).lastPathComponent
         )
 
         try ReviewDiscovery.write(record, to: tempURL)
         ReviewDiscovery.removeIfOwned(
             pid: record.pid,
             url: URL(string: record.url),
+            serverStartTime: record.serverStartTime,
             at: tempURL
         )
 
         #expect(FileManager.default.fileExists(atPath: tempURL.path) == false)
     }
 
-    @Test func discoveryRemoveIfOwnedKeepsMismatchedURLForSamePID() throws {
+    @Test func discoveryRemoveIfOwnedKeepsMismatchedStartTime() throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let record = ReviewDiscoveryRecord(
+        let record = LiveEndpointRecord(
             url: "http://localhost:9417/mcp",
             host: "localhost",
             port: 9417,
             pid: Int(ProcessInfo.processInfo.processIdentifier),
+            serverStartTime: try #require(processStartTime(of: pid_t(ProcessInfo.processInfo.processIdentifier))),
             updatedAt: Date(),
-            executableName: "codex-review-mcp-server"
+            executableName: URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0]).lastPathComponent
         )
 
         try ReviewDiscovery.write(record, to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
         ReviewDiscovery.removeIfOwned(
             pid: record.pid,
-            url: URL(string: "http://localhost:9999/mcp"),
+            url: URL(string: record.url),
+            serverStartTime: .init(seconds: 999, microseconds: 0),
             at: tempURL
         )
 
         #expect(FileManager.default.fileExists(atPath: tempURL.path))
-        ReviewDiscovery.remove(at: tempURL)
     }
 
-    @Test func discoveryRemoveDeletesLegacyAndPrimaryLocationsTogether() throws {
-        let primaryURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let legacyURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let record = ReviewDiscoveryRecord(
-            url: "http://localhost:9417/mcp",
-            host: "localhost",
-            port: 9417,
-            pid: Int(ProcessInfo.processInfo.processIdentifier),
-            updatedAt: Date(),
-            executableName: URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0]).lastPathComponent
+    @Test func splitStandardErrorChunkBuffersTrailingPartialLine() {
+        let firstSplit = splitStandardErrorChunk(
+            existingFragment: "",
+            chunk: "first line\npartial"
         )
+        #expect(firstSplit.completeLines == ["first line"])
+        #expect(firstSplit.trailingFragment == "partial")
 
-        try ReviewDiscovery.write(record, to: primaryURL)
-        try ReviewDiscovery.write(record, to: legacyURL)
-
-        ReviewDiscovery.remove(atFileURLs: [primaryURL, legacyURL])
-
-        #expect(FileManager.default.fileExists(atPath: primaryURL.path) == false)
-        #expect(FileManager.default.fileExists(atPath: legacyURL.path) == false)
-        ReviewDiscovery.remove(at: primaryURL)
-        ReviewDiscovery.remove(at: legacyURL)
-    }
-
-    @Test func discoveryRemoveIfOwnedDeletesLegacyAndPrimaryLocationsTogether() throws {
-        let primaryURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let legacyURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let record = ReviewDiscoveryRecord(
-            url: "http://localhost:9417/mcp",
-            host: "localhost",
-            port: 9417,
-            pid: Int(ProcessInfo.processInfo.processIdentifier),
-            updatedAt: Date(),
-            executableName: URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0]).lastPathComponent
+        let secondSplit = splitStandardErrorChunk(
+            existingFragment: firstSplit.trailingFragment,
+            chunk: " line\nsecond line\n"
         )
-
-        try ReviewDiscovery.write(record, to: primaryURL)
-        try ReviewDiscovery.write(record, to: legacyURL)
-
-        ReviewDiscovery.removeIfOwned(pid: record.pid, url: URL(string: record.url), atFileURLs: [primaryURL, legacyURL])
-
-        #expect(FileManager.default.fileExists(atPath: primaryURL.path) == false)
-        #expect(FileManager.default.fileExists(atPath: legacyURL.path) == false)
-        ReviewDiscovery.remove(at: primaryURL)
-        ReviewDiscovery.remove(at: legacyURL)
+        #expect(secondSplit.completeLines == ["partial line", "second line", ""])
+        #expect(secondSplit.trailingFragment.isEmpty)
     }
 }

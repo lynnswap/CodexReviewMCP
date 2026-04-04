@@ -1,10 +1,14 @@
-import Darwin
 import Foundation
 import ReviewJobs
 
 package struct ReviewBootstrapFailure: Error, LocalizedError, Sendable {
     package var message: String
     package var model: String?
+
+    package init(message: String, model: String? = nil) {
+        self.message = message
+        self.model = model
+    }
 
     package var errorDescription: String? {
         message
@@ -29,24 +33,25 @@ package struct ReviewProcessOutcome: Sendable {
 
 package struct AppServerReviewRunner: Sendable {
     package var settingsBuilder: ReviewExecutionSettingsBuilder
-    package var gracefulTerminationWait: Duration = .seconds(2)
     package var pollInterval: Duration = .milliseconds(100)
-    package var exitMonitorPollTimeout: Duration = .seconds(600)
 
     package init(settingsBuilder: ReviewExecutionSettingsBuilder = .init()) {
         self.settingsBuilder = settingsBuilder
     }
 
     package func run(
+        session: any AppServerSessionTransport,
         request: ReviewRequestOptions,
         defaultTimeoutSeconds: Int?,
-        onStart: @escaping @Sendable (AppServerProcessController, Date) async -> Void,
+        resolvedModelHint: String? = nil,
+        onStart: @escaping @Sendable (Date) async -> Void,
         onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void,
-        requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?
+        requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
+        onUnrecoverableTransportFailure: @escaping @Sendable () async -> Void = {}
     ) async throws -> ReviewProcessOutcome {
         let settings = try settingsBuilder.build(request: request)
         let request = settings.request
-        var effectiveModel: String?
+        var effectiveModel: String? = resolvedModelHint
         if let cancelled = await cancelledOutcomeBeforeStart(
             requestedModel: effectiveModel,
             requestedTerminationReason: requestedTerminationReason,
@@ -55,87 +60,12 @@ package struct AppServerReviewRunner: Sendable {
             return cancelled
         }
 
-        let startedProcess = try AppServerProcessController.start(command: settings.command)
-        let controller = startedProcess.controller
         let startedAt = Date()
-        await onStart(controller, startedAt)
+        await onStart(startedAt)
         await onEvent(.progress(.started, "Review started."))
 
         let state = AppServerReviewState()
-        let connection = AppServerConnection(
-            controller: controller,
-            stdoutHandle: startedProcess.stdoutHandle,
-            stderrHandle: startedProcess.stderrHandle,
-            exitMonitorPollTimeout: exitMonitorPollTimeout,
-            onNotification: { notification in
-                await handle(notification: notification, state: state, onEvent: onEvent)
-            },
-            onStderrLine: { line in
-                await state.appendStandardError(line)
-                await onEvent(.rawLine(line))
-            }
-        )
-        await connection.start()
-
-        func cleanupForThrow() async {
-            await connection.stop()
-            _ = await controller.terminateGracefully(grace: gracefulTerminationWait)
-        }
-
-        func cleanupForReturn() async {
-            await connection.stop()
-        }
-
-        func cancelledOutcomeDuringBootstrap() async -> ReviewProcessOutcome? {
-            let cancellationReason: String?
-            if Task.isCancelled {
-                cancellationReason = "Review cancelled."
-            } else if case .cancelled(let reason)? = await requestedTerminationReason() {
-                cancellationReason = reason
-            } else {
-                cancellationReason = nil
-            }
-
-            guard let cancellationReason else {
-                return nil
-            }
-
-            await cleanupForThrow()
-            let endedAt = Date()
-            await onEvent(.progress(.completed, "Review cancelled."))
-            return ReviewProcessOutcome(
-                state: .cancelled,
-                exitCode: (await controller.pollExitStatus()) ?? 130,
-                reviewThreadID: nil,
-                threadID: nil,
-                turnID: nil,
-                model: effectiveModel,
-                hasFinalReview: false,
-                lastAgentMessage: "",
-                errorMessage: cancellationReason,
-                summary: "Review cancelled.",
-                startedAt: startedAt,
-                endedAt: endedAt,
-                content: cancellationReason
-            )
-        }
-
-        if let cancelled = await cancelledOutcomeDuringBootstrap() {
-            return cancelled
-        }
-
-        let initializeResponse: AppServerInitializeResponse
-        do {
-            initializeResponse = try await connection.initialize()
-        } catch {
-            await cleanupForThrow()
-            throw ReviewError.bootstrapFailed("Failed to initialize app-server: \(error.localizedDescription)")
-        }
-
-        if let cancelled = await cancelledOutcomeDuringBootstrap() {
-            return cancelled
-        }
-
+        let initializeResponse = await session.initializeResponse()
         let resolvedCodexHome = ReviewHomePaths.resolvedCodexHomeURL(
             appServerCodexHome: initializeResponse.codexHome,
             environment: settings.command.environment
@@ -145,7 +75,6 @@ package struct AppServerReviewRunner: Sendable {
         do {
             localConfig = try loadReviewLocalConfig(environment: settings.command.environment)
         } catch {
-            await cleanupForThrow()
             throw ReviewError.bootstrapFailed("Failed to read ReviewMCP config: \(error.localizedDescription)")
         }
 
@@ -158,13 +87,9 @@ package struct AppServerReviewRunner: Sendable {
             resolvedConfig: fallbackAppServerConfig
         ).reportedModelBeforeThreadStart
 
-        if let cancelled = await cancelledOutcomeDuringBootstrap() {
-            return cancelled
-        }
-
         let resolvedConfig: AppServerConfigReadResponse.Config
         do {
-            let configResponse: AppServerConfigReadResponse = try await connection.request(
+            let configResponse: AppServerConfigReadResponse = try await session.request(
                 method: "config/read",
                 params: AppServerConfigReadParams(
                     cwd: request.cwd,
@@ -178,7 +103,6 @@ package struct AppServerReviewRunner: Sendable {
             )
         } catch {
             guard shouldFallbackFromConfigReadError(error) else {
-                await cleanupForThrow()
                 throw ReviewBootstrapFailure(
                     message: "Failed to read app-server config: \(error.localizedDescription)",
                     model: effectiveModel
@@ -199,7 +123,11 @@ package struct AppServerReviewRunner: Sendable {
         )
         effectiveModel = resolvedModels.reportedModelBeforeThreadStart
 
-        if let cancelled = await cancelledOutcomeDuringBootstrap() {
+        if let cancelled = await cancelledOutcomeBeforeStart(
+            requestedModel: effectiveModel,
+            requestedTerminationReason: requestedTerminationReason,
+            onEvent: onEvent
+        ) {
             return cancelled
         }
 
@@ -217,24 +145,25 @@ package struct AppServerReviewRunner: Sendable {
                 codexHome: resolvedCodexHome
             ),
             personality: settings.overrides.personality,
-            ephemeral: settings.overrides.ephemeral
+            ephemeral: true
         )
 
         let threadResponse: AppServerThreadStartResponse
         do {
-            threadResponse = try await connection.request(
+            threadResponse = try await session.request(
                 method: "thread/start",
                 params: threadStart,
                 responseType: AppServerThreadStartResponse.self
             )
         } catch {
-            await cleanupForThrow()
             throw ReviewBootstrapFailure(
-                message: "Failed to start review thread: \(error.localizedDescription)",
+                message: bootstrapFailureMessage(
+                    prefix: "Failed to start review thread: \(error.localizedDescription)",
+                    diagnostics: await session.diagnosticsTail()
+                ),
                 model: effectiveModel
             )
         }
-
         effectiveModel = if reviewSpecificModel != nil {
             resolvedModels.reportedModelBeforeThreadStart
                 ?? threadResponse.model?.nilIfEmpty
@@ -245,32 +174,35 @@ package struct AppServerReviewRunner: Sendable {
                 ?? effectiveModel
         }
 
-        if let cancelled = await cancelledOutcomeDuringBootstrap() {
-            return cancelled
+        if let cancellationReason = await cancellationReason(requestedTerminationReason: requestedTerminationReason) {
+            await cleanupThread(session: session, threadID: threadResponse.thread.id)
+            await onEvent(.progress(.completed, "Review cancelled."))
+            return cancelledOutcome(
+                model: effectiveModel,
+                startedAt: startedAt,
+                endedAt: Date(),
+                reason: cancellationReason
+            )
         }
-
-        var reviewStart = AppServerReviewStartParams(
-            threadID: "",
-            target: request.target,
-            delivery: "inline"
-        )
-        reviewStart.threadID = threadResponse.thread.id
 
         let reviewResponse: AppServerReviewStartResponse
         do {
-            reviewResponse = try await connection.request(
+            reviewResponse = try await session.request(
                 method: "review/start",
-                params: reviewStart,
+                params: AppServerReviewStartParams(
+                    threadID: threadResponse.thread.id,
+                    target: request.target,
+                    delivery: "inline"
+                ),
                 responseType: AppServerReviewStartResponse.self
             )
         } catch {
-            await cleanupForThrow()
+            await cleanupThread(session: session, threadID: threadResponse.thread.id)
             throw ReviewBootstrapFailure(
                 message: "Failed to start review: \(error.localizedDescription)",
                 model: effectiveModel
             )
         }
-
         let reviewThreadID = reviewResponse.reviewThreadID
         let turnID = reviewResponse.turn.id
         await state.markReviewStarted(
@@ -286,47 +218,85 @@ package struct AppServerReviewRunner: Sendable {
         ))
         await onEvent(.progress(.threadStarted, "Review started: \(reviewThreadID)"))
 
-        var cancellationReason: String?
+        var cancellationReasonValue: String?
+        var timeoutMessage: String?
         var interruptSent = false
-        var processExitObservedAt: Date?
+        var awaitingInterruptResolution = false
         var completedWithoutReviewObservedAt: Date?
+        var diagnosticsTracker = DiagnosticsTailTracker()
         let timeoutSeconds = request.timeoutSeconds ?? defaultTimeoutSeconds
 
         while true {
-            if cancellationReason == nil,
-               case .cancelled(let reason)? = await requestedTerminationReason()
-            {
-                cancellationReason = reason
+            await emitDiagnosticTailDelta(
+                session: session,
+                tracker: &diagnosticsTracker,
+                onEvent: onEvent
+            )
+            for notification in await session.drainNotifications() {
+                await handle(notification: notification, state: state, onEvent: onEvent)
             }
 
-            if let cancellationReason,
-               interruptSent == false
+            if cancellationReasonValue == nil {
+                cancellationReasonValue = await cancellationReason(requestedTerminationReason: requestedTerminationReason)
+            }
+
+            if timeoutMessage == nil,
+               let timeoutSeconds,
+               Date().timeIntervalSince(startedAt) >= Double(timeoutSeconds)
             {
-                interruptSent = true
-                do {
-                    let snapshot = await state.snapshot()
-                    let _: AppServerEmptyResponse = try await connection.request(
-                        method: "turn/interrupt",
-                        params: AppServerTurnInterruptParams(
-                            // `turn/interrupt` targets the conversation thread, not the review job handle.
-                            threadID: snapshot.threadID ?? threadResponse.thread.id,
-                            turnID: snapshot.turnID ?? turnID
-                        ),
-                        responseType: AppServerEmptyResponse.self
-                    )
-                    await onEvent(.logEntry(.init(kind: .progress, text: "Cancellation requested.")))
-                } catch {
-                    await onEvent(.failed(cancellationReason))
-                    _ = await controller.terminateGracefully(grace: gracefulTerminationWait)
-                }
+                timeoutMessage = "Review timed out after \(timeoutSeconds) seconds."
+                cancellationReasonValue = timeoutMessage
             }
 
             let snapshot = await state.snapshot()
             if let turnStatus = snapshot.turnStatus {
-                await connection.synchronize()
-                let synchronizedSnapshot = await state.snapshot()
+                if awaitingInterruptResolution,
+                   turnStatus == .inProgress,
+                   let cancellationReasonValue
+                {
+                    let endedAt = Date()
+                    await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
+                    await onUnrecoverableTransportFailure()
+                    let finalSnapshot = await state.snapshot()
+                    if let timeoutMessage {
+                        await onEvent(.progress(.completed, "Review timed out."))
+                        return ReviewProcessOutcome(
+                            state: .failed,
+                            exitCode: 124,
+                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                            turnID: finalSnapshot.turnID ?? turnID,
+                            model: effectiveModel,
+                            hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                            lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                            errorMessage: timeoutMessage,
+                            summary: timeoutMessage,
+                            startedAt: startedAt,
+                            endedAt: endedAt,
+                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
+                        )
+                    }
+                    let reason = finalSnapshot.errorMessage ?? cancellationReasonValue
+                    await onEvent(.progress(.completed, "Review cancelled."))
+                    return ReviewProcessOutcome(
+                        state: .cancelled,
+                        exitCode: 0,
+                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                        turnID: finalSnapshot.turnID ?? turnID,
+                        model: effectiveModel,
+                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        errorMessage: reason,
+                        summary: "Review cancelled.",
+                        startedAt: startedAt,
+                        endedAt: endedAt,
+                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
+                    )
+                }
+
                 if turnStatus == .completed,
-                   synchronizedSnapshot.finalReview?.nilIfEmpty == nil
+                   snapshot.finalReview?.nilIfEmpty == nil
                 {
                     let observedAt = completedWithoutReviewObservedAt ?? Date()
                     completedWithoutReviewObservedAt = observedAt
@@ -337,39 +307,74 @@ package struct AppServerReviewRunner: Sendable {
                 } else {
                     completedWithoutReviewObservedAt = nil
                 }
+
                 let endedAt = Date()
-                let exitCode = await stopAppServer(controller: controller)
-                await connection.synchronize()
-                let snapshot = await state.snapshot()
+                await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
+                let finalSnapshot = await state.snapshot()
+
                 switch turnStatus {
                 case .completed:
-                    guard let review = snapshot.finalReview?.nilIfEmpty else {
-                        await cleanupForReturn()
+                    if let timeoutMessage {
+                        await onEvent(.progress(.completed, "Review timed out."))
                         return ReviewProcessOutcome(
                             state: .failed,
-                            exitCode: exitCode,
-                            reviewThreadID: snapshot.reviewThreadID ?? reviewThreadID,
-                            threadID: snapshot.threadID ?? threadResponse.thread.id,
-                            turnID: snapshot.turnID ?? turnID,
+                            exitCode: 124,
+                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                            turnID: finalSnapshot.turnID ?? turnID,
+                            model: effectiveModel,
+                            hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                            lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                            errorMessage: timeoutMessage,
+                            summary: timeoutMessage,
+                            startedAt: startedAt,
+                            endedAt: endedAt,
+                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
+                        )
+                    }
+                    if let cancellationReasonValue {
+                        await onEvent(.progress(.completed, "Review cancelled."))
+                        return ReviewProcessOutcome(
+                            state: .cancelled,
+                            exitCode: 0,
+                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                            turnID: finalSnapshot.turnID ?? turnID,
+                            model: effectiveModel,
+                            hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                            lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                            errorMessage: cancellationReasonValue,
+                            summary: "Review cancelled.",
+                            startedAt: startedAt,
+                            endedAt: endedAt,
+                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? cancellationReasonValue
+                        )
+                    }
+                    guard let review = finalSnapshot.finalReview?.nilIfEmpty else {
+                        return ReviewProcessOutcome(
+                            state: .failed,
+                            exitCode: 1,
+                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                            turnID: finalSnapshot.turnID ?? turnID,
                             model: effectiveModel,
                             hasFinalReview: false,
-                            lastAgentMessage: snapshot.lastAgentMessage ?? "",
+                            lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                             errorMessage: "Review completed without an `exitedReviewMode` item.",
                             summary: "Review failed.",
                             startedAt: startedAt,
                             endedAt: endedAt,
-                            content: snapshot.lastAgentMessage ?? "Review failed."
+                            content: finalSnapshot.lastAgentMessage ?? "Review failed."
                         )
                     }
                     let summary = "Review completed successfully."
                     await onEvent(.progress(.completed, summary))
-                    await cleanupForReturn()
                     return ReviewProcessOutcome(
                         state: .succeeded,
-                        exitCode: exitCode,
-                        reviewThreadID: snapshot.reviewThreadID ?? reviewThreadID,
-                        threadID: snapshot.threadID ?? threadResponse.thread.id,
-                        turnID: snapshot.turnID ?? turnID,
+                        exitCode: 0,
+                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                        turnID: finalSnapshot.turnID ?? turnID,
                         model: effectiveModel,
                         hasFinalReview: true,
                         lastAgentMessage: review,
@@ -380,130 +385,187 @@ package struct AppServerReviewRunner: Sendable {
                         content: review
                     )
                 case .interrupted:
-                    let reason = cancellationReason ?? snapshot.errorMessage ?? "Review cancelled."
+                    if let timeoutMessage {
+                        await onEvent(.progress(.completed, "Review timed out."))
+                        return ReviewProcessOutcome(
+                            state: .failed,
+                            exitCode: 124,
+                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                            turnID: finalSnapshot.turnID ?? turnID,
+                            model: effectiveModel,
+                            hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                            lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                            errorMessage: timeoutMessage,
+                            summary: timeoutMessage,
+                            startedAt: startedAt,
+                            endedAt: endedAt,
+                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
+                        )
+                    }
+                    let reason = cancellationReasonValue ?? finalSnapshot.errorMessage ?? "Review cancelled."
                     await onEvent(.progress(.completed, "Review cancelled."))
-                    await cleanupForReturn()
                     return ReviewProcessOutcome(
                         state: .cancelled,
-                        exitCode: exitCode,
-                        reviewThreadID: snapshot.reviewThreadID ?? reviewThreadID,
-                        threadID: snapshot.threadID ?? threadResponse.thread.id,
-                        turnID: snapshot.turnID ?? turnID,
+                        exitCode: 0,
+                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                        turnID: finalSnapshot.turnID ?? turnID,
                         model: effectiveModel,
-                        hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
-                        lastAgentMessage: snapshot.lastAgentMessage ?? "",
+                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                         errorMessage: reason,
                         summary: "Review cancelled.",
                         startedAt: startedAt,
                         endedAt: endedAt,
-                        content: snapshot.finalReview ?? snapshot.lastAgentMessage ?? reason
+                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
                     )
-                case .failed, .inProgress:
-                    let errorMessage = snapshot.errorMessage ?? "Review failed."
+                case .failed:
+                    let errorMessage = finalSnapshot.errorMessage ?? "Review failed."
                     await onEvent(.progress(.completed, "Review failed."))
-                    await cleanupForReturn()
                     return ReviewProcessOutcome(
                         state: .failed,
-                        exitCode: exitCode,
-                        reviewThreadID: snapshot.reviewThreadID ?? reviewThreadID,
-                        threadID: snapshot.threadID ?? threadResponse.thread.id,
-                        turnID: snapshot.turnID ?? turnID,
+                        exitCode: 1,
+                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                        turnID: finalSnapshot.turnID ?? turnID,
                         model: effectiveModel,
-                        hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
-                        lastAgentMessage: snapshot.lastAgentMessage ?? "",
+                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                         errorMessage: errorMessage,
                         summary: "Review failed.",
                         startedAt: startedAt,
                         endedAt: endedAt,
-                        content: snapshot.finalReview ?? snapshot.lastAgentMessage ?? errorMessage
+                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? errorMessage
+                    )
+                case .inProgress:
+                    break
+                }
+            }
+
+            if let cancellationReasonValue,
+               interruptSent == false
+            {
+                interruptSent = true
+                do {
+                    let snapshot = await state.snapshot()
+                    let _: AppServerEmptyResponse = try await session.request(
+                        method: "turn/interrupt",
+                        params: AppServerTurnInterruptParams(
+                            threadID: snapshot.threadID ?? threadResponse.thread.id,
+                            turnID: snapshot.turnID ?? turnID
+                        ),
+                        responseType: AppServerEmptyResponse.self
+                    )
+                    awaitingInterruptResolution = true
+                    await onEvent(.logEntry(.init(kind: .progress, text: "Cancellation requested.")))
+                } catch {
+                    let endedAt = Date()
+                    let interruptFailure = "Failed to interrupt review: \(error.localizedDescription)"
+                    await onEvent(.failed(interruptFailure))
+                    let snapshot = await state.snapshot()
+                    await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
+                    await onUnrecoverableTransportFailure()
+                    let finalSnapshot = await state.snapshot()
+
+                    if let timeoutMessage {
+                        await onEvent(.progress(.completed, "Review timed out."))
+                        return ReviewProcessOutcome(
+                            state: .failed,
+                            exitCode: 124,
+                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                            turnID: finalSnapshot.turnID ?? turnID,
+                            model: effectiveModel,
+                            hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                            lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                            errorMessage: timeoutMessage,
+                            summary: timeoutMessage,
+                            startedAt: startedAt,
+                            endedAt: endedAt,
+                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
+                        )
+                    }
+
+                    let reason = finalSnapshot.errorMessage ?? cancellationReasonValue
+                    await onEvent(.progress(.completed, "Review cancelled."))
+                    return ReviewProcessOutcome(
+                        state: .cancelled,
+                        exitCode: 0,
+                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                        turnID: finalSnapshot.turnID ?? turnID,
+                        model: effectiveModel,
+                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        errorMessage: reason,
+                        summary: "Review cancelled.",
+                        startedAt: startedAt,
+                        endedAt: endedAt,
+                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
                     )
                 }
             }
 
-            if let exitCode = await controller.pollExitStatus() {
-                let snapshot = await state.snapshot()
-                if snapshot.reviewThreadID == nil {
-                    await cleanupForThrow()
+            if snapshot.turnStatus == .inProgress {
+                try? await Task.sleep(for: pollInterval)
+                continue
+            }
+
+            if let disconnectError = await session.disconnectError() {
+                let endedAt = Date()
+                let finalSnapshot = await state.snapshot()
+                await cleanupThread(session: session, threadID: finalSnapshot.threadID ?? threadResponse.thread.id)
+                await onUnrecoverableTransportFailure()
+                await emitDiagnosticTailDelta(
+                    session: session,
+                    tracker: &diagnosticsTracker,
+                    onEvent: onEvent
+                )
+                if finalSnapshot.reviewThreadID == nil {
                     throw ReviewBootstrapFailure(
-                        message: bootstrapFailureMessage(exitCode: exitCode, stderr: snapshot.stderrText),
+                        message: bootstrapFailureMessage(
+                            prefix: disconnectError.localizedDescription,
+                            diagnostics: await session.diagnosticsTail()
+                        ),
                         model: effectiveModel
                     )
                 }
-                if snapshot.turnStatus == nil {
-                    let observedAt = processExitObservedAt ?? Date()
-                    processExitObservedAt = observedAt
-                    if Date().timeIntervalSince(observedAt) < 0.25 {
-                        try? await Task.sleep(for: .milliseconds(20))
-                        continue
-                    }
+                let reason = timeoutMessage
+                    ?? cancellationReasonValue
+                    ?? finalSnapshot.errorMessage
+                    ?? disconnectError.localizedDescription
+                let progressMessage: String
+                let state: ReviewJobState
+                let summary: String
+                if let timeoutMessage {
+                    progressMessage = "Review timed out."
+                    state = .failed
+                    summary = timeoutMessage
+                } else if cancellationReasonValue != nil {
+                    progressMessage = "Review cancelled."
+                    state = .cancelled
+                    summary = "Review cancelled."
+                } else {
+                    progressMessage = "Review failed."
+                    state = .failed
+                    summary = "Review failed."
                 }
-                let endedAt = Date()
-                let reason = cancellationReason ?? snapshot.errorMessage ?? "app-server exited unexpectedly (exit=\(exitCode))."
-                await onEvent(.progress(.completed, cancellationReason == nil ? "Review failed." : "Review cancelled."))
-                await cleanupForReturn()
+                await onEvent(.progress(.completed, progressMessage))
                 return ReviewProcessOutcome(
-                    state: cancellationReason == nil ? .failed : .cancelled,
-                    exitCode: exitCode,
-                    reviewThreadID: snapshot.reviewThreadID,
-                    threadID: snapshot.threadID,
-                    turnID: snapshot.turnID,
+                    state: state,
+                    exitCode: timeoutMessage == nil ? (state == .failed ? 1 : 0) : 124,
+                    reviewThreadID: finalSnapshot.reviewThreadID,
+                    threadID: finalSnapshot.threadID,
+                    turnID: finalSnapshot.turnID,
                     model: effectiveModel,
-                    hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
-                    lastAgentMessage: snapshot.lastAgentMessage ?? "",
+                    hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                    lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                     errorMessage: reason,
-                    summary: cancellationReason == nil ? "Review failed." : "Review cancelled.",
+                    summary: summary,
                     startedAt: startedAt,
                     endedAt: endedAt,
-                    content: snapshot.finalReview ?? snapshot.lastAgentMessage ?? reason
-                )
-            }
-
-            if let timeoutSeconds,
-               Date().timeIntervalSince(startedAt) >= Double(timeoutSeconds)
-            {
-                _ = await controller.terminateGracefully(grace: gracefulTerminationWait)
-                let snapshot = await state.snapshot()
-                let endedAt = Date()
-                await onEvent(.progress(.completed, "Review timed out."))
-                await cleanupForReturn()
-                return ReviewProcessOutcome(
-                    state: .failed,
-                    exitCode: (await controller.pollExitStatus()) ?? 124,
-                    reviewThreadID: snapshot.reviewThreadID,
-                    threadID: snapshot.threadID,
-                    turnID: snapshot.turnID,
-                    model: effectiveModel,
-                    hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
-                    lastAgentMessage: snapshot.lastAgentMessage ?? "",
-                    errorMessage: "Review timed out after \(timeoutSeconds) seconds.",
-                    summary: "Review timed out after \(timeoutSeconds) seconds.",
-                    startedAt: startedAt,
-                    endedAt: endedAt,
-                    content: snapshot.finalReview ?? snapshot.lastAgentMessage ?? "Review timed out."
-                )
-            }
-
-            if Task.isCancelled {
-                let reason = cancellationReason ?? "Review cancelled."
-                _ = await controller.terminateGracefully(grace: gracefulTerminationWait)
-                let snapshot = await state.snapshot()
-                let endedAt = Date()
-                await onEvent(.progress(.completed, "Review cancelled."))
-                await cleanupForReturn()
-                return ReviewProcessOutcome(
-                    state: .cancelled,
-                    exitCode: (await controller.pollExitStatus()) ?? 130,
-                    reviewThreadID: snapshot.reviewThreadID,
-                    threadID: snapshot.threadID,
-                    turnID: snapshot.turnID,
-                    model: effectiveModel,
-                    hasFinalReview: snapshot.finalReview?.nilIfEmpty != nil,
-                    lastAgentMessage: snapshot.lastAgentMessage ?? "",
-                    errorMessage: reason,
-                    summary: "Review cancelled.",
-                    startedAt: startedAt,
-                    endedAt: endedAt,
-                    content: snapshot.finalReview ?? snapshot.lastAgentMessage ?? reason
+                    content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
                 )
             }
 
@@ -523,18 +585,9 @@ package struct AppServerReviewRunner: Sendable {
         requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
         onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void
     ) async -> ReviewProcessOutcome? {
-        let cancellationReason: String?
-        if Task.isCancelled {
-            cancellationReason = "Review cancelled."
-        } else if case .cancelled(let reason)? = await requestedTerminationReason() {
-            cancellationReason = reason
-        } else {
-            cancellationReason = nil
-        }
-        guard let cancellationReason else {
+        guard let cancellationReason = await cancellationReason(requestedTerminationReason: requestedTerminationReason) else {
             return nil
         }
-
         let startedAt = Date()
         await onEvent(.progress(.completed, "Review cancelled."))
         return ReviewProcessOutcome(
@@ -553,6 +606,120 @@ package struct AppServerReviewRunner: Sendable {
             content: cancellationReason
         )
     }
+
+    private func cancelledOutcome(
+        model: String?,
+        startedAt: Date,
+        endedAt: Date,
+        reason: String
+    ) -> ReviewProcessOutcome {
+        ReviewProcessOutcome(
+            state: .cancelled,
+            exitCode: 130,
+            reviewThreadID: nil,
+            threadID: nil,
+            turnID: nil,
+            model: model,
+            hasFinalReview: false,
+            lastAgentMessage: "",
+            errorMessage: reason,
+            summary: "Review cancelled.",
+            startedAt: startedAt,
+            endedAt: endedAt,
+            content: reason
+        )
+    }
+
+    private func cancellationReason(
+        requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?
+    ) async -> String? {
+        if Task.isCancelled {
+            return "Review cancelled."
+        }
+        if case .cancelled(let reason)? = await requestedTerminationReason() {
+            return reason
+        }
+        return nil
+    }
+
+    private func cleanupThread(
+        session: any AppServerSessionTransport,
+        threadID: String
+    ) async {
+        var cleanupSucceeded = true
+        do {
+            let _: AppServerEmptyResponse = try await session.request(
+                method: "thread/backgroundTerminals/clean",
+                params: AppServerThreadBackgroundTerminalsCleanParams(threadID: threadID),
+                responseType: AppServerEmptyResponse.self
+            )
+        } catch {
+            cleanupSucceeded = false
+        }
+        do {
+            let _: AppServerEmptyResponse = try await session.request(
+                method: "thread/unsubscribe",
+                params: AppServerThreadUnsubscribeParams(threadID: threadID),
+                responseType: AppServerEmptyResponse.self
+            )
+        } catch {
+            cleanupSucceeded = false
+        }
+        _ = await session.drainNotifications()
+        let disconnectError = await session.disconnectError()
+        if cleanupSucceeded == false || disconnectError != nil {
+            await session.close()
+        }
+    }
+}
+
+private struct DiagnosticsTailTracker {
+    fileprivate var lastTail = ""
+}
+
+private func emitDiagnosticTailDelta(
+    session: any AppServerSessionTransport,
+    tracker: inout DiagnosticsTailTracker,
+    onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void
+) async {
+    let currentTail = await session.diagnosticsTail()
+    guard currentTail.isEmpty == false, currentTail != tracker.lastTail else {
+        tracker.lastTail = currentTail
+        return
+    }
+
+    let deltaText: String
+    if tracker.lastTail.isEmpty {
+        deltaText = currentTail
+    } else if currentTail.hasPrefix(tracker.lastTail) {
+        var suffix = String(currentTail.dropFirst(tracker.lastTail.count))
+        if suffix.first == "\n" {
+            suffix.removeFirst()
+        }
+        deltaText = suffix
+    } else {
+        deltaText = currentTail
+    }
+    tracker.lastTail = currentTail
+
+    for line in deltaText.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+        await onEvent(.rawLine(String(line)))
+    }
+}
+
+private func bootstrapFailureMessage(prefix: String, diagnostics: String) -> String {
+    guard diagnostics.isEmpty == false else {
+        return prefix
+    }
+    return "\(prefix): \(diagnostics)"
+}
+
+private func rawReasoningGroupID(itemID: String, contentIndex: Int) -> String {
+    "\(itemID):\(contentIndex)"
+}
+
+private func reasoningSummaryGroupID(itemID: String, summaryIndex: Int) -> String {
+    "\(itemID):summary:\(summaryIndex)"
 }
 
 private func handle(
@@ -710,30 +877,6 @@ private func handle(
     }
 }
 
-private func bootstrapFailureMessage(exitCode: Int, stderr: String) -> String {
-    if stderr.isEmpty == false {
-        return "app-server exited before the review started (exit=\(exitCode)): \(stderr)"
-    }
-    return "app-server exited before the review started (exit=\(exitCode))."
-}
-
-private func rawReasoningGroupID(itemID: String, contentIndex: Int) -> String {
-    "\(itemID):\(contentIndex)"
-}
-
-private func reasoningSummaryGroupID(itemID: String, summaryIndex: Int) -> String {
-    "\(itemID):summary:\(summaryIndex)"
-}
-
-private func stopAppServer(controller: AppServerProcessController) async -> Int {
-    await controller.closeStandardInput()
-    if let exitCode = await controller.waitForExit(timeout: .milliseconds(500)) {
-        return exitCode
-    }
-    _ = await controller.terminateGracefully(grace: .seconds(2))
-    return (await controller.pollExitStatus()) ?? 0
-}
-
 private actor AppServerReviewState {
     enum GroupTextUpdate: Sendable {
         case append(String)
@@ -747,11 +890,29 @@ private actor AppServerReviewState {
         }
 
         var replacesGroup: Bool {
-            if case .replace = self {
+            switch self {
+            case .append:
+                return false
+            case .replace:
                 return true
             }
-            return false
         }
+    }
+
+    struct Snapshot: Sendable {
+        var reviewThreadID: String?
+        var threadID: String?
+        var turnID: String?
+        var turnStatus: AppServerTurnStatus?
+        var lastAgentMessage: String?
+        var finalReview: String?
+        var errorMessage: String?
+        var stderrText: String
+    }
+
+    struct CompletedAgentMessage: Sendable {
+        var latestText: String
+        var logUpdate: GroupTextUpdate?
     }
 
     struct ReasoningCompletion: Sendable {
@@ -769,77 +930,38 @@ private actor AppServerReviewState {
         var rawEntries: [RawEntry]
     }
 
-    struct Snapshot: Sendable {
-        var reviewThreadID: String?
-        var threadID: String?
-        var turnID: String?
-        var turnStatus: AppServerTurnStatus?
-        var lastAgentMessage: String?
-        var finalReview: String?
-        var errorMessage: String?
-        var stderrText: String
-    }
-
     private var reviewThreadID: String?
     private var threadID: String?
     private var turnID: String?
     private var turnStatus: AppServerTurnStatus?
-    private var lastAgentMessage: String?
     private var finalReview: String?
+    private var lastAgentMessage: String?
     private var errorMessage: String?
     private var stderrLines: [String] = []
     private var agentMessagesByItemID: [String: String] = [:]
-    private var completedAgentMessageItemIDs = Set<String>()
-    private var commandOutputSeen = Set<String>()
-    private var streamedPlanByItemID: [String: String] = [:]
-    private var completedPlanItemIDs = Set<String>()
+    private var completedAgentMessageItemIDs: Set<String> = []
+    private var commandOutputsByItemID: [String: String] = [:]
+    private var completedCommandItemIDs: Set<String> = []
+    private var plansByItemID: [String: String] = [:]
+    private var completedPlanItemIDs: Set<String> = []
     private var streamedReasoningSummaryByItemID: [String: [Int: String]] = [:]
     private var streamedRawReasoningByItemID: [String: [Int: String]] = [:]
-    private var completedReasoningItemIDs = Set<String>()
+    private var completedReasoningItemIDs: Set<String> = []
     private var toolCallLabelsByItemID: [String: String] = [:]
 
-    func markReviewStarted(reviewThreadID: String, threadID: String, turnID: String) {
+    func markReviewStarted(
+        reviewThreadID: String,
+        threadID: String,
+        turnID: String
+    ) {
         self.reviewThreadID = reviewThreadID
         self.threadID = threadID
         self.turnID = turnID
     }
 
     func noteTurnStarted(turnID: String) {
-        if self.turnID == nil {
-            self.turnID = turnID
-        }
-    }
-
-    struct CompletedAgentMessage: Sendable {
-        var latestText: String
-        var logUpdate: GroupTextUpdate?
-    }
-
-    func appendAgentMessageDelta(itemID: String, delta: String) -> String? {
-        guard completedAgentMessageItemIDs.contains(itemID) == false else {
-            return nil
-        }
-        let current = agentMessagesByItemID[itemID, default: ""]
-        let updated = current + delta
-        agentMessagesByItemID[itemID] = updated
-        lastAgentMessage = updated
-        return updated
-    }
-
-    func noteCompletedAgentMessage(itemID: String, text: String) -> CompletedAgentMessage {
-        completedAgentMessageItemIDs.insert(itemID)
-        let streamedText = agentMessagesByItemID[itemID]
-        agentMessagesByItemID[itemID] = text
-        lastAgentMessage = text
-        return CompletedAgentMessage(
-            latestText: text,
-            logUpdate: completionGroupUpdate(streamedText: streamedText, finalText: text)
-        )
-    }
-
-    func noteFinalReview(_ review: String) {
-        finalReview = review
-        lastAgentMessage = review
+        self.turnID = turnID
+        turnStatus = .inProgress
     }
 
     func noteTurnCompleted(turn: AppServerTurn) {
@@ -848,45 +970,64 @@ private actor AppServerReviewState {
         errorMessage = turn.error?.message?.nilIfEmpty ?? errorMessage
     }
 
-    func noteCommandOutput(itemID: String, delta: String) {
-        if delta.isEmpty == false {
-            commandOutputSeen.insert(itemID)
+    func appendAgentMessageDelta(itemID: String, delta: String) -> String? {
+        guard completedAgentMessageItemIDs.contains(itemID) == false else {
+            return nil
         }
+        let updated = (agentMessagesByItemID[itemID] ?? "") + delta
+        agentMessagesByItemID[itemID] = updated
+        lastAgentMessage = updated
+        return updated
+    }
+
+    func noteCompletedAgentMessage(itemID: String, text: String) -> CompletedAgentMessage {
+        let streamedText = agentMessagesByItemID[itemID]
+        agentMessagesByItemID[itemID] = text
+        completedAgentMessageItemIDs.insert(itemID)
+        lastAgentMessage = text
+        return .init(
+            latestText: text,
+            logUpdate: completionGroupUpdate(streamedText: streamedText, finalText: text)
+        )
+    }
+
+    func noteCommandOutput(itemID: String, delta: String) {
+        commandOutputsByItemID[itemID, default: ""].append(delta)
     }
 
     func noteCommandCompleted(itemID: String, aggregatedOutput: String?) -> String? {
-        if commandOutputSeen.contains(itemID) {
+        guard completedCommandItemIDs.contains(itemID) == false else {
             return nil
         }
-        return aggregatedOutput?.nilIfEmpty
-    }
-
-    func noteToolCall(itemID: String, server: String, tool: String) {
-        toolCallLabelsByItemID[itemID] = "\(server).\(tool)"
-    }
-
-    func toolCallLabel(itemID: String) -> String? {
-        toolCallLabelsByItemID[itemID]
+        completedCommandItemIDs.insert(itemID)
+        let streamedOutput = commandOutputsByItemID[itemID]
+        let finalOutput = aggregatedOutput ?? streamedOutput ?? ""
+        commandOutputsByItemID[itemID] = finalOutput
+        return completionGroupUpdate(streamedText: streamedOutput, finalText: finalOutput)?.text
     }
 
     func notePlanDelta(itemID: String, delta: String) -> Bool {
         guard completedPlanItemIDs.contains(itemID) == false else {
             return false
         }
-        streamedPlanByItemID[itemID, default: ""] += delta
+        plansByItemID[itemID, default: ""].append(delta)
         return true
     }
 
     func notePlanCompleted(itemID: String, text: String) -> GroupTextUpdate? {
+        let streamedText = plansByItemID[itemID]
+        plansByItemID[itemID] = text
         completedPlanItemIDs.insert(itemID)
-        return completionGroupUpdate(streamedText: streamedPlanByItemID[itemID], finalText: text)
+        return completionGroupUpdate(streamedText: streamedText, finalText: text)
     }
 
     func noteReasoningSummaryDelta(itemID: String, summaryIndex: Int, delta: String) -> Bool {
         guard completedReasoningItemIDs.contains(itemID) == false else {
             return false
         }
-        streamedReasoningSummaryByItemID[itemID, default: [:]][summaryIndex, default: ""] += delta
+        var sections = streamedReasoningSummaryByItemID[itemID] ?? [:]
+        sections[summaryIndex, default: ""].append(delta)
+        streamedReasoningSummaryByItemID[itemID] = sections
         return true
     }
 
@@ -894,6 +1035,9 @@ private actor AppServerReviewState {
         guard completedReasoningItemIDs.contains(itemID) == false else {
             return false
         }
+        let sections = streamedReasoningSummaryByItemID[itemID] ?? [:]
+        _ = sections[summaryIndex, default: ""]
+        streamedReasoningSummaryByItemID[itemID] = sections
         return true
     }
 
@@ -901,7 +1045,9 @@ private actor AppServerReviewState {
         guard completedReasoningItemIDs.contains(itemID) == false else {
             return false
         }
-        streamedRawReasoningByItemID[itemID, default: [:]][contentIndex, default: ""] += delta
+        var sections = streamedRawReasoningByItemID[itemID] ?? [:]
+        sections[contentIndex, default: ""].append(delta)
+        streamedRawReasoningByItemID[itemID] = sections
         return true
     }
 
@@ -948,6 +1094,19 @@ private actor AppServerReviewState {
         )
     }
 
+    func noteToolCall(itemID: String, server: String, tool: String) {
+        toolCallLabelsByItemID[itemID] = "\(server).\(tool)"
+    }
+
+    func toolCallLabel(itemID: String) -> String? {
+        toolCallLabelsByItemID[itemID]
+    }
+
+    func noteFinalReview(_ review: String) {
+        finalReview = review
+        lastAgentMessage = review
+    }
+
     func appendStandardError(_ line: String) {
         stderrLines.append(line)
     }
@@ -983,637 +1142,4 @@ private actor AppServerReviewState {
         }
         return .replace(finalText)
     }
-}
-
-package actor AppServerProcessController {
-    package struct StartedProcess: Sendable {
-        package var controller: AppServerProcessController
-        package var stdoutHandle: FileHandle
-        package var stderrHandle: FileHandle
-    }
-
-    private let pid: pid_t
-    private let stdinHandle: FileHandle
-    private var cachedExitCode: Int?
-
-    private init(pid: pid_t, stdinHandle: FileHandle) {
-        self.pid = pid
-        self.stdinHandle = stdinHandle
-    }
-
-    package static func start(command: AppServerCommand) throws -> StartedProcess {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: command.currentDirectory, isDirectory: &isDirectory),
-              isDirectory.boolValue
-        else {
-            throw ReviewError.spawnFailed("Working directory does not exist or is not a directory: \(command.currentDirectory)")
-        }
-
-        let executable = try resolveExecutable(for: command)
-        let stdinPipe = try makePipe()
-        let stdoutPipe = try makePipe()
-        let stderrPipe = try makePipe()
-        var stdinReadFD = stdinPipe.read
-        var stdinWriteFD = stdinPipe.write
-        var stdoutReadFD = stdoutPipe.read
-        var stdoutWriteFD = stdoutPipe.write
-        var stderrReadFD = stderrPipe.read
-        var stderrWriteFD = stderrPipe.write
-        defer {
-            for fd in [stdinReadFD, stdinWriteFD, stdoutReadFD, stdoutWriteFD, stderrReadFD, stderrWriteFD] where fd >= 0 {
-                close(fd)
-            }
-        }
-
-        var fileActions: posix_spawn_file_actions_t? = nil
-        try throwOnPOSIX(posix_spawn_file_actions_init(&fileActions), context: "posix_spawn_file_actions_init")
-        defer { posix_spawn_file_actions_destroy(&fileActions) }
-
-        try throwOnPOSIX(posix_spawn_file_actions_adddup2(&fileActions, stdinPipe.read, STDIN_FILENO), context: "stdin dup2")
-        try throwOnPOSIX(posix_spawn_file_actions_adddup2(&fileActions, stdoutPipe.write, STDOUT_FILENO), context: "stdout dup2")
-        try throwOnPOSIX(posix_spawn_file_actions_adddup2(&fileActions, stderrPipe.write, STDERR_FILENO), context: "stderr dup2")
-        try throwOnPOSIX(posix_spawn_file_actions_addclose(&fileActions, stdinPipe.write), context: "close stdin write")
-        try throwOnPOSIX(posix_spawn_file_actions_addclose(&fileActions, stdoutPipe.read), context: "close stdout read")
-        try throwOnPOSIX(posix_spawn_file_actions_addclose(&fileActions, stderrPipe.read), context: "close stderr read")
-        try command.currentDirectory.withCString { path in
-            if #available(macOS 26.0, *) {
-                try throwOnPOSIX(posix_spawn_file_actions_addchdir(&fileActions, path), context: "chdir")
-            } else {
-                try throwOnPOSIX(posix_spawn_file_actions_addchdir_np(&fileActions, path), context: "chdir")
-            }
-        }
-
-        var attributes: posix_spawnattr_t? = nil
-        try throwOnPOSIX(posix_spawnattr_init(&attributes), context: "posix_spawnattr_init")
-        defer { posix_spawnattr_destroy(&attributes) }
-
-        var defaultSignals = sigset_t()
-        sigemptyset(&defaultSignals)
-        sigaddset(&defaultSignals, SIGTERM)
-        sigaddset(&defaultSignals, SIGINT)
-
-        let flags = Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF)
-        try throwOnPOSIX(posix_spawnattr_setflags(&attributes, flags), context: "posix_spawnattr_setflags")
-        try throwOnPOSIX(posix_spawnattr_setpgroup(&attributes, 0), context: "posix_spawnattr_setpgroup")
-        try throwOnPOSIX(posix_spawnattr_setsigdefault(&attributes, &defaultSignals), context: "posix_spawnattr_setsigdefault")
-
-        let argv = [executable] + command.arguments
-        let envp = command.environment.map { "\($0.key)=\($0.value)" }
-
-        let pid = try withCStringArray(argv) { argvPointers in
-            try withCStringArray(envp) { envPointers in
-                var pid: pid_t = 0
-                let status = executable.withCString { executablePointer in
-                    posix_spawn(&pid, executablePointer, &fileActions, &attributes, argvPointers, envPointers)
-                }
-                try throwOnPOSIX(status, context: "posix_spawn")
-                return pid
-            }
-        }
-
-        let stdinHandle = FileHandle(fileDescriptor: stdinWriteFD, closeOnDealloc: true)
-        let stdoutHandle = FileHandle(fileDescriptor: stdoutReadFD, closeOnDealloc: true)
-        let stderrHandle = FileHandle(fileDescriptor: stderrReadFD, closeOnDealloc: true)
-        stdinWriteFD = -1
-        stdoutReadFD = -1
-        stderrReadFD = -1
-        stdinReadFD = -1
-        stdoutWriteFD = -1
-        stderrWriteFD = -1
-
-        return StartedProcess(
-            controller: AppServerProcessController(pid: pid, stdinHandle: stdinHandle),
-            stdoutHandle: stdoutHandle,
-            stderrHandle: stderrHandle
-        )
-    }
-
-    package func writeLine(_ data: Data) throws {
-        try stdinHandle.write(contentsOf: data + Data([0x0A]))
-    }
-
-    package func closeStandardInput() {
-        try? stdinHandle.close()
-    }
-
-    package func pollExitStatus() -> Int? {
-        if let cachedExitCode {
-            return cachedExitCode
-        }
-        var status: Int32 = 0
-        let waitResult = waitpid(pid, &status, WNOHANG)
-        if waitResult == 0 {
-            return nil
-        }
-        if waitResult == pid {
-            let exitCode = normalizeWaitStatus(status)
-            cachedExitCode = exitCode
-            return exitCode
-        }
-        if waitResult == -1, errno == ECHILD {
-            return cachedExitCode
-        }
-        return nil
-    }
-
-    package func waitForExit(
-        timeout: Duration,
-        observeCancellation: Bool = false
-    ) async -> Int? {
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while ContinuousClock.now < deadline {
-            if observeCancellation && Task.isCancelled {
-                return nil
-            }
-            if let exitCode = pollExitStatus() {
-                return exitCode
-            }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-        if observeCancellation && Task.isCancelled {
-            return nil
-        }
-        return pollExitStatus()
-    }
-
-    package func terminateGracefully(grace: Duration) async -> Bool {
-        guard pollExitStatus() == nil else {
-            return false
-        }
-        killpg(pid, SIGTERM)
-        let deadline = ContinuousClock.now.advanced(by: grace)
-        while ContinuousClock.now < deadline {
-            if pollExitStatus() != nil {
-                return true
-            }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-        killpg(pid, SIGKILL)
-        _ = await waitForExit(timeout: .seconds(2))
-        return true
-    }
-}
-
-private actor AppServerConnection {
-    private let controller: AppServerProcessController
-    private let stdoutHandle: FileHandle
-    private let stderrHandle: FileHandle
-    private let exitMonitorPollTimeout: Duration
-    private let decoder = JSONDecoder()
-    private let encoder = JSONEncoder()
-    private let onNotification: @Sendable (AppServerServerNotification) async -> Void
-    private let onStderrLine: @Sendable (String) async -> Void
-    private var nextRequestID = 1
-    private var pendingResponses: [AppServerRequestID: CheckedContinuation<Data, Error>] = [:]
-    private var stdoutFramer = AppServerJSONLFramer()
-    private var stderrFramer = AppServerJSONLFramer()
-    private var stdoutReadTask: Task<Void, Never>?
-    private var stderrReadTask: Task<Void, Never>?
-    private var exitMonitorTask: Task<Void, Never>?
-    private var stopped = false
-
-    init(
-        controller: AppServerProcessController,
-        stdoutHandle: FileHandle,
-        stderrHandle: FileHandle,
-        exitMonitorPollTimeout: Duration,
-        onNotification: @escaping @Sendable (AppServerServerNotification) async -> Void,
-        onStderrLine: @escaping @Sendable (String) async -> Void
-    ) {
-        self.controller = controller
-        self.stdoutHandle = stdoutHandle
-        self.stderrHandle = stderrHandle
-        self.exitMonitorPollTimeout = exitMonitorPollTimeout
-        self.onNotification = onNotification
-        self.onStderrLine = onStderrLine
-    }
-
-    func start() {
-        guard stopped == false else {
-            return
-        }
-        stdoutReadTask = Task.detached { [weak self] in
-            guard let self else { return }
-            while true {
-                let data = self.stdoutHandle.availableData
-                await self.consumeStdoutData(data)
-                if data.isEmpty {
-                    return
-                }
-            }
-        }
-        stderrReadTask = Task.detached { [weak self] in
-            guard let self else { return }
-            while true {
-                let data = self.stderrHandle.availableData
-                await self.consumeStderrData(data)
-                if data.isEmpty {
-                    return
-                }
-            }
-        }
-        exitMonitorTask = Task { [weak self] in
-            guard let self else { return }
-            await self.monitorProcessExit()
-        }
-    }
-
-    func initialize() async throws -> AppServerInitializeResponse {
-        let response: AppServerInitializeResponse = try await request(
-            method: "initialize",
-            params: AppServerInitializeParams(
-                clientInfo: .init(
-                    name: codexReviewMCPName,
-                    title: "Codex Review MCP",
-                    version: codexReviewMCPVersion
-                )
-            ),
-            responseType: AppServerInitializeResponse.self
-        )
-        try await notify(method: "initialized", params: AppServerInitializedParams())
-        return response
-    }
-
-    func request<Params: Encodable, Response: Decodable>(
-        method: String,
-        params: Params,
-        responseType: Response.Type
-    ) async throws -> Response {
-        let id = AppServerRequestID.integer(nextRequestID)
-        nextRequestID += 1
-        let payload = try encoder.encode(
-            AppServerRequestEnvelope(
-                id: id,
-                method: method,
-                params: params
-            )
-        )
-        let responseData = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-            pendingResponses[id] = continuation
-            Task {
-                do {
-                    try await self.controller.writeLine(payload)
-                } catch {
-                    self.failPendingResponse(id: id, error: error)
-                }
-            }
-        }
-        return try decoder.decode(AppServerResponseEnvelope<Response>.self, from: responseData).result
-    }
-
-    func notify<Params: Encodable>(method: String, params: Params) async throws {
-        let payload = try encoder.encode(
-            AppServerOutgoingNotificationEnvelope(
-                method: method,
-                params: params
-            )
-        )
-        try await controller.writeLine(payload)
-    }
-
-    func stop() async {
-        guard stopped == false else {
-            return
-        }
-        stopped = true
-        exitMonitorTask?.cancel()
-        exitMonitorTask = nil
-        try? stdoutHandle.close()
-        try? stderrHandle.close()
-        await stdoutReadTask?.value
-        await stderrReadTask?.value
-        stdoutReadTask = nil
-        stderrReadTask = nil
-        for (_, continuation) in pendingResponses {
-            continuation.resume(throwing: ReviewError.io("app-server connection stopped."))
-        }
-        pendingResponses.removeAll()
-    }
-
-    func synchronize() async {
-        // Reader loops run in detached tasks; yield once so any just-read chunk can
-        // enter the actor queue before this barrier returns.
-        await Task.yield()
-    }
-
-    private func consumeStdoutData(_ data: Data) async {
-        if data.isEmpty {
-            await handleStdoutClosed()
-            return
-        }
-        for message in stdoutFramer.append(data) {
-            await processStdoutMessage(message)
-        }
-    }
-
-    private func handleStdoutClosed() async {
-        if stopped == false {
-            for message in stdoutFramer.finish() {
-                await processStdoutMessage(message)
-            }
-            failPendingResponses(message: "app-server stdout closed unexpectedly.")
-        }
-    }
-
-    private func monitorProcessExit() async {
-        while stopped == false {
-            guard await controller.waitForExit(
-                timeout: exitMonitorPollTimeout,
-                observeCancellation: true
-            ) != nil else {
-                if Task.isCancelled {
-                    return
-                }
-                continue
-            }
-            handleProcessExit()
-            return
-        }
-    }
-
-    private func handleProcessExit() {
-        guard stopped == false else {
-            return
-        }
-        failPendingResponses(message: "app-server process exited before responding.")
-    }
-
-    private func consumeStderrData(_ data: Data) async {
-        if data.isEmpty {
-            for line in stderrFramer.finish() {
-                await emitStderrLine(line)
-            }
-            return
-        }
-        for line in stderrFramer.append(data) {
-            await emitStderrLine(line)
-        }
-    }
-
-    private func emitStderrLine(_ line: Data) async {
-        guard let text = String(data: line, encoding: .utf8) else {
-            return
-        }
-        await onStderrLine(text)
-    }
-
-    private func processStdoutMessage(_ data: Data) async {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return
-        }
-
-        if let idObject = object["id"], let requestID = AppServerRequestID(jsonObject: idObject) {
-            if let method = object["method"] as? String {
-                await rejectServerRequest(id: requestID, method: method)
-                return
-            }
-            guard let continuation = pendingResponses.removeValue(forKey: requestID) else {
-                return
-            }
-            if let error = parseResponseError(from: object) {
-                continuation.resume(throwing: error)
-            } else {
-                continuation.resume(returning: data)
-            }
-            return
-        }
-
-        guard let method = object["method"] as? String else {
-            return
-        }
-        await onNotification(decodeNotification(method: method, data: data))
-    }
-
-    private func rejectServerRequest(id: AppServerRequestID, method: String) async {
-        let payload = [
-            "id": id.foundationObject,
-            "error": [
-                "code": -32601,
-                "message": "Unsupported app-server request `\(method)`."
-            ]
-        ] as [String : Any]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
-            return
-        }
-        try? await controller.writeLine(data)
-    }
-
-    private func failPendingResponses(message: String) {
-        for (_, continuation) in pendingResponses {
-            continuation.resume(throwing: ReviewError.io(message))
-        }
-        pendingResponses.removeAll()
-    }
-
-    private func failPendingResponse(id: AppServerRequestID, error: Error) {
-        guard let continuation = pendingResponses.removeValue(forKey: id) else {
-            return
-        }
-        continuation.resume(throwing: error)
-    }
-
-    private func parseResponseError(from object: [String: Any]) -> AppServerResponseError? {
-        guard let error = object["error"] as? [String: Any] else {
-            return nil
-        }
-        let code = (error["code"] as? Int)
-            ?? (error["code"] as? NSNumber)?.intValue
-        let message = (error["message"] as? String)?.nilIfEmpty ?? "app-server request failed."
-        return AppServerResponseError(code: code, message: message)
-    }
-
-    private func decodeNotification(method: String, data: Data) -> AppServerServerNotification {
-        switch method {
-        case "turn/started":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerTurnStartedNotification>.self,
-                from: data
-            ) {
-                return .turnStarted(notification.params)
-            }
-        case "turn/completed":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerTurnCompletedNotification>.self,
-                from: data
-            ) {
-                return .turnCompleted(notification.params)
-            }
-        case "item/started":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerItemStartedNotification>.self,
-                from: data
-            ) {
-                return .itemStarted(notification.params)
-            }
-        case "item/completed":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerItemCompletedNotification>.self,
-                from: data
-            ) {
-                return .itemCompleted(notification.params)
-            }
-        case "item/agentMessage/delta":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerAgentMessageDeltaNotification>.self,
-                from: data
-            ) {
-                return .agentMessageDelta(notification.params)
-            }
-        case "item/plan/delta":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerPlanDeltaNotification>.self,
-                from: data
-            ) {
-                return .planDelta(notification.params)
-            }
-        case "item/commandExecution/outputDelta":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerCommandExecutionOutputDeltaNotification>.self,
-                from: data
-            ) {
-                return .commandExecutionOutputDelta(notification.params)
-            }
-        case "item/reasoning/summaryTextDelta":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerReasoningSummaryTextDeltaNotification>.self,
-                from: data
-            ) {
-                return .reasoningSummaryTextDelta(notification.params)
-            }
-        case "item/reasoning/summaryPartAdded":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerReasoningSummaryPartAddedNotification>.self,
-                from: data
-            ) {
-                return .reasoningSummaryPartAdded(notification.params)
-            }
-        case "item/reasoning/textDelta":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerReasoningTextDeltaNotification>.self,
-                from: data
-            ) {
-                return .reasoningTextDelta(notification.params)
-            }
-        case "item/mcpToolCall/progress":
-            if let notification = try? decoder.decode(
-                AppServerIncomingNotificationEnvelope<AppServerMcpToolCallProgressNotification>.self,
-                from: data
-            ) {
-                return .mcpToolCallProgress(notification.params)
-            }
-        default:
-            break
-        }
-        return .ignored
-    }
-}
-
-private struct AppServerRequestEnvelope<Params: Encodable>: Encodable {
-    var id: AppServerRequestID
-    var method: String
-    var params: Params
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch id {
-        case .string(let value):
-            try container.encode(value, forKey: .id)
-        case .integer(let value):
-            try container.encode(value, forKey: .id)
-        case .double(let value):
-            try container.encode(value, forKey: .id)
-        }
-        try container.encode(method, forKey: .method)
-        try container.encode(params, forKey: .params)
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case method
-        case params
-    }
-}
-
-
-private struct AppServerOutgoingNotificationEnvelope<Params: Encodable>: Encodable {
-    var method: String
-    var params: Params
-}
-
-private struct AppServerIncomingNotificationEnvelope<Params: Decodable>: Decodable {
-    var method: String
-    var params: Params
-}
-
-private struct AppServerResponseEnvelope<Result: Decodable>: Decodable {
-    var result: Result
-}
-
-private func resolveExecutable(for command: AppServerCommand) throws -> String {
-    guard let resolved = resolveCodexCommand(
-        requestedCommand: command.executable,
-        environment: command.environment,
-        currentDirectory: command.currentDirectory
-    ) else {
-        throw ReviewError.spawnFailed(
-            "Unable to locate \(command.executable) executable. Set --codex-command or ensure PATH contains \(command.executable)."
-        )
-    }
-    return resolved
-}
-
-private func makePipe() throws -> (read: Int32, write: Int32) {
-    var descriptors: [Int32] = [0, 0]
-    guard pipe(&descriptors) == 0 else {
-        throw ReviewError.spawnFailed("pipe: \(String(cString: strerror(errno)))")
-    }
-    return (descriptors[0], descriptors[1])
-}
-
-private func normalizeWaitStatus(_ status: Int32) -> Int {
-    if wifsignaled(status) {
-        return 128 + Int(wtermsig(status))
-    }
-    if wifexited(status) {
-        return Int(wexitstatus(status))
-    }
-    return Int(status)
-}
-
-private func throwOnPOSIX(_ result: Int32, context: String) throws {
-    guard result == 0 else {
-        let message = String(cString: strerror(result))
-        throw ReviewError.spawnFailed("\(context): \(message)")
-    }
-}
-
-private func withCStringArray<Result>(
-    _ values: [String],
-    body: ([UnsafeMutablePointer<CChar>?]) throws -> Result
-) throws -> Result {
-    var pointers: [UnsafeMutablePointer<CChar>?] = values.map { strdup($0) }
-    pointers.append(nil)
-    defer {
-        for pointer in pointers where pointer != nil {
-            free(pointer)
-        }
-    }
-    return try body(pointers)
-}
-
-private func wifexited(_ status: Int32) -> Bool {
-    (status & 0x7f) == 0
-}
-
-private func wexitstatus(_ status: Int32) -> Int32 {
-    (status >> 8) & 0xff
-}
-
-private func wifsignaled(_ status: Int32) -> Bool {
-    let signal = status & 0x7f
-    return signal != 0 && signal != 0x7f
-}
-
-private func wtermsig(_ status: Int32) -> Int32 {
-    status & 0x7f
 }

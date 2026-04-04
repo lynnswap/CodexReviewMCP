@@ -157,7 +157,20 @@ package struct AppServerInitializeParams: Encodable, Sendable {
         package var version: String
     }
 
+    package struct Capabilities: Encodable, Sendable {
+        package var experimentalApi: Bool?
+
+        package enum CodingKeys: String, CodingKey {
+            case experimentalApi = "experimentalApi"
+        }
+
+        package init(experimentalApi: Bool? = nil) {
+            self.experimentalApi = experimentalApi
+        }
+    }
+
     package var clientInfo: ClientInfo
+    package var capabilities: Capabilities?
 }
 
 package struct AppServerInitializeResponse: Decodable, Sendable {
@@ -165,6 +178,18 @@ package struct AppServerInitializeResponse: Decodable, Sendable {
     package var codexHome: String?
     package var platformFamily: String?
     package var platformOs: String?
+
+    package init(
+        userAgent: String? = nil,
+        codexHome: String? = nil,
+        platformFamily: String? = nil,
+        platformOs: String? = nil
+    ) {
+        self.userAgent = userAgent
+        self.codexHome = codexHome
+        self.platformFamily = platformFamily
+        self.platformOs = platformOs
+    }
 }
 
 package struct AppServerInitializedParams: Codable, Sendable {}
@@ -229,6 +254,10 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
     }
 
     package var config: Config
+
+    package init(config: Config) {
+        self.config = config
+    }
 }
 
 package struct AppServerThreadStartParams: Encodable, Sendable {
@@ -244,10 +273,35 @@ package struct AppServerThreadStartParams: Encodable, Sendable {
 package struct AppServerThreadStartResponse: Decodable, Sendable {
     package struct Thread: Decodable, Sendable {
         package var id: String
+
+        package init(id: String) {
+            self.id = id
+        }
     }
 
     package var thread: Thread
     package var model: String?
+
+    package init(thread: Thread, model: String?) {
+        self.thread = thread
+        self.model = model
+    }
+}
+
+package struct AppServerThreadUnsubscribeParams: Encodable, Sendable {
+    package var threadID: String
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+    }
+}
+
+package struct AppServerThreadBackgroundTerminalsCleanParams: Encodable, Sendable {
+    package var threadID: String
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+    }
 }
 
 package struct AppServerReviewStartParams: Encodable, Sendable {
@@ -269,6 +323,11 @@ package struct AppServerReviewStartResponse: Decodable, Sendable {
     package enum CodingKeys: String, CodingKey {
         case turn
         case reviewThreadID = "reviewThreadId"
+    }
+
+    package init(turn: AppServerTurn, reviewThreadID: String) {
+        self.turn = turn
+        self.reviewThreadID = reviewThreadID
     }
 }
 
@@ -293,12 +352,22 @@ package enum AppServerTurnStatus: String, Decodable, Sendable {
 
 package struct AppServerTurnError: Decodable, Sendable {
     package var message: String?
+
+    package init(message: String?) {
+        self.message = message
+    }
 }
 
 package struct AppServerTurn: Decodable, Sendable {
     package var id: String
     package var status: AppServerTurnStatus
     package var error: AppServerTurnError?
+
+    package init(id: String, status: AppServerTurnStatus, error: AppServerTurnError?) {
+        self.id = id
+        self.status = status
+        self.error = error
+    }
 }
 
 package struct AppServerTurnStartedNotification: Decodable, Sendable {
@@ -309,6 +378,11 @@ package struct AppServerTurnStartedNotification: Decodable, Sendable {
         case threadID = "threadId"
         case turn
     }
+
+    package init(threadID: String, turn: AppServerTurn) {
+        self.threadID = threadID
+        self.turn = turn
+    }
 }
 
 package struct AppServerTurnCompletedNotification: Decodable, Sendable {
@@ -318,6 +392,11 @@ package struct AppServerTurnCompletedNotification: Decodable, Sendable {
     package enum CodingKeys: String, CodingKey {
         case threadID = "threadId"
         case turn
+    }
+
+    package init(threadID: String, turn: AppServerTurn) {
+        self.threadID = threadID
+        self.turn = turn
     }
 }
 
@@ -427,6 +506,12 @@ package struct AppServerItemStartedNotification: Decodable, Sendable {
         case threadID = "threadId"
         case turnID = "turnId"
     }
+
+    package init(item: AppServerThreadItem, threadID: String, turnID: String) {
+        self.item = item
+        self.threadID = threadID
+        self.turnID = turnID
+    }
 }
 
 package struct AppServerItemCompletedNotification: Decodable, Sendable {
@@ -438,6 +523,12 @@ package struct AppServerItemCompletedNotification: Decodable, Sendable {
         case item
         case threadID = "threadId"
         case turnID = "turnId"
+    }
+
+    package init(item: AppServerThreadItem, threadID: String, turnID: String) {
+        self.item = item
+        self.threadID = threadID
+        self.turnID = turnID
     }
 }
 
@@ -546,6 +637,11 @@ package struct AppServerMcpToolCallProgressNotification: Decodable, Sendable {
 package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendable {
     package var code: Int?
     package var message: String
+
+    package init(code: Int?, message: String) {
+        self.code = code
+        self.message = message
+    }
 
     package var errorDescription: String? {
         message
