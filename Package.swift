@@ -1,26 +1,234 @@
 // swift-tools-version: 6.3
-// The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
 
 let package = Package(
     name: "CodexReviewMCP",
+    platforms: [
+        .macOS(.v15),
+    ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
+        .library(
+            name: "CodexReviewModel",
+            targets: ["CodexReviewModel"]
+        ),
+        .library(
+            name: "CodexReviewUI",
+            targets: ["CodexReviewUI"]
+        ),
         .library(
             name: "CodexReviewMCP",
             targets: ["CodexReviewMCP"]
         ),
+        .executable(
+            name: "codex-review-mcp",
+            targets: ["CodexReviewMCPExecutable"]
+        ),
+        .executable(
+            name: "codex-review-mcp-server",
+            targets: ["CodexReviewMCPServerExecutable"]
+        ),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", exact: "0.12.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
+        .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
+        .package(url: "https://github.com/lynnswap/ObservationBridge.git", from: "0.6.1"),
+        .package(url: "https://github.com/swiftlang/swift-subprocess.git", .upToNextMinor(from: "0.4.0")),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "CodexReviewMCP"
+            name: "ReviewJobs",
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "ReviewCore",
+            dependencies: [
+                "ReviewJobs",
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
+            ],
+            resources: [
+                .process("Resources"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "ReviewHTTPServer",
+            dependencies: [
+                "ReviewCore",
+                "ReviewJobs",
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "ReviewStdioAdapter",
+            dependencies: [
+                "ReviewCore",
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "ReviewRuntime",
+            dependencies: [
+                "ReviewJobs",
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "CodexReviewModel",
+            dependencies: [
+                "ReviewJobs",
+                "ReviewRuntime",
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "CodexReviewUI",
+            dependencies: [
+                "CodexReviewModel",
+                .product(name: "ObservationBridge", package: "ObservationBridge"),
+                "ReviewJobs",
+                "ReviewRuntime",
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "ReviewCLI",
+            dependencies: [
+                "CodexReviewMCP",
+                "ReviewHTTPServer",
+                "ReviewStdioAdapter",
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "CodexReviewMCP",
+            dependencies: [
+                "CodexReviewModel",
+                "ReviewCore",
+                "ReviewJobs",
+                "ReviewRuntime",
+                "ReviewHTTPServer",
+                "ReviewStdioAdapter",
+                .product(name: "ObservationBridge", package: "ObservationBridge"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "ReviewTestSupport",
+            dependencies: [
+                "ReviewCore",
+                "ReviewJobs",
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .executableTarget(
+            name: "CodexReviewMCPExecutable",
+            dependencies: ["ReviewCLI"],
+            path: "Sources/CodexReviewMCPExecutable",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .executableTarget(
+            name: "CodexReviewMCPServerExecutable",
+            dependencies: ["ReviewCLI"],
+            path: "Sources/CodexReviewMCPServerExecutable",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .testTarget(
+            name: "ReviewJobsTests",
+            dependencies: ["ReviewJobs", "ReviewCore", "ReviewRuntime", "CodexReviewMCP", "ReviewTestSupport"],
+            path: "Tests/ReviewJobsTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .testTarget(
+            name: "ReviewCoreTests",
+            dependencies: ["ReviewCore", "ReviewJobs", "ReviewTestSupport"],
+            path: "Tests/ReviewCoreTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .testTarget(
+            name: "ReviewHTTPServerTests",
+            dependencies: ["ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime", "CodexReviewMCP"],
+            path: "Tests/ReviewHTTPServerTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .testTarget(
+            name: "ReviewCLITests",
+            dependencies: ["ReviewCLI", "ReviewCore", "ReviewJobs", "ReviewRuntime"],
+            path: "Tests/ReviewCLITests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .testTarget(
+            name: "ReviewStdioAdapterTests",
+            dependencies: ["ReviewStdioAdapter", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime"],
+            path: "Tests/ReviewStdioAdapterTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
         ),
         .testTarget(
             name: "CodexReviewMCPTests",
-            dependencies: ["CodexReviewMCP"]
+            dependencies: ["CodexReviewMCP", "CodexReviewModel", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime", "ReviewTestSupport"],
+            path: "Tests/CodexReviewMCPTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .testTarget(
+            name: "CodexReviewUITests",
+            dependencies: ["CodexReviewUI", "CodexReviewModel", "ReviewJobs", "ReviewRuntime"],
+            path: "Tests/CodexReviewUITests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]

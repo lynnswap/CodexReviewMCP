@@ -1,0 +1,27 @@
+{
+  "server": {
+    "defaultPort": 9417,
+    "endpointPath": "/mcp",
+    "sessionTimeoutSeconds": 3600
+  },
+  "review": {
+    "autoCompactRatio": 0.9
+  },
+  "models": {
+    "fallbackContextWindows": {
+      "gpt-5.4-mini": 272000,
+      "gpt-5.3-codex-spark": 128000
+    },
+    "wideContextPrefixes": [
+      "gpt-5.3-codex",
+      "gpt-5.2-codex",
+      "gpt-5.2",
+      "gpt-5.1-codex-max",
+      "gpt-5.1-codex-mini",
+      "gpt-5.1-codex"
+    ],
+    "gpt54AndAboveClampLimit": 1000000,
+    "defaultWideContextClampLimit": 272000,
+    "sparkClampLimit": 128000
+  }
+}
