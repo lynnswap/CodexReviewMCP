@@ -55,6 +55,7 @@ package actor AppServerSupervisor: AppServerManaging {
     private var pendingStandardErrorBytes = Data()
     private var trailingStandardErrorFragment = ""
     private var startingRuntimeState: AppServerRuntimeState?
+    private var discoveredStartingWebSocketURL: URL?
     private var lifetimeTask: Task<Void, Never>?
 
     package init(configuration: Configuration = .init()) {
@@ -220,6 +221,7 @@ package actor AppServerSupervisor: AppServerManaging {
         stderrLines.removeAll(keepingCapacity: false)
         pendingStandardErrorBytes.removeAll(keepingCapacity: false)
         trailingStandardErrorFragment = ""
+        discoveredStartingWebSocketURL = nil
         let tokenFileURL = ReviewHomePaths.appServerWebSocketTokenFileURL(
             filename: "app-server-ws-token-\(launchID.uuidString)",
             environment: configuration.environment
@@ -228,7 +230,7 @@ package actor AppServerSupervisor: AppServerManaging {
         do {
             let authToken = UUID().uuidString
             var launchedProcessIdentity: ProcessIdentity?
-            let websocketURL = try reserveLoopbackWebSocketURL()
+            let requestedWebSocketURL = try makeLoopbackWebSocketListenURL()
             let isolatedCodexHomeURL = try prepareIsolatedCodexHome(
                 launchID: launchID,
                 environment: self.configuration.environment
@@ -242,7 +244,7 @@ package actor AppServerSupervisor: AppServerManaging {
             let configuration = try makeAppServerConfiguration(
                 codexCommand: self.configuration.codexCommand,
                 environment: self.configuration.environment,
-                listenAddress: websocketURL.absoluteString,
+                listenAddress: requestedWebSocketURL.absoluteString,
                 tokenFileURL: tokenFileURL,
                 isolatedCodexHomeURL: isolatedCodexHomeURL
             )
@@ -269,9 +271,9 @@ package actor AppServerSupervisor: AppServerManaging {
 
                 let stderrTask = self.startCapturingStandardError(from: errorSequence)
                 do {
-                    try await self.waitUntilReady(
+                    let websocketURL = try await self.waitUntilReady(
                         processIdentity: .init(pid: pid, startTime: startTime),
-                        websocketURL: websocketURL
+                        requestedWebSocketURL: requestedWebSocketURL
                     )
 
                     self.finishStarting(
@@ -381,6 +383,10 @@ package actor AppServerSupervisor: AppServerManaging {
 
     private func appendStandardErrorLines(_ lines: [String]) {
         stderrLines.append(contentsOf: lines)
+        discoveredStartingWebSocketURL = nextDiscoveredWebSocketURL(
+            cached: discoveredStartingWebSocketURL,
+            stderrLines: lines
+        )
         if stderrLines.count > 200 {
             stderrLines.removeFirst(stderrLines.count - 200)
         }
@@ -388,13 +394,13 @@ package actor AppServerSupervisor: AppServerManaging {
 
     private func waitUntilReady(
         processIdentity: ProcessIdentity,
-        websocketURL: URL
-    ) async throws {
+        requestedWebSocketURL: URL
+    ) async throws -> URL {
 
         let deadline = ContinuousClock.now.advanced(by: configuration.startupTimeout)
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
-        let readyURL = try makeReadyURL(from: websocketURL)
+        var cachedWebSocketURL = requestedWebSocketURL.port == 0 ? nil : requestedWebSocketURL
 
         while ContinuousClock.now < deadline {
             try Task.checkCancellation()
@@ -405,14 +411,19 @@ package actor AppServerSupervisor: AppServerManaging {
                 throw ReviewError.spawnFailed("app-server exited before becoming ready\(suffix)")
             }
 
-            var request = URLRequest(url: readyURL)
-            request.httpMethod = "GET"
-            request.timeoutInterval = 1
-            if let (_, response) = try? await session.data(for: request),
-               let httpResponse = response as? HTTPURLResponse,
-               httpResponse.statusCode == 200
-            {
-                return
+            cachedWebSocketURL = cachedWebSocketURL ?? discoveredStartingWebSocketURL
+            let websocketURL = cachedWebSocketURL
+            if let websocketURL {
+                let readyURL = try makeReadyURL(from: websocketURL)
+                var request = URLRequest(url: readyURL)
+                request.httpMethod = "GET"
+                request.timeoutInterval = 1
+                if let (_, response) = try? await session.data(for: request),
+                   let httpResponse = response as? HTTPURLResponse,
+                   httpResponse.statusCode == 200
+                {
+                    return websocketURL
+                }
             }
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -446,6 +457,7 @@ package actor AppServerSupervisor: AppServerManaging {
             state = .stopped
             lifetimeTask = nil
         }
+        discoveredStartingWebSocketURL = nil
         try? FileManager.default.removeItem(at: tokenFileURL)
         if let isolatedCodexHomeURL {
             try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
@@ -652,47 +664,40 @@ private func stripANSIEscapeCodes(_ text: String) -> String {
     return stripped
 }
 
-private func reserveLoopbackWebSocketURL() throws -> URL {
-    let socketFD = socket(AF_INET, SOCK_STREAM, 0)
-    guard socketFD >= 0 else {
-        throw ReviewError.spawnFailed("failed to create loopback reservation socket.")
-    }
-    defer { close(socketFD) }
-
-    var value: Int32 = 1
-    _ = setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &value, socklen_t(MemoryLayout.size(ofValue: value)))
-
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = in_port_t(0).bigEndian
-    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-
-    let bindResult = withUnsafePointer(to: &address) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            Darwin.bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-        }
-    }
-    guard bindResult == 0 else {
-        throw ReviewError.spawnFailed("failed to bind loopback reservation socket: \(String(cString: strerror(errno))).")
-    }
-
-    var boundAddress = sockaddr_in()
-    var addressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
-    let nameResult = withUnsafeMutablePointer(to: &boundAddress) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            getsockname(socketFD, $0, &addressLength)
-        }
-    }
-    guard nameResult == 0 else {
-        throw ReviewError.spawnFailed("failed to inspect reserved loopback port: \(String(cString: strerror(errno))).")
-    }
-
-    let port = Int(UInt16(bigEndian: boundAddress.sin_port))
-    guard let url = URL(string: "ws://127.0.0.1:\(port)") else {
-        throw ReviewError.spawnFailed("failed to construct reserved websocket URL.")
+package func makeLoopbackWebSocketListenURL() throws -> URL {
+    guard let url = URL(string: "ws://127.0.0.1:0") else {
+        throw ReviewError.spawnFailed("failed to construct websocket listen URL.")
     }
     return url
+}
+
+package func discoveredWebSocketURL(from stderrLines: [String]) -> URL? {
+    let bannerPatterns = [
+        #"listening on:\s+(ws://127\.0\.0\.1:\d+)"#,
+        #"app-server websocket listening on\s+(ws://127\.0\.0\.1:\d+)"#,
+    ]
+    for line in stderrLines.reversed() {
+        let stripped = stripANSIEscapeCodes(line)
+        for pattern in bannerPatterns {
+            guard let range = stripped.range(of: pattern, options: .regularExpression) else {
+                continue
+            }
+            let match = String(stripped[range])
+            let urlString = match.split(separator: " ").last.map(String.init) ?? match
+            guard let url = URL(string: urlString) else {
+                continue
+            }
+            guard url.port != 0 else {
+                continue
+            }
+            return url
+        }
+    }
+    return nil
+}
+
+package func nextDiscoveredWebSocketURL(cached: URL?, stderrLines: [String]) -> URL? {
+    cached ?? discoveredWebSocketURL(from: stderrLines)
 }
 
 private func isSupervisorProcessGroupAlive(_ identity: ProcessIdentity) -> Bool {

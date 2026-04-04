@@ -1,8 +1,60 @@
+import Foundation
 import Testing
 @testable import ReviewCore
 
 @Suite
 struct AppServerSupervisorTests {
+    @Test func loopbackWebSocketListenURLUsesEphemeralPort() throws {
+        let url = try makeLoopbackWebSocketListenURL()
+
+        #expect(url.absoluteString == "ws://127.0.0.1:0")
+    }
+
+    @Test func discoveredWebSocketURLParsesStartupBannerLine() throws {
+        let url = discoveredWebSocketURL(from: [
+            "codex app-server (WebSockets)",
+            "  listening on: ws://127.0.0.1:60421",
+            "  readyz: http://127.0.0.1:60421/readyz",
+        ])
+
+        #expect(url?.absoluteString == "ws://127.0.0.1:60421")
+    }
+
+    @Test func discoveredWebSocketURLStripsANSIEscapeCodes() throws {
+        let url = discoveredWebSocketURL(from: [
+            "\u{1b}[2m  listening on:\u{1b}[0m \u{1b}[32mws://127.0.0.1:60422\u{1b}[0m"
+        ])
+
+        #expect(url?.absoluteString == "ws://127.0.0.1:60422")
+    }
+
+    @Test func discoveredWebSocketURLIgnoresEphemeralPlaceholderPort() {
+        let url = discoveredWebSocketURL(from: [
+            "ws://127.0.0.1:0"
+        ])
+
+        #expect(url == nil)
+    }
+
+    @Test func discoveredWebSocketURLIgnoresNonBannerWebSocketLines() {
+        let url = discoveredWebSocketURL(from: [
+            "debug: retrying ws://127.0.0.1:60424 after auth failure"
+        ])
+
+        #expect(url == nil)
+    }
+
+    @Test func nextDiscoveredWebSocketURLKeepsCachedURLAfterBannerEviction() throws {
+        let cached = URL(string: "ws://127.0.0.1:60423")
+
+        let url = nextDiscoveredWebSocketURL(
+            cached: cached,
+            stderrLines: Array(repeating: "other stderr", count: 400)
+        )
+
+        #expect(url?.absoluteString == "ws://127.0.0.1:60423")
+    }
+
     @Test func isolatedCodexHomeConfigRemovesCodexReviewServerSection() {
         let original = """
         model = "gpt-5.4"
