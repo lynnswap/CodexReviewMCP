@@ -5,7 +5,10 @@ import CodexReviewModel
 @available(macOS 26.0, *)
 @MainActor
 final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAccessoryViewController {
+    private let store: CodexReviewStore
+
     init(store: CodexReviewStore) {
+        self.store = store
         super.init(nibName: nil, bundle: nil)
 
         automaticallyAppliesContentInsets = true
@@ -17,6 +20,16 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
         nil
     }
 }
+
+#if DEBUG
+@available(macOS 26.0, *)
+@MainActor
+extension ReviewMonitorServerStatusAccessoryViewController {
+    var isRestartEnabledForTesting: Bool {
+        store.serverState.isRestartAvailable
+    }
+}
+#endif
 
 @available(macOS 26.0, *)
 private struct StatusView: View {

@@ -20,6 +20,8 @@ package protocol CodexAppServerManaging: Sendable {
 
 package actor CodexAppServerSupervisor: CodexAppServerManaging {
     package struct Configuration: Sendable {
+        package static let defaultStartupTimeout: Duration = .seconds(30)
+
         package var codexCommand: String
         package var environment: [String: String]
         package var startupTimeout: Duration
@@ -27,7 +29,7 @@ package actor CodexAppServerSupervisor: CodexAppServerManaging {
         package init(
             codexCommand: String = "codex",
             environment: [String: String] = ProcessInfo.processInfo.environment,
-            startupTimeout: Duration = .seconds(30)
+            startupTimeout: Duration = Self.defaultStartupTimeout
         ) {
             self.codexCommand = codexCommand
             self.environment = environment
@@ -299,7 +301,11 @@ package actor CodexAppServerSupervisor: CodexAppServerManaging {
                     _ = await stderrTask.value
                     return ()
                 } catch {
-                    stderrTask.cancel()
+                    await self.failStartingLaunch(
+                        launchID: launchID,
+                        runtimeState: runtimeState,
+                        error: error
+                    )
                     _ = await stderrTask.value
                     throw error
                 }
@@ -403,6 +409,7 @@ package actor CodexAppServerSupervisor: CodexAppServerManaging {
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
         var cachedWebSocketURL = requestedWebSocketURL.port == 0 ? nil : requestedWebSocketURL
+        var attemptedReadyProbe = false
 
         while ContinuousClock.now < deadline {
             try Task.checkCancellation()
@@ -413,9 +420,12 @@ package actor CodexAppServerSupervisor: CodexAppServerManaging {
                 throw ReviewError.spawnFailed("app-server exited before becoming ready\(suffix)")
             }
 
-            cachedWebSocketURL = cachedWebSocketURL ?? discoveredStartingWebSocketURL
+            cachedWebSocketURL = cachedWebSocketURL
+                ?? discoveredStartingWebSocketURL
+                ?? loopbackWebSocketURL(fromListeningSocketOf: processIdentity.pid)
             let websocketURL = cachedWebSocketURL
             if let websocketURL {
+                attemptedReadyProbe = true
                 let readyURL = try makeReadyURL(from: websocketURL)
                 var request = URLRequest(url: readyURL)
                 request.httpMethod = "GET"
@@ -430,7 +440,14 @@ package actor CodexAppServerSupervisor: CodexAppServerManaging {
             try await Task.sleep(for: .milliseconds(100))
         }
 
-        throw ReviewError.spawnFailed("timed out waiting for app-server readiness.")
+        if attemptedReadyProbe {
+            throw ReviewError.spawnFailed(
+                "timed out waiting for app-server readiness: readyz did not return 200."
+            )
+        }
+        throw ReviewError.spawnFailed(
+            "timed out waiting for app-server readiness: unable to resolve websocket listen port."
+        )
     }
 
     private var currentLaunchID: UUID? {
@@ -471,6 +488,15 @@ package actor CodexAppServerSupervisor: CodexAppServerManaging {
             return
         }
         startingRuntimeState = runtimeState
+    }
+
+    private func failStartingLaunch(
+        launchID: UUID,
+        runtimeState: CodexAppServerRuntimeState,
+        error: Error
+    ) async {
+        await terminateStartingProcess(runtimeState: runtimeState)
+        finishStarting(launchID: launchID, .failure(error))
     }
 
     private func terminateStartingProcess(runtimeState: CodexAppServerRuntimeState) async {
@@ -700,6 +726,100 @@ package func discoveredWebSocketURL(from stderrLines: [String]) -> URL? {
 
 package func nextDiscoveredWebSocketURL(cached: URL?, stderrLines: [String]) -> URL? {
     cached ?? discoveredWebSocketURL(from: stderrLines)
+}
+
+package func loopbackWebSocketURL(fromListeningSocketOf pid: pid_t) -> URL? {
+    guard let port = loopbackListeningPort(of: pid) else {
+        return nil
+    }
+    return URL(string: "ws://127.0.0.1:\(port)")
+}
+
+package func loopbackListeningPort(of pid: pid_t) -> Int? {
+    guard pid > 0 else {
+        return nil
+    }
+
+    let listBytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+    guard listBytes > 0 else {
+        return nil
+    }
+
+    let stride = MemoryLayout<proc_fdinfo>.stride
+    let count = Int(listBytes) / stride
+    guard count > 0 else {
+        return nil
+    }
+
+    var descriptors = [proc_fdinfo](repeating: .init(), count: count)
+    let filledBytes = proc_pidinfo(
+        pid,
+        PROC_PIDLISTFDS,
+        0,
+        &descriptors,
+        Int32(descriptors.count * stride)
+    )
+    guard filledBytes > 0 else {
+        return nil
+    }
+
+    let filledCount = Int(filledBytes) / stride
+    for descriptor in descriptors.prefix(filledCount) {
+        guard descriptor.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET),
+              let socketInfo = socketFDInfo(of: pid, fd: descriptor.proc_fd),
+              let port = loopbackListeningPort(from: socketInfo)
+        else {
+            continue
+        }
+        return port
+    }
+
+    return nil
+}
+
+private func socketFDInfo(of pid: pid_t, fd: Int32) -> socket_fdinfo? {
+    var socketInfo = socket_fdinfo()
+    let result = proc_pidfdinfo(
+        pid,
+        fd,
+        PROC_PIDFDSOCKETINFO,
+        &socketInfo,
+        Int32(MemoryLayout<socket_fdinfo>.stride)
+    )
+    guard result == Int32(MemoryLayout<socket_fdinfo>.stride) else {
+        return nil
+    }
+    return socketInfo
+}
+
+private func loopbackListeningPort(from socketInfo: socket_fdinfo) -> Int? {
+    let socket = socketInfo.psi
+    guard socket.soi_family == AF_INET,
+          socket.soi_protocol == IPPROTO_TCP
+    else {
+        return nil
+    }
+
+    let inInfo: in_sockinfo
+    switch Int(socket.soi_kind) {
+    case SOCKINFO_IN:
+        inInfo = socket.soi_proto.pri_in
+    case SOCKINFO_TCP:
+        inInfo = socket.soi_proto.pri_tcp.tcpsi_ini
+    default:
+        return nil
+    }
+
+    let loopbackAddress = inet_addr("127.0.0.1")
+    guard inInfo.insi_vflag == UInt8(INI_IPV4),
+          inInfo.insi_fport == 0,
+          inInfo.insi_laddr.ina_46.i46a_addr4.s_addr == loopbackAddress
+    else {
+        return nil
+    }
+
+    let port = Int(UInt16(truncatingIfNeeded: inInfo.insi_lport).byteSwapped)
+    return port > 0 ? port : nil
 }
 
 private func isSupervisorProcessGroupAlive(_ identity: ProcessIdentity) -> Bool {

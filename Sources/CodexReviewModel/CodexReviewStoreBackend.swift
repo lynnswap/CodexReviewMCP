@@ -6,7 +6,8 @@ package protocol CodexReviewStoreBackend: AnyObject {
 
     func start(
         store: CodexReviewStore,
-        forceRestartIfNeeded: Bool
+        forceRestartIfNeeded: Bool,
+        startupAttemptID: UUID
     ) async
 
     func stop(store: CodexReviewStore) async
@@ -29,10 +30,15 @@ package final class CodexReviewPreviewStoreBackend: CodexReviewStoreBackend {
 
     package func start(
         store: CodexReviewStore,
-        forceRestartIfNeeded: Bool
+        forceRestartIfNeeded: Bool,
+        startupAttemptID: UUID
     ) async {
         _ = forceRestartIfNeeded
-        store.transitionToFailed("Embedded server is unavailable in preview mode.")
+        _ = startupAttemptID
+        store.transitionToFailed(
+            "Embedded server is unavailable in preview mode.",
+            startupAttemptID: startupAttemptID
+        )
     }
 
     package func stop(store: CodexReviewStore) async {

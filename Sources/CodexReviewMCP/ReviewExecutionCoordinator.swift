@@ -131,7 +131,7 @@ package actor ReviewExecutionCoordinator {
         reason: String,
         store: CodexReviewStore
     ) async {
-        let targetIDs = await store.closeSessionState(sessionID)
+        let targetIDs = await store.closeSessionState(sessionID, reason: reason)
         let closeReason = ReviewTerminationReason.cancelled(reason.nilIfEmpty ?? "Cancellation requested.")
         for jobID in targetIDs {
             recordRequestedTerminationReason(jobID: jobID, reason: closeReason)

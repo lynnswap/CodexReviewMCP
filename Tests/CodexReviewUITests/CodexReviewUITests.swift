@@ -38,6 +38,18 @@ struct CodexReviewUITests {
         #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
     }
 
+    @Test func startingServerStateKeepsResetEnabledInStatusAccessory() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .starting, workspaces: [])
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.statusAccessoryViewControllerForTesting.isRestartEnabledForTesting)
+    }
+
     @Test func splitViewInstallsToolbarWithSidebarTrackingSeparator() {
         guard #available(macOS 26.0, *) else {
             return
@@ -637,10 +649,12 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
 
     func start(
         store: CodexReviewStore,
-        forceRestartIfNeeded: Bool
+        forceRestartIfNeeded: Bool,
+        startupAttemptID: UUID
     ) async {
         _ = store
         _ = forceRestartIfNeeded
+        _ = startupAttemptID
     }
 
     func stop(store: CodexReviewStore) async {

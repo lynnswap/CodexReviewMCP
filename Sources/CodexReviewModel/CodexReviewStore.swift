@@ -11,6 +11,8 @@ public final class CodexReviewStore {
 
     @ObservationIgnored package let diagnosticsURL: URL?
     @ObservationIgnored package let backend: any CodexReviewStoreBackend
+    @ObservationIgnored private var startupAttemptID: UUID?
+    @ObservationIgnored private var restartInFlight = false
 
     package init(
         backend: any CodexReviewStoreBackend,
@@ -29,21 +31,30 @@ public final class CodexReviewStore {
         }
 
         serverState = .starting
+        let startupAttemptID = UUID()
+        self.startupAttemptID = startupAttemptID
         serverURL = nil
         resetReviews()
         writeDiagnosticsIfNeeded()
         await backend.start(
             store: self,
-            forceRestartIfNeeded: forceRestartIfNeeded
+            forceRestartIfNeeded: forceRestartIfNeeded,
+            startupAttemptID: startupAttemptID
         )
     }
 
     public func stop() async {
+        startupAttemptID = nil
         await backend.stop(store: self)
         transitionToStopped()
     }
 
     public func restart() async {
+        guard restartInFlight == false else {
+            return
+        }
+        restartInFlight = true
+        defer { restartInFlight = false }
         await stop()
         await start(forceRestartIfNeeded: true)
     }
@@ -52,7 +63,13 @@ public final class CodexReviewStore {
         await backend.waitUntilStopped()
     }
 
-    package func transitionToRunning(serverURL: URL) {
+    package func transitionToRunning(
+        serverURL: URL,
+        startupAttemptID: UUID? = nil
+    ) {
+        guard matchesCurrentStartupAttempt(startupAttemptID) else {
+            return
+        }
         self.serverURL = serverURL
         serverState = .running
         writeDiagnosticsIfNeeded()
@@ -60,8 +77,13 @@ public final class CodexReviewStore {
 
     package func transitionToFailed(
         _ message: String,
-        resetJobs: Bool = false
+        resetJobs: Bool = false,
+        startupAttemptID: UUID? = nil
     ) {
+        guard matchesCurrentStartupAttempt(startupAttemptID) else {
+            return
+        }
+        self.startupAttemptID = nil
         serverURL = nil
         if resetJobs {
             resetReviews()
@@ -70,7 +92,14 @@ public final class CodexReviewStore {
         writeDiagnosticsIfNeeded()
     }
 
-    package func transitionToStopped(resetJobs: Bool = true) {
+    package func transitionToStopped(
+        resetJobs: Bool = true,
+        startupAttemptID: UUID? = nil
+    ) {
+        guard matchesCurrentStartupAttempt(startupAttemptID) else {
+            return
+        }
+        self.startupAttemptID = nil
         serverURL = nil
         if resetJobs {
             resetReviews()
@@ -119,5 +148,12 @@ public final class CodexReviewStore {
 
     private func resetReviews() {
         workspaces = []
+    }
+
+    private func matchesCurrentStartupAttempt(_ startupAttemptID: UUID?) -> Bool {
+        guard let startupAttemptID else {
+            return true
+        }
+        return self.startupAttemptID == startupAttemptID
     }
 }

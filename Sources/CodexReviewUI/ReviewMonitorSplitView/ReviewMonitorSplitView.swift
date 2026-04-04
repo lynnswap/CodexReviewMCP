@@ -185,6 +185,14 @@ extension ReviewMonitorSplitViewController {
         return transportViewController
     }
 
+    var statusAccessoryViewControllerForTesting: ReviewMonitorServerStatusAccessoryViewController {
+        guard let statusAccessoryViewController else {
+            fatalError("Status accessory view controller is not configured yet.")
+        }
+        statusAccessoryViewController.loadViewIfNeeded()
+        return statusAccessoryViewController
+    }
+
     var toolbarIdentifiersForTesting: [NSToolbarItem.Identifier] {
         toolbar?.items.map(\.itemIdentifier) ?? []
     }

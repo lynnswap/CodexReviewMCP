@@ -575,8 +575,10 @@ package struct CodexAppServerReviewRunner: Sendable {
                                 content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                             )
                         }
-                        let terminalError = finalSnapshot.terminalError
-                            ?? cancellationReasonValue.map { makeCodexReviewTerminalError(source: .cancelled, message: $0) }
+                        let terminalError = cancellationReasonValue.map {
+                                makeCodexReviewTerminalError(source: .cancelled, message: $0)
+                            }
+                            ?? finalSnapshot.terminalError
                             ?? makeCodexReviewTerminalError(source: .cancelled, message: "Review cancelled.")
                         await onEvent(.progress(.completed, "Review cancelled."))
                         return ReviewProcessOutcome(

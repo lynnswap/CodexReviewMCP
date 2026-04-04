@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import ReviewTestSupport
 @_spi(Testing) @testable import CodexReviewMCP
+@_spi(Testing) @testable import CodexReviewModel
 @testable import CodexAppServer
 @testable import ReviewCore
 @testable import ReviewJobs
@@ -108,6 +109,92 @@ struct CodexReviewMCPTests {
         _ = await stopTask.value
 
         #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
+    }
+
+    @Test func startFailsWhenAppServerPrepareTimesOut() async throws {
+        let manager = DelayedPrepareAppServerManager(
+            runtimeState: .init(
+                pid: 200,
+                startTime: .init(seconds: 2, microseconds: 0),
+                processGroupLeaderPID: 200,
+                processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: try isolatedHomeEnvironment()
+            ),
+            appServerStartupTimeout: .milliseconds(200),
+            appServerManager: manager
+        )
+
+        await store.start()
+
+        guard case .failed(let message) = store.serverState else {
+            throw TestFailure("expected start timeout to transition store to failed")
+        }
+        #expect(message.contains("Timed out waiting for app-server supervisor readiness."))
+        #expect(await manager.shutdownCount() >= 1)
+    }
+
+    @Test func restartFromStartingPerformsHardResetCleanupAndStartsFreshServer() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
+        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
+        let port = try nextAvailablePort(in: 39571 ... 39580)
+        let staleServerStartTime = ProcessStartTime(seconds: 10, microseconds: 0)
+
+        let staleDiscovery = LiveEndpointRecord(
+            url: "http://localhost:\(port)/mcp",
+            host: "localhost",
+            port: port,
+            pid: 900,
+            serverStartTime: staleServerStartTime,
+            updatedAt: Date(timeIntervalSince1970: 100),
+            executableName: nil
+        )
+        let staleRuntimeState = ReviewRuntimeStateRecord(
+            serverPID: 900,
+            serverStartTime: staleServerStartTime,
+            appServerPID: 901,
+            appServerStartTime: .init(seconds: 11, microseconds: 0),
+            appServerProcessGroupLeaderPID: 901,
+            appServerProcessGroupLeaderStartTime: .init(seconds: 11, microseconds: 0),
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        try ReviewDiscovery.write(staleDiscovery, to: discoveryFileURL)
+        try ReviewRuntimeStateStore.write(staleRuntimeState, to: runtimeStateFileURL)
+        defer {
+            ReviewDiscovery.remove(at: discoveryFileURL)
+            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        }
+
+        let runtimeState = CodexAppServerRuntimeState(
+            pid: 200,
+            startTime: .init(seconds: 2, microseconds: 0),
+            processGroupLeaderPID: 200,
+            processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
+        )
+        let manager = MockAppServerManager(modeProvider: { _ in .success() }, runtimeState: runtimeState)
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: port,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager
+        )
+        store.loadForTesting(serverState: .starting, workspaces: [])
+
+        await store.restart()
+        defer { Task { await store.stop() } }
+
+        #expect(store.serverState == .running)
+        let persistedRuntimeState = try #require(ReviewRuntimeStateStore.read(from: runtimeStateFileURL))
+        #expect(persistedRuntimeState.appServerPID == runtimeState.pid)
+        #expect(persistedRuntimeState.serverPID != staleRuntimeState.serverPID)
     }
 
     @Test func sessionTransportFailureDoesNotDropOtherSessionsOrRuntimeState() async throws {
@@ -687,6 +774,53 @@ private actor DelayedShutdownAppServerManager: CodexAppServerManaging {
     }
 }
 
+private actor DelayedPrepareAppServerManager: CodexAppServerManaging {
+    private let runtimeState: CodexAppServerRuntimeState
+    private var shutdownCountStorage = 0
+    private var isShuttingDown = false
+    private var prepareWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(runtimeState: CodexAppServerRuntimeState) {
+        self.runtimeState = runtimeState
+    }
+
+    func prepare() async throws -> CodexAppServerRuntimeState {
+        await withCheckedContinuation { continuation in
+            prepareWaiters.append(continuation)
+        }
+        if isShuttingDown {
+            throw ReviewError.io("prepare interrupted by shutdown")
+        }
+        return runtimeState
+    }
+
+    func makeSessionTransport(sessionID _: String) async throws -> any CodexAppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
+    func currentRuntimeState() async -> CodexAppServerRuntimeState? {
+        runtimeState
+    }
+
+    func diagnosticsTail() async -> String {
+        ""
+    }
+
+    func shutdown() async {
+        shutdownCountStorage += 1
+        isShuttingDown = true
+        let waiters = prepareWaiters
+        prepareWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    func shutdownCount() async -> Int {
+        shutdownCountStorage
+    }
+}
+
 private actor DelayedConnectAppServerManager: CodexAppServerManaging {
     private let runtimeState: CodexAppServerRuntimeState
     private var connectStarted = false
@@ -948,6 +1082,38 @@ private func makeTemporaryDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+private func nextAvailablePort(in range: ClosedRange<Int>) throws -> Int {
+    for port in range {
+        let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            continue
+        }
+        defer { close(descriptor) }
+
+        var value: Int32 = 1
+        _ = withUnsafePointer(to: &value) {
+            setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, $0, socklen_t(MemoryLayout<Int32>.size))
+        }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if result == 0 {
+            return port
+        }
+    }
+
+    throw TestFailure("no free TCP port found in range \(range)")
 }
 
 private struct TestFailure: Error {

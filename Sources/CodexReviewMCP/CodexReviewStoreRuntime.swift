@@ -27,11 +27,13 @@ extension CodexReviewStore {
     package convenience init(
         configuration: ReviewServerConfiguration,
         diagnosticsURL: URL? = nil,
+        appServerStartupTimeout: Duration = CodexAppServerSupervisor.Configuration.defaultStartupTimeout,
         appServerManager: (any CodexAppServerManaging)? = nil
     ) {
         self.init(
             backend: CodexReviewEmbeddedServerBackend(
                 configuration: configuration,
+                appServerStartupTimeout: appServerStartupTimeout,
                 appServerManager: appServerManager
             ),
             diagnosticsURL: diagnosticsURL
@@ -144,7 +146,7 @@ extension CodexReviewStore {
         initialModel: String? = nil
     ) throws -> String {
         let backend = try liveBackend()
-        if backend.closedSessions.contains(sessionID) {
+        if backend.closedSessions[sessionID] != nil {
             throw ReviewError.accessDenied("Session \(sessionID) is already closed.")
         }
         let request = try request.validated()
@@ -364,11 +366,11 @@ extension CodexReviewStore {
         let defaultReason = "Cancellation requested."
         let closedSessionReason: ReviewTerminationReason? = {
             guard let backend = backend as? CodexReviewEmbeddedServerBackend,
-                  backend.closedSessions.contains(sessionID)
+                  let reason = backend.closedSessions[sessionID]
             else {
                 return nil
             }
-            return .cancelled(defaultReason)
+            return .cancelled(reason.nilIfEmpty ?? defaultReason)
         }()
 
         guard let location = jobLocation(id: jobID) else {
@@ -384,11 +386,14 @@ extension CodexReviewStore {
         return closedSessionReason
     }
 
-    package func closeSessionState(_ sessionID: String) -> [String] {
+    package func closeSessionState(
+        _ sessionID: String,
+        reason: String
+    ) -> [String] {
         guard let backend = backend as? CodexReviewEmbeddedServerBackend else {
             return []
         }
-        backend.closedSessions.insert(sessionID)
+        backend.closedSessions[sessionID] = reason
         var activeJobIDs: [String] = []
         for workspace in workspaces {
             activeJobIDs.append(
@@ -407,7 +412,7 @@ extension CodexReviewStore {
             return
         }
         let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard backend.closedSessions.contains(job.sessionID),
+        guard backend.closedSessions[job.sessionID] != nil,
               job.isTerminal
         else {
             return
@@ -420,7 +425,7 @@ extension CodexReviewStore {
         excludingJobIDs: Set<String> = []
     ) {
         guard let backend = backend as? CodexReviewEmbeddedServerBackend,
-              backend.closedSessions.contains(sessionID)
+              backend.closedSessions[sessionID] != nil
         else {
             return
         }
@@ -921,6 +926,7 @@ extension CodexReviewStore {
 @MainActor
 private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
+    let appServerStartupTimeout: Duration
     let appServerManager: any CodexAppServerManaging
     lazy var executionCoordinator: ReviewExecutionCoordinator = {
         ReviewExecutionCoordinator(
@@ -945,7 +951,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     private var server: ReviewMCPHTTPServer?
     private var waitTask: Task<Void, Never>?
-    var closedSessions: Set<String> = []
+    var closedSessions: [String: String] = [:]
     private var discoveryFileURL: URL {
         ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
     }
@@ -959,22 +965,26 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     init(
         configuration: ReviewServerConfiguration,
+        appServerStartupTimeout: Duration = CodexAppServerSupervisor.Configuration.defaultStartupTimeout,
         appServerManager: (any CodexAppServerManaging)? = nil
     ) {
         self.configuration = configuration
+        self.appServerStartupTimeout = appServerStartupTimeout
         self.appServerManager = appServerManager ?? CodexAppServerSupervisor(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
-                environment: configuration.environment
+                environment: configuration.environment,
+                startupTimeout: appServerStartupTimeout
             )
         )
     }
 
     func start(
         store: CodexReviewStore,
-        forceRestartIfNeeded: Bool
+        forceRestartIfNeeded: Bool,
+        startupAttemptID: UUID
     ) async {
-        closedSessions = []
+        closedSessions = [:]
 
         let server = makeServer(store: store)
         do {
@@ -991,23 +1001,35 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 url = try await server.start()
             }
 
-            let appServerRuntimeState = try await appServerManager.prepare()
+            let appServerRuntimeState = try await prepareAppServerRuntimeState()
             self.server = server
             writeRuntimeState(
                 endpointRecord: server.currentEndpointRecord(),
                 appServerRuntimeState: appServerRuntimeState
             )
-            store.transitionToRunning(serverURL: url)
-            observeServerLifecycle(server: server, store: store)
+            store.transitionToRunning(
+                serverURL: url,
+                startupAttemptID: startupAttemptID
+            )
+            observeServerLifecycle(
+                server: server,
+                store: store,
+                startupAttemptID: startupAttemptID
+            )
         } catch {
             await server.stop()
             await appServerManager.shutdown()
+            try? await replayAddressInUseCleanup()
             self.server = nil
-            store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
+            store.transitionToFailed(
+                CodexReviewStore.errorMessage(from: error),
+                startupAttemptID: startupAttemptID
+            )
         }
     }
 
     func stop(store: CodexReviewStore) async {
+        let shouldHardResetPersistedState = store.serverState != .running
         waitTask?.cancel()
         waitTask = nil
         await executionCoordinator.shutdown(reason: "Review server stopped.", store: store)
@@ -1019,8 +1041,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         } else {
             await appServerManager.shutdown()
         }
+        if shouldHardResetPersistedState {
+            try? await replayAddressInUseCleanup()
+        }
         self.server = nil
-        closedSessions = []
+        closedSessions = [:]
     }
 
     func waitUntilStopped() async {
@@ -1108,6 +1133,47 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         )
     }
 
+    private func prepareAppServerRuntimeState() async throws -> CodexAppServerRuntimeState {
+        let manager = appServerManager
+        let startupTimeout = appServerStartupTimeout
+        let prepareTask = Task {
+            try await manager.prepare()
+        }
+
+        return try await withThrowingTaskGroup(of: CodexAppServerRuntimeState.self) { group in
+            group.addTask {
+                try await prepareTask.value
+            }
+            group.addTask {
+                try await Task.sleep(for: startupTimeout)
+                try Task.checkCancellation()
+                throw ReviewError.spawnFailed(
+                    "Timed out waiting for app-server supervisor readiness."
+                )
+            }
+
+            do {
+                guard let result = try await group.next() else {
+                    throw ReviewError.spawnFailed(
+                        "Timed out waiting for app-server supervisor readiness."
+                    )
+                }
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                prepareTask.cancel()
+                if let reviewError = error as? ReviewError,
+                   case .spawnFailed = reviewError
+                {
+                    await manager.shutdown()
+                    throw reviewError
+                }
+                throw error
+            }
+        }
+    }
+
     private func replayAddressInUseCleanup() async throws {
         let runtimeState = ReviewRuntimeStateStore.read(from: runtimeStateFileURL)
         if let endpointRecord = addressInUseCleanupRecord(runtimeState: runtimeState) {
@@ -1165,7 +1231,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     private func observeServerLifecycle(
         server: ReviewMCPHTTPServer,
-        store: CodexReviewStore
+        store: CodexReviewStore,
+        startupAttemptID: UUID
     ) {
         waitTask?.cancel()
         waitTask = Task { @MainActor [weak self, weak store] in
@@ -1180,8 +1247,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
-                self.closedSessions = []
-                store.transitionToStopped()
+                self.closedSessions = [:]
+                store.transitionToStopped(startupAttemptID: startupAttemptID)
             } catch is CancellationError {
             } catch {
                 guard let self, let store, self.server === server else {
@@ -1193,10 +1260,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
-                self.closedSessions = []
+                self.closedSessions = [:]
                 store.transitionToFailed(
                     CodexReviewStore.errorMessage(from: error),
-                    resetJobs: true
+                    resetJobs: true,
+                    startupAttemptID: startupAttemptID
                 )
             }
         }
