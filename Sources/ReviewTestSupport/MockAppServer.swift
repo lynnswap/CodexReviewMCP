@@ -358,6 +358,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             case .nonRetryErrorWithoutTurnCompletion(let reviewThreadID, _, let turnID, _, let message):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
                 let failure: AppServerErrorNotification = try decodeResponse(
                     [
                         "error": [
@@ -365,7 +366,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                             "additionalDetails": NSNull(),
                         ],
                         "willRetry": false,
-                        "threadId": reviewThreadID,
+                        "threadId": threadID,
                         "turnId": turnID,
                     ],
                     as: AppServerErrorNotification.self
@@ -382,6 +383,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                let threadID = currentThreadID ?? reviewThreadID
                 let failure: AppServerErrorNotification = try decodeResponse(
                     [
                         "error": [
@@ -389,7 +391,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                             "additionalDetails": NSNull(),
                         ],
                         "willRetry": false,
-                        "threadId": reviewThreadID,
+                        "threadId": threadID,
                         "turnId": turnID,
                     ],
                     as: AppServerErrorNotification.self
@@ -405,6 +407,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             case .nonRetryErrorThenCompleted(let reviewThreadID, _, let turnID, _, let finalReview, let message):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
                 let failure: AppServerErrorNotification = try decodeResponse(
                     [
                         "error": [
@@ -412,7 +415,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                             "additionalDetails": NSNull(),
                         ],
                         "willRetry": false,
-                        "threadId": reviewThreadID,
+                        "threadId": threadID,
                         "turnId": turnID,
                     ],
                     as: AppServerErrorNotification.self
@@ -429,20 +432,21 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             case .finalReviewWithoutTurnCompletionAfterThreadUnavailable(let reviewThreadID, _, let turnID, _, let finalReview):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
                 notifications.append(
                     .threadStatusChanged(
                         .init(
-                            threadID: reviewThreadID,
+                            threadID: threadID,
                             status: .init(type: "notLoaded")
                         )
                     )
                 )
-                notifications.append(.threadClosed(.init(threadID: reviewThreadID)))
+                notifications.append(.threadClosed(.init(threadID: threadID)))
                 notifications.append(
                     .itemCompleted(
                         .init(
                             item: .exitedReviewMode(id: turnID, review: finalReview),
-                            threadID: reviewThreadID,
+                            threadID: threadID,
                             turnID: turnID
                         )
                     )
@@ -457,10 +461,11 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             case .turnCompletedBeforeFinalReviewThenThreadUnavailable(let reviewThreadID, _, let turnID, _, let finalReview):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
                 notifications.append(
                     .turnCompleted(
                         .init(
-                            threadID: reviewThreadID,
+                            threadID: threadID,
                             turn: .init(id: turnID, status: .completed, error: nil)
                         )
                     )
@@ -468,17 +473,17 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 notifications.append(
                     .threadStatusChanged(
                         .init(
-                            threadID: reviewThreadID,
+                            threadID: threadID,
                             status: .init(type: "notLoaded")
                         )
                     )
                 )
-                notifications.append(.threadClosed(.init(threadID: reviewThreadID)))
+                notifications.append(.threadClosed(.init(threadID: threadID)))
                 delayedNotifications.append(
                     .itemCompleted(
                         .init(
                             item: .exitedReviewMode(id: turnID, review: finalReview),
-                            threadID: reviewThreadID,
+                            threadID: threadID,
                             turnID: turnID
                         )
                     )
@@ -495,10 +500,11 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 let turnID = "turn-review"
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
                 notifications.append(
                     .turnCompleted(
                         .init(
-                            threadID: reviewThreadID,
+                            threadID: threadID,
                             turn: .init(id: turnID, status: .failed, error: .init(message: message))
                         )
                     )
@@ -513,15 +519,16 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             case .threadClosedWithoutTurnCompletion(let reviewThreadID, _, let turnID, _):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
                 notifications.append(
                     .threadStatusChanged(
                         .init(
-                            threadID: reviewThreadID,
+                            threadID: threadID,
                             status: .init(type: "notLoaded")
                         )
                     )
                 )
-                notifications.append(.threadClosed(.init(threadID: reviewThreadID)))
+                notifications.append(.threadClosed(.init(threadID: threadID)))
                 return try decodeResponse(
                     [
                         "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
@@ -532,15 +539,16 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             case .threadClosedBeforeCompletedNotifications(let reviewThreadID, _, let turnID, _, let finalReview):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
                 notifications.append(
                     .threadStatusChanged(
                         .init(
-                            threadID: reviewThreadID,
+                            threadID: threadID,
                             status: .init(type: "notLoaded")
                         )
                     )
                 )
-                notifications.append(.threadClosed(.init(threadID: reviewThreadID)))
+                notifications.append(.threadClosed(.init(threadID: threadID)))
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
                 return try decodeResponse(
                     [
@@ -665,10 +673,11 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
     }
 
     private func enqueueReviewStarted(reviewThreadID: String, turnID: String) {
+        let threadID = currentThreadID ?? reviewThreadID
         notifications.append(
             .turnStarted(
                 .init(
-                    threadID: reviewThreadID,
+                    threadID: threadID,
                     turn: .init(id: turnID, status: .inProgress, error: nil)
                 )
             )
@@ -677,7 +686,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             .itemStarted(
                 .init(
                     item: .enteredReviewMode(id: turnID, review: "current changes"),
-                    threadID: reviewThreadID,
+                    threadID: threadID,
                     turnID: turnID
                 )
             )
@@ -699,11 +708,12 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         finalReview: String,
         into destination: inout [AppServerServerNotification]
     ) {
+        let threadID = currentThreadID ?? reviewThreadID
         destination.append(
             .itemCompleted(
                 .init(
                     item: .exitedReviewMode(id: turnID, review: finalReview),
-                    threadID: reviewThreadID,
+                    threadID: threadID,
                     turnID: turnID
                 )
             )
@@ -711,7 +721,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         destination.append(
             .turnCompleted(
                 .init(
-                    threadID: reviewThreadID,
+                    threadID: threadID,
                     turn: .init(id: turnID, status: .completed, error: nil)
                 )
             )

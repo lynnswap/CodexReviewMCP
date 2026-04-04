@@ -1367,10 +1367,10 @@ private actor AppServerReviewState {
     }
 
     private func isActiveReviewThread(_ threadID: String) -> Bool {
-        guard let reviewThreadID else {
+        guard let activeThreadID = self.threadID else {
             return false
         }
-        return threadID == reviewThreadID
+        return threadID == activeThreadID
     }
 
     private func isTrackedTurn(_ turnID: String) -> Bool {
