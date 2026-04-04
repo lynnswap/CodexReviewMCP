@@ -6,5 +6,5 @@ package enum ReviewProcessEvent: Sendable {
     case logEntry(ReviewLogEntry)
     case rawLine(String)
     case agentMessage(String)
-    case failed(String)
+    case failed(CodexReviewTerminalError)
 }

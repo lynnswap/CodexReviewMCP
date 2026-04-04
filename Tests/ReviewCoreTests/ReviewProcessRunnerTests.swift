@@ -1,15 +1,16 @@
 import Foundation
 import Testing
 import ReviewTestSupport
+@testable import CodexAppServer
 @testable import ReviewCore
 @testable import ReviewJobs
 
 @Suite(.serialized)
-struct AppServerReviewRunnerTests {
+struct CodexAppServerReviewRunnerTests {
     @Test func appServerReviewRunnerSucceedsAndCapturesReviewLifecycle() async throws {
         let cwd = try makeTemporaryDirectory()
         let recorder = EventRecorder()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -48,7 +49,7 @@ struct AppServerReviewRunnerTests {
             homeURL: tempHome,
             content: #"review_model = "gpt-5.4-mini""#
         )
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: ["HOME": tempHome.path]
             )
@@ -70,7 +71,7 @@ struct AppServerReviewRunnerTests {
 
     @Test func appServerReviewRunnerWaitsForSecondNotificationBatchBeforeCleaningUp() async throws {
         let cwd = try makeTemporaryDirectory()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -94,7 +95,7 @@ struct AppServerReviewRunnerTests {
 
     @Test func appServerReviewRunnerThrowsWhenConfigReadFailsUnexpectedly() async throws {
         let cwd = try makeTemporaryDirectory()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -117,7 +118,7 @@ struct AppServerReviewRunnerTests {
         let cwd = try makeTemporaryDirectory()
         let cancellation = CancellationFlag()
         let reviewStarted = ReviewStartedProbe()
-        var runner = AppServerReviewRunner(
+        var runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -154,7 +155,7 @@ struct AppServerReviewRunnerTests {
         let cwd = try makeTemporaryDirectory()
         let cancellation = CancellationFlag()
         let reviewStarted = ReviewStartedProbe()
-        var runner = AppServerReviewRunner(
+        var runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -190,7 +191,7 @@ struct AppServerReviewRunnerTests {
     @Test func appServerReviewRunnerPreservesParentThreadIDWhenReviewThreadDiffers() async throws {
         let cwd = try makeTemporaryDirectory()
         let reviewStarted = ReviewStartedProbe()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -227,7 +228,7 @@ struct AppServerReviewRunnerTests {
         let cwd = try makeTemporaryDirectory()
         let reviewStarted = ReviewStartedProbe()
         let cancellation = CancellationFlag()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -255,14 +256,14 @@ struct AppServerReviewRunnerTests {
         let result = try await task.value
 
         #expect(result.state == ReviewJobState.cancelled)
-        #expect(result.errorMessage?.contains("Cancellation requested.") == true)
+        #expect(result.terminalError?.message.contains("Cancellation requested.") == true)
         #expect(await session.backgroundCleanCount >= 1)
         #expect(await session.unsubscribeCount >= 1)
     }
 
     @Test func appServerReviewRunnerEnforcesTimeoutWhenTurnStaysInProgress() async throws {
         let cwd = try makeTemporaryDirectory()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -290,7 +291,7 @@ struct AppServerReviewRunnerTests {
         let cwd = try makeTemporaryDirectory()
         let reviewStarted = ReviewStartedProbe()
         let cancellation = CancellationFlag()
-        var runner = AppServerReviewRunner(
+        var runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -327,7 +328,7 @@ struct AppServerReviewRunnerTests {
 
     @Test func appServerReviewRunnerReturnsBootstrapFailureWhenThreadStartDisconnects() async throws {
         let cwd = try makeTemporaryDirectory()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -349,7 +350,7 @@ struct AppServerReviewRunnerTests {
     @Test func appServerReviewRunnerFailsWhenReviewThreadClosesBeforeTurnCompletes() async throws {
         let cwd = try makeTemporaryDirectory()
         let recorder = EventRecorder()
-        var runner = AppServerReviewRunner(
+        var runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -369,12 +370,12 @@ struct AppServerReviewRunnerTests {
         )
 
         #expect(result.state == .failed)
-        #expect(result.errorMessage == "Review thread closed before the review completed.")
+        #expect(result.terminalError?.message == "Review thread closed before the review completed.")
     }
 
     @Test func appServerReviewRunnerWaitsForTerminalEventsAfterThreadCloses() async throws {
         let cwd = try makeTemporaryDirectory()
-        var runner = AppServerReviewRunner(
+        var runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -397,7 +398,7 @@ struct AppServerReviewRunnerTests {
 
     @Test func appServerReviewRunnerIgnoresUnrelatedNonRetryErrorNotifications() async throws {
         let cwd = try makeTemporaryDirectory()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -419,7 +420,7 @@ struct AppServerReviewRunnerTests {
 
     @Test func appServerReviewRunnerIgnoresParentThreadClosureForDetachedReviews() async throws {
         let cwd = try makeTemporaryDirectory()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -445,7 +446,7 @@ struct AppServerReviewRunnerTests {
 
     @Test func appServerReviewRunnerFailsImmediatelyOnTrackedNonRetryErrorNotification() async throws {
         let cwd = try makeTemporaryDirectory()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -462,12 +463,12 @@ struct AppServerReviewRunnerTests {
         )
 
         #expect(result.state == .failed)
-        #expect(result.errorMessage == "review failed hard")
+        #expect(result.terminalError?.message == "review failed hard")
     }
 
     @Test func appServerReviewRunnerLetsTerminalErrorOverrideCompletedTurn() async throws {
         let cwd = try makeTemporaryDirectory()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -484,12 +485,12 @@ struct AppServerReviewRunnerTests {
         )
 
         #expect(result.state == .failed)
-        #expect(result.errorMessage == "review failed after completion")
+        #expect(result.terminalError?.message == "review failed after completion")
     }
 
     @Test func appServerReviewRunnerPreservesFailureWhenTurnCompletesAfterError() async throws {
         let cwd = try makeTemporaryDirectory()
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -506,12 +507,12 @@ struct AppServerReviewRunnerTests {
         )
 
         #expect(result.state == .failed)
-        #expect(result.errorMessage == "review failed before completion")
+        #expect(result.terminalError?.message == "review failed before completion")
     }
 
     @Test func appServerReviewRunnerFailsWhenFinalReviewArrivesWithoutTurnCompletionAfterThreadUnload() async throws {
         let cwd = try makeTemporaryDirectory()
-        var runner = AppServerReviewRunner(
+        var runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -531,12 +532,12 @@ struct AppServerReviewRunnerTests {
         )
 
         #expect(result.state == .failed)
-        #expect(result.errorMessage == "Review thread closed before the review completed.")
+        #expect(result.terminalError?.message == "Review thread closed before the review completed.")
     }
 
     @Test func appServerReviewRunnerAcceptsLateFinalReviewAfterCompletedTurnAndThreadUnload() async throws {
         let cwd = try makeTemporaryDirectory()
-        var runner = AppServerReviewRunner(
+        var runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -561,7 +562,7 @@ struct AppServerReviewRunnerTests {
 
     @Test func appServerReviewRunnerPrefersTimeoutOverThreadUnavailableFailure() async throws {
         let cwd = try makeTemporaryDirectory()
-        var runner = AppServerReviewRunner(
+        var runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
             )
@@ -580,7 +581,7 @@ struct AppServerReviewRunnerTests {
 
         #expect(result.state == .failed)
         #expect(result.exitCode == 124)
-        #expect(result.errorMessage == "Review timed out after 0 seconds.")
+        #expect(result.terminalError?.message == "Review timed out after 0 seconds.")
     }
 }
 

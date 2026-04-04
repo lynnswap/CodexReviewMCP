@@ -146,7 +146,7 @@ struct CodexReviewUITests {
 
         #expect(job.status == .cancelled)
         #expect(job.summary == "Review cancelled.")
-        #expect(job.errorMessage == "Cancellation requested.")
+        #expect(job.terminalError?.message == "Cancellation requested.")
         #expect(job.startedAt == startedAt)
         #expect(job.endedAt != nil)
     }
@@ -174,7 +174,7 @@ struct CodexReviewUITests {
 
         #expect(job.status == .running)
         #expect(job.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(job.errorMessage == "Cancellation failed.")
+        #expect(job.terminalError?.message == "Cancellation failed.")
         #expect(job.endedAt == nil)
     }
 

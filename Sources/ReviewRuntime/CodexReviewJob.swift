@@ -32,7 +32,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public var hasFinalReview: Bool
     public var lastAgentMessage: String?
     public var logEntries: [ReviewLogEntry]
-    public var errorMessage: String?
+    public var terminalError: CodexReviewTerminalError?
     public var exitCode: Int?
 
     public var isTerminal: Bool {
@@ -91,16 +91,16 @@ public final class CodexReviewJob: Identifiable, Hashable {
             {
                 return lastAgentMessage
             }
-            if let errorMessage, errorMessage.isEmpty == false {
-                return errorMessage
+            if let terminalError {
+                return terminalError.displayText
             }
             return summary
         }
         if let lastAgentMessage, lastAgentMessage.isEmpty == false {
             return lastAgentMessage
         }
-        if let errorMessage, errorMessage.isEmpty == false {
-            return errorMessage
+        if let terminalError {
+            return terminalError.displayText
         }
         return summary
     }
@@ -123,7 +123,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         hasFinalReview: Bool,
         lastAgentMessage: String?,
         logEntries: [ReviewLogEntry],
-        errorMessage: String?,
+        terminalError: CodexReviewTerminalError?,
         exitCode: Int?
     ) {
         self.id = id
@@ -143,7 +143,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         self.hasFinalReview = hasFinalReview
         self.lastAgentMessage = lastAgentMessage
         self.logEntries = logEntries
-        self.errorMessage = errorMessage
+        self.terminalError = terminalError
         self.exitCode = exitCode
     }
 

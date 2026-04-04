@@ -21,7 +21,7 @@ extension CodexReviewJob {
         hasFinalReview: Bool = false,
         lastAgentMessage: String? = "",
         logEntries: [ReviewLogEntry] = [],
-        errorMessage: String? = nil,
+        terminalError: CodexReviewTerminalError? = nil,
         exitCode: Int? = nil
     ) -> CodexReviewJob {
         CodexReviewJob(
@@ -42,7 +42,7 @@ extension CodexReviewJob {
             hasFinalReview: hasFinalReview,
             lastAgentMessage: lastAgentMessage,
             logEntries: logEntries,
-            errorMessage: errorMessage,
+            terminalError: terminalError,
             exitCode: exitCode
         )
     }

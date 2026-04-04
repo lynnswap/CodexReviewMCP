@@ -191,7 +191,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         let oversizedError = String(repeating: "b", count: reviewLogLimitBytes) + " BOOTSTRAP TAIL"
         store.failToStart(
             jobID: jobID,
-            message: oversizedError,
+            terminalError: .init(source: .bootstrap, message: oversizedError),
             startedAt: Date(timeIntervalSince1970: 1),
             endedAt: Date(timeIntervalSince1970: 2)
         )

@@ -33,8 +33,11 @@ struct ReviewToolHandler {
                 as: ReviewStartArguments.self
             )
             let result = try await startReview(arguments.makeRequest())
+            let responseText = result.review.isEmpty
+                ? (result.terminalError?.displayText ?? result.status.rawValue)
+                : result.review
             return try CallTool.Result(
-                content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
+                content: [.text(text: responseText, annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContentForStart(),
                 isError: result.status == .failed
             )
@@ -61,8 +64,11 @@ struct ReviewToolHandler {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewReadArguments.self)
             let result = try await readReview(arguments.reviewThreadID)
+            let responseText = result.review.isEmpty
+                ? (result.terminalError?.displayText ?? result.status.rawValue)
+                : result.review
             return try CallTool.Result(
-                content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
+                content: [.text(text: responseText, annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContentForRead(),
                 isError: result.status == .failed
             )

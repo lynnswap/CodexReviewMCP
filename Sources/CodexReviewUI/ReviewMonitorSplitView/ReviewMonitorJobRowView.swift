@@ -82,11 +82,11 @@ struct ReviewMonitorJobRowView: View {
             let reviewText = job.reviewText.trimmingCharacters(in: .whitespacesAndNewlines)
             return reviewText.isEmpty ? nil : reviewText
         }
-        if let errorMessage = job.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
-           errorMessage.isEmpty == false
+        if let terminalError = job.terminalError?.displayText.trimmingCharacters(in: .whitespacesAndNewlines),
+           terminalError.isEmpty == false
         {
             let summary = job.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            return summary.isEmpty ? errorMessage : summary
+            return summary.isEmpty ? terminalError : summary
         }
         guard let lastAgentMessage = job.lastAgentMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
               lastAgentMessage.isEmpty == false

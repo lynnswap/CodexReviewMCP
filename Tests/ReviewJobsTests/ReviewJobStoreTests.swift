@@ -135,7 +135,7 @@ struct ReviewJobStoreTests {
         let result = try await reviewTask.value
 
         #expect(result.status == .cancelled)
-        #expect(result.error == "session closed")
+        #expect(result.terminalError?.message == "session closed")
     }
 
     @Test func codexReviewStoreFailsToStartWhenReviewStartFails() async throws {
@@ -160,7 +160,7 @@ struct ReviewJobStoreTests {
         )
 
         #expect(result.status == .failed)
-        #expect(result.error?.contains("Failed to start review") == true)
+        #expect(result.terminalError?.message.contains("Failed to start review") == true)
     }
 
     @Test func codexReviewStoreClosesSessionLaneAfterBootstrapFailure() async throws {

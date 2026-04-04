@@ -2,7 +2,9 @@ import Foundation
 import Testing
 import ReviewTestSupport
 @_spi(Testing) @testable import CodexReviewMCP
+@testable import CodexAppServer
 @testable import ReviewCore
+@testable import ReviewJobs
 
 @Suite(.serialized)
 @MainActor
@@ -18,7 +20,7 @@ struct CodexReviewMCPTests {
             ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
         }
 
-        let runtimeState = AppServerRuntimeState(
+        let runtimeState = CodexAppServerRuntimeState(
             pid: 200,
             startTime: .init(seconds: 2, microseconds: 0),
             processGroupLeaderPID: 200,
@@ -620,26 +622,26 @@ private actor RestartTaskResultBox {
     }
 }
 
-private actor DelayedShutdownAppServerManager: AppServerManaging {
-    private let runtimeState: AppServerRuntimeState
+private actor DelayedShutdownAppServerManager: CodexAppServerManaging {
+    private let runtimeState: CodexAppServerRuntimeState
     private var shutdownStarted = false
     private var shutdownWaiters: [CheckedContinuation<Void, Never>] = []
     private var resumeWaiters: [CheckedContinuation<Void, Never>] = []
     private var resumeRequested = false
 
-    init(runtimeState: AppServerRuntimeState) {
+    init(runtimeState: CodexAppServerRuntimeState) {
         self.runtimeState = runtimeState
     }
 
-    func prepare() async throws -> AppServerRuntimeState {
+    func prepare() async throws -> CodexAppServerRuntimeState {
         runtimeState
     }
 
-    func makeSessionTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+    func makeSessionTransport(sessionID _: String) async throws -> any CodexAppServerSessionTransport {
         MockAppServerSessionTransport(mode: .success())
     }
 
-    func currentRuntimeState() async -> AppServerRuntimeState? {
+    func currentRuntimeState() async -> CodexAppServerRuntimeState? {
         runtimeState
     }
 
@@ -685,23 +687,23 @@ private actor DelayedShutdownAppServerManager: AppServerManaging {
     }
 }
 
-private actor DelayedConnectAppServerManager: AppServerManaging {
-    private let runtimeState: AppServerRuntimeState
+private actor DelayedConnectAppServerManager: CodexAppServerManaging {
+    private let runtimeState: CodexAppServerRuntimeState
     private var connectStarted = false
     private var connectStartWaiters: [CheckedContinuation<Void, Never>] = []
     private var connectResumeWaiters: [CheckedContinuation<Void, Never>] = []
     private var connectResumed = false
     private var transport: MockAppServerSessionTransport?
 
-    init(runtimeState: AppServerRuntimeState) {
+    init(runtimeState: CodexAppServerRuntimeState) {
         self.runtimeState = runtimeState
     }
 
-    func prepare() async throws -> AppServerRuntimeState {
+    func prepare() async throws -> CodexAppServerRuntimeState {
         runtimeState
     }
 
-    func makeSessionTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+    func makeSessionTransport(sessionID _: String) async throws -> any CodexAppServerSessionTransport {
         connectStarted = true
         let startWaiters = connectStartWaiters
         connectStartWaiters.removeAll(keepingCapacity: false)
@@ -718,7 +720,7 @@ private actor DelayedConnectAppServerManager: AppServerManaging {
         return transport
     }
 
-    func currentRuntimeState() async -> AppServerRuntimeState? {
+    func currentRuntimeState() async -> CodexAppServerRuntimeState? {
         runtimeState
     }
 

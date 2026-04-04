@@ -1,32 +1,33 @@
 import Foundation
+import CodexAppServerProtocol
 import ReviewJobs
 
-package protocol AppServerSessionTransport: Sendable {
-    func initializeResponse() async -> AppServerInitializeResponse
+package protocol CodexAppServerSessionTransport: Sendable {
+    func initializeResponse() async -> CodexAppServerInitializeResponse
     func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
         method: String,
         params: Params,
         responseType: Response.Type
     ) async throws -> Response
     func notify<Params: Encodable & Sendable>(method: String, params: Params) async throws
-    func drainNotifications() async -> [AppServerServerNotification]
+    func drainNotifications() async -> [CodexAppServerNotification]
     func disconnectError() async -> Error?
     func diagnosticsTail() async -> String
     func isClosed() async -> Bool
     func close() async
 }
 
-package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
+package actor CodexAppServerWebSocketSessionTransport: CodexAppServerSessionTransport {
     private let session: URLSession
     private let task: URLSessionWebSocketTask
-    private var initializePayload: AppServerInitializeResponse
+    private var initializePayload: CodexAppServerInitializeResponse
     private let diagnosticsProvider: @Sendable () async -> String
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let requestTimeout: Duration = .seconds(30)
     private var nextRequestID = 1
-    private var pendingResponses: [AppServerRequestID: CheckedContinuation<Data, Error>] = [:]
-    private var notifications: [AppServerServerNotification] = []
+    private var pendingResponses: [CodexAppServerRequestID: CheckedContinuation<Data, Error>] = [:]
+    private var notifications: [CodexAppServerNotification] = []
     private var receiveTask: Task<Void, Never>?
     private var closed = false
     private var disconnected: Error?
@@ -38,7 +39,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         clientTitle: String,
         clientVersion: String,
         diagnosticsProvider: @escaping @Sendable () async -> String
-    ) async throws -> AppServerWebSocketSessionTransport {
+    ) async throws -> CodexAppServerWebSocketSessionTransport {
         let configuration = URLSessionConfiguration.ephemeral
         let session = URLSession(configuration: configuration)
         var request = URLRequest(url: websocketURL)
@@ -46,13 +47,13 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         let task = session.webSocketTask(with: request)
         task.resume()
 
-        let initializePayload = AppServerInitializeResponse(
+        let initializePayload = CodexAppServerInitializeResponse(
             userAgent: nil,
             codexHome: nil,
             platformFamily: nil,
             platformOs: nil
         )
-        let transport = AppServerWebSocketSessionTransport(
+        let transport = CodexAppServerWebSocketSessionTransport(
             session: session,
             task: task,
             initializePayload: initializePayload,
@@ -60,9 +61,9 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         )
         do {
             await transport.startReceiving()
-            let initializeResponse: AppServerInitializeResponse = try await transport.request(
+            let initializeResponse: CodexAppServerInitializeResponse = try await transport.request(
                 method: "initialize",
-                params: AppServerInitializeParams(
+                params: CodexAppServerInitializeParams(
                     clientInfo: .init(
                         name: clientName,
                         title: clientTitle,
@@ -70,10 +71,10 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
                     ),
                     capabilities: .init(experimentalApi: true)
                 ),
-                responseType: AppServerInitializeResponse.self
+                responseType: CodexAppServerInitializeResponse.self
             )
             await transport.storeInitializeResponse(initializeResponse)
-            try await transport.notify(method: "initialized", params: AppServerInitializedParams())
+            try await transport.notify(method: "initialized", params: CodexAppServerInitializedParams())
             return transport
         } catch {
             await transport.close()
@@ -84,7 +85,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
     private init(
         session: URLSession,
         task: URLSessionWebSocketTask,
-        initializePayload: AppServerInitializeResponse,
+        initializePayload: CodexAppServerInitializeResponse,
         diagnosticsProvider: @escaping @Sendable () async -> String
     ) {
         self.session = session
@@ -93,7 +94,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         self.diagnosticsProvider = diagnosticsProvider
     }
 
-    package func initializeResponse() async -> AppServerInitializeResponse {
+    package func initializeResponse() async -> CodexAppServerInitializeResponse {
         initializePayload
     }
 
@@ -109,11 +110,11 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
             throw ReviewError.io("app-server websocket session is closed.")
         }
 
-        let id = AppServerRequestID.integer(nextRequestID)
+        let id = CodexAppServerRequestID.integer(nextRequestID)
         nextRequestID += 1
         appServerTransportDebug("sending websocket request \(id): \(method)")
         let payload = try encoder.encode(
-            AppServerRequestEnvelope(
+            CodexAppServerRequestEnvelope(
                 id: id,
                 method: method,
                 params: params
@@ -144,7 +145,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
                 await self.failPendingResponseIfPresent(id: id, error: CancellationError())
             }
         }
-        return try decoder.decode(AppServerResponseEnvelope<Response>.self, from: responseData).result
+        return try decoder.decode(CodexAppServerResponseEnvelope<Response>.self, from: responseData).result
     }
 
     package func notify<Params: Encodable & Sendable>(method: String, params: Params) async throws {
@@ -156,7 +157,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         }
         appServerTransportDebug("sending websocket notification: \(method)")
         let payload = try encoder.encode(
-            AppServerOutgoingNotificationEnvelope(
+            CodexAppServerOutgoingNotificationEnvelope(
                 method: method,
                 params: params
             )
@@ -164,7 +165,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         try await send(payload)
     }
 
-    package func drainNotifications() async -> [AppServerServerNotification] {
+    package func drainNotifications() async -> [CodexAppServerNotification] {
         defer { notifications.removeAll(keepingCapacity: true) }
         return notifications
     }
@@ -193,7 +194,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         session.invalidateAndCancel()
     }
 
-    private func storeInitializeResponse(_ response: AppServerInitializeResponse) {
+    private func storeInitializeResponse(_ response: CodexAppServerInitializeResponse) {
         initializePayload = response
     }
 
@@ -237,7 +238,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
             return
         }
 
-        if let idObject = object["id"], let requestID = AppServerRequestID(jsonObject: idObject) {
+        if let idObject = object["id"], let requestID = CodexAppServerRequestID(jsonObject: idObject) {
             if let method = object["method"] as? String {
                 appServerTransportDebug("server request over websocket: \(method)")
                 await rejectServerRequest(id: requestID, method: method)
@@ -276,7 +277,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         try await task.send(.string(text))
     }
 
-    private func rejectServerRequest(id: AppServerRequestID, method: String) async {
+    private func rejectServerRequest(id: CodexAppServerRequestID, method: String) async {
         let payload = [
             "id": id.foundationObject,
             "error": [
@@ -290,14 +291,14 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         try? await send(data)
     }
 
-    private func parseResponseError(from object: [String: Any]) -> AppServerResponseError? {
+    private func parseResponseError(from object: [String: Any]) -> CodexAppServerResponseError? {
         guard let error = object["error"] as? [String: Any] else {
             return nil
         }
         let code = (error["code"] as? Int)
             ?? (error["code"] as? NSNumber)?.intValue
         let message = (error["message"] as? String)?.nilIfEmpty ?? "app-server request failed."
-        return AppServerResponseError(code: code, message: message)
+        return CodexAppServerResponseError(code: code, message: message)
     }
 
     private func failPendingResponses(with error: Error) {
@@ -307,20 +308,20 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         pendingResponses.removeAll()
     }
 
-    private func failPendingResponse(id: AppServerRequestID, error: Error) {
+    private func failPendingResponse(id: CodexAppServerRequestID, error: Error) {
         guard let continuation = pendingResponses.removeValue(forKey: id) else {
             return
         }
         continuation.resume(throwing: error)
     }
 
-    private func failPendingResponseIfPresent(id: AppServerRequestID, error: Error) {
+    private func failPendingResponseIfPresent(id: CodexAppServerRequestID, error: Error) {
         failPendingResponse(id: id, error: error)
     }
 }
 
-private struct AppServerRequestEnvelope<Params: Encodable>: Encodable {
-    var id: AppServerRequestID
+private struct CodexAppServerRequestEnvelope<Params: Encodable>: Encodable {
+    var id: CodexAppServerRequestID
     var method: String
     var params: Params
 
@@ -345,112 +346,112 @@ private struct AppServerRequestEnvelope<Params: Encodable>: Encodable {
     }
 }
 
-private struct AppServerOutgoingNotificationEnvelope<Params: Encodable>: Encodable {
+private struct CodexAppServerOutgoingNotificationEnvelope<Params: Encodable>: Encodable {
     var method: String
     var params: Params
 }
 
-private struct AppServerResponseEnvelope<Result: Decodable>: Decodable {
+private struct CodexAppServerResponseEnvelope<Result: Decodable>: Decodable {
     var result: Result
 }
 
-private func decodeNotification(method: String, data: Data) -> AppServerServerNotification {
+private func decodeNotification(method: String, data: Data) -> CodexAppServerNotification {
     let decoder = JSONDecoder()
     switch method {
     case "thread/status/changed":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerThreadStatusChangedNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerThreadStatusChangedNotification>.self,
             from: data
         ) {
             return .threadStatusChanged(notification.params)
         }
     case "thread/closed":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerThreadClosedNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerThreadClosedNotification>.self,
             from: data
         ) {
             return .threadClosed(notification.params)
         }
     case "turn/started":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerTurnStartedNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerTurnStartedNotification>.self,
             from: data
         ) {
             return .turnStarted(notification.params)
         }
     case "turn/completed":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerTurnCompletedNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerTurnCompletedNotification>.self,
             from: data
         ) {
             return .turnCompleted(notification.params)
         }
     case "item/started":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerItemStartedNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerItemStartedNotification>.self,
             from: data
         ) {
             return .itemStarted(notification.params)
         }
     case "item/completed":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerItemCompletedNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerItemCompletedNotification>.self,
             from: data
         ) {
             return .itemCompleted(notification.params)
         }
     case "item/agentMessage/delta":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerAgentMessageDeltaNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerAgentMessageDeltaNotification>.self,
             from: data
         ) {
             return .agentMessageDelta(notification.params)
         }
     case "item/plan/delta":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerPlanDeltaNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerPlanDeltaNotification>.self,
             from: data
         ) {
             return .planDelta(notification.params)
         }
     case "item/commandExecution/outputDelta":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerCommandExecutionOutputDeltaNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerCommandExecutionOutputDeltaNotification>.self,
             from: data
         ) {
             return .commandExecutionOutputDelta(notification.params)
         }
     case "item/reasoning/summaryTextDelta":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerReasoningSummaryTextDeltaNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerReasoningSummaryTextDeltaNotification>.self,
             from: data
         ) {
             return .reasoningSummaryTextDelta(notification.params)
         }
     case "item/reasoning/summaryPartAdded":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerReasoningSummaryPartAddedNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerReasoningSummaryPartAddedNotification>.self,
             from: data
         ) {
             return .reasoningSummaryPartAdded(notification.params)
         }
     case "item/reasoning/textDelta":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerReasoningTextDeltaNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerReasoningTextDeltaNotification>.self,
             from: data
         ) {
             return .reasoningTextDelta(notification.params)
         }
     case "item/mcpToolCall/progress":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerMcpToolCallProgressNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerMcpToolCallProgressNotification>.self,
             from: data
         ) {
             return .mcpToolCallProgress(notification.params)
         }
     case "error":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerErrorNotification>.self,
+            CodexAppServerIncomingNotificationEnvelope<CodexAppServerErrorNotification>.self,
             from: data
         ) {
             return .error(notification.params)
@@ -480,7 +481,7 @@ private let codexReviewMCPWebSocketDebugEnabled: Bool = {
     }
 }()
 
-private struct AppServerIncomingNotificationEnvelope<Params: Decodable>: Decodable {
+private struct CodexAppServerIncomingNotificationEnvelope<Params: Decodable>: Decodable {
     var method: String
     var params: Params
 }

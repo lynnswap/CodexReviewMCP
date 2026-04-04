@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import ReviewCore
 
 package struct ForcedRestartError: Error, LocalizedError {
     package var message: String

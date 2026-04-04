@@ -1,3 +1,4 @@
+import CodexAppServer
 import Darwin
 import CodexReviewModel
 import Foundation
@@ -26,7 +27,7 @@ extension CodexReviewStore {
     package convenience init(
         configuration: ReviewServerConfiguration,
         diagnosticsURL: URL? = nil,
-        appServerManager: (any AppServerManaging)? = nil
+        appServerManager: (any CodexAppServerManaging)? = nil
     ) {
         self.init(
             backend: CodexReviewEmbeddedServerBackend(
@@ -63,7 +64,7 @@ extension CodexReviewStore {
             lastAgentMessage: job.lastAgentMessage ?? "",
             logs: job.logEntries,
             rawLogText: job.rawLogText,
-            error: job.errorMessage
+            terminalError: job.terminalError
         )
     }
 
@@ -82,7 +83,7 @@ extension CodexReviewStore {
             lastAgentMessage: job.lastAgentMessage ?? "",
             logs: job.logEntries,
             rawLogText: job.rawLogText,
-            error: job.errorMessage
+            terminalError: job.terminalError
         )
     }
 
@@ -202,9 +203,9 @@ extension CodexReviewStore {
             updateJob(id: jobID) { job in
                 job.lastAgentMessage = message
             }
-        case .failed(let message):
+        case .failed(let terminalError):
             updateJob(id: jobID) { job in
-                job.errorMessage = message.nilIfEmpty
+                job.terminalError = terminalError
             }
         }
     }
@@ -223,7 +224,7 @@ extension CodexReviewStore {
             } else if outcome.state == .cancelled {
                 let preservedContent = outcome.content.nilIfEmpty
                 let preservedMessage = outcome.lastAgentMessage.nilIfEmpty
-                let cancellationMessage = outcome.errorMessage?.nilIfEmpty
+                let cancellationMessage = outcome.terminalError?.displayText.nilIfEmpty
                 if let preservedContent,
                    preservedContent != cancellationMessage
                 {
@@ -236,7 +237,7 @@ extension CodexReviewStore {
             } else {
                 job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
             }
-            job.errorMessage = outcome.errorMessage
+            job.terminalError = outcome.terminalError
             job.reviewThreadID = outcome.reviewThreadID ?? job.reviewThreadID
             job.threadID = outcome.threadID ?? job.threadID
             job.turnID = outcome.turnID ?? job.turnID
@@ -248,7 +249,7 @@ extension CodexReviewStore {
 
     package func failToStart(
         jobID: String,
-        message: String,
+        terminalError: CodexReviewTerminalError,
         model: String? = nil,
         startedAt: Date,
         endedAt: Date
@@ -258,11 +259,12 @@ extension CodexReviewStore {
             job.status = .failed
             job.summary = "Failed to start review."
             job.model = model ?? job.model
-            job.errorMessage = message
+            job.terminalError = terminalError
             job.startedAt = startedAt
             job.endedAt = endedAt
-            if message.isEmpty == false {
-                job.logEntries.append(.init(kind: .error, text: message))
+            let displayText = terminalError.displayText
+            if displayText.isEmpty == false {
+                job.logEntries.append(.init(kind: .error, text: displayText))
                 trimDiagnosticEntries(job: job)
             }
         }
@@ -281,7 +283,9 @@ extension CodexReviewStore {
             job.summary = "Review cancelled."
             job.model = model ?? job.model
             job.hasFinalReview = false
-            job.errorMessage = reason.nilIfEmpty ?? job.errorMessage
+            job.terminalError = reason.nilIfEmpty.map {
+                CodexReviewTerminalError(source: .cancelled, message: $0)
+            } ?? job.terminalError
             if job.startedAt == nil {
                 job.startedAt = startedAt
             }
@@ -322,7 +326,7 @@ extension CodexReviewStore {
                 job.summary = "Review cancelled."
                 job.hasFinalReview = false
                 if reason.isEmpty == false {
-                    job.errorMessage = reason
+                    job.terminalError = CodexReviewTerminalError(source: .cancelled, message: reason)
                 }
                 job.endedAt = endedAt
             }
@@ -333,7 +337,7 @@ extension CodexReviewStore {
                 job.summary = "Cancellation requested."
                 job.hasFinalReview = false
                 if reason.isEmpty == false {
-                    job.errorMessage = reason
+                    job.terminalError = CodexReviewTerminalError(source: .cancelled, message: reason)
                 }
             }
             return ReviewCancelResult(jobID: jobID, state: .running, signalled: true)
@@ -375,7 +379,7 @@ extension CodexReviewStore {
             return .cancelled(defaultReason)
         }
         if job.status == .cancelled || job.cancellationRequested {
-            return .cancelled(job.errorMessage?.nilIfEmpty ?? defaultReason)
+            return .cancelled(job.terminalError?.message.nilIfEmpty ?? defaultReason)
         }
         return closedSessionReason
     }
@@ -543,7 +547,7 @@ extension CodexReviewStore {
             hasFinalReview: false,
             lastAgentMessage: nil,
             logEntries: [],
-            errorMessage: nil,
+            terminalError: nil,
             exitCode: nil
         )
 
@@ -917,7 +921,7 @@ extension CodexReviewStore {
 @MainActor
 private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
-    let appServerManager: any AppServerManaging
+    let appServerManager: any CodexAppServerManaging
     lazy var executionCoordinator: ReviewExecutionCoordinator = {
         ReviewExecutionCoordinator(
             configuration: .init(
@@ -955,10 +959,10 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     init(
         configuration: ReviewServerConfiguration,
-        appServerManager: (any AppServerManaging)? = nil
+        appServerManager: (any CodexAppServerManaging)? = nil
     ) {
         self.configuration = configuration
-        self.appServerManager = appServerManager ?? AppServerSupervisor(
+        self.appServerManager = appServerManager ?? CodexAppServerSupervisor(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
                 environment: configuration.environment
@@ -1200,7 +1204,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     private func writeRuntimeState(
         endpointRecord: LiveEndpointRecord?,
-        appServerRuntimeState: AppServerRuntimeState
+        appServerRuntimeState: CodexAppServerRuntimeState
     ) {
         guard let endpointRecord else {
             return

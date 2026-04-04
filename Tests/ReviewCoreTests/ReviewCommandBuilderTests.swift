@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import CodexAppServer
 @testable import ReviewCore
 @testable import ReviewJobs
 

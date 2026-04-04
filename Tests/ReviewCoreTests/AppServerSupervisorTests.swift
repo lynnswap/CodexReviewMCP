@@ -1,9 +1,9 @@
 import Foundation
 import Testing
-@testable import ReviewCore
+@testable import CodexAppServer
 
 @Suite
-struct AppServerSupervisorTests {
+struct CodexAppServerSupervisorTests {
     @Test func loopbackWebSocketListenURLUsesEphemeralPort() throws {
         let url = try makeLoopbackWebSocketListenURL()
 

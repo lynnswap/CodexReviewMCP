@@ -1,7 +1,9 @@
 import Foundation
+import CodexAppServerProtocol
+import ReviewCore
 import ReviewJobs
 
-package struct AppServerCommand: Sendable {
+package struct CodexAppServerCommand: Sendable {
     package var executable: String
     package var arguments: [String]
     package var environment: [String: String]
@@ -23,7 +25,7 @@ package struct ReviewRunnerOverrides: Sendable, Equatable {
 }
 
 package struct ReviewExecutionSettings: Sendable {
-    package var command: AppServerCommand
+    package var command: CodexAppServerCommand
     package var request: ReviewRequestOptions
     package var overrides: ReviewRunnerOverrides
 }
@@ -49,7 +51,7 @@ package struct ReviewExecutionSettingsBuilder: Sendable {
     package func build(request: ReviewRequestOptions) throws -> ReviewExecutionSettings {
         let request = try request.validated()
         return ReviewExecutionSettings(
-            command: AppServerCommand(
+            command: CodexAppServerCommand(
                 executable: codexCommand,
                 arguments: ["app-server", "--listen", "stdio://"],
                 environment: environment,
@@ -64,13 +66,13 @@ package struct ReviewExecutionSettingsBuilder: Sendable {
 package func makeReviewThreadStartConfig(
     reviewSpecificModel: String?,
     localConfig: ReviewLocalConfig,
-    resolvedConfig: AppServerConfigReadResponse.Config,
+    resolvedConfig: CodexAppServerConfigReadResponse.Config,
     clampModel: String?,
     environment: [String: String],
     codexHome: URL? = nil
-) -> [String: AppServerJSONValue]? {
+) -> [String: CodexAppServerJSONValue]? {
     let modelsCache = loadModelsCache(environment: environment, codexHome: codexHome)
-    var config: [String: AppServerJSONValue] = [:]
+    var config: [String: CodexAppServerJSONValue] = [:]
 
     if let reviewSpecificModel = reviewSpecificModel?.nilIfEmpty {
         config["review_model"] = .string(reviewSpecificModel)
@@ -123,7 +125,7 @@ package func resolveInitialReviewModel(
 
 package func resolveReviewModelSelection(
     localConfig: ReviewLocalConfig,
-    resolvedConfig: AppServerConfigReadResponse.Config
+    resolvedConfig: CodexAppServerConfigReadResponse.Config
 ) -> ResolvedReviewModelSelection {
     let reviewSpecificModel = localConfig.reviewModel?.nilIfEmpty
         ?? resolvedConfig.reviewModel?.nilIfEmpty
@@ -139,7 +141,7 @@ package func resolveReviewModelSelection(
 package func loadFallbackAppServerConfig(
     environment: [String: String] = ProcessInfo.processInfo.environment,
     codexHome: URL? = nil
-) -> AppServerConfigReadResponse.Config {
+) -> CodexAppServerConfigReadResponse.Config {
     let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
     let profile = readTopLevelString(from: configPath, key: "profile")
 
@@ -159,9 +161,9 @@ package func loadFallbackAppServerConfig(
 }
 
 package func mergeAppServerConfig(
-    primary: AppServerConfigReadResponse.Config,
-    fallback: AppServerConfigReadResponse.Config
-) -> AppServerConfigReadResponse.Config {
+    primary: CodexAppServerConfigReadResponse.Config,
+    fallback: CodexAppServerConfigReadResponse.Config
+) -> CodexAppServerConfigReadResponse.Config {
     .init(
         model: primary.model?.nilIfEmpty ?? fallback.model?.nilIfEmpty,
         reviewModel: primary.reviewModel?.nilIfEmpty ?? fallback.reviewModel?.nilIfEmpty,

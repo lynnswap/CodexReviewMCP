@@ -38,7 +38,9 @@ extension CodexReviewStore {
         job.status = .cancelled
         job.summary = "Review cancelled."
         job.hasFinalReview = false
-        job.errorMessage = reason.nilIfEmpty ?? job.errorMessage
+        job.terminalError = reason.nilIfEmpty.map {
+            CodexReviewTerminalError(source: .cancelled, message: $0)
+        } ?? job.terminalError
         job.endedAt = Date()
         writeDiagnosticsIfNeeded()
     }
@@ -65,7 +67,7 @@ extension CodexReviewStore {
             } else {
                 job.summary = "Failed to cancel review: \(message)"
             }
-            job.errorMessage = message
+            job.terminalError = CodexReviewTerminalError(source: .cancelled, message: message)
         } else {
             job.summary = "Failed to cancel review."
         }

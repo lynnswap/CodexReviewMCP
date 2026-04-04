@@ -1,13 +1,13 @@
 import Foundation
 import ReviewJobs
 
-package enum AppServerJSONValue: Codable, Sendable, Equatable {
+package enum CodexAppServerJSONValue: Codable, Sendable, Equatable {
     case string(String)
     case int(Int)
     case double(Double)
     case bool(Bool)
-    case object([String: AppServerJSONValue])
-    case array([AppServerJSONValue])
+    case object([String: CodexAppServerJSONValue])
+    case array([CodexAppServerJSONValue])
     case null
 
     package init(from decoder: Decoder) throws {
@@ -22,10 +22,10 @@ package enum AppServerJSONValue: Codable, Sendable, Equatable {
             self = .double(value)
         } else if let value = try? container.decode(Bool.self) {
             self = .bool(value)
-        } else if let value = try? container.decode([String: AppServerJSONValue].self) {
+        } else if let value = try? container.decode([String: CodexAppServerJSONValue].self) {
             self = .object(value)
         } else {
-            self = .array(try container.decode([AppServerJSONValue].self))
+            self = .array(try container.decode([CodexAppServerJSONValue].self))
         }
     }
 
@@ -104,7 +104,7 @@ package enum AppServerJSONValue: Codable, Sendable, Equatable {
     }
 }
 
-package enum AppServerRequestID: Hashable, Sendable {
+package enum CodexAppServerRequestID: Hashable, Sendable {
     case string(String)
     case integer(Int)
     case double(Double)
@@ -150,11 +150,17 @@ package enum AppServerRequestID: Hashable, Sendable {
     }
 }
 
-package struct AppServerInitializeParams: Encodable, Sendable {
+package struct CodexAppServerInitializeParams: Encodable, Sendable {
     package struct ClientInfo: Encodable, Sendable {
         package var name: String
         package var title: String
         package var version: String
+
+        package init(name: String, title: String, version: String) {
+            self.name = name
+            self.title = title
+            self.version = version
+        }
     }
 
     package struct Capabilities: Encodable, Sendable {
@@ -171,9 +177,14 @@ package struct AppServerInitializeParams: Encodable, Sendable {
 
     package var clientInfo: ClientInfo
     package var capabilities: Capabilities?
+
+    package init(clientInfo: ClientInfo, capabilities: Capabilities? = nil) {
+        self.clientInfo = clientInfo
+        self.capabilities = capabilities
+    }
 }
 
-package struct AppServerInitializeResponse: Decodable, Sendable {
+package struct CodexAppServerInitializeResponse: Decodable, Sendable {
     package var userAgent: String?
     package var codexHome: String?
     package var platformFamily: String?
@@ -192,14 +203,21 @@ package struct AppServerInitializeResponse: Decodable, Sendable {
     }
 }
 
-package struct AppServerInitializedParams: Codable, Sendable {}
-
-package struct AppServerConfigReadParams: Encodable, Sendable {
-    package var cwd: String
-    package var includeLayers: Bool
+package struct CodexAppServerInitializedParams: Codable, Sendable {
+    package init() {}
 }
 
-package struct AppServerConfigReadResponse: Decodable, Sendable {
+package struct CodexAppServerConfigReadParams: Encodable, Sendable {
+    package var cwd: String
+    package var includeLayers: Bool
+
+    package init(cwd: String, includeLayers: Bool) {
+        self.cwd = cwd
+        self.includeLayers = includeLayers
+    }
+}
+
+package struct CodexAppServerConfigReadResponse: Decodable, Sendable {
     package struct Config: Decodable, Sendable {
         package var model: String?
         package var reviewModel: String?
@@ -260,17 +278,35 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
     }
 }
 
-package struct AppServerThreadStartParams: Encodable, Sendable {
+package struct CodexAppServerThreadStartParams: Encodable, Sendable {
     package var model: String?
     package var cwd: String?
     package var approvalPolicy: String?
     package var sandbox: String?
-    package var config: [String: AppServerJSONValue]?
+    package var config: [String: CodexAppServerJSONValue]?
     package var personality: String?
     package var ephemeral: Bool?
+
+    package init(
+        model: String? = nil,
+        cwd: String? = nil,
+        approvalPolicy: String? = nil,
+        sandbox: String? = nil,
+        config: [String: CodexAppServerJSONValue]? = nil,
+        personality: String? = nil,
+        ephemeral: Bool? = nil
+    ) {
+        self.model = model
+        self.cwd = cwd
+        self.approvalPolicy = approvalPolicy
+        self.sandbox = sandbox
+        self.config = config
+        self.personality = personality
+        self.ephemeral = ephemeral
+    }
 }
 
-package struct AppServerThreadStartResponse: Decodable, Sendable {
+package struct CodexAppServerThreadStartResponse: Decodable, Sendable {
     package struct Thread: Decodable, Sendable {
         package var id: String
 
@@ -288,144 +324,7 @@ package struct AppServerThreadStartResponse: Decodable, Sendable {
     }
 }
 
-package struct AppServerThreadUnsubscribeParams: Encodable, Sendable {
-    package var threadID: String
-
-    package enum CodingKeys: String, CodingKey {
-        case threadID = "threadId"
-    }
-}
-
-package struct AppServerThreadBackgroundTerminalsCleanParams: Encodable, Sendable {
-    package var threadID: String
-
-    package enum CodingKeys: String, CodingKey {
-        case threadID = "threadId"
-    }
-}
-
-package struct AppServerReviewStartParams: Encodable, Sendable {
-    package var threadID: String
-    package var target: ReviewTarget
-    package var delivery: String?
-
-    package enum CodingKeys: String, CodingKey {
-        case threadID = "threadId"
-        case target
-        case delivery
-    }
-}
-
-package struct AppServerReviewStartResponse: Decodable, Sendable {
-    package var turn: AppServerTurn
-    package var reviewThreadID: String
-
-    package enum CodingKeys: String, CodingKey {
-        case turn
-        case reviewThreadID = "reviewThreadId"
-    }
-
-    package init(turn: AppServerTurn, reviewThreadID: String) {
-        self.turn = turn
-        self.reviewThreadID = reviewThreadID
-    }
-}
-
-package struct AppServerTurnInterruptParams: Encodable, Sendable {
-    package var threadID: String
-    package var turnID: String
-
-    package enum CodingKeys: String, CodingKey {
-        case threadID = "threadId"
-        case turnID = "turnId"
-    }
-}
-
-package struct AppServerEmptyResponse: Decodable, Sendable {}
-
-package enum AppServerTurnStatus: String, Decodable, Sendable {
-    case completed
-    case interrupted
-    case failed
-    case inProgress
-}
-
-package struct AppServerTurnError: Decodable, Sendable {
-    package var message: String?
-
-    package init(message: String?) {
-        self.message = message
-    }
-}
-
-package struct AppServerTurn: Decodable, Sendable {
-    package var id: String
-    package var status: AppServerTurnStatus
-    package var error: AppServerTurnError?
-
-    package init(id: String, status: AppServerTurnStatus, error: AppServerTurnError?) {
-        self.id = id
-        self.status = status
-        self.error = error
-    }
-}
-
-package struct AppServerTurnStartedNotification: Decodable, Sendable {
-    package var threadID: String
-    package var turn: AppServerTurn
-
-    package enum CodingKeys: String, CodingKey {
-        case threadID = "threadId"
-        case turn
-    }
-
-    package init(threadID: String, turn: AppServerTurn) {
-        self.threadID = threadID
-        self.turn = turn
-    }
-}
-
-package struct AppServerTurnCompletedNotification: Decodable, Sendable {
-    package var threadID: String
-    package var turn: AppServerTurn
-
-    package enum CodingKeys: String, CodingKey {
-        case threadID = "threadId"
-        case turn
-    }
-
-    package init(threadID: String, turn: AppServerTurn) {
-        self.threadID = threadID
-        self.turn = turn
-    }
-}
-
-package struct AppServerThreadStatus: Decodable, Sendable {
-    package var type: String
-    package var activeFlags: [String]?
-
-    package init(type: String, activeFlags: [String]? = nil) {
-        self.type = type
-        self.activeFlags = activeFlags
-    }
-}
-
-package struct AppServerThreadStatusChangedNotification: Decodable, Sendable {
-    package var threadID: String
-    package var status: AppServerThreadStatus
-
-    package enum CodingKeys: String, CodingKey {
-        case threadID = "threadId"
-        case status
-    }
-
-    package init(threadID: String, status: AppServerThreadStatus) {
-        self.threadID = threadID
-        self.status = status
-    }
-}
-
-package struct AppServerThreadClosedNotification: Decodable, Sendable {
+package struct CodexAppServerThreadUnsubscribeParams: Encodable, Sendable {
     package var threadID: String
 
     package enum CodingKeys: String, CodingKey {
@@ -437,7 +336,200 @@ package struct AppServerThreadClosedNotification: Decodable, Sendable {
     }
 }
 
-package enum AppServerThreadItem: Decodable, Sendable, Equatable {
+package struct CodexAppServerThreadBackgroundTerminalsCleanParams: Encodable, Sendable {
+    package var threadID: String
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+    }
+
+    package init(threadID: String) {
+        self.threadID = threadID
+    }
+}
+
+package struct CodexAppServerReviewStartParams: Encodable, Sendable {
+    package var threadID: String
+    package var target: ReviewTarget
+    package var delivery: String?
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case target
+        case delivery
+    }
+
+    package init(threadID: String, target: ReviewTarget, delivery: String? = nil) {
+        self.threadID = threadID
+        self.target = target
+        self.delivery = delivery
+    }
+}
+
+package struct CodexAppServerReviewStartResponse: Decodable, Sendable {
+    package var turn: CodexAppServerTurn
+    package var reviewThreadID: String
+
+    package enum CodingKeys: String, CodingKey {
+        case turn
+        case reviewThreadID = "reviewThreadId"
+    }
+
+    package init(turn: CodexAppServerTurn, reviewThreadID: String) {
+        self.turn = turn
+        self.reviewThreadID = reviewThreadID
+    }
+}
+
+package struct CodexAppServerTurnInterruptParams: Encodable, Sendable {
+    package var threadID: String
+    package var turnID: String
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case turnID = "turnId"
+    }
+
+    package init(threadID: String, turnID: String) {
+        self.threadID = threadID
+        self.turnID = turnID
+    }
+}
+
+package struct CodexAppServerEmptyResponse: Decodable, Sendable {}
+
+package enum CodexAppServerTurnStatus: String, Decodable, Sendable {
+    case completed
+    case interrupted
+    case failed
+    case inProgress
+}
+
+package enum CodexAppServerCodexErrorInfo: Codable, Sendable, Hashable {
+    case contextWindowExceeded
+    case unknown(String)
+
+    package init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "ContextWindowExceeded":
+            self = .contextWindowExceeded
+        default:
+            self = .unknown(value)
+        }
+    }
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    package var rawValue: String {
+        switch self {
+        case .contextWindowExceeded:
+            return "ContextWindowExceeded"
+        case .unknown(let value):
+            return value
+        }
+    }
+}
+
+package struct CodexAppServerTurnError: Decodable, Sendable, Hashable {
+    package var message: String
+    package var codexErrorInfo: CodexAppServerCodexErrorInfo?
+    package var additionalDetails: String?
+
+    package init(
+        message: String,
+        codexErrorInfo: CodexAppServerCodexErrorInfo? = nil,
+        additionalDetails: String? = nil
+    ) {
+        self.message = message
+        self.codexErrorInfo = codexErrorInfo
+        self.additionalDetails = additionalDetails
+    }
+}
+
+package struct CodexAppServerTurn: Decodable, Sendable {
+    package var id: String
+    package var status: CodexAppServerTurnStatus
+    package var error: CodexAppServerTurnError?
+
+    package init(id: String, status: CodexAppServerTurnStatus, error: CodexAppServerTurnError?) {
+        self.id = id
+        self.status = status
+        self.error = error
+    }
+}
+
+package struct CodexAppServerTurnStartedNotification: Decodable, Sendable {
+    package var threadID: String
+    package var turn: CodexAppServerTurn
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case turn
+    }
+
+    package init(threadID: String, turn: CodexAppServerTurn) {
+        self.threadID = threadID
+        self.turn = turn
+    }
+}
+
+package struct CodexAppServerTurnCompletedNotification: Decodable, Sendable {
+    package var threadID: String
+    package var turn: CodexAppServerTurn
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case turn
+    }
+
+    package init(threadID: String, turn: CodexAppServerTurn) {
+        self.threadID = threadID
+        self.turn = turn
+    }
+}
+
+package struct CodexAppServerThreadStatus: Decodable, Sendable {
+    package var type: String
+    package var activeFlags: [String]?
+
+    package init(type: String, activeFlags: [String]? = nil) {
+        self.type = type
+        self.activeFlags = activeFlags
+    }
+}
+
+package struct CodexAppServerThreadStatusChangedNotification: Decodable, Sendable {
+    package var threadID: String
+    package var status: CodexAppServerThreadStatus
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+        case status
+    }
+
+    package init(threadID: String, status: CodexAppServerThreadStatus) {
+        self.threadID = threadID
+        self.status = status
+    }
+}
+
+package struct CodexAppServerThreadClosedNotification: Decodable, Sendable {
+    package var threadID: String
+
+    package enum CodingKeys: String, CodingKey {
+        case threadID = "threadId"
+    }
+
+    package init(threadID: String) {
+        self.threadID = threadID
+    }
+}
+
+package enum CodexAppServerThreadItem: Decodable, Sendable, Equatable {
     case enteredReviewMode(id: String, review: String)
     case exitedReviewMode(id: String, review: String)
     case commandExecution(id: String, command: String, aggregatedOutput: String?, exitCode: Int?, status: String)
@@ -504,8 +596,8 @@ package enum AppServerThreadItem: Decodable, Sendable, Equatable {
                 content: try container.decodeIfPresent([String].self, forKey: .content) ?? []
             )
         case "mcpToolCall":
-            let rawError = try container.decodeIfPresent(AppServerJSONValue.self, forKey: .error)
-            let rawResult = try container.decodeIfPresent(AppServerJSONValue.self, forKey: .result)
+            let rawError = try container.decodeIfPresent(CodexAppServerJSONValue.self, forKey: .error)
+            let rawResult = try container.decodeIfPresent(CodexAppServerJSONValue.self, forKey: .result)
             self = .mcpToolCall(
                 id: try container.decode(String.self, forKey: .id),
                 server: try container.decode(String.self, forKey: .server),
@@ -524,7 +616,7 @@ package enum AppServerThreadItem: Decodable, Sendable, Equatable {
     }
 }
 
-private extension AppServerJSONValue {
+private extension CodexAppServerJSONValue {
     var nonNullDebugText: String? {
         if case .null = self {
             return nil
@@ -533,8 +625,8 @@ private extension AppServerJSONValue {
     }
 }
 
-package struct AppServerItemStartedNotification: Decodable, Sendable {
-    package var item: AppServerThreadItem
+package struct CodexAppServerItemStartedNotification: Decodable, Sendable {
+    package var item: CodexAppServerThreadItem
     package var threadID: String
     package var turnID: String
 
@@ -544,15 +636,15 @@ package struct AppServerItemStartedNotification: Decodable, Sendable {
         case turnID = "turnId"
     }
 
-    package init(item: AppServerThreadItem, threadID: String, turnID: String) {
+    package init(item: CodexAppServerThreadItem, threadID: String, turnID: String) {
         self.item = item
         self.threadID = threadID
         self.turnID = turnID
     }
 }
 
-package struct AppServerItemCompletedNotification: Decodable, Sendable {
-    package var item: AppServerThreadItem
+package struct CodexAppServerItemCompletedNotification: Decodable, Sendable {
+    package var item: CodexAppServerThreadItem
     package var threadID: String
     package var turnID: String
 
@@ -562,14 +654,14 @@ package struct AppServerItemCompletedNotification: Decodable, Sendable {
         case turnID = "turnId"
     }
 
-    package init(item: AppServerThreadItem, threadID: String, turnID: String) {
+    package init(item: CodexAppServerThreadItem, threadID: String, turnID: String) {
         self.item = item
         self.threadID = threadID
         self.turnID = turnID
     }
 }
 
-package struct AppServerAgentMessageDeltaNotification: Decodable, Sendable {
+package struct CodexAppServerAgentMessageDeltaNotification: Decodable, Sendable {
     package var threadID: String
     package var turnID: String
     package var itemID: String
@@ -583,7 +675,7 @@ package struct AppServerAgentMessageDeltaNotification: Decodable, Sendable {
     }
 }
 
-package struct AppServerCommandExecutionOutputDeltaNotification: Decodable, Sendable {
+package struct CodexAppServerCommandExecutionOutputDeltaNotification: Decodable, Sendable {
     package var threadID: String
     package var turnID: String
     package var itemID: String
@@ -597,7 +689,7 @@ package struct AppServerCommandExecutionOutputDeltaNotification: Decodable, Send
     }
 }
 
-package struct AppServerPlanDeltaNotification: Decodable, Sendable {
+package struct CodexAppServerPlanDeltaNotification: Decodable, Sendable {
     package var threadID: String
     package var turnID: String
     package var itemID: String
@@ -611,7 +703,7 @@ package struct AppServerPlanDeltaNotification: Decodable, Sendable {
     }
 }
 
-package struct AppServerReasoningSummaryTextDeltaNotification: Decodable, Sendable {
+package struct CodexAppServerReasoningSummaryTextDeltaNotification: Decodable, Sendable {
     package var threadID: String
     package var turnID: String
     package var itemID: String
@@ -627,7 +719,7 @@ package struct AppServerReasoningSummaryTextDeltaNotification: Decodable, Sendab
     }
 }
 
-package struct AppServerReasoningSummaryPartAddedNotification: Decodable, Sendable {
+package struct CodexAppServerReasoningSummaryPartAddedNotification: Decodable, Sendable {
     package var threadID: String
     package var turnID: String
     package var itemID: String
@@ -641,7 +733,7 @@ package struct AppServerReasoningSummaryPartAddedNotification: Decodable, Sendab
     }
 }
 
-package struct AppServerReasoningTextDeltaNotification: Decodable, Sendable {
+package struct CodexAppServerReasoningTextDeltaNotification: Decodable, Sendable {
     package var threadID: String
     package var turnID: String
     package var itemID: String
@@ -657,7 +749,7 @@ package struct AppServerReasoningTextDeltaNotification: Decodable, Sendable {
     }
 }
 
-package struct AppServerMcpToolCallProgressNotification: Decodable, Sendable {
+package struct CodexAppServerMcpToolCallProgressNotification: Decodable, Sendable {
     package var threadID: String
     package var turnID: String
     package var itemID: String
@@ -671,18 +763,8 @@ package struct AppServerMcpToolCallProgressNotification: Decodable, Sendable {
     }
 }
 
-package struct AppServerErrorNotification: Decodable, Sendable {
-    package struct TurnError: Decodable, Sendable {
-        package var message: String
-        package var additionalDetails: String?
-
-        package init(message: String, additionalDetails: String? = nil) {
-            self.message = message
-            self.additionalDetails = additionalDetails
-        }
-    }
-
-    package var error: TurnError
+package struct CodexAppServerErrorNotification: Decodable, Sendable {
+    package var error: CodexAppServerTurnError
     package var willRetry: Bool
     package var threadID: String
     package var turnID: String
@@ -695,7 +777,7 @@ package struct AppServerErrorNotification: Decodable, Sendable {
     }
 }
 
-package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendable {
+package struct CodexAppServerResponseError: Decodable, Error, LocalizedError, Sendable {
     package var code: Int?
     package var message: String
 
@@ -716,25 +798,25 @@ package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendabl
     }
 }
 
-package enum AppServerServerNotification: Sendable {
-    case threadStatusChanged(AppServerThreadStatusChangedNotification)
-    case threadClosed(AppServerThreadClosedNotification)
-    case turnStarted(AppServerTurnStartedNotification)
-    case turnCompleted(AppServerTurnCompletedNotification)
-    case itemStarted(AppServerItemStartedNotification)
-    case itemCompleted(AppServerItemCompletedNotification)
-    case agentMessageDelta(AppServerAgentMessageDeltaNotification)
-    case planDelta(AppServerPlanDeltaNotification)
-    case commandExecutionOutputDelta(AppServerCommandExecutionOutputDeltaNotification)
-    case reasoningSummaryTextDelta(AppServerReasoningSummaryTextDeltaNotification)
-    case reasoningSummaryPartAdded(AppServerReasoningSummaryPartAddedNotification)
-    case reasoningTextDelta(AppServerReasoningTextDeltaNotification)
-    case mcpToolCallProgress(AppServerMcpToolCallProgressNotification)
-    case error(AppServerErrorNotification)
+package enum CodexAppServerNotification: Sendable {
+    case threadStatusChanged(CodexAppServerThreadStatusChangedNotification)
+    case threadClosed(CodexAppServerThreadClosedNotification)
+    case turnStarted(CodexAppServerTurnStartedNotification)
+    case turnCompleted(CodexAppServerTurnCompletedNotification)
+    case itemStarted(CodexAppServerItemStartedNotification)
+    case itemCompleted(CodexAppServerItemCompletedNotification)
+    case agentMessageDelta(CodexAppServerAgentMessageDeltaNotification)
+    case planDelta(CodexAppServerPlanDeltaNotification)
+    case commandExecutionOutputDelta(CodexAppServerCommandExecutionOutputDeltaNotification)
+    case reasoningSummaryTextDelta(CodexAppServerReasoningSummaryTextDeltaNotification)
+    case reasoningSummaryPartAdded(CodexAppServerReasoningSummaryPartAddedNotification)
+    case reasoningTextDelta(CodexAppServerReasoningTextDeltaNotification)
+    case mcpToolCallProgress(CodexAppServerMcpToolCallProgressNotification)
+    case error(CodexAppServerErrorNotification)
     case ignored
 }
 
-package struct AppServerJSONLFramer {
+package struct CodexAppServerJSONLFramer {
     private var buffer = Data()
 
     package init() {}

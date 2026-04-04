@@ -1,3 +1,4 @@
+import CodexAppServer
 import Foundation
 import ReviewCore
 import ReviewJobs
@@ -26,15 +27,15 @@ package actor ReviewExecutionCoordinator {
     }
 
     private let configuration: Configuration
-    private let appServerManager: any AppServerManaging
-    private let runtimeStateDidChange: @Sendable (AppServerRuntimeState) async -> Void
+    private let appServerManager: any CodexAppServerManaging
+    private let runtimeStateDidChange: @Sendable (CodexAppServerRuntimeState) async -> Void
     private var executions: [String: ExecutionHandle] = [:]
     private var sessionLanes: [String: ReviewSessionLane] = [:]
 
     package init(
         configuration: Configuration = .init(),
-        appServerManager: any AppServerManaging,
-        runtimeStateDidChange: @escaping @Sendable (AppServerRuntimeState) async -> Void = { _ in }
+        appServerManager: any CodexAppServerManaging,
+        runtimeStateDidChange: @escaping @Sendable (CodexAppServerRuntimeState) async -> Void = { _ in }
     ) {
         self.configuration = configuration
         self.appServerManager = appServerManager
@@ -193,7 +194,7 @@ package actor ReviewExecutionCoordinator {
     ) async throws {
         let now = Date()
         let lane = sessionLane(for: sessionID)
-        let runner = AppServerReviewRunner(
+        let runner = CodexAppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: configuration.codexCommand,
                 environment: configuration.environment
@@ -235,7 +236,10 @@ package actor ReviewExecutionCoordinator {
             } else {
                 await store.failToStart(
                     jobID: jobID,
-                    message: error.errorDescription ?? "Failed to start review.",
+                    terminalError: CodexReviewTerminalError(
+                        source: .bootstrap,
+                        message: error.errorDescription ?? "Failed to start review."
+                    ),
                     model: error.model ?? initialModel,
                     startedAt: now,
                     endedAt: Date()
@@ -253,7 +257,10 @@ package actor ReviewExecutionCoordinator {
             } else {
                 await store.failToStart(
                     jobID: jobID,
-                    message: error.errorDescription ?? "Failed to start review.",
+                    terminalError: CodexReviewTerminalError(
+                        source: .bootstrap,
+                        message: error.errorDescription ?? "Failed to start review."
+                    ),
                     model: initialModel,
                     startedAt: now,
                     endedAt: Date()
@@ -263,7 +270,10 @@ package actor ReviewExecutionCoordinator {
             let message = (error as? ReviewError)?.errorDescription ?? error.localizedDescription
             await store.failToStart(
                 jobID: jobID,
-                message: message,
+                terminalError: CodexReviewTerminalError(
+                    source: .bootstrap,
+                    message: message
+                ),
                 model: initialModel,
                 startedAt: now,
                 endedAt: Date()
@@ -345,9 +355,9 @@ package actor ReviewExecutionCoordinator {
 
 private actor ReviewSessionLane {
     private let sessionID: String
-    private let appServerManager: any AppServerManaging
-    private let runtimeStateDidChange: @Sendable (AppServerRuntimeState) async -> Void
-    private var transport: (any AppServerSessionTransport)?
+    private let appServerManager: any CodexAppServerManaging
+    private let runtimeStateDidChange: @Sendable (CodexAppServerRuntimeState) async -> Void
+    private var transport: (any CodexAppServerSessionTransport)?
     private var reviewInFlight = false
     private var isClosed = false
     private var closeReason: String?
@@ -355,8 +365,8 @@ private actor ReviewSessionLane {
 
     init(
         sessionID: String,
-        appServerManager: any AppServerManaging,
-        runtimeStateDidChange: @escaping @Sendable (AppServerRuntimeState) async -> Void
+        appServerManager: any CodexAppServerManaging,
+        runtimeStateDidChange: @escaping @Sendable (CodexAppServerRuntimeState) async -> Void
     ) {
         self.sessionID = sessionID
         self.appServerManager = appServerManager
@@ -364,7 +374,7 @@ private actor ReviewSessionLane {
     }
 
     func runReview(
-        runner: AppServerReviewRunner,
+        runner: CodexAppServerReviewRunner,
         request: ReviewRequestOptions,
         defaultTimeoutSeconds: Int?,
         resolvedModelHint: String?,
@@ -415,7 +425,7 @@ private actor ReviewSessionLane {
         _ = sessionID
     }
 
-    private func connectedTransport() async throws -> any AppServerSessionTransport {
+    private func connectedTransport() async throws -> any CodexAppServerSessionTransport {
         if isClosed {
             throw ReviewBootstrapFailure(message: closeReason ?? "Review cancelled.", model: nil)
         }

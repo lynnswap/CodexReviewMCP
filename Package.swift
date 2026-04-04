@@ -65,8 +65,32 @@ let package = Package(
             ]
         ),
         .target(
+            name: "CodexAppServerProtocol",
+            dependencies: [
+                "ReviewJobs",
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "CodexAppServer",
+            dependencies: [
+                "CodexAppServerProtocol",
+                "ReviewCore",
+                "ReviewJobs",
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
             name: "ReviewHTTPServer",
             dependencies: [
+                "CodexAppServer",
                 "ReviewCore",
                 "ReviewJobs",
                 .product(name: "MCP", package: "swift-sdk"),
@@ -124,6 +148,7 @@ let package = Package(
         .target(
             name: "ReviewCLI",
             dependencies: [
+                "CodexAppServer",
                 "CodexReviewMCP",
                 "ReviewHTTPServer",
                 "ReviewStdioAdapter",
@@ -136,6 +161,7 @@ let package = Package(
         .target(
             name: "CodexReviewMCP",
             dependencies: [
+                "CodexAppServer",
                 "CodexReviewModel",
                 "ReviewCore",
                 "ReviewJobs",
@@ -151,6 +177,8 @@ let package = Package(
         .target(
             name: "ReviewTestSupport",
             dependencies: [
+                "CodexAppServer",
+                "CodexAppServerProtocol",
                 "ReviewCore",
                 "ReviewJobs",
             ],
@@ -176,7 +204,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewJobsTests",
-            dependencies: ["ReviewJobs", "ReviewCore", "ReviewRuntime", "CodexReviewMCP", "ReviewTestSupport"],
+            dependencies: ["ReviewJobs", "ReviewCore", "ReviewRuntime", "CodexAppServer", "CodexAppServerProtocol", "CodexReviewMCP", "ReviewTestSupport"],
             path: "Tests/ReviewJobsTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -184,7 +212,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewCoreTests",
-            dependencies: ["ReviewCore", "ReviewJobs", "ReviewTestSupport"],
+            dependencies: ["ReviewCore", "ReviewJobs", "CodexAppServer", "CodexAppServerProtocol", "ReviewTestSupport"],
             path: "Tests/ReviewCoreTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -192,7 +220,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewHTTPServerTests",
-            dependencies: ["ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime", "CodexReviewMCP"],
+            dependencies: ["ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime", "CodexAppServer", "CodexReviewMCP"],
             path: "Tests/ReviewHTTPServerTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -200,7 +228,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewCLITests",
-            dependencies: ["ReviewCLI", "ReviewCore", "ReviewJobs", "ReviewRuntime"],
+            dependencies: ["ReviewCLI", "ReviewCore", "ReviewJobs", "ReviewRuntime", "CodexAppServer"],
             path: "Tests/ReviewCLITests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -208,7 +236,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewStdioAdapterTests",
-            dependencies: ["ReviewStdioAdapter", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime"],
+            dependencies: ["ReviewStdioAdapter", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime", "CodexAppServer"],
             path: "Tests/ReviewStdioAdapterTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -216,7 +244,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CodexReviewMCPTests",
-            dependencies: ["CodexReviewMCP", "CodexReviewModel", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime", "ReviewTestSupport"],
+            dependencies: ["CodexReviewMCP", "CodexReviewModel", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime", "CodexAppServer", "CodexAppServerProtocol", "ReviewTestSupport"],
             path: "Tests/CodexReviewMCPTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

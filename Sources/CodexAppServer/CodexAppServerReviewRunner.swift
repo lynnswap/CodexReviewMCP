@@ -1,4 +1,6 @@
 import Foundation
+import CodexAppServerProtocol
+import ReviewCore
 import ReviewJobs
 
 package struct ReviewBootstrapFailure: Error, LocalizedError, Sendable {
@@ -24,14 +26,40 @@ package struct ReviewProcessOutcome: Sendable {
     package var model: String?
     package var hasFinalReview: Bool
     package var lastAgentMessage: String
-    package var errorMessage: String?
+    package var terminalError: CodexReviewTerminalError?
     package var summary: String
     package var startedAt: Date
     package var endedAt: Date
     package var content: String
 }
 
-package struct AppServerReviewRunner: Sendable {
+private func makeCodexReviewTerminalError(
+    source: CodexReviewTerminalErrorSource,
+    message: String,
+    additionalDetails: String? = nil,
+    codexErrorInfo: String? = nil
+) -> CodexReviewTerminalError {
+    CodexReviewTerminalError(
+        source: source,
+        message: message,
+        additionalDetails: additionalDetails?.nilIfEmpty,
+        codexErrorInfo: codexErrorInfo?.nilIfEmpty
+    )
+}
+
+private func makeCodexReviewTerminalError(
+    source: CodexReviewTerminalErrorSource,
+    from error: CodexAppServerTurnError
+) -> CodexReviewTerminalError {
+    makeCodexReviewTerminalError(
+        source: source,
+        message: error.message,
+        additionalDetails: error.additionalDetails,
+        codexErrorInfo: error.codexErrorInfo?.rawValue
+    )
+}
+
+package struct CodexAppServerReviewRunner: Sendable {
     package var settingsBuilder: ReviewExecutionSettingsBuilder
     package var pollInterval: Duration = .milliseconds(100)
     package var threadUnavailableGracePeriod: Duration = .seconds(1)
@@ -41,7 +69,7 @@ package struct AppServerReviewRunner: Sendable {
     }
 
     package func run(
-        session: any AppServerSessionTransport,
+        session: any CodexAppServerSessionTransport,
         request: ReviewRequestOptions,
         defaultTimeoutSeconds: Int?,
         resolvedModelHint: String? = nil,
@@ -65,7 +93,7 @@ package struct AppServerReviewRunner: Sendable {
         await onStart(startedAt)
         await onEvent(.progress(.started, "Review started."))
 
-        let state = AppServerReviewState()
+        let state = CodexAppServerReviewState()
         let initializeResponse = await session.initializeResponse()
         let resolvedCodexHome = ReviewHomePaths.resolvedCodexHomeURL(
             appServerCodexHome: initializeResponse.codexHome,
@@ -88,15 +116,15 @@ package struct AppServerReviewRunner: Sendable {
             resolvedConfig: fallbackAppServerConfig
         ).reportedModelBeforeThreadStart
 
-        let resolvedConfig: AppServerConfigReadResponse.Config
+        let resolvedConfig: CodexAppServerConfigReadResponse.Config
         do {
-            let configResponse: AppServerConfigReadResponse = try await session.request(
+            let configResponse: CodexAppServerConfigReadResponse = try await session.request(
                 method: "config/read",
-                params: AppServerConfigReadParams(
+                params: CodexAppServerConfigReadParams(
                     cwd: request.cwd,
                     includeLayers: false
                 ),
-                responseType: AppServerConfigReadResponse.self
+                responseType: CodexAppServerConfigReadResponse.self
             )
             resolvedConfig = mergeAppServerConfig(
                 primary: configResponse.config,
@@ -132,7 +160,7 @@ package struct AppServerReviewRunner: Sendable {
             return cancelled
         }
 
-        let threadStart = AppServerThreadStartParams(
+        let threadStart = CodexAppServerThreadStartParams(
             model: resolvedModels.threadStartModelHint,
             cwd: request.cwd,
             approvalPolicy: settings.overrides.approvalPolicy,
@@ -149,12 +177,12 @@ package struct AppServerReviewRunner: Sendable {
             ephemeral: true
         )
 
-        let threadResponse: AppServerThreadStartResponse
+        let threadResponse: CodexAppServerThreadStartResponse
         do {
             threadResponse = try await session.request(
                 method: "thread/start",
                 params: threadStart,
-                responseType: AppServerThreadStartResponse.self
+                responseType: CodexAppServerThreadStartResponse.self
             )
         } catch {
             throw ReviewBootstrapFailure(
@@ -187,16 +215,16 @@ package struct AppServerReviewRunner: Sendable {
             )
         }
 
-        let reviewResponse: AppServerReviewStartResponse
+        let reviewResponse: CodexAppServerReviewStartResponse
         do {
             reviewResponse = try await session.request(
                 method: "review/start",
-                params: AppServerReviewStartParams(
+                params: CodexAppServerReviewStartParams(
                     threadID: threadResponse.thread.id,
                     target: request.target,
                     delivery: "inline"
                 ),
-                responseType: AppServerReviewStartResponse.self
+                responseType: CodexAppServerReviewStartResponse.self
             )
         } catch {
             await cleanupThread(session: session, threadID: threadResponse.thread.id)
@@ -231,25 +259,28 @@ package struct AppServerReviewRunner: Sendable {
         let clock = ContinuousClock()
 
         func requestInterrupt(
-            using snapshot: AppServerReviewState.Snapshot,
+            using snapshot: CodexAppServerReviewState.Snapshot,
             cancellationReasonValue: String
         ) async -> ReviewProcessOutcome? {
             interruptSent = true
             do {
-                let _: AppServerEmptyResponse = try await session.request(
+                let _: CodexAppServerEmptyResponse = try await session.request(
                     method: "turn/interrupt",
-                    params: AppServerTurnInterruptParams(
+                    params: CodexAppServerTurnInterruptParams(
                         threadID: snapshot.threadID ?? threadResponse.thread.id,
                         turnID: snapshot.turnID ?? turnID
                     ),
-                    responseType: AppServerEmptyResponse.self
+                    responseType: CodexAppServerEmptyResponse.self
                 )
                 awaitingInterruptResolution = true
                 await onEvent(.logEntry(.init(kind: .progress, text: "Cancellation requested.")))
                 return nil
             } catch {
                 let endedAt = Date()
-                let interruptFailure = "Failed to interrupt review: \(error.localizedDescription)"
+                let interruptFailure = makeCodexReviewTerminalError(
+                    source: .cancelled,
+                    message: "Failed to interrupt review: \(error.localizedDescription)"
+                )
                 await onEvent(.failed(interruptFailure))
                 appServerReviewRunnerDebug("cleanupThread because turn/interrupt failed: \(error.localizedDescription)")
                 await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
@@ -257,6 +288,7 @@ package struct AppServerReviewRunner: Sendable {
                 let finalSnapshot = await state.snapshot()
 
                 if let timeoutMessage {
+                    let terminalError = makeCodexReviewTerminalError(source: .timeout, message: timeoutMessage)
                     await onEvent(.progress(.completed, "Review timed out."))
                     return ReviewProcessOutcome(
                         state: .failed,
@@ -267,15 +299,18 @@ package struct AppServerReviewRunner: Sendable {
                         model: effectiveModel,
                         hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                         lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                        errorMessage: timeoutMessage,
+                        terminalError: terminalError,
                         summary: timeoutMessage,
                         startedAt: startedAt,
                         endedAt: endedAt,
-                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
+                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                     )
                 }
 
-                let reason = finalSnapshot.errorMessage ?? cancellationReasonValue
+                let terminalError = finalSnapshot.terminalError ?? makeCodexReviewTerminalError(
+                    source: .cancelled,
+                    message: cancellationReasonValue
+                )
                 await onEvent(.progress(.completed, "Review cancelled."))
                 return ReviewProcessOutcome(
                     state: .cancelled,
@@ -286,11 +321,11 @@ package struct AppServerReviewRunner: Sendable {
                     model: effectiveModel,
                     hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                     lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                    errorMessage: reason,
+                    terminalError: terminalError,
                     summary: "Review cancelled.",
                     startedAt: startedAt,
                     endedAt: endedAt,
-                    content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
+                    content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                 )
             }
         }
@@ -330,10 +365,10 @@ package struct AppServerReviewRunner: Sendable {
                         let observedAt = pendingThreadUnavailableObservedAt ?? clock.now
                         pendingThreadUnavailableObservedAt = observedAt
                         if clock.now >= observedAt.advanced(by: threadUnavailableGracePeriod),
-                           let reason = await state.finalizePendingThreadUnavailableFailure()
+                           let terminalError = await state.finalizePendingThreadUnavailableFailure()
                         {
-                            await onEvent(.logEntry(.init(kind: .error, text: reason)))
-                            await onEvent(.failed(reason))
+                            await onEvent(.logEntry(.init(kind: .error, text: terminalError.displayText)))
+                            await onEvent(.failed(terminalError))
                             continue
                         }
                     } else {
@@ -365,12 +400,13 @@ package struct AppServerReviewRunner: Sendable {
                    turnStatus == .inProgress,
                    let cancellationReasonValue
                 {
-                    let endedAt = Date()
+                   let endedAt = Date()
                     appServerReviewRunnerDebug("cleanupThread while awaiting interrupt resolution because turn stayed inProgress")
                     await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
                     await onUnrecoverableTransportFailure()
                     let finalSnapshot = await state.snapshot()
                     if let timeoutMessage {
+                        let terminalError = makeCodexReviewTerminalError(source: .timeout, message: timeoutMessage)
                         await onEvent(.progress(.completed, "Review timed out."))
                         return ReviewProcessOutcome(
                             state: .failed,
@@ -381,14 +417,17 @@ package struct AppServerReviewRunner: Sendable {
                             model: effectiveModel,
                             hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                             lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                            errorMessage: timeoutMessage,
+                            terminalError: terminalError,
                             summary: timeoutMessage,
                             startedAt: startedAt,
                             endedAt: endedAt,
-                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
+                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                         )
                     }
-                    let reason = finalSnapshot.errorMessage ?? cancellationReasonValue
+                    let terminalError = finalSnapshot.terminalError ?? makeCodexReviewTerminalError(
+                        source: .cancelled,
+                        message: cancellationReasonValue
+                    )
                     await onEvent(.progress(.completed, "Review cancelled."))
                     return ReviewProcessOutcome(
                         state: .cancelled,
@@ -399,11 +438,11 @@ package struct AppServerReviewRunner: Sendable {
                         model: effectiveModel,
                         hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                         lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                        errorMessage: reason,
+                        terminalError: terminalError,
                         summary: "Review cancelled.",
                         startedAt: startedAt,
                         endedAt: endedAt,
-                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
+                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                     )
                 }
 
@@ -438,6 +477,7 @@ package struct AppServerReviewRunner: Sendable {
                     switch turnStatus {
                     case .completed:
                         if let timeoutMessage {
+                            let terminalError = makeCodexReviewTerminalError(source: .timeout, message: timeoutMessage)
                             await onEvent(.progress(.completed, "Review timed out."))
                             return ReviewProcessOutcome(
                                 state: .failed,
@@ -448,14 +488,18 @@ package struct AppServerReviewRunner: Sendable {
                                 model: effectiveModel,
                                 hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                                 lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                                errorMessage: timeoutMessage,
+                                terminalError: terminalError,
                                 summary: timeoutMessage,
                                 startedAt: startedAt,
                                 endedAt: endedAt,
-                                content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
+                                content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                             )
                         }
                         if let cancellationReasonValue {
+                            let terminalError = makeCodexReviewTerminalError(
+                                source: .cancelled,
+                                message: cancellationReasonValue
+                            )
                             await onEvent(.progress(.completed, "Review cancelled."))
                             return ReviewProcessOutcome(
                                 state: .cancelled,
@@ -466,14 +510,18 @@ package struct AppServerReviewRunner: Sendable {
                                 model: effectiveModel,
                                 hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                                 lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                                errorMessage: cancellationReasonValue,
+                                terminalError: terminalError,
                                 summary: "Review cancelled.",
                                 startedAt: startedAt,
                                 endedAt: endedAt,
-                                content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? cancellationReasonValue
+                                content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                             )
                         }
                         guard let review = finalSnapshot.finalReview?.nilIfEmpty else {
+                            let terminalError = makeCodexReviewTerminalError(
+                                source: .protocolViolation,
+                                message: "Review completed without an `exitedReviewMode` item."
+                            )
                             return ReviewProcessOutcome(
                                 state: .failed,
                                 exitCode: 1,
@@ -483,11 +531,11 @@ package struct AppServerReviewRunner: Sendable {
                                 model: effectiveModel,
                                 hasFinalReview: false,
                                 lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                                errorMessage: "Review completed without an `exitedReviewMode` item.",
+                                terminalError: terminalError,
                                 summary: "Review failed.",
                                 startedAt: startedAt,
                                 endedAt: endedAt,
-                                content: finalSnapshot.lastAgentMessage ?? "Review failed."
+                                content: finalSnapshot.lastAgentMessage ?? terminalError.displayText
                             )
                         }
                         let summary = "Review completed successfully."
@@ -501,7 +549,7 @@ package struct AppServerReviewRunner: Sendable {
                             model: effectiveModel,
                             hasFinalReview: true,
                             lastAgentMessage: review,
-                            errorMessage: nil,
+                            terminalError: nil,
                             summary: summary,
                             startedAt: startedAt,
                             endedAt: endedAt,
@@ -509,6 +557,7 @@ package struct AppServerReviewRunner: Sendable {
                         )
                     case .interrupted:
                         if let timeoutMessage {
+                            let terminalError = makeCodexReviewTerminalError(source: .timeout, message: timeoutMessage)
                             await onEvent(.progress(.completed, "Review timed out."))
                             return ReviewProcessOutcome(
                                 state: .failed,
@@ -519,14 +568,16 @@ package struct AppServerReviewRunner: Sendable {
                                 model: effectiveModel,
                                 hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                                 lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                                errorMessage: timeoutMessage,
+                                terminalError: terminalError,
                                 summary: timeoutMessage,
                                 startedAt: startedAt,
                                 endedAt: endedAt,
-                                content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
+                                content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                             )
                         }
-                        let reason = cancellationReasonValue ?? finalSnapshot.errorMessage ?? "Review cancelled."
+                        let terminalError = finalSnapshot.terminalError
+                            ?? cancellationReasonValue.map { makeCodexReviewTerminalError(source: .cancelled, message: $0) }
+                            ?? makeCodexReviewTerminalError(source: .cancelled, message: "Review cancelled.")
                         await onEvent(.progress(.completed, "Review cancelled."))
                         return ReviewProcessOutcome(
                             state: .cancelled,
@@ -537,14 +588,15 @@ package struct AppServerReviewRunner: Sendable {
                             model: effectiveModel,
                             hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                             lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                            errorMessage: reason,
+                            terminalError: terminalError,
                             summary: "Review cancelled.",
                             startedAt: startedAt,
                             endedAt: endedAt,
-                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
+                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                         )
                     case .failed:
-                        let errorMessage = finalSnapshot.errorMessage ?? "Review failed."
+                        let terminalError = finalSnapshot.terminalError
+                            ?? makeCodexReviewTerminalError(source: .turnCompleted, message: "Review failed.")
                         await onEvent(.progress(.completed, "Review failed."))
                         return ReviewProcessOutcome(
                             state: .failed,
@@ -555,11 +607,11 @@ package struct AppServerReviewRunner: Sendable {
                             model: effectiveModel,
                             hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                             lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                            errorMessage: errorMessage,
+                            terminalError: terminalError,
                             summary: "Review failed.",
                             startedAt: startedAt,
                             endedAt: endedAt,
-                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? errorMessage
+                            content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                         )
                     case .inProgress:
                         break
@@ -587,10 +639,7 @@ package struct AppServerReviewRunner: Sendable {
                         model: effectiveModel
                     )
                 }
-                let reason = timeoutMessage
-                    ?? cancellationReasonValue
-                    ?? finalSnapshot.errorMessage
-                    ?? disconnectError.localizedDescription
+                let terminalError: CodexReviewTerminalError
                 let progressMessage: String
                 let state: ReviewJobState
                 let summary: String
@@ -598,14 +647,25 @@ package struct AppServerReviewRunner: Sendable {
                     progressMessage = "Review timed out."
                     state = .failed
                     summary = timeoutMessage
+                    terminalError = makeCodexReviewTerminalError(source: .timeout, message: timeoutMessage)
                 } else if cancellationReasonValue != nil {
                     progressMessage = "Review cancelled."
                     state = .cancelled
                     summary = "Review cancelled."
+                    terminalError = finalSnapshot.terminalError
+                        ?? makeCodexReviewTerminalError(
+                            source: .cancelled,
+                            message: cancellationReasonValue ?? "Review cancelled."
+                        )
                 } else {
                     progressMessage = "Review failed."
                     state = .failed
                     summary = "Review failed."
+                    terminalError = finalSnapshot.terminalError
+                        ?? makeCodexReviewTerminalError(
+                            source: .turnCompleted,
+                            message: disconnectError.localizedDescription
+                        )
                 }
                 await onEvent(.progress(.completed, progressMessage))
                 return ReviewProcessOutcome(
@@ -617,11 +677,11 @@ package struct AppServerReviewRunner: Sendable {
                     model: effectiveModel,
                     hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
                     lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                    errorMessage: reason,
+                    terminalError: terminalError,
                     summary: summary,
                     startedAt: startedAt,
                     endedAt: endedAt,
-                    content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
+                    content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? terminalError.displayText
                 )
             }
 
@@ -635,7 +695,7 @@ package struct AppServerReviewRunner: Sendable {
     }
 
     private func shouldFallbackFromConfigReadError(_ error: Error) -> Bool {
-        guard let responseError = error as? AppServerResponseError else {
+        guard let responseError = error as? CodexAppServerResponseError else {
             return false
         }
         return responseError.isUnsupportedMethod
@@ -660,7 +720,7 @@ package struct AppServerReviewRunner: Sendable {
             model: requestedModel,
             hasFinalReview: false,
             lastAgentMessage: "",
-            errorMessage: cancellationReason,
+            terminalError: makeCodexReviewTerminalError(source: .cancelled, message: cancellationReason),
             summary: "Review cancelled.",
             startedAt: startedAt,
             endedAt: startedAt,
@@ -683,7 +743,7 @@ package struct AppServerReviewRunner: Sendable {
             model: model,
             hasFinalReview: false,
             lastAgentMessage: "",
-            errorMessage: reason,
+            terminalError: makeCodexReviewTerminalError(source: .cancelled, message: reason),
             summary: "Review cancelled.",
             startedAt: startedAt,
             endedAt: endedAt,
@@ -704,24 +764,24 @@ package struct AppServerReviewRunner: Sendable {
     }
 
     private func cleanupThread(
-        session: any AppServerSessionTransport,
+        session: any CodexAppServerSessionTransport,
         threadID: String
     ) async {
         var cleanupSucceeded = true
         do {
-            let _: AppServerEmptyResponse = try await session.request(
+            let _: CodexAppServerEmptyResponse = try await session.request(
                 method: "thread/backgroundTerminals/clean",
-                params: AppServerThreadBackgroundTerminalsCleanParams(threadID: threadID),
-                responseType: AppServerEmptyResponse.self
+                params: CodexAppServerThreadBackgroundTerminalsCleanParams(threadID: threadID),
+                responseType: CodexAppServerEmptyResponse.self
             )
         } catch {
             cleanupSucceeded = false
         }
         do {
-            let _: AppServerEmptyResponse = try await session.request(
+            let _: CodexAppServerEmptyResponse = try await session.request(
                 method: "thread/unsubscribe",
-                params: AppServerThreadUnsubscribeParams(threadID: threadID),
-                responseType: AppServerEmptyResponse.self
+                params: CodexAppServerThreadUnsubscribeParams(threadID: threadID),
+                responseType: CodexAppServerEmptyResponse.self
             )
         } catch {
             cleanupSucceeded = false
@@ -758,7 +818,7 @@ private struct DiagnosticsTailTracker {
 }
 
 private func emitDiagnosticTailDelta(
-    session: any AppServerSessionTransport,
+    session: any CodexAppServerSessionTransport,
     tracker: inout DiagnosticsTailTracker,
     onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void
 ) async {
@@ -803,8 +863,8 @@ private func reasoningSummaryGroupID(itemID: String, summaryIndex: Int) -> Strin
 }
 
 private func handle(
-    notification: AppServerServerNotification,
-    state: AppServerReviewState,
+    notification: CodexAppServerNotification,
+    state: CodexAppServerReviewState,
     onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void
 ) async {
     switch notification {
@@ -964,29 +1024,28 @@ private func handle(
             text: prefix + payload.message
         )))
     case .error(let payload):
-        let message = payload.error.additionalDetails?.nilIfEmpty.map {
-            "\(payload.error.message) \($0)"
-        } ?? payload.error.message
         let isTrackedError = await state.noteErrorNotification(
             threadID: payload.threadID,
             turnID: payload.turnID,
-            message: message,
+            error: payload.error,
             willRetry: payload.willRetry
         )
         guard isTrackedError else {
             break
         }
+        let terminalError = makeCodexReviewTerminalError(source: .errorNotification, from: payload.error)
+        let message = terminalError.displayText
         let kind: ReviewLogEntry.Kind = payload.willRetry ? .progress : .error
         await onEvent(.logEntry(.init(kind: kind, text: message)))
         if payload.willRetry == false {
-            await onEvent(.failed(message))
+            await onEvent(.failed(terminalError))
         }
     case .ignored:
         break
     }
 }
 
-private actor AppServerReviewState {
+private actor CodexAppServerReviewState {
     enum GroupTextUpdate: Sendable {
         case append(String)
         case replace(String)
@@ -1012,11 +1071,11 @@ private actor AppServerReviewState {
         var reviewThreadID: String?
         var threadID: String?
         var turnID: String?
-        var turnStatus: AppServerTurnStatus?
+        var turnStatus: CodexAppServerTurnStatus?
         var pendingThreadUnavailableReason: String?
         var lastAgentMessage: String?
         var finalReview: String?
-        var errorMessage: String?
+        var terminalError: CodexReviewTerminalError?
         var stderrText: String
     }
 
@@ -1043,10 +1102,10 @@ private actor AppServerReviewState {
     private var reviewThreadID: String?
     private var threadID: String?
     private var turnID: String?
-    private var turnStatus: AppServerTurnStatus?
+    private var turnStatus: CodexAppServerTurnStatus?
     private var finalReview: String?
     private var lastAgentMessage: String?
-    private var errorMessage: String?
+    private var terminalError: CodexReviewTerminalError?
     private var pendingThreadUnavailableReason: String?
     private var stderrLines: [String] = []
     private var agentMessagesByItemID: [String: String] = [:]
@@ -1081,7 +1140,7 @@ private actor AppServerReviewState {
         turnStatus = .inProgress
     }
 
-    func noteTurnCompleted(turn: AppServerTurn) {
+    func noteTurnCompleted(turn: CodexAppServerTurn) {
         if let existingTurnID = turnID, existingTurnID != turn.id {
             return
         }
@@ -1092,7 +1151,9 @@ private actor AppServerReviewState {
         if turnStatus != .failed || turn.status == .failed {
             turnStatus = turn.status
         }
-        errorMessage = turn.error?.message?.nilIfEmpty ?? errorMessage
+        if let error = turn.error {
+            terminalError = makeCodexReviewTerminalError(source: .turnCompleted, from: error)
+        }
     }
 
     func noteThreadStatusChanged(threadID: String, statusType: String) -> String? {
@@ -1115,30 +1176,33 @@ private actor AppServerReviewState {
     func noteErrorNotification(
         threadID: String,
         turnID: String,
-        message: String,
+        error: CodexAppServerTurnError,
         willRetry: Bool
     ) -> Bool {
         guard isActiveReviewThread(threadID), isTrackedTurn(turnID) else {
             return false
         }
         if willRetry == false {
-            errorMessage = message.nilIfEmpty ?? errorMessage
+            terminalError = makeCodexReviewTerminalError(source: .errorNotification, from: error)
             turnStatus = .failed
             pendingThreadUnavailableReason = nil
         }
         return true
     }
 
-    func finalizePendingThreadUnavailableFailure() -> String? {
+    func finalizePendingThreadUnavailableFailure() -> CodexReviewTerminalError? {
         guard let reason = pendingThreadUnavailableReason,
               turnStatus == nil || turnStatus == .inProgress
         else {
             return nil
         }
         turnStatus = .failed
-        errorMessage = errorMessage ?? reason
+        terminalError = terminalError ?? makeCodexReviewTerminalError(
+            source: .threadUnavailable,
+            message: reason
+        )
         pendingThreadUnavailableReason = nil
-        return errorMessage
+        return terminalError
     }
 
     func appendAgentMessageDelta(itemID: String, delta: String) -> String? {
@@ -1291,12 +1355,12 @@ private actor AppServerReviewState {
             pendingThreadUnavailableReason: pendingThreadUnavailableReason,
             lastAgentMessage: lastAgentMessage,
             finalReview: finalReview,
-            errorMessage: errorMessage,
+            terminalError: terminalError,
             stderrText: stderrLines.joined(separator: "\n")
         )
     }
 
-    func containsTrackedActivity(_ notifications: [AppServerServerNotification]) -> Bool {
+    func containsTrackedActivity(_ notifications: [CodexAppServerNotification]) -> Bool {
         notifications.contains { notification in
             switch notification {
             case .threadStatusChanged(let payload):

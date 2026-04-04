@@ -1,5 +1,7 @@
 import Darwin
 import Foundation
+import CodexAppServerProtocol
+import ReviewCore
 import ReviewJobs
 import Subprocess
 #if canImport(System)
@@ -8,15 +10,15 @@ import System
 import SystemPackage
 #endif
 
-package protocol AppServerManaging: Sendable {
-    func prepare() async throws -> AppServerRuntimeState
-    func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport
-    func currentRuntimeState() async -> AppServerRuntimeState?
+package protocol CodexAppServerManaging: Sendable {
+    func prepare() async throws -> CodexAppServerRuntimeState
+    func makeSessionTransport(sessionID: String) async throws -> any CodexAppServerSessionTransport
+    func currentRuntimeState() async -> CodexAppServerRuntimeState?
     func diagnosticsTail() async -> String
     func shutdown() async
 }
 
-package actor AppServerSupervisor: AppServerManaging {
+package actor CodexAppServerSupervisor: CodexAppServerManaging {
     package struct Configuration: Sendable {
         package var codexCommand: String
         package var environment: [String: String]
@@ -37,7 +39,7 @@ package actor AppServerSupervisor: AppServerManaging {
         var launchID: UUID
         var websocketURL: URL
         var authToken: String
-        var runtimeState: AppServerRuntimeState
+        var runtimeState: CodexAppServerRuntimeState
         var execution: Execution
         var tokenFileURL: URL
         var isolatedCodexHomeURL: URL?
@@ -54,7 +56,7 @@ package actor AppServerSupervisor: AppServerManaging {
     private var stderrLines: [String] = []
     private var pendingStandardErrorBytes = Data()
     private var trailingStandardErrorFragment = ""
-    private var startingRuntimeState: AppServerRuntimeState?
+    private var startingRuntimeState: CodexAppServerRuntimeState?
     private var discoveredStartingWebSocketURL: URL?
     private var lifetimeTask: Task<Void, Never>?
 
@@ -62,14 +64,14 @@ package actor AppServerSupervisor: AppServerManaging {
         self.configuration = configuration
     }
 
-    package func prepare() async throws -> AppServerRuntimeState {
+    package func prepare() async throws -> CodexAppServerRuntimeState {
         try await ensureRunning().runtimeState
     }
 
-    package func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport {
+    package func makeSessionTransport(sessionID: String) async throws -> any CodexAppServerSessionTransport {
         let running = try await ensureRunning()
         _ = sessionID
-        return try await AppServerWebSocketSessionTransport.connect(
+        return try await CodexAppServerWebSocketSessionTransport.connect(
             websocketURL: running.websocketURL,
             authToken: running.authToken,
             clientName: codexReviewMCPName,
@@ -81,7 +83,7 @@ package actor AppServerSupervisor: AppServerManaging {
         )
     }
 
-    package func currentRuntimeState() async -> AppServerRuntimeState? {
+    package func currentRuntimeState() async -> CodexAppServerRuntimeState? {
         switch state {
         case .running(let running):
             return running.runtimeState
@@ -261,7 +263,7 @@ package actor AppServerSupervisor: AppServerManaging {
                 launchedProcessIdentity = .init(pid: pid, startTime: startTime)
                 let processGroupLeaderPID = currentProcessGroupID(of: pid) ?? pid
                 let processGroupLeaderStartTime = processStartTime(of: processGroupLeaderPID) ?? startTime
-                let runtimeState = AppServerRuntimeState(
+                let runtimeState = CodexAppServerRuntimeState(
                     pid: Int(pid),
                     startTime: startTime,
                     processGroupLeaderPID: Int(processGroupLeaderPID),
@@ -464,14 +466,14 @@ package actor AppServerSupervisor: AppServerManaging {
         }
     }
 
-    private func noteStartingRuntimeState(_ runtimeState: AppServerRuntimeState) {
+    private func noteStartingRuntimeState(_ runtimeState: CodexAppServerRuntimeState) {
         guard case .starting = state else {
             return
         }
         startingRuntimeState = runtimeState
     }
 
-    private func terminateStartingProcess(runtimeState: AppServerRuntimeState) async {
+    private func terminateStartingProcess(runtimeState: CodexAppServerRuntimeState) async {
         let processIdentity = ProcessIdentity(
             pid: pid_t(runtimeState.pid),
             startTime: runtimeState.startTime

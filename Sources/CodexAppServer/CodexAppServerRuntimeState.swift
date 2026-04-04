@@ -1,6 +1,7 @@
 import Foundation
+import ReviewCore
 
-package struct AppServerRuntimeState: Sendable, Equatable {
+package struct CodexAppServerRuntimeState: Sendable, Equatable {
     package var pid: Int
     package var startTime: ProcessStartTime
     package var processGroupLeaderPID: Int

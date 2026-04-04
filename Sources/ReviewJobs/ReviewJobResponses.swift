@@ -11,7 +11,7 @@ package struct ReviewReadResult: Sendable, Hashable {
     package var lastAgentMessage: String
     package var logs: [ReviewLogEntry]
     package var rawLogText: String
-    package var error: String?
+    package var terminalError: CodexReviewTerminalError?
 
     package init(
         reviewThreadID: String?,
@@ -23,7 +23,7 @@ package struct ReviewReadResult: Sendable, Hashable {
         lastAgentMessage: String,
         logs: [ReviewLogEntry],
         rawLogText: String,
-        error: String? = nil
+        terminalError: CodexReviewTerminalError? = nil
     ) {
         self.reviewThreadID = reviewThreadID
         self.threadID = threadID
@@ -34,7 +34,7 @@ package struct ReviewReadResult: Sendable, Hashable {
         self.lastAgentMessage = lastAgentMessage
         self.logs = logs
         self.rawLogText = rawLogText
-        self.error = error
+        self.terminalError = terminalError
     }
 
     package func structuredContentForStart() -> Value {
@@ -63,9 +63,7 @@ package struct ReviewReadResult: Sendable, Hashable {
                 object["lastAgentMessage"] = .string(lastAgentMessage)
             }
         }
-        if let error {
-            object["error"] = .string(error)
-        }
+        object["terminalError"] = terminalError?.structuredContent() ?? .null
         return .object(object)
     }
 }

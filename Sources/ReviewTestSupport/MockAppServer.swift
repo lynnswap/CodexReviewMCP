@@ -1,4 +1,6 @@
 import Foundation
+import CodexAppServer
+import CodexAppServerProtocol
 import ReviewCore
 import ReviewJobs
 
@@ -113,16 +115,16 @@ package enum MockAppServerMode: Sendable {
     )
 }
 
-package actor MockAppServerSessionTransport: AppServerSessionTransport {
+package actor MockAppServerSessionTransport: CodexAppServerSessionTransport {
     package struct RecordedRequest: Sendable {
         package var method: String
         package var payload: Data
     }
 
     private let mode: MockAppServerMode
-    private let initialize: AppServerInitializeResponse
-    private var notifications: [AppServerServerNotification] = []
-    private var delayedNotifications: [AppServerServerNotification] = []
+    private let initialize: CodexAppServerInitializeResponse
+    private var notifications: [CodexAppServerNotification] = []
+    private var delayedNotifications: [CodexAppServerNotification] = []
     private var requests: [RecordedRequest] = []
     private var requestCounts: [String: Int] = [:]
     private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
@@ -135,7 +137,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
 
     package init(
         mode: MockAppServerMode,
-        initialize: AppServerInitializeResponse = .init(
+        initialize: CodexAppServerInitializeResponse = .init(
             userAgent: nil,
             codexHome: nil,
             platformFamily: "macOS",
@@ -146,7 +148,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         self.initialize = initialize
     }
 
-    package func initializeResponse() async -> AppServerInitializeResponse {
+    package func initializeResponse() async -> CodexAppServerInitializeResponse {
         initialize
     }
 
@@ -180,9 +182,9 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         case "config/read":
             switch mode {
             case .configReadFailure(let message):
-                throw AppServerResponseError(code: -32001, message: message)
+                throw CodexAppServerResponseError(code: -32001, message: message)
             case .configReadUnsupported:
-                throw AppServerResponseError(code: -32601, message: "Method not found")
+                throw CodexAppServerResponseError(code: -32601, message: "Method not found")
             default:
                 return try decodeResponse(
                     ["config": ["model": "gpt-5.4-mini"]],
@@ -240,7 +242,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         case "review/start":
             switch mode {
             case .reviewStartFailure(let message):
-                throw AppServerResponseError(code: -32002, message: message)
+                throw CodexAppServerResponseError(code: -32002, message: message)
             case .success(let reviewThreadID, _, let turnID, _, let finalReview):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
@@ -332,7 +334,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             case .unrelatedNonRetryErrorThenSuccess(let reviewThreadID, _, let turnID, _, let finalReview):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
-                let unrelatedError: AppServerErrorNotification = try decodeResponse(
+                let unrelatedError: CodexAppServerErrorNotification = try decodeResponse(
                     [
                         "error": [
                             "message": "unrelated failure",
@@ -342,10 +344,10 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         "threadId": "thr-unrelated",
                         "turnId": "turn-unrelated",
                     ],
-                    as: AppServerErrorNotification.self
+                    as: CodexAppServerErrorNotification.self
                 )
                 notifications.append(
-                    AppServerServerNotification.error(unrelatedError)
+                    CodexAppServerNotification.error(unrelatedError)
                 )
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
                 return try decodeResponse(
@@ -359,7 +361,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 let threadID = currentThreadID ?? reviewThreadID
-                let failure: AppServerErrorNotification = try decodeResponse(
+                let failure: CodexAppServerErrorNotification = try decodeResponse(
                     [
                         "error": [
                             "message": message,
@@ -369,7 +371,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         "threadId": threadID,
                         "turnId": turnID,
                     ],
-                    as: AppServerErrorNotification.self
+                    as: CodexAppServerErrorNotification.self
                 )
                 notifications.append(.error(failure))
                 return try decodeResponse(
@@ -384,7 +386,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
                 let threadID = currentThreadID ?? reviewThreadID
-                let failure: AppServerErrorNotification = try decodeResponse(
+                let failure: CodexAppServerErrorNotification = try decodeResponse(
                     [
                         "error": [
                             "message": message,
@@ -394,7 +396,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         "threadId": threadID,
                         "turnId": turnID,
                     ],
-                    as: AppServerErrorNotification.self
+                    as: CodexAppServerErrorNotification.self
                 )
                 notifications.append(.error(failure))
                 return try decodeResponse(
@@ -408,7 +410,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 let threadID = currentThreadID ?? reviewThreadID
-                let failure: AppServerErrorNotification = try decodeResponse(
+                let failure: CodexAppServerErrorNotification = try decodeResponse(
                     [
                         "error": [
                             "message": message,
@@ -418,7 +420,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         "threadId": threadID,
                         "turnId": turnID,
                     ],
-                    as: AppServerErrorNotification.self
+                    as: CodexAppServerErrorNotification.self
                 )
                 notifications.append(.error(failure))
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
@@ -589,7 +591,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             }
         case "turn/interrupt":
             if case .interruptFailure(let message) = mode {
-                throw AppServerResponseError(code: -32003, message: message)
+                throw CodexAppServerResponseError(code: -32003, message: message)
             }
             if case .interruptIgnoredLongRunning = mode {
                 return try decodeResponse([:], as: responseType)
@@ -627,7 +629,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         _ = method
     }
 
-    package func drainNotifications() async -> [AppServerServerNotification] {
+    package func drainNotifications() async -> [CodexAppServerNotification] {
         if notifications.isEmpty, delayedNotifications.isEmpty == false {
             notifications = delayedNotifications
             delayedNotifications.removeAll(keepingCapacity: false)
@@ -706,7 +708,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         reviewThreadID: String,
         turnID: String,
         finalReview: String,
-        into destination: inout [AppServerServerNotification]
+        into destination: inout [CodexAppServerNotification]
     ) {
         let threadID = currentThreadID ?? reviewThreadID
         destination.append(
@@ -745,9 +747,9 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
     }
 }
 
-package actor MockAppServerManager: AppServerManaging {
+package actor MockAppServerManager: CodexAppServerManaging {
     private let modeProvider: @Sendable (String) -> MockAppServerMode
-    private let runtimeState: AppServerRuntimeState
+    private let runtimeState: CodexAppServerRuntimeState
     private var prepareCountStorage = 0
     private var shutdownCountStorage = 0
     private var transports: [String: MockAppServerSessionTransport] = [:]
@@ -756,7 +758,7 @@ package actor MockAppServerManager: AppServerManaging {
 
     package init(
         modeProvider: @escaping @Sendable (String) -> MockAppServerMode,
-        runtimeState: AppServerRuntimeState = .init(
+        runtimeState: CodexAppServerRuntimeState = .init(
             pid: 200,
             startTime: .init(seconds: 2, microseconds: 0),
             processGroupLeaderPID: 200,
@@ -767,12 +769,12 @@ package actor MockAppServerManager: AppServerManaging {
         self.runtimeState = runtimeState
     }
 
-    package func prepare() async throws -> AppServerRuntimeState {
+    package func prepare() async throws -> CodexAppServerRuntimeState {
         prepareCountStorage += 1
         return runtimeState
     }
 
-    package func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport {
+    package func makeSessionTransport(sessionID: String) async throws -> any CodexAppServerSessionTransport {
         let transport = MockAppServerSessionTransport(mode: modeProvider(sessionID))
         transports[sessionID] = transport
         transportCreationCounts[sessionID, default: 0] += 1
@@ -783,7 +785,7 @@ package actor MockAppServerManager: AppServerManaging {
         return transport
     }
 
-    package func currentRuntimeState() async -> AppServerRuntimeState? {
+    package func currentRuntimeState() async -> CodexAppServerRuntimeState? {
         runtimeState
     }
 

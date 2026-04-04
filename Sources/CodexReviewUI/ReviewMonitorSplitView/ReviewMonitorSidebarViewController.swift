@@ -1,6 +1,7 @@
 import AppKit
 import CodexReviewModel
 import ObservationBridge
+import ReviewJobs
 import ReviewRuntime
 import SwiftUI
 
@@ -314,7 +315,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         } else {
             job.summary = "Failed to cancel review: \(message)"
         }
-        job.errorMessage = message
+        job.terminalError = CodexReviewTerminalError(source: .cancelled, message: message)
     }
 
     private func updateEmptyState(itemCount: Int) {

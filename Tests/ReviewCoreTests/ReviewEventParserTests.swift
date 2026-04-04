@@ -1,11 +1,11 @@
 import Foundation
 import Testing
-@testable import ReviewCore
+@testable import CodexAppServerProtocol
 
 @Suite
-struct AppServerProtocolTests {
+struct CodexAppServerProtocolTests {
     @Test func appServerJSONLFramerSplitsCompleteMessages() {
-        var framer = AppServerJSONLFramer()
+        var framer = CodexAppServerJSONLFramer()
 
         let firstMessages = framer.append(Data("{\"id\":1}\n{\"id\":".utf8))
         let secondMessages = framer.append(Data("2}\n".utf8))
@@ -17,7 +17,7 @@ struct AppServerProtocolTests {
     }
 
     @Test func appServerJSONLFramerFlushesRemainingMessageOnFinish() {
-        var framer = AppServerJSONLFramer()
+        var framer = CodexAppServerJSONLFramer()
         _ = framer.append(Data("{\"method\":\"initialized\"}".utf8))
 
         let flushed = framer.finish()
@@ -26,10 +26,10 @@ struct AppServerProtocolTests {
     }
 
     @Test func appServerRequestIDParsesSupportedJSONShapes() {
-        #expect(AppServerRequestID(jsonObject: "1") == .string("1"))
-        #expect(AppServerRequestID(jsonObject: 7) == .integer(7))
-        #expect(AppServerRequestID(jsonObject: NSNumber(value: 11)) == .integer(11))
-        #expect(AppServerRequestID(jsonObject: NSNumber(value: 3.5)) == .double(3.5))
+        #expect(CodexAppServerRequestID(jsonObject: "1") == .string("1"))
+        #expect(CodexAppServerRequestID(jsonObject: 7) == .integer(7))
+        #expect(CodexAppServerRequestID(jsonObject: NSNumber(value: 11)) == .integer(11))
+        #expect(CodexAppServerRequestID(jsonObject: NSNumber(value: 3.5)) == .double(3.5))
     }
 
     @Test func appServerConfigReadResponseDecodesStringNumericLimits() throws {
@@ -42,7 +42,7 @@ struct AppServerProtocolTests {
         }
         """.utf8)
 
-        let response = try JSONDecoder().decode(AppServerConfigReadResponse.self, from: data)
+        let response = try JSONDecoder().decode(CodexAppServerConfigReadResponse.self, from: data)
 
         #expect(response.config.modelContextWindow == 120_000)
         #expect(response.config.modelAutoCompactTokenLimit == 110_000)
@@ -50,27 +50,27 @@ struct AppServerProtocolTests {
 
     @Test func appServerThreadItemDecodesPlanReasoningAndToolItems() throws {
         let plan = try JSONDecoder().decode(
-            AppServerThreadItem.self,
+            CodexAppServerThreadItem.self,
             from: Data(#"{"type":"plan","id":"plan_1","text":"- step 1\n- step 2"}"#.utf8)
         )
         let reasoning = try JSONDecoder().decode(
-            AppServerThreadItem.self,
+            CodexAppServerThreadItem.self,
             from: Data(#"{"type":"reasoning","id":"rsn_1","summary":["first"],"content":["raw"]}"#.utf8)
         )
         let toolCall = try JSONDecoder().decode(
-            AppServerThreadItem.self,
+            CodexAppServerThreadItem.self,
             from: Data(#"{"type":"mcpToolCall","id":"tool_1","server":"github","tool":"search","status":"completed","result":{"ok":true}}"#.utf8)
         )
         let contextCompaction = try JSONDecoder().decode(
-            AppServerThreadItem.self,
+            CodexAppServerThreadItem.self,
             from: Data(#"{"type":"contextCompaction","id":"ctx_1"}"#.utf8)
         )
         let nullToolCall = try JSONDecoder().decode(
-            AppServerThreadItem.self,
+            CodexAppServerThreadItem.self,
             from: Data(#"{"type":"mcpToolCall","id":"tool_2","server":"github","tool":"search","status":"completed","result":null,"error":null}"#.utf8)
         )
         let floatingPointToolCall = try JSONDecoder().decode(
-            AppServerThreadItem.self,
+            CodexAppServerThreadItem.self,
             from: Data(#"{"type":"mcpToolCall","id":"tool_3","server":"github","tool":"search","status":"completed","result":0.5}"#.utf8)
         )
 
@@ -84,23 +84,23 @@ struct AppServerProtocolTests {
 
     @Test func appServerDeltaNotificationsDecode() throws {
         let planDelta = try JSONDecoder().decode(
-            TestNotificationEnvelope<AppServerPlanDeltaNotification>.self,
+            TestNotificationEnvelope<CodexAppServerPlanDeltaNotification>.self,
             from: Data(#"{"method":"item/plan/delta","params":{"threadId":"thr_1","turnId":"turn_1","itemId":"plan_1","delta":"- first\n"}}"#.utf8)
         )
         let reasoningSummary = try JSONDecoder().decode(
-            TestNotificationEnvelope<AppServerReasoningSummaryTextDeltaNotification>.self,
+            TestNotificationEnvelope<CodexAppServerReasoningSummaryTextDeltaNotification>.self,
             from: Data(#"{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"thr_1","turnId":"turn_1","itemId":"rsn_1","delta":"thinking","summaryIndex":0}}"#.utf8)
         )
         let reasoningBreak = try JSONDecoder().decode(
-            TestNotificationEnvelope<AppServerReasoningSummaryPartAddedNotification>.self,
+            TestNotificationEnvelope<CodexAppServerReasoningSummaryPartAddedNotification>.self,
             from: Data(#"{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"thr_1","turnId":"turn_1","itemId":"rsn_1","summaryIndex":1}}"#.utf8)
         )
         let rawReasoning = try JSONDecoder().decode(
-            TestNotificationEnvelope<AppServerReasoningTextDeltaNotification>.self,
+            TestNotificationEnvelope<CodexAppServerReasoningTextDeltaNotification>.self,
             from: Data(#"{"method":"item/reasoning/textDelta","params":{"threadId":"thr_1","turnId":"turn_1","itemId":"rsn_1","delta":"raw","contentIndex":0}}"#.utf8)
         )
         let toolProgress = try JSONDecoder().decode(
-            TestNotificationEnvelope<AppServerMcpToolCallProgressNotification>.self,
+            TestNotificationEnvelope<CodexAppServerMcpToolCallProgressNotification>.self,
             from: Data(#"{"method":"item/mcpToolCall/progress","params":{"threadId":"thr_1","turnId":"turn_1","itemId":"tool_1","message":"Fetching schema"}}"#.utf8)
         )
 
