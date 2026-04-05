@@ -14,17 +14,6 @@ struct ServerOptions {
     var forceRestart = false
 }
 
-package struct LoginOptions {
-    var codexCommand = "codex"
-    var action: LoginAction = .login
-}
-
-package enum LoginAction: Equatable {
-    case login
-    case status
-    case logout
-}
-
 package struct AdapterOptions {
     var url: URL
     var requestTimeoutSeconds: TimeInterval
@@ -81,31 +70,6 @@ func parseServerOptions(args: [String]) throws -> ServerOptions {
             throw CLIError(message: "unknown option: \(arg)\n\n\(serverUsage)", exitCode: 2)
         }
     }
-    return options
-}
-
-package func parseLoginOptions(args: [String]) throws -> LoginOptions {
-    var options = LoginOptions()
-    var cursor = Array(args.dropFirst()).makeIterator()
-
-    while let arg = cursor.next() {
-        switch arg {
-        case "--codex-command":
-            guard let value = cursor.next(), value.isEmpty == false else {
-                throw CLIError(message: "invalid value for --codex-command", exitCode: 2)
-            }
-            options.codexCommand = value
-        case "status":
-            options.action = .status
-        case "logout":
-            options.action = .logout
-        case "-h", "--help":
-            throw CLIError(message: loginUsage, exitCode: 0)
-        default:
-            throw CLIError(message: "unknown option: \(arg)\n\n\(loginUsage)", exitCode: 2)
-        }
-    }
-
     return options
 }
 
@@ -283,13 +247,4 @@ Usage:
 private let adapterUsage = """
 Usage:
   codex-review-mcp [--url http://localhost:\(codexReviewDefaultPort)/mcp] [--request-timeout sec]
-"""
-
-private let loginUsage = """
-Usage:
-  codex-review-mcp-login [--codex-command path] [status|logout]
-
-Examples:
-  codex-review-mcp-login
-  codex-review-mcp-login status
 """

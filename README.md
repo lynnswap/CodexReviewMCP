@@ -1,22 +1,12 @@
 # CodexReviewMCP
 
-An MCP server and STDIO adapter for Codex reviews backed by `codex app-server`.
-
-`codex-review-mcp-server` runs as a persistent HTTP/SSE MCP server and keeps a
-single long-lived `codex app-server` backend process alive over loopback
-websocket transport. Review jobs are scoped per MCP session and share that
-backend through one websocket connection per session.
-`codex-review-mcp` is a thin STDIO adapter for clients that require STDIO transport.
+CodexReviewMCP exposes Codex review over MCP.
 
 ## Quick Start
 
-1. Start the server
+1. Launch ReviewMonitor.
 
-   ```bash
-   swift run codex-review-mcp-server
-   ```
-
-2. Register it in your MCP client
+2. Register the MCP server in your client:
 
    ```bash
    # Recommended: HTTP/SSE
@@ -58,16 +48,13 @@ entry to include the timeout values.
 
 ## Architecture
 
-- `codex-review-mcp-server`
+- MCP server
   - Persistent HTTP/SSE MCP server
   - Multi-session
   - Session-scoped review jobs
   - One long-lived `codex app-server` backend process
   - One websocket connection per MCP session
   - Reviews serialize within a session and may run concurrently across sessions
-- `codex-review-mcp`
-  - JSON-RPC over STDIO adapter
-  - Forwards to the HTTP/SSE server
 - Discovery
   - Writes the resolved endpoint to `~/.codex_review/review_mcp_endpoint.json`
   - Stores internal supervisor state in `~/.codex_review/review_mcp_runtime_state.json`
@@ -75,109 +62,6 @@ entry to include the timeout values.
 Pre-1.0 note:
 
 - Discovery schema, runtime-state layout, and other internal file formats may change without migration before the first release.
-
-## Installation
-
-### Build from source
-
-```bash
-swift build
-```
-
-Debug binaries are written to:
-
-- `.build/debug/codex-review-mcp`
-- `.build/debug/codex-review-mcp-server`
-- `.build/debug/codex-review-mcp-login`
-
-Release build:
-
-```bash
-swift build -c release
-```
-
-Release binaries are written to:
-
-- `.build/release/codex-review-mcp`
-- `.build/release/codex-review-mcp-server`
-- `.build/release/codex-review-mcp-login`
-
-### Optional: copy binaries into your PATH
-
-```bash
-mkdir -p "$HOME/.local/bin"
-cp .build/release/codex-review-mcp "$HOME/.local/bin/"
-cp .build/release/codex-review-mcp-server "$HOME/.local/bin/"
-cp .build/release/codex-review-mcp-login "$HOME/.local/bin/"
-chmod +x "$HOME/.local/bin/codex-review-mcp" "$HOME/.local/bin/codex-review-mcp-server" "$HOME/.local/bin/codex-review-mcp-login"
-```
-
-### Authenticate ReviewMCP Home
-
-ReviewMCP uses a dedicated Codex home at `~/.codex_review`. To authenticate it with the normal Codex OAuth flow, run:
-
-```bash
-codex-review-mcp-login
-```
-
-This signs in `~/.codex_review` directly using Codex's built-in account flow. Cached credentials may live in `~/.codex_review/auth.json` or in the OS credential store, depending on Codex configuration. ReviewMCP does not rely on symlinking or copying credentials from `~/.codex`.
-
-Useful variants:
-
-- `codex-review-mcp-login status`
-- `codex-review-mcp-login logout`
-
-### Authenticate From ReviewMonitor
-
-The ReviewMonitor app shows ReviewMCP authentication separately from server state.
-
-- Use the server status menu to:
-  - `Sign in with ChatGPT`
-  - `Sign Out`
-- ChatGPT sign-in opens the Codex browser login URL in your default browser and waits for Codex to complete the localhost callback flow.
-- If a review fails because authentication is missing or expired, the detail pane shows a sign-in action so you can re-authenticate and retry.
-
-## Usage
-
-### Server: `codex-review-mcp-server`
-
-Defaults:
-
-- listen: `localhost:9417`
-- endpoint: `/mcp`
-- session timeout: `3600` seconds
-- discovery file: `~/.codex_review/review_mcp_endpoint.json`
-
-Options:
-
-| Option | Description |
-|--------|-------------|
-| `--listen host:port` | Listen address for the HTTP/SSE MCP server |
-| `--session-timeout sec` | Session idle timeout in seconds |
-| `--codex-command path` | Override the `codex` executable path |
-| `--force-restart` | If the listen port is already in use, terminate the discovered existing server and restart |
-
-### Adapter: `codex-review-mcp`
-
-Options:
-
-| Option | Description |
-|--------|-------------|
-| `--url url` | Explicit upstream MCP URL |
-| `--request-timeout sec` | HTTP request timeout for the adapter |
-
-Environment variables:
-
-| Variable | Description |
-|----------|-------------|
-| `CODEX_REVIEW_MCP_ENDPOINT` | Override the upstream URL for the STDIO adapter |
-
-Adapter endpoint resolution order:
-
-1. `--url`
-2. `CODEX_REVIEW_MCP_ENDPOINT`
-3. Discovery file: `~/.codex_review/review_mcp_endpoint.json`
-4. Default: `http://localhost:9417/mcp`
 
 ## MCP Tools
 
