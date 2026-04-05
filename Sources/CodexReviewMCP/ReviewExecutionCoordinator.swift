@@ -206,6 +206,7 @@ package actor ReviewExecutionCoordinator {
                 request: request,
                 defaultTimeoutSeconds: configuration.defaultTimeoutSeconds,
                 resolvedModelHint: initialModel,
+                diagnosticLineSubscription: await appServerManager.diagnosticLineStream(),
                 onStart: { startedAt in
                     await store.markStarted(
                         jobID: jobID,
@@ -352,6 +353,7 @@ private actor ReviewSessionLane {
     private var isClosed = false
     private var closeReason: String?
     private var queuedReviewWaiters: [CheckedContinuation<Void, Never>] = []
+    private var stateChangeSubscribers: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     init(
         sessionID: String,
@@ -368,6 +370,7 @@ private actor ReviewSessionLane {
         request: ReviewRequestOptions,
         defaultTimeoutSeconds: Int?,
         resolvedModelHint: String?,
+        diagnosticLineSubscription: AsyncStreamSubscription<String>,
         onStart: @escaping @Sendable (Date) async -> Void,
         onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void,
         requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
@@ -386,6 +389,11 @@ private actor ReviewSessionLane {
                 request: request,
                 defaultTimeoutSeconds: defaultTimeoutSeconds,
                 resolvedModelHint: resolvedModelHint,
+                diagnosticLineSubscription: diagnosticLineSubscription,
+                stateChangeSubscription: stateChangeStream(),
+                diagnosticsTail: { [appServerManager] in
+                    await appServerManager.diagnosticsTail()
+                },
                 onStart: onStart,
                 onEvent: onEvent,
                 requestedTerminationReason: requestedTerminationReason,
@@ -408,6 +416,7 @@ private actor ReviewSessionLane {
             closeReason = reason
         }
         notifyPendingStateChange()
+        finishStateChangeSubscribers()
         if let transport {
             await transport.close()
         }
@@ -419,10 +428,7 @@ private actor ReviewSessionLane {
         if isClosed {
             throw ReviewBootstrapFailure(message: closeReason ?? "Review cancelled.", model: nil)
         }
-        if let transport,
-           await transport.isClosed() == false,
-           await transport.disconnectError() == nil
-        {
+        if let transport, await transport.isClosed() == false {
             return transport
         }
 
@@ -439,6 +445,9 @@ private actor ReviewSessionLane {
     }
 
     func notifyPendingStateChange() {
+        for continuation in stateChangeSubscribers.values {
+            continuation.yield(())
+        }
         guard queuedReviewWaiters.isEmpty == false else {
             return
         }
@@ -479,6 +488,45 @@ private actor ReviewSessionLane {
             await transport.close()
         }
         transport = nil
+    }
+
+    private func stateChangeStream() -> AsyncStreamSubscription<Void> {
+        var continuation: AsyncStream<Void>.Continuation!
+        let stream = AsyncStream<Void>(bufferingPolicy: .unbounded) {
+            continuation = $0
+        }
+        let subscriberID = UUID()
+        stateChangeSubscribers[subscriberID] = continuation
+        continuation.onTermination = { _ in
+            Task {
+                await self.removeStateChangeSubscriber(id: subscriberID)
+            }
+        }
+        return .init(
+            stream: stream,
+            cancel: { [weak self] in
+                await self?.cancelStateChangeSubscriber(id: subscriberID)
+            }
+        )
+    }
+
+    private func finishStateChangeSubscribers() {
+        let continuations = stateChangeSubscribers.values
+        stateChangeSubscribers.removeAll()
+        for continuation in continuations {
+            continuation.finish()
+        }
+    }
+
+    private func removeStateChangeSubscriber(id: UUID) {
+        stateChangeSubscribers[id] = nil
+    }
+
+    private func cancelStateChangeSubscriber(id: UUID) {
+        guard let continuation = stateChangeSubscribers.removeValue(forKey: id) else {
+            return
+        }
+        continuation.finish()
     }
 }
 

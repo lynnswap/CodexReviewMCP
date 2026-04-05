@@ -31,9 +31,166 @@ package struct ReviewProcessOutcome: Sendable {
     package var content: String
 }
 
+private enum AppServerReviewRunnerSignal: Sendable {
+    case notification(AppServerServerNotification)
+    case diagnosticLine(String)
+    case stateChanged
+    case timeoutFired
+    case threadUnavailableGraceExpired
+    case completedWithoutFinalReviewGraceExpired
+    case transportDisconnectGraceExpired
+    case interruptResolutionCheck
+    case transportClosed
+    case transportDisconnected(String)
+}
+
+private enum AppServerNotificationDeliveryTier: Sendable {
+    case lossless
+    case bestEffort
+    case auxiliary
+}
+
+private func notificationDeliveryTier(
+    _ notification: AppServerServerNotification
+) -> AppServerNotificationDeliveryTier {
+    switch notification {
+    case .turnCompleted, .itemCompleted, .agentMessageDelta, .planDelta, .reasoningSummaryTextDelta, .reasoningTextDelta:
+        .lossless
+    case .commandExecutionOutputDelta:
+        .bestEffort
+    case .threadStatusChanged, .threadClosed, .turnStarted, .itemStarted, .reasoningSummaryPartAdded, .mcpToolCallProgress, .error, .ignored:
+        .auxiliary
+    }
+}
+
+private actor AppServerReviewRunnerSignalEmitter {
+    private let continuation: AsyncStream<AppServerReviewRunnerSignal>.Continuation
+
+    init(continuation: AsyncStream<AppServerReviewRunnerSignal>.Continuation) {
+        self.continuation = continuation
+    }
+
+    func yield(_ signal: AppServerReviewRunnerSignal) {
+        continuation.yield(signal)
+    }
+}
+
+private func makeNotificationSourceTask(
+    subscription: AsyncThrowingStreamSubscription<AppServerServerNotification>,
+    emitter: AppServerReviewRunnerSignalEmitter
+) -> Task<Void, Never> {
+    Task {
+        await withTaskCancellationHandler {
+            do {
+                for try await notification in subscription.stream {
+                    await emitter.yield(.notification(notification))
+                }
+                guard Task.isCancelled == false else {
+                    return
+                }
+                await emitter.yield(.transportClosed)
+            } catch {
+                guard Task.isCancelled == false else {
+                    return
+                }
+                await emitter.yield(.transportDisconnected(error.localizedDescription))
+            }
+        } onCancel: {
+            Task {
+                await subscription.cancel()
+            }
+        }
+    }
+}
+
+private func makeStringSourceTask(
+    subscription: AsyncStreamSubscription<String>,
+    emitter: AppServerReviewRunnerSignalEmitter
+) -> Task<Void, Never> {
+    Task {
+        await withTaskCancellationHandler {
+            for await line in subscription.stream {
+                await emitter.yield(.diagnosticLine(line))
+            }
+        } onCancel: {
+            Task {
+                await subscription.cancel()
+            }
+        }
+    }
+}
+
+private func makeVoidSourceTask(
+    subscription: AsyncStreamSubscription<Void>,
+    emitter: AppServerReviewRunnerSignalEmitter
+) -> Task<Void, Never> {
+    Task {
+        await withTaskCancellationHandler {
+            for await _ in subscription.stream {
+                await emitter.yield(.stateChanged)
+            }
+        } onCancel: {
+            Task {
+                await subscription.cancel()
+            }
+        }
+    }
+}
+
+private func makeDelayedSignalTask(
+    duration: Duration,
+    signal: AppServerReviewRunnerSignal,
+    emitter: AppServerReviewRunnerSignalEmitter,
+    yieldFirst: Bool = false
+) -> Task<Void, Never> {
+    Task {
+        do {
+            if yieldFirst {
+                await Task.yield()
+            }
+            try Task.checkCancellation()
+            try await Task.sleep(for: duration)
+            try Task.checkCancellation()
+        } catch {
+            return
+        }
+        await emitter.yield(signal)
+    }
+}
+
+private func runWithinRemainingReviewTimeout<Result: Sendable>(
+    timeoutSeconds: Int?,
+    startedAt: Date,
+    operation: @escaping @Sendable () async throws -> Result
+) async throws -> Result {
+    guard let timeoutSeconds else {
+        return try await operation()
+    }
+
+    let remainingSeconds = Double(timeoutSeconds) - Date().timeIntervalSince(startedAt)
+    guard remainingSeconds > 0 else {
+        throw ReviewError.io("Review timed out after \(timeoutSeconds) seconds.")
+    }
+
+    let timeoutDuration = Duration.milliseconds(max(1, Int(ceil(remainingSeconds * 1000))))
+    return try await withThrowingTaskGroup(of: Result.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        group.addTask {
+            try await Task.sleep(for: timeoutDuration)
+            throw ReviewError.io("Review timed out after \(timeoutSeconds) seconds.")
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else {
+            throw ReviewError.io("review operation finished without a result.")
+        }
+        return result
+    }
+}
+
 package struct AppServerReviewRunner: Sendable {
     package var settingsBuilder: ReviewExecutionSettingsBuilder
-    package var pollInterval: Duration = .milliseconds(100)
     package var threadUnavailableGracePeriod: Duration = .seconds(1)
 
     package init(settingsBuilder: ReviewExecutionSettingsBuilder = .init()) {
@@ -45,11 +202,25 @@ package struct AppServerReviewRunner: Sendable {
         request: ReviewRequestOptions,
         defaultTimeoutSeconds: Int?,
         resolvedModelHint: String? = nil,
+        diagnosticLineSubscription: AsyncStreamSubscription<String> = .init(
+            stream: AsyncStream { continuation in
+                continuation.finish()
+            },
+            cancel: {}
+        ),
+        stateChangeSubscription: AsyncStreamSubscription<Void> = .init(
+            stream: AsyncStream { continuation in
+                continuation.finish()
+            },
+            cancel: {}
+        ),
+        diagnosticsTail: @escaping @Sendable () async -> String = { "" },
         onStart: @escaping @Sendable (Date) async -> Void,
         onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void,
         requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
         onUnrecoverableTransportFailure: @escaping @Sendable () async -> Void = {}
     ) async throws -> ReviewProcessOutcome {
+        appServerReviewRunnerDebug("run started")
         let settings = try settingsBuilder.build(request: request)
         let request = settings.request
         var effectiveModel: String? = resolvedModelHint
@@ -64,6 +235,7 @@ package struct AppServerReviewRunner: Sendable {
         let startedAt = Date()
         await onStart(startedAt)
         await onEvent(.progress(.started, "Review started."))
+        let timeoutSeconds = request.timeoutSeconds ?? defaultTimeoutSeconds
 
         let state = AppServerReviewState()
         let initializeResponse = await session.initializeResponse()
@@ -90,14 +262,19 @@ package struct AppServerReviewRunner: Sendable {
 
         let resolvedConfig: AppServerConfigReadResponse.Config
         do {
-            let configResponse: AppServerConfigReadResponse = try await session.request(
-                method: "config/read",
-                params: AppServerConfigReadParams(
-                    cwd: request.cwd,
-                    includeLayers: false
-                ),
-                responseType: AppServerConfigReadResponse.self
-            )
+            let configResponse: AppServerConfigReadResponse = try await runWithinRemainingReviewTimeout(
+                timeoutSeconds: timeoutSeconds,
+                startedAt: startedAt
+            ) {
+                try await session.request(
+                    method: "config/read",
+                    params: AppServerConfigReadParams(
+                        cwd: request.cwd,
+                        includeLayers: false
+                    ),
+                    responseType: AppServerConfigReadResponse.self
+                )
+            }
             resolvedConfig = mergeAppServerConfig(
                 primary: configResponse.config,
                 fallback: fallbackAppServerConfig
@@ -151,16 +328,21 @@ package struct AppServerReviewRunner: Sendable {
 
         let threadResponse: AppServerThreadStartResponse
         do {
-            threadResponse = try await session.request(
-                method: "thread/start",
-                params: threadStart,
-                responseType: AppServerThreadStartResponse.self
-            )
+            threadResponse = try await runWithinRemainingReviewTimeout(
+                timeoutSeconds: timeoutSeconds,
+                startedAt: startedAt
+            ) {
+                try await session.request(
+                    method: "thread/start",
+                    params: threadStart,
+                    responseType: AppServerThreadStartResponse.self
+                )
+            }
         } catch {
             throw ReviewBootstrapFailure(
                 message: bootstrapFailureMessage(
                     prefix: "Failed to start review thread: \(error.localizedDescription)",
-                    diagnostics: await session.diagnosticsTail()
+                    diagnostics: await diagnosticsTail()
                 ),
                 model: effectiveModel
             )
@@ -187,48 +369,142 @@ package struct AppServerReviewRunner: Sendable {
             )
         }
 
-        let reviewResponse: AppServerReviewStartResponse
-        do {
-            reviewResponse = try await session.request(
-                method: "review/start",
-                params: AppServerReviewStartParams(
-                    threadID: threadResponse.thread.id,
-                    target: request.target,
-                    delivery: "inline"
-                ),
-                responseType: AppServerReviewStartResponse.self
-            )
-        } catch {
-            await cleanupThread(session: session, threadID: threadResponse.thread.id)
-            throw ReviewBootstrapFailure(
-                message: "Failed to start review: \(error.localizedDescription)",
-                model: effectiveModel
+        let notificationSubscription = await session.notificationStream()
+        var signalContinuation: AsyncStream<AppServerReviewRunnerSignal>.Continuation!
+        let signalStream = AsyncStream<AppServerReviewRunnerSignal>(bufferingPolicy: .unbounded) {
+            signalContinuation = $0
+        }
+        let signalEmitter = AppServerReviewRunnerSignalEmitter(continuation: signalContinuation)
+        var sourceTasks: [Task<Void, Never>] = [
+            makeNotificationSourceTask(subscription: notificationSubscription, emitter: signalEmitter),
+            makeStringSourceTask(subscription: diagnosticLineSubscription, emitter: signalEmitter),
+            makeVoidSourceTask(subscription: stateChangeSubscription, emitter: signalEmitter),
+        ]
+        if let timeoutSeconds {
+            sourceTasks.append(
+                makeDelayedSignalTask(
+                    duration: .seconds(timeoutSeconds),
+                    signal: .timeoutFired,
+                    emitter: signalEmitter
+                )
             )
         }
-        let reviewThreadID = reviewResponse.reviewThreadID
-        let turnID = reviewResponse.turn.id
-        await state.markReviewStarted(
-            reviewThreadID: reviewThreadID,
-            threadID: threadResponse.thread.id,
-            turnID: turnID
-        )
-        await onEvent(.reviewStarted(
-            reviewThreadID: reviewThreadID,
-            threadID: threadResponse.thread.id,
-            turnID: turnID,
-            model: effectiveModel
-        ))
-        await onEvent(.progress(.threadStarted, "Review started: \(reviewThreadID)"))
 
         var cancellationReasonValue: String?
         var timeoutMessage: String?
         var interruptSent = false
         var awaitingInterruptResolution = false
-        var completedWithoutReviewObservedAt: Date?
-        var pendingThreadUnavailableObservedAt: ContinuousClock.Instant?
-        var diagnosticsTracker = DiagnosticsTailTracker()
-        let timeoutSeconds = request.timeoutSeconds ?? defaultTimeoutSeconds
-        let clock = ContinuousClock()
+        var completedWithoutFinalReviewGraceSatisfied = false
+        var transportDisconnectGraceSatisfied = false
+        var completionGraceDuration: Duration?
+        var completionGraceTask: Task<Void, Never>?
+        var threadUnavailableGraceTask: Task<Void, Never>?
+        var transportDisconnectGraceTask: Task<Void, Never>?
+        var pendingTransportDisconnectReason: String?
+
+        func stopSignalSources() async {
+            threadUnavailableGraceTask?.cancel()
+            completionGraceTask?.cancel()
+            transportDisconnectGraceTask?.cancel()
+            for task in sourceTasks {
+                task.cancel()
+            }
+            signalContinuation.finish()
+            if let threadUnavailableGraceTask {
+                _ = await threadUnavailableGraceTask.value
+            }
+            if let completionGraceTask {
+                _ = await completionGraceTask.value
+            }
+            if let transportDisconnectGraceTask {
+                _ = await transportDisconnectGraceTask.value
+            }
+            for task in sourceTasks {
+                _ = await task.value
+            }
+        }
+
+        func cancelThreadUnavailableGraceTask() {
+            threadUnavailableGraceTask?.cancel()
+            threadUnavailableGraceTask = nil
+        }
+
+        func scheduleThreadUnavailableGraceTask() {
+            cancelThreadUnavailableGraceTask()
+            threadUnavailableGraceTask = makeDelayedSignalTask(
+                duration: threadUnavailableGracePeriod,
+                signal: .threadUnavailableGraceExpired,
+                emitter: signalEmitter,
+                yieldFirst: true
+            )
+        }
+
+        func cancelCompletionGraceTask() {
+            completionGraceTask?.cancel()
+            completionGraceTask = nil
+            completionGraceDuration = nil
+            completedWithoutFinalReviewGraceSatisfied = false
+        }
+
+        func scheduleCompletionGraceTask(duration: Duration) {
+            guard completionGraceTask == nil || completionGraceDuration != duration else {
+                return
+            }
+            cancelCompletionGraceTask()
+            completionGraceDuration = duration
+            completionGraceTask = makeDelayedSignalTask(
+                duration: duration,
+                signal: .completedWithoutFinalReviewGraceExpired,
+                emitter: signalEmitter
+            )
+        }
+
+        func scheduleTransportDisconnectGraceTask() {
+            guard transportDisconnectGraceTask == nil else {
+                return
+            }
+            transportDisconnectGraceSatisfied = false
+            transportDisconnectGraceTask = makeDelayedSignalTask(
+                duration: threadUnavailableGracePeriod,
+                signal: .transportDisconnectGraceExpired,
+                emitter: signalEmitter,
+                yieldFirst: true
+            )
+        }
+
+        func updateTimers(
+            snapshot: AppServerReviewState.Snapshot,
+            trackedActivity: Bool
+        ) {
+            let canTrackThreadUnavailable = snapshot.pendingThreadUnavailableReason != nil
+                && (snapshot.turnStatus == nil || snapshot.turnStatus == .inProgress)
+                && awaitingInterruptResolution == false
+                && cancellationReasonValue == nil
+                && timeoutMessage == nil
+            if canTrackThreadUnavailable {
+                if trackedActivity || threadUnavailableGraceTask == nil {
+                    scheduleThreadUnavailableGraceTask()
+                }
+            } else {
+                cancelThreadUnavailableGraceTask()
+            }
+
+            let wantsCompletionGrace = snapshot.turnStatus == .completed
+                && snapshot.finalReview?.nilIfEmpty == nil
+                && cancellationReasonValue == nil
+                && timeoutMessage == nil
+            if completedWithoutFinalReviewGraceSatisfied && wantsCompletionGrace {
+                return
+            }
+            if wantsCompletionGrace {
+                let duration: Duration = snapshot.pendingThreadUnavailableReason == nil
+                    ? .milliseconds(250)
+                    : threadUnavailableGracePeriod
+                scheduleCompletionGraceTask(duration: duration)
+            } else {
+                cancelCompletionGraceTask()
+            }
+        }
 
         func requestInterrupt(
             using snapshot: AppServerReviewState.Snapshot,
@@ -246,6 +522,9 @@ package struct AppServerReviewRunner: Sendable {
                 )
                 awaitingInterruptResolution = true
                 await onEvent(.logEntry(.init(kind: .progress, text: "Cancellation requested.")))
+                if snapshot.turnStatus == .inProgress {
+                    await signalEmitter.yield(.interruptResolutionCheck)
+                }
                 return nil
             } catch {
                 let endedAt = Date()
@@ -295,60 +574,107 @@ package struct AppServerReviewRunner: Sendable {
             }
         }
 
-        while true {
-            await emitDiagnosticTailDelta(
-                session: session,
-                tracker: &diagnosticsTracker,
-                onEvent: onEvent
+        let reviewResponse: AppServerReviewStartResponse
+        do {
+            reviewResponse = try await runWithinRemainingReviewTimeout(
+                timeoutSeconds: timeoutSeconds,
+                startedAt: startedAt
+            ) {
+                try await session.request(
+                    method: "review/start",
+                    params: AppServerReviewStartParams(
+                        threadID: threadResponse.thread.id,
+                        target: request.target,
+                        delivery: "inline"
+                    ),
+                    responseType: AppServerReviewStartResponse.self
+                )
+            }
+        } catch {
+            await stopSignalSources()
+            await cleanupThread(session: session, threadID: threadResponse.thread.id)
+            throw ReviewBootstrapFailure(
+                message: "Failed to start review: \(error.localizedDescription)",
+                model: effectiveModel
             )
-            let drainedNotifications = await session.drainNotifications()
-            let sawTrackedActivity = await state.containsTrackedActivity(drainedNotifications)
-            for notification in drainedNotifications {
+        }
+        let reviewThreadID = reviewResponse.reviewThreadID
+        let turnID = reviewResponse.turn.id
+        appServerReviewRunnerDebug("review/start succeeded: \(reviewThreadID)")
+        await state.markReviewStarted(
+            reviewThreadID: reviewThreadID,
+            threadID: threadResponse.thread.id,
+            turnID: turnID
+        )
+        await onEvent(.reviewStarted(
+            reviewThreadID: reviewThreadID,
+            threadID: threadResponse.thread.id,
+            turnID: turnID,
+            model: effectiveModel
+        ))
+        await onEvent(.progress(.threadStarted, "Review started: \(reviewThreadID)"))
+
+        func awaitOutcome() async throws -> ReviewProcessOutcome {
+            for await signal in signalStream {
+                var trackedActivity = false
+
+            switch signal {
+            case .notification(let notification):
+                trackedActivity = await state.containsTrackedActivity([notification])
                 await handle(notification: notification, state: state, onEvent: onEvent)
+            case .diagnosticLine(let line):
+                await onEvent(.rawLine(line))
+            case .stateChanged:
+                break
+            case .timeoutFired:
+                if timeoutMessage == nil, let timeoutSeconds {
+                    timeoutMessage = "Review timed out after \(timeoutSeconds) seconds."
+                    cancellationReasonValue = timeoutMessage
+                }
+            case .threadUnavailableGraceExpired:
+                if let reason = await state.finalizePendingThreadUnavailableFailure() {
+                    await onEvent(.logEntry(.init(kind: .error, text: reason)))
+                    await onEvent(.failed(reason))
+                }
+            case .completedWithoutFinalReviewGraceExpired:
+                completedWithoutFinalReviewGraceSatisfied = true
+            case .transportDisconnectGraceExpired:
+                transportDisconnectGraceSatisfied = true
+                transportDisconnectGraceTask = nil
+            case .interruptResolutionCheck:
+                break
+            case .transportClosed:
+                pendingTransportDisconnectReason = pendingTransportDisconnectReason
+                    ?? "app-server websocket session closed."
+                scheduleTransportDisconnectGraceTask()
+            case .transportDisconnected(let message):
+                pendingTransportDisconnectReason = pendingTransportDisconnectReason ?? message
+                scheduleTransportDisconnectGraceTask()
             }
 
             if cancellationReasonValue == nil {
                 cancellationReasonValue = await cancellationReason(requestedTerminationReason: requestedTerminationReason)
             }
 
-            if timeoutMessage == nil,
-               let timeoutSeconds,
-               Date().timeIntervalSince(startedAt) >= Double(timeoutSeconds)
-            {
-                timeoutMessage = "Review timed out after \(timeoutSeconds) seconds."
-                cancellationReasonValue = timeoutMessage
-            }
-
             let snapshot = await state.snapshot()
-            if snapshot.pendingThreadUnavailableReason != nil {
-                if snapshot.turnStatus == nil || snapshot.turnStatus == .inProgress {
-                    if awaitingInterruptResolution {
-                        pendingThreadUnavailableObservedAt = nil
-                    } else if cancellationReasonValue != nil || timeoutMessage != nil {
-                        pendingThreadUnavailableObservedAt = nil
-                    } else if sawTrackedActivity == false {
-                        let observedAt = pendingThreadUnavailableObservedAt ?? clock.now
-                        pendingThreadUnavailableObservedAt = observedAt
-                        if clock.now >= observedAt.advanced(by: threadUnavailableGracePeriod),
-                           let reason = await state.finalizePendingThreadUnavailableFailure()
-                        {
-                            await onEvent(.logEntry(.init(kind: .error, text: reason)))
-                            await onEvent(.failed(reason))
-                            continue
-                        }
-                    } else {
-                        pendingThreadUnavailableObservedAt = nil
-                    }
-                } else {
-                    pendingThreadUnavailableObservedAt = nil
-                }
-            } else {
-                pendingThreadUnavailableObservedAt = nil
+            updateTimers(snapshot: snapshot, trackedActivity: trackedActivity)
+
+            if pendingTransportDisconnectReason != nil,
+               snapshot.reviewThreadID == nil
+            {
+                throw ReviewBootstrapFailure(
+                    message: bootstrapFailureMessage(
+                        prefix: pendingTransportDisconnectReason ?? "app-server websocket disconnected.",
+                        diagnostics: await diagnosticsTail()
+                    ),
+                    model: effectiveModel
+                )
             }
 
             if (snapshot.turnStatus == nil || snapshot.turnStatus == .inProgress),
                let cancellationReasonValue,
-               interruptSent == false
+               interruptSent == false,
+               pendingTransportDisconnectReason == nil
             {
                 if let outcome = await requestInterrupt(
                     using: snapshot,
@@ -356,8 +682,6 @@ package struct AppServerReviewRunner: Sendable {
                 ) {
                     return outcome
                 }
-                try? await Task.sleep(for: pollInterval)
-                continue
             }
 
             if let turnStatus = snapshot.turnStatus {
@@ -409,31 +733,27 @@ package struct AppServerReviewRunner: Sendable {
 
                 if turnStatus != .inProgress {
                     if turnStatus == .completed,
-                       snapshot.finalReview?.nilIfEmpty == nil
+                       snapshot.finalReview?.nilIfEmpty == nil,
+                       (
+                           completedWithoutFinalReviewGraceSatisfied == false
+                               || (
+                                   pendingTransportDisconnectReason != nil
+                                       && transportDisconnectGraceSatisfied == false
+                               )
+                       ),
+                       timeoutMessage == nil,
+                       cancellationReasonValue == nil
                     {
-                        let observedAt = completedWithoutReviewObservedAt ?? Date()
-                        completedWithoutReviewObservedAt = observedAt
-                        let completionGraceSeconds: Double
-                        if snapshot.pendingThreadUnavailableReason == nil {
-                            completionGraceSeconds = 0.25
-                        } else {
-                            let components = threadUnavailableGracePeriod.components
-                            completionGraceSeconds =
-                                Double(components.seconds)
-                                + Double(components.attoseconds) / 1_000_000_000_000_000_000
-                        }
-                        if Date().timeIntervalSince(observedAt) < completionGraceSeconds {
-                            try? await Task.sleep(for: .milliseconds(20))
-                            continue
-                        }
-                    } else {
-                        completedWithoutReviewObservedAt = nil
+                        continue
                     }
 
                     let endedAt = Date()
                     appServerReviewRunnerDebug("cleanupThread after terminal turn status \(turnStatus.rawValue)")
                     await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
                     let finalSnapshot = await state.snapshot()
+                    if pendingTransportDisconnectReason != nil {
+                        await onUnrecoverableTransportFailure()
+                    }
 
                     switch turnStatus {
                     case .completed:
@@ -471,6 +791,25 @@ package struct AppServerReviewRunner: Sendable {
                                 startedAt: startedAt,
                                 endedAt: endedAt,
                                 content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? cancellationReasonValue
+                            )
+                        }
+                        if let transportDisconnectReason = pendingTransportDisconnectReason {
+                            appServerReviewRunnerDebug("cleanupThread after transport disconnect while waiting for final review: \(transportDisconnectReason)")
+                            await onEvent(.progress(.completed, "Review failed."))
+                            return ReviewProcessOutcome(
+                                state: .failed,
+                                exitCode: 1,
+                                reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                                threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                                turnID: finalSnapshot.turnID ?? turnID,
+                                model: effectiveModel,
+                                hasFinalReview: false,
+                                lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                                errorMessage: transportDisconnectReason,
+                                summary: "Review failed.",
+                                startedAt: startedAt,
+                                endedAt: endedAt,
+                                content: finalSnapshot.lastAgentMessage ?? transportDisconnectReason
                             )
                         }
                         guard let review = finalSnapshot.finalReview?.nilIfEmpty else {
@@ -567,70 +906,94 @@ package struct AppServerReviewRunner: Sendable {
                 }
             }
 
-            if let disconnectError = await session.disconnectError() {
-                let endedAt = Date()
-                let finalSnapshot = await state.snapshot()
-                appServerReviewRunnerDebug("cleanupThread because websocket disconnected: \(disconnectError.localizedDescription)")
-                await cleanupThread(session: session, threadID: finalSnapshot.threadID ?? threadResponse.thread.id)
-                await onUnrecoverableTransportFailure()
-                await emitDiagnosticTailDelta(
-                    session: session,
-                    tracker: &diagnosticsTracker,
-                    onEvent: onEvent
-                )
-                if finalSnapshot.reviewThreadID == nil {
-                    throw ReviewBootstrapFailure(
-                        message: bootstrapFailureMessage(
-                            prefix: disconnectError.localizedDescription,
-                            diagnostics: await session.diagnosticsTail()
-                        ),
-                        model: effectiveModel
+            if let transportDisconnectReason = pendingTransportDisconnectReason {
+                if let timeoutMessage {
+                    let endedAt = Date()
+                    appServerReviewRunnerDebug("cleanupThread after transport disconnect timeout: \(transportDisconnectReason)")
+                    await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
+                    await onUnrecoverableTransportFailure()
+                    let finalSnapshot = await state.snapshot()
+                    await onEvent(.progress(.completed, "Review timed out."))
+                    return ReviewProcessOutcome(
+                        state: .failed,
+                        exitCode: 124,
+                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                        turnID: finalSnapshot.turnID ?? turnID,
+                        model: effectiveModel,
+                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        errorMessage: timeoutMessage,
+                        summary: timeoutMessage,
+                        startedAt: startedAt,
+                        endedAt: endedAt,
+                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
                     )
                 }
-                let reason = timeoutMessage
-                    ?? cancellationReasonValue
-                    ?? finalSnapshot.errorMessage
-                    ?? disconnectError.localizedDescription
-                let progressMessage: String
-                let state: ReviewJobState
-                let summary: String
-                if let timeoutMessage {
-                    progressMessage = "Review timed out."
-                    state = .failed
-                    summary = timeoutMessage
-                } else if cancellationReasonValue != nil {
-                    progressMessage = "Review cancelled."
-                    state = .cancelled
-                    summary = "Review cancelled."
-                } else {
-                    progressMessage = "Review failed."
-                    state = .failed
-                    summary = "Review failed."
+
+                if let cancellationReasonValue,
+                   snapshot.turnStatus == nil || snapshot.turnStatus == .inProgress
+                {
+                    let endedAt = Date()
+                    appServerReviewRunnerDebug("cleanupThread after transport disconnect cancellation: \(transportDisconnectReason)")
+                    await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
+                    await onUnrecoverableTransportFailure()
+                    let finalSnapshot = await state.snapshot()
+                    let reason = finalSnapshot.errorMessage ?? cancellationReasonValue
+                    await onEvent(.progress(.completed, "Review cancelled."))
+                    return ReviewProcessOutcome(
+                        state: .cancelled,
+                        exitCode: 0,
+                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                        turnID: finalSnapshot.turnID ?? turnID,
+                        model: effectiveModel,
+                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        errorMessage: reason,
+                        summary: "Review cancelled.",
+                        startedAt: startedAt,
+                        endedAt: endedAt,
+                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
+                    )
                 }
-                await onEvent(.progress(.completed, progressMessage))
-                return ReviewProcessOutcome(
-                    state: state,
-                    exitCode: timeoutMessage == nil ? (state == .failed ? 1 : 0) : 124,
-                    reviewThreadID: finalSnapshot.reviewThreadID,
-                    threadID: finalSnapshot.threadID,
-                    turnID: finalSnapshot.turnID,
-                    model: effectiveModel,
-                    hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                    lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                    errorMessage: reason,
-                    summary: summary,
-                    startedAt: startedAt,
-                    endedAt: endedAt,
-                    content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
-                )
-            }
 
-            if snapshot.turnStatus == .inProgress {
-                try? await Task.sleep(for: pollInterval)
-                continue
+                if transportDisconnectGraceSatisfied {
+                    let endedAt = Date()
+                    appServerReviewRunnerDebug("cleanupThread after transport disconnect grace expired: \(transportDisconnectReason)")
+                    await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
+                    await onUnrecoverableTransportFailure()
+                    let finalSnapshot = await state.snapshot()
+                    await onEvent(.progress(.completed, "Review failed."))
+                    return ReviewProcessOutcome(
+                        state: .failed,
+                        exitCode: 1,
+                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                        turnID: finalSnapshot.turnID ?? turnID,
+                        model: effectiveModel,
+                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
+                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        errorMessage: transportDisconnectReason,
+                        summary: "Review failed.",
+                        startedAt: startedAt,
+                        endedAt: endedAt,
+                        content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? transportDisconnectReason
+                    )
+                }
             }
+        }
 
-            try? await Task.sleep(for: pollInterval)
+            throw ReviewError.io("review signal stream ended unexpectedly")
+        }
+
+        do {
+            let outcome = try await awaitOutcome()
+            await stopSignalSources()
+            return outcome
+        } catch {
+            await stopSignalSources()
+            throw error
         }
     }
 
@@ -726,9 +1089,7 @@ package struct AppServerReviewRunner: Sendable {
         } catch {
             cleanupSucceeded = false
         }
-        _ = await session.drainNotifications()
-        let disconnectError = await session.disconnectError()
-        if cleanupSucceeded == false || disconnectError != nil {
+        if cleanupSucceeded == false {
             await session.close()
         }
     }
@@ -752,40 +1113,6 @@ private let codexReviewMCPRunnerDebugEnabled: Bool = {
         return false
     }
 }()
-
-private struct DiagnosticsTailTracker {
-    fileprivate var lastTail = ""
-}
-
-private func emitDiagnosticTailDelta(
-    session: any AppServerSessionTransport,
-    tracker: inout DiagnosticsTailTracker,
-    onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void
-) async {
-    let currentTail = await session.diagnosticsTail()
-    guard currentTail.isEmpty == false, currentTail != tracker.lastTail else {
-        tracker.lastTail = currentTail
-        return
-    }
-
-    let deltaText: String
-    if tracker.lastTail.isEmpty {
-        deltaText = currentTail
-    } else if currentTail.hasPrefix(tracker.lastTail) {
-        var suffix = String(currentTail.dropFirst(tracker.lastTail.count))
-        if suffix.first == "\n" {
-            suffix.removeFirst()
-        }
-        deltaText = suffix
-    } else {
-        deltaText = currentTail
-    }
-    tracker.lastTail = currentTail
-
-    for line in deltaText.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
-        await onEvent(.rawLine(String(line)))
-    }
-}
 
 private func bootstrapFailureMessage(prefix: String, diagnostics: String) -> String {
     guard diagnostics.isEmpty == false else {
@@ -1298,6 +1625,9 @@ private actor AppServerReviewState {
 
     func containsTrackedActivity(_ notifications: [AppServerServerNotification]) -> Bool {
         notifications.contains { notification in
+            guard notificationDeliveryTier(notification) != .bestEffort else {
+                return false
+            }
             switch notification {
             case .threadStatusChanged(let payload):
                 return isActiveReviewThread(payload.threadID)
@@ -1317,8 +1647,8 @@ private actor AppServerReviewState {
                 return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
             case .planDelta(let payload):
                 return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .commandExecutionOutputDelta(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
+            case .commandExecutionOutputDelta:
+                return false
             case .reasoningSummaryTextDelta(let payload):
                 return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
             case .reasoningSummaryPartAdded(let payload):

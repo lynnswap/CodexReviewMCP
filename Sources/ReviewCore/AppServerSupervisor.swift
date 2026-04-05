@@ -12,6 +12,7 @@ package protocol AppServerManaging: Sendable {
     func prepare() async throws -> AppServerRuntimeState
     func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport
     func currentRuntimeState() async -> AppServerRuntimeState?
+    func diagnosticLineStream() async -> AsyncStreamSubscription<String>
     func diagnosticsTail() async -> String
     func shutdown() async
 }
@@ -57,6 +58,7 @@ package actor AppServerSupervisor: AppServerManaging {
     private var startingRuntimeState: AppServerRuntimeState?
     private var discoveredStartingWebSocketURL: URL?
     private var lifetimeTask: Task<Void, Never>?
+    private var diagnosticSubscribers: [UUID: AsyncStream<String>.Continuation] = [:]
 
     package init(configuration: Configuration = .init()) {
         self.configuration = configuration
@@ -74,10 +76,7 @@ package actor AppServerSupervisor: AppServerManaging {
             authToken: running.authToken,
             clientName: codexReviewMCPName,
             clientTitle: "Codex Review MCP",
-            clientVersion: codexReviewMCPVersion,
-            diagnosticsProvider: { [weak self] in
-                await self?.diagnosticsTail() ?? ""
-            }
+            clientVersion: codexReviewMCPVersion
         )
     }
 
@@ -90,6 +89,26 @@ package actor AppServerSupervisor: AppServerManaging {
         }
     }
 
+    package func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        var continuation: AsyncStream<String>.Continuation!
+        let stream = AsyncStream<String>(bufferingPolicy: .unbounded) {
+            continuation = $0
+        }
+        let subscriberID = UUID()
+        diagnosticSubscribers[subscriberID] = continuation
+        continuation.onTermination = { _ in
+            Task {
+                await self.removeDiagnosticSubscriber(id: subscriberID)
+            }
+        }
+        return .init(
+            stream: stream,
+            cancel: { [weak self] in
+                await self?.cancelDiagnosticSubscriber(id: subscriberID)
+            }
+        )
+    }
+
     package func diagnosticsTail() async -> String {
         stderrLines.suffix(100).joined(separator: "\n")
     }
@@ -98,6 +117,7 @@ package actor AppServerSupervisor: AppServerManaging {
         switch state {
         case .running(let current):
             state = .stopped
+            finishDiagnosticSubscribers()
             let processIdentity = ProcessIdentity(
                 pid: pid_t(current.runtimeState.pid),
                 startTime: current.runtimeState.startTime
@@ -141,6 +161,7 @@ package actor AppServerSupervisor: AppServerManaging {
             let task = lifetimeTask
             let startingRuntimeState = self.startingRuntimeState
             state = .stopped
+            finishDiagnosticSubscribers()
             task?.cancel()
             if let startingRuntimeState {
                 await terminateStartingProcess(runtimeState: startingRuntimeState)
@@ -155,6 +176,7 @@ package actor AppServerSupervisor: AppServerManaging {
                 lifetimeTask = nil
             }
         case .stopped:
+            finishDiagnosticSubscribers()
             return
         }
     }
@@ -394,6 +416,11 @@ package actor AppServerSupervisor: AppServerManaging {
             cached: discoveredStartingWebSocketURL,
             stderrLines: lines
         )
+        for line in lines {
+            for continuation in diagnosticSubscribers.values {
+                continuation.yield(line)
+            }
+        }
         if stderrLines.count > 200 {
             stderrLines.removeFirst(stderrLines.count - 200)
         }
@@ -460,10 +487,30 @@ package actor AppServerSupervisor: AppServerManaging {
             lifetimeTask = nil
         }
         discoveredStartingWebSocketURL = nil
+        finishDiagnosticSubscribers()
         try? FileManager.default.removeItem(at: tokenFileURL)
         if let isolatedCodexHomeURL {
             try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
         }
+    }
+
+    private func finishDiagnosticSubscribers() {
+        let continuations = diagnosticSubscribers.values
+        diagnosticSubscribers.removeAll()
+        for continuation in continuations {
+            continuation.finish()
+        }
+    }
+
+    private func removeDiagnosticSubscriber(id: UUID) {
+        diagnosticSubscribers[id] = nil
+    }
+
+    private func cancelDiagnosticSubscriber(id: UUID) {
+        guard let continuation = diagnosticSubscribers.removeValue(forKey: id) else {
+            return
+        }
+        continuation.finish()
     }
 
     private func noteStartingRuntimeState(_ runtimeState: AppServerRuntimeState) {

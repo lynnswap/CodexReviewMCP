@@ -723,6 +723,12 @@ private actor DelayedShutdownAppServerManager: AppServerManaging {
         runtimeState
     }
 
+    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
+    }
+
     func diagnosticsTail() async -> String {
         ""
     }
@@ -802,6 +808,12 @@ private actor DelayedConnectAppServerManager: AppServerManaging {
         runtimeState
     }
 
+    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
+    }
+
     func diagnosticsTail() async -> String {
         ""
     }
@@ -869,6 +881,12 @@ private actor BlockingPrepareAppServerManager: AppServerManaging {
 
     func currentRuntimeState() async -> AppServerRuntimeState? {
         runtimeState
+    }
+
+    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
     }
 
     func diagnosticsTail() async -> String {

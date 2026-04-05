@@ -1,6 +1,32 @@
 import Foundation
 import ReviewJobs
 
+package struct AsyncStreamSubscription<Element: Sendable>: Sendable {
+    package var stream: AsyncStream<Element>
+    package var cancel: @Sendable () async -> Void
+
+    package init(
+        stream: AsyncStream<Element>,
+        cancel: @escaping @Sendable () async -> Void
+    ) {
+        self.stream = stream
+        self.cancel = cancel
+    }
+}
+
+package struct AsyncThrowingStreamSubscription<Element: Sendable>: Sendable {
+    package var stream: AsyncThrowingStream<Element, Error>
+    package var cancel: @Sendable () async -> Void
+
+    package init(
+        stream: AsyncThrowingStream<Element, Error>,
+        cancel: @escaping @Sendable () async -> Void
+    ) {
+        self.stream = stream
+        self.cancel = cancel
+    }
+}
+
 package protocol AppServerSessionTransport: Sendable {
     func initializeResponse() async -> AppServerInitializeResponse
     func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
@@ -9,9 +35,7 @@ package protocol AppServerSessionTransport: Sendable {
         responseType: Response.Type
     ) async throws -> Response
     func notify<Params: Encodable & Sendable>(method: String, params: Params) async throws
-    func drainNotifications() async -> [AppServerServerNotification]
-    func disconnectError() async -> Error?
-    func diagnosticsTail() async -> String
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification>
     func isClosed() async -> Bool
     func close() async
 }
@@ -20,13 +44,12 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
     private let session: URLSession
     private let task: URLSessionWebSocketTask
     private var initializePayload: AppServerInitializeResponse
-    private let diagnosticsProvider: @Sendable () async -> String
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let requestTimeout: Duration = .seconds(30)
     private var nextRequestID = 1
     private var pendingResponses: [AppServerRequestID: CheckedContinuation<Data, Error>] = [:]
-    private var notifications: [AppServerServerNotification] = []
+    private var notificationSubscribers: [UUID: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation] = [:]
     private var receiveTask: Task<Void, Never>?
     private var closed = false
     private var disconnected: Error?
@@ -36,8 +59,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         authToken: String,
         clientName: String,
         clientTitle: String,
-        clientVersion: String,
-        diagnosticsProvider: @escaping @Sendable () async -> String
+        clientVersion: String
     ) async throws -> AppServerWebSocketSessionTransport {
         let configuration = URLSessionConfiguration.ephemeral
         let session = URLSession(configuration: configuration)
@@ -55,8 +77,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         let transport = AppServerWebSocketSessionTransport(
             session: session,
             task: task,
-            initializePayload: initializePayload,
-            diagnosticsProvider: diagnosticsProvider
+            initializePayload: initializePayload
         )
         do {
             await transport.startReceiving()
@@ -84,13 +105,11 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
     private init(
         session: URLSession,
         task: URLSessionWebSocketTask,
-        initializePayload: AppServerInitializeResponse,
-        diagnosticsProvider: @escaping @Sendable () async -> String
+        initializePayload: AppServerInitializeResponse
     ) {
         self.session = session
         self.task = task
         self.initializePayload = initializePayload
-        self.diagnosticsProvider = diagnosticsProvider
     }
 
     package func initializeResponse() async -> AppServerInitializeResponse {
@@ -123,7 +142,11 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         let timeoutError = ReviewError.io("app-server websocket request `\(method)` timed out.")
         let requestTimeout = self.requestTimeout
         let timeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: requestTimeout)
+            do {
+                try await Task.sleep(for: requestTimeout)
+            } catch {
+                return
+            }
             await self?.failPendingResponseIfPresent(id: id, error: timeoutError)
         }
         defer { timeoutTask.cancel() }
@@ -164,17 +187,35 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         try await send(payload)
     }
 
-    package func drainNotifications() async -> [AppServerServerNotification] {
-        defer { notifications.removeAll(keepingCapacity: true) }
-        return notifications
-    }
+    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let disconnected = self.disconnected
+        let closed = self.closed
+        var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation!
+        let stream = AsyncThrowingStream<AppServerServerNotification, Error>(bufferingPolicy: .unbounded) {
+            continuation = $0
+        }
+        if let disconnected {
+            continuation.finish(throwing: disconnected)
+            return .init(stream: stream, cancel: {})
+        }
+        if closed {
+            continuation.finish()
+            return .init(stream: stream, cancel: {})
+        }
 
-    package func disconnectError() async -> Error? {
-        disconnected
-    }
-
-    package func diagnosticsTail() async -> String {
-        await diagnosticsProvider()
+        let subscriberID = UUID()
+        notificationSubscribers[subscriberID] = continuation
+        continuation.onTermination = { _ in
+            Task {
+                await self.removeNotificationSubscriber(id: subscriberID)
+            }
+        }
+        return .init(
+            stream: stream,
+            cancel: { [weak self] in
+                await self?.cancelNotificationSubscriber(id: subscriberID)
+            }
+        )
     }
 
     package func isClosed() async -> Bool {
@@ -186,6 +227,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
             return
         }
         closed = true
+        finishNotificationSubscribers(failing: nil)
         receiveTask?.cancel()
         receiveTask = nil
         failPendingResponses(with: ReviewError.io("app-server websocket session closed."))
@@ -223,8 +265,11 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
                 if closed {
                     return
                 }
-                disconnected = ReviewError.io("app-server websocket disconnected: \(error.localizedDescription)")
-                failPendingResponses(with: disconnected!)
+                let disconnectError = ReviewError.io("app-server websocket disconnected: \(error.localizedDescription)")
+                closed = true
+                disconnected = disconnectError
+                failPendingResponses(with: disconnectError)
+                finishNotificationSubscribers(failing: disconnectError)
                 return
             }
         }
@@ -265,8 +310,8 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
             appServerTransportDebug("ignored websocket notification \(method): \(String(text.prefix(400)))")
         } else {
             appServerTransportDebug("websocket notification \(method)")
+            broadcastNotification(notification)
         }
-        notifications.append(notification)
     }
 
     private func send(_ data: Data) async throws {
@@ -316,6 +361,35 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
 
     private func failPendingResponseIfPresent(id: AppServerRequestID, error: Error) {
         failPendingResponse(id: id, error: error)
+    }
+
+    private func broadcastNotification(_ notification: AppServerServerNotification) {
+        for continuation in notificationSubscribers.values {
+            continuation.yield(notification)
+        }
+    }
+
+    private func finishNotificationSubscribers(failing error: Error?) {
+        let continuations = notificationSubscribers.values
+        notificationSubscribers.removeAll()
+        for continuation in continuations {
+            if let error {
+                continuation.finish(throwing: error)
+            } else {
+                continuation.finish()
+            }
+        }
+    }
+
+    private func removeNotificationSubscriber(id: UUID) {
+        notificationSubscribers[id] = nil
+    }
+
+    private func cancelNotificationSubscriber(id: UUID) {
+        guard let continuation = notificationSubscribers.removeValue(forKey: id) else {
+            return
+        }
+        continuation.finish()
     }
 }
 
