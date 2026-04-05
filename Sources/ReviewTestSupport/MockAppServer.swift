@@ -53,6 +53,13 @@ package enum MockAppServerMode: Sendable {
         model: String = "gpt-5.4-mini",
         finalReview: String = "Looks solid overall."
     )
+    case threadClosedThenTransportDisconnect(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        message: String = "mock app-server transport disconnected"
+    )
     case detachedParentThreadClosedBeforeCompletedNotifications(
         reviewThreadID: String = "thr-review",
         parentThreadID: String = "thr-parent",
@@ -747,6 +754,27 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 )
                 enqueueNotification(.threadClosed(.init(threadID: threadID)))
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .threadClosedThenTransportDisconnect(let reviewThreadID, _, let turnID, _, let message):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
+                enqueueNotification(
+                    .threadStatusChanged(
+                        .init(
+                            threadID: threadID,
+                            status: .init(type: "notLoaded")
+                        )
+                    )
+                )
+                enqueueNotification(.threadClosed(.init(threadID: threadID)))
+                scheduleDelayedDisconnect(message: message)
                 return try decodeResponse(
                     [
                         "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],

@@ -38,6 +38,7 @@ private enum AppServerReviewRunnerSignal: Sendable {
     case timeoutFired
     case threadUnavailableGraceExpired
     case completedWithoutFinalReviewGraceExpired
+    case completedTurnSettleExpired
     case transportDisconnectGraceExpired
     case interruptResolutionCheck
     case transportClosed
@@ -50,7 +51,7 @@ private enum AppServerNotificationDeliveryTier: Sendable {
     case auxiliary
 }
 
-private func notificationDeliveryTier(
+private func codexNotificationDeliveryTier(
     _ notification: AppServerServerNotification
 ) -> AppServerNotificationDeliveryTier {
     switch notification {
@@ -236,6 +237,13 @@ package struct AppServerReviewRunner: Sendable {
         await onStart(startedAt)
         await onEvent(.progress(.started, "Review started."))
         let timeoutSeconds = request.timeoutSeconds ?? defaultTimeoutSeconds
+        let bootstrapTimeoutSeconds: Int? = if let requestTimeout = request.timeoutSeconds {
+            requestTimeout
+        } else if let defaultTimeoutSeconds, defaultTimeoutSeconds > 0 {
+            defaultTimeoutSeconds
+        } else {
+            nil
+        }
 
         let state = AppServerReviewState()
         let initializeResponse = await session.initializeResponse()
@@ -263,7 +271,7 @@ package struct AppServerReviewRunner: Sendable {
         let resolvedConfig: AppServerConfigReadResponse.Config
         do {
             let configResponse: AppServerConfigReadResponse = try await runWithinRemainingReviewTimeout(
-                timeoutSeconds: timeoutSeconds,
+                timeoutSeconds: bootstrapTimeoutSeconds,
                 startedAt: startedAt
             ) {
                 try await session.request(
@@ -329,7 +337,7 @@ package struct AppServerReviewRunner: Sendable {
         let threadResponse: AppServerThreadStartResponse
         do {
             threadResponse = try await runWithinRemainingReviewTimeout(
-                timeoutSeconds: timeoutSeconds,
+                timeoutSeconds: bootstrapTimeoutSeconds,
                 startedAt: startedAt
             ) {
                 try await session.request(
@@ -395,16 +403,20 @@ package struct AppServerReviewRunner: Sendable {
         var interruptSent = false
         var awaitingInterruptResolution = false
         var completedWithoutFinalReviewGraceSatisfied = false
+        var completedTurnSettleSatisfied = false
         var transportDisconnectGraceSatisfied = false
         var completionGraceDuration: Duration?
         var completionGraceTask: Task<Void, Never>?
+        var completedTurnSettleTask: Task<Void, Never>?
         var threadUnavailableGraceTask: Task<Void, Never>?
         var transportDisconnectGraceTask: Task<Void, Never>?
         var pendingTransportDisconnectReason: String?
+        var transportDisconnectObservedAt: Date?
 
         func stopSignalSources() async {
             threadUnavailableGraceTask?.cancel()
             completionGraceTask?.cancel()
+            completedTurnSettleTask?.cancel()
             transportDisconnectGraceTask?.cancel()
             for task in sourceTasks {
                 task.cancel()
@@ -415,6 +427,9 @@ package struct AppServerReviewRunner: Sendable {
             }
             if let completionGraceTask {
                 _ = await completionGraceTask.value
+            }
+            if let completedTurnSettleTask {
+                _ = await completedTurnSettleTask.value
             }
             if let transportDisconnectGraceTask {
                 _ = await transportDisconnectGraceTask.value
@@ -459,6 +474,19 @@ package struct AppServerReviewRunner: Sendable {
             )
         }
 
+        func scheduleCompletedTurnSettleTask() {
+            guard completedTurnSettleTask == nil else {
+                return
+            }
+            completedTurnSettleSatisfied = false
+            completedTurnSettleTask = makeDelayedSignalTask(
+                duration: .zero,
+                signal: .completedTurnSettleExpired,
+                emitter: signalEmitter,
+                yieldFirst: true
+            )
+        }
+
         func scheduleTransportDisconnectGraceTask() {
             guard transportDisconnectGraceTask == nil else {
                 return
@@ -470,6 +498,33 @@ package struct AppServerReviewRunner: Sendable {
                 emitter: signalEmitter,
                 yieldFirst: true
             )
+        }
+
+        func noteTransportDisconnect(reason: String) {
+            if pendingTransportDisconnectReason == nil {
+                pendingTransportDisconnectReason = reason
+                transportDisconnectObservedAt = Date()
+            }
+            scheduleTransportDisconnectGraceTask()
+        }
+
+        func shouldWaitForHigherPriorityOutcome(
+            snapshot: AppServerReviewState.Snapshot
+        ) -> Bool {
+            if let turnStatus = snapshot.turnStatus {
+                switch turnStatus {
+                case .completed:
+                    return snapshot.finalReview?.nilIfEmpty == nil
+                        && completedWithoutFinalReviewGraceSatisfied == false
+                case .failed, .interrupted:
+                    return true
+                case .inProgress:
+                    break
+                }
+            }
+
+            return snapshot.pendingThreadUnavailableReason != nil
+                && (snapshot.turnStatus == nil || snapshot.turnStatus == .inProgress)
         }
 
         func updateTimers(
@@ -577,7 +632,7 @@ package struct AppServerReviewRunner: Sendable {
         let reviewResponse: AppServerReviewStartResponse
         do {
             reviewResponse = try await runWithinRemainingReviewTimeout(
-                timeoutSeconds: timeoutSeconds,
+                timeoutSeconds: bootstrapTimeoutSeconds,
                 startedAt: startedAt
             ) {
                 try await session.request(
@@ -638,18 +693,18 @@ package struct AppServerReviewRunner: Sendable {
                 }
             case .completedWithoutFinalReviewGraceExpired:
                 completedWithoutFinalReviewGraceSatisfied = true
+            case .completedTurnSettleExpired:
+                completedTurnSettleSatisfied = true
+                completedTurnSettleTask = nil
             case .transportDisconnectGraceExpired:
                 transportDisconnectGraceSatisfied = true
                 transportDisconnectGraceTask = nil
             case .interruptResolutionCheck:
                 break
             case .transportClosed:
-                pendingTransportDisconnectReason = pendingTransportDisconnectReason
-                    ?? "app-server websocket session closed."
-                scheduleTransportDisconnectGraceTask()
+                noteTransportDisconnect(reason: "app-server websocket session closed.")
             case .transportDisconnected(let message):
-                pendingTransportDisconnectReason = pendingTransportDisconnectReason ?? message
-                scheduleTransportDisconnectGraceTask()
+                noteTransportDisconnect(reason: message)
             }
 
             if cancellationReasonValue == nil {
@@ -733,6 +788,16 @@ package struct AppServerReviewRunner: Sendable {
 
                 if turnStatus != .inProgress {
                     if turnStatus == .completed,
+                       snapshot.finalReview?.nilIfEmpty != nil,
+                       timeoutMessage == nil,
+                       cancellationReasonValue == nil,
+                       completedTurnSettleSatisfied == false
+                    {
+                        scheduleCompletedTurnSettleTask()
+                        continue
+                    }
+
+                    if turnStatus == .completed,
                        snapshot.finalReview?.nilIfEmpty == nil,
                        (
                            completedWithoutFinalReviewGraceSatisfied == false
@@ -793,26 +858,26 @@ package struct AppServerReviewRunner: Sendable {
                                 content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? cancellationReasonValue
                             )
                         }
-                        if let transportDisconnectReason = pendingTransportDisconnectReason {
-                            appServerReviewRunnerDebug("cleanupThread after transport disconnect while waiting for final review: \(transportDisconnectReason)")
-                            await onEvent(.progress(.completed, "Review failed."))
-                            return ReviewProcessOutcome(
-                                state: .failed,
-                                exitCode: 1,
-                                reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                                threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                                turnID: finalSnapshot.turnID ?? turnID,
-                                model: effectiveModel,
-                                hasFinalReview: false,
-                                lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
-                                errorMessage: transportDisconnectReason,
-                                summary: "Review failed.",
-                                startedAt: startedAt,
-                                endedAt: endedAt,
-                                content: finalSnapshot.lastAgentMessage ?? transportDisconnectReason
-                            )
-                        }
                         guard let review = finalSnapshot.finalReview?.nilIfEmpty else {
+                            if let transportDisconnectReason = pendingTransportDisconnectReason {
+                                appServerReviewRunnerDebug("cleanupThread after transport disconnect while waiting for final review: \(transportDisconnectReason)")
+                                await onEvent(.progress(.completed, "Review failed."))
+                                return ReviewProcessOutcome(
+                                    state: .failed,
+                                    exitCode: 1,
+                                    reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                                    threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                                    turnID: finalSnapshot.turnID ?? turnID,
+                                    model: effectiveModel,
+                                    hasFinalReview: false,
+                                    lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                                    errorMessage: transportDisconnectReason,
+                                    summary: "Review failed.",
+                                    startedAt: startedAt,
+                                    endedAt: endedAt,
+                                    content: finalSnapshot.lastAgentMessage ?? transportDisconnectReason
+                                )
+                            }
                             return ReviewProcessOutcome(
                                 state: .failed,
                                 exitCode: 1,
@@ -959,8 +1024,16 @@ package struct AppServerReviewRunner: Sendable {
                 }
 
                 if transportDisconnectGraceSatisfied {
+                    if shouldWaitForHigherPriorityOutcome(snapshot: snapshot) {
+                        continue
+                    }
                     let endedAt = Date()
-                    appServerReviewRunnerDebug("cleanupThread after transport disconnect grace expired: \(transportDisconnectReason)")
+                    let observedAtDescription = transportDisconnectObservedAt.map {
+                        ISO8601DateFormatter().string(from: $0)
+                    } ?? "unknown"
+                    appServerReviewRunnerDebug(
+                        "cleanupThread after transport disconnect grace expired: \(transportDisconnectReason) observedAt=\(observedAtDescription)"
+                    )
                     await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
                     await onUnrecoverableTransportFailure()
                     let finalSnapshot = await state.snapshot()
@@ -1625,7 +1698,7 @@ private actor AppServerReviewState {
 
     func containsTrackedActivity(_ notifications: [AppServerServerNotification]) -> Bool {
         notifications.contains { notification in
-            guard notificationDeliveryTier(notification) != .bestEffort else {
+            guard codexNotificationDeliveryTier(notification) != .bestEffort else {
                 return false
             }
             switch notification {

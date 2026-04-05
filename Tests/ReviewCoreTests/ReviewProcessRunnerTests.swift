@@ -415,6 +415,29 @@ struct AppServerReviewRunnerTests {
         #expect(result.content == "Looks solid overall.")
     }
 
+    @Test func appServerReviewRunnerPrefersThreadUnavailableFailureOverTransportDisconnect() async throws {
+        let cwd = try makeTemporaryDirectory()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.threadUnavailableGracePeriod = .milliseconds(100)
+        let session = MockAppServerSessionTransport(mode: .threadClosedThenTransportDisconnect())
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .failed)
+        #expect(result.errorMessage == "Review thread closed before the review completed.")
+    }
+
     @Test func appServerReviewRunnerSucceedsWhenBestEffortCommandOutputPrecedesCompletion() async throws {
         let cwd = try makeTemporaryDirectory()
         let runner = AppServerReviewRunner(
@@ -459,6 +482,37 @@ struct AppServerReviewRunnerTests {
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
+
+        #expect(result.state == .failed)
+        #expect(result.errorMessage == "mock app-server transport disconnected")
+    }
+
+    @Test func appServerReviewRunnerWaitsForTransportDisconnectGraceBeforeFailing() async throws {
+        let cwd = try makeTemporaryDirectory()
+        var runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        runner.threadUnavailableGracePeriod = .seconds(1)
+        let session = MockAppServerSessionTransport(
+            mode: .commandOutputThenTransportDisconnect()
+        )
+
+        let task = Task {
+            try await runner.run(
+                session: session,
+                request: .init(cwd: cwd.path, target: .uncommittedChanges),
+                defaultTimeoutSeconds: nil as Int?,
+                onStart: { _ in },
+                onEvent: { _ in },
+                requestedTerminationReason: { nil as ReviewTerminationReason? }
+            )
+        }
+
+        #expect(await taskCompletesWithin(task, timeout: .milliseconds(100)) == false)
+
+        let result = try await task.value
 
         #expect(result.state == .failed)
         #expect(result.errorMessage == "mock app-server transport disconnected")
@@ -833,6 +887,25 @@ private actor StateChangeSignal {
 }
 
 private struct TaskAwaitTimeoutError: Error {}
+
+private func taskCompletesWithin<T: Sendable>(
+    _ task: Task<T, Error>,
+    timeout: Duration
+) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            _ = try? await task.value
+            return true
+        }
+        group.addTask {
+            try? await Task.sleep(for: timeout)
+            return false
+        }
+        let completed = await group.next() ?? false
+        group.cancelAll()
+        return completed
+    }
+}
 
 private func awaitTaskValue<T: Sendable>(
     _ task: Task<T, Error>,
