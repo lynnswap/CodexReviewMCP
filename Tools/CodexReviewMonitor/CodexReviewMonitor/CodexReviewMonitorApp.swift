@@ -79,6 +79,7 @@ enum CodexReviewMonitorLaunchEnvironment {
 @MainActor
 final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private var shouldManageEmbeddedServer = true
+    private var terminationTask: Task<Void, Never>?
 
     lazy var store = CodexReviewStore()
 
@@ -93,14 +94,23 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        _ = notification
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard shouldManageEmbeddedServer else {
-            return
+            return .terminateNow
         }
-        Task {
-            await store.stop()
+        guard terminationTask == nil else {
+            return .terminateLater
         }
+        terminationTask = Task { @MainActor [weak self] in
+            guard let self else {
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            await self.store.stop()
+            self.terminationTask = nil
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 

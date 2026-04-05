@@ -941,6 +941,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     private var server: ReviewMCPHTTPServer?
     private var waitTask: Task<Void, Never>?
+    private var startupTask: Task<Void, Never>?
+    private var startupTaskID: UUID?
     var closedSessions: Set<String> = []
     private var discoveryFileURL: URL {
         ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
@@ -950,7 +952,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     }
 
     var isActive: Bool {
-        server != nil || waitTask != nil
+        server != nil || waitTask != nil || startupTask != nil
     }
 
     init(
@@ -971,59 +973,56 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         forceRestartIfNeeded: Bool
     ) async {
         closedSessions = []
-
-        let server = makeServer(store: store)
-        do {
-            let url: URL
-            do {
-                url = try await server.start()
-            } catch {
-                guard forceRestartIfNeeded,
-                      isAddressInUse(error)
-                else {
-                    throw error
-                }
-                try await replayAddressInUseCleanup()
-                url = try await server.start()
+        let startupID = UUID()
+        let task = Task { @MainActor [weak self, weak store] in
+            guard let self, let store else {
+                return
             }
-
-            let appServerRuntimeState = try await appServerManager.prepare()
-            self.server = server
-            writeRuntimeState(
-                endpointRecord: server.currentEndpointRecord(),
-                appServerRuntimeState: appServerRuntimeState
+            await self.performStartup(
+                startupID: startupID,
+                store: store,
+                forceRestartIfNeeded: forceRestartIfNeeded
             )
-            store.transitionToRunning(serverURL: url)
-            observeServerLifecycle(server: server, store: store)
-        } catch {
-            await server.stop()
-            await appServerManager.shutdown()
-            self.server = nil
-            store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
+        }
+        startupTaskID = startupID
+        startupTask = task
+        await task.value
+        if startupTaskID == startupID {
+            startupTask = nil
+            startupTaskID = nil
         }
     }
 
     func stop(store: CodexReviewStore) async {
+        let startupTask = self.startupTask
+        self.startupTask = nil
+        startupTaskID = nil
+        startupTask?.cancel()
         waitTask?.cancel()
         waitTask = nil
         await executionCoordinator.shutdown(reason: "Review server stopped.", store: store)
         if let server {
             let endpointRecord = server.currentEndpointRecord()
+            self.server = nil
             await server.stop()
             await appServerManager.shutdown()
             removeRuntimeState(endpointRecord: endpointRecord)
         } else {
             await appServerManager.shutdown()
+            ReviewDiscovery.remove(at: discoveryFileURL)
+            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
         }
-        self.server = nil
         closedSessions = []
+        await startupTask?.value
     }
 
     func waitUntilStopped() async {
-        guard let waitTask else {
-            return
+        if let startupTask {
+            await startupTask.value
         }
-        _ = await waitTask.value
+        if let waitTask {
+            _ = await waitTask.value
+        }
     }
 
     func cancelReview(
@@ -1102,6 +1101,71 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 return store.hasActiveJobs(for: sessionID)
             }
         )
+    }
+
+    private func performStartup(
+        startupID: UUID,
+        store: CodexReviewStore,
+        forceRestartIfNeeded: Bool
+    ) async {
+        let server = makeServer(store: store)
+        do {
+            let url = try await startServer(
+                server,
+                forceRestartIfNeeded: forceRestartIfNeeded
+            )
+            guard startupTaskID == startupID else {
+                await server.stop()
+                return
+            }
+
+            self.server = server
+            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+
+            let appServerRuntimeState = try await appServerManager.prepare()
+            guard startupTaskID == startupID, self.server === server else {
+                return
+            }
+
+            writeRuntimeState(
+                endpointRecord: server.currentEndpointRecord(),
+                appServerRuntimeState: appServerRuntimeState
+            )
+            store.transitionToRunning(serverURL: url)
+            observeServerLifecycle(server: server, store: store)
+        } catch is CancellationError {
+            guard startupTaskID == startupID else {
+                return
+            }
+            await server.stop()
+            await appServerManager.shutdown()
+            self.server = nil
+        } catch {
+            guard startupTaskID == startupID else {
+                return
+            }
+            await server.stop()
+            await appServerManager.shutdown()
+            self.server = nil
+            store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
+        }
+    }
+
+    private func startServer(
+        _ server: ReviewMCPHTTPServer,
+        forceRestartIfNeeded: Bool
+    ) async throws -> URL {
+        do {
+            return try await server.start()
+        } catch {
+            guard forceRestartIfNeeded,
+                  isAddressInUse(error)
+            else {
+                throw error
+            }
+            try await replayAddressInUseCleanup()
+            return try await server.start()
+        }
     }
 
     private func replayAddressInUseCleanup() async throws {

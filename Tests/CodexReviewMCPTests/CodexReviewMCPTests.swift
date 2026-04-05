@@ -108,6 +108,86 @@ struct CodexReviewMCPTests {
         #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
     }
 
+    @Test func stopCancelsPartialStartupAndRemovesDiscoveryState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
+        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
+        ReviewDiscovery.remove(at: discoveryFileURL)
+        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        defer {
+            ReviewDiscovery.remove(at: discoveryFileURL)
+            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        }
+
+        let manager = BlockingPrepareAppServerManager(runtimeState: .init(
+            pid: 300,
+            startTime: .init(seconds: 3, microseconds: 0),
+            processGroupLeaderPID: 300,
+            processGroupLeaderStartTime: .init(seconds: 3, microseconds: 0)
+        ))
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager
+        )
+
+        let startTask = Task { await store.start() }
+
+        await manager.waitForPrepareStart()
+        try await waitUntil(timeout: .seconds(2)) {
+            ReviewDiscovery.readPersisted(from: discoveryFileURL) != nil
+        }
+        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
+
+        await store.stop()
+        _ = await startTask.value
+
+        #expect(store.serverState == .stopped)
+        #expect(ReviewDiscovery.readPersisted(from: discoveryFileURL) == nil)
+        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
+        #expect(await manager.shutdownCount() == 1)
+    }
+
+    @Test func restartRecoversFromPartialStartup() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
+        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
+
+        let manager = BlockingPrepareAppServerManager(runtimeState: .init(
+            pid: 400,
+            startTime: .init(seconds: 4, microseconds: 0),
+            processGroupLeaderPID: 400,
+            processGroupLeaderStartTime: .init(seconds: 4, microseconds: 0)
+        ))
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager
+        )
+
+        let firstStartTask = Task { await store.start() }
+
+        await manager.waitForPrepareStart()
+        await store.restart()
+        _ = await firstStartTask.value
+
+        #expect(store.serverState == .running)
+        let runtimeState = try #require(ReviewRuntimeStateStore.read(from: runtimeStateFileURL))
+        #expect(runtimeState.appServerPID == 400)
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() >= 1)
+
+        await store.stop()
+        #expect(store.serverState == .stopped)
+    }
+
     @Test func sessionTransportFailureDoesNotDropOtherSessionsOrRuntimeState() async throws {
         let environment = try isolatedHomeEnvironment()
         let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
@@ -755,6 +835,77 @@ private actor DelayedConnectAppServerManager: AppServerManaging {
     }
 }
 
+private actor BlockingPrepareAppServerManager: AppServerManaging {
+    private let runtimeState: AppServerRuntimeState
+    private var prepareCountStorage = 0
+    private var shutdownCountStorage = 0
+    private var firstPrepareStarted = false
+    private var firstPrepareStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var blockedPrepareContinuations: [CheckedContinuation<AppServerRuntimeState, Error>] = []
+
+    init(runtimeState: AppServerRuntimeState) {
+        self.runtimeState = runtimeState
+    }
+
+    func prepare() async throws -> AppServerRuntimeState {
+        prepareCountStorage += 1
+        if prepareCountStorage == 1 {
+            firstPrepareStarted = true
+            let waiters = firstPrepareStartWaiters
+            firstPrepareStartWaiters.removeAll(keepingCapacity: false)
+            for waiter in waiters {
+                waiter.resume()
+            }
+            return try await withCheckedThrowingContinuation { continuation in
+                blockedPrepareContinuations.append(continuation)
+            }
+        }
+        return runtimeState
+    }
+
+    func makeSessionTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
+    func currentRuntimeState() async -> AppServerRuntimeState? {
+        runtimeState
+    }
+
+    func diagnosticsTail() async -> String {
+        ""
+    }
+
+    func shutdown() async {
+        shutdownCountStorage += 1
+        let continuations = blockedPrepareContinuations
+        blockedPrepareContinuations.removeAll(keepingCapacity: false)
+        for continuation in continuations {
+            continuation.resume(throwing: CancellationError())
+        }
+    }
+
+    func waitForPrepareStart() async {
+        if firstPrepareStarted {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if firstPrepareStarted {
+                continuation.resume()
+            } else {
+                firstPrepareStartWaiters.append(continuation)
+            }
+        }
+    }
+
+    func prepareCount() -> Int {
+        prepareCountStorage
+    }
+
+    func shutdownCount() -> Int {
+        shutdownCountStorage
+    }
+}
+
 private func runWithRestartClock(
     _ clock: TestRestartClock,
     maxSteps: Int = 40,
@@ -789,6 +940,21 @@ private func runWithRestartClock(
         clock.advance(by: step)
     }
     throw TestFailure("timed out driving restart clock")
+}
+
+private func waitUntil(
+    timeout: Duration,
+    interval: Duration = .milliseconds(50),
+    condition: @escaping @Sendable () -> Bool
+) async throws {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if condition() {
+            return
+        }
+        try await Task.sleep(for: interval)
+    }
+    throw TestFailure("timed out waiting for condition")
 }
 
 private final class FakeForcedRestartEnvironment: @unchecked Sendable {

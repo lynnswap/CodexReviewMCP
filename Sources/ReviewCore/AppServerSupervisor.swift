@@ -110,6 +110,7 @@ package actor AppServerSupervisor: AppServerManaging {
                 rootPID: processIdentity.pid,
                 excludingGroupLeaderPID: processGroupIdentity.pid
             )
+            try? current.execution.send(signal: .terminate, toProcessGroup: false)
             try? current.execution.send(signal: .terminate, toProcessGroup: true)
             signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
             let deadline = ContinuousClock.now.advanced(by: .seconds(2))
@@ -126,6 +127,7 @@ package actor AppServerSupervisor: AppServerManaging {
                 || isSupervisorProcessGroupAlive(processGroupIdentity)
                 || hasLiveSupervisorChildGroups(childGroupIdentities)
             {
+                try? current.execution.send(signal: .kill, toProcessGroup: false)
                 try? current.execution.send(signal: .kill, toProcessGroup: true)
                 signalSupervisorChildGroups(childGroupIdentities, signal: SIGKILL)
             }
@@ -299,6 +301,7 @@ package actor AppServerSupervisor: AppServerManaging {
                 } catch {
                     stderrTask.cancel()
                     _ = await stderrTask.value
+                    await self.terminateStartingProcess(runtimeState: runtimeState)
                     throw error
                 }
             }
@@ -314,6 +317,10 @@ package actor AppServerSupervisor: AppServerManaging {
                 )
             }
         } catch {
+            let startingRuntimeState = self.startingRuntimeState
+            if let startingRuntimeState {
+                await terminateStartingProcess(runtimeState: startingRuntimeState)
+            }
             finishStarting(launchID: launchID, .failure(error))
             if currentLaunchID == launchID {
                 lifetimeTask = nil
@@ -400,7 +407,7 @@ package actor AppServerSupervisor: AppServerManaging {
         let deadline = ContinuousClock.now.advanced(by: configuration.startupTimeout)
         let session = URLSession(configuration: .ephemeral)
         defer { session.invalidateAndCancel() }
-        var cachedWebSocketURL = requestedWebSocketURL.port == 0 ? nil : requestedWebSocketURL
+        let readyURL = try makeReadyURL(from: requestedWebSocketURL)
 
         while ContinuousClock.now < deadline {
             try Task.checkCancellation()
@@ -411,19 +418,14 @@ package actor AppServerSupervisor: AppServerManaging {
                 throw ReviewError.spawnFailed("app-server exited before becoming ready\(suffix)")
             }
 
-            cachedWebSocketURL = cachedWebSocketURL ?? discoveredStartingWebSocketURL
-            let websocketURL = cachedWebSocketURL
-            if let websocketURL {
-                let readyURL = try makeReadyURL(from: websocketURL)
-                var request = URLRequest(url: readyURL)
-                request.httpMethod = "GET"
-                request.timeoutInterval = 1
-                if let (_, response) = try? await session.data(for: request),
-                   let httpResponse = response as? HTTPURLResponse,
-                   httpResponse.statusCode == 200
-                {
-                    return websocketURL
-                }
+            var request = URLRequest(url: readyURL)
+            request.httpMethod = "GET"
+            request.timeoutInterval = 1
+            if let (_, response) = try? await session.data(for: request),
+               let httpResponse = response as? HTTPURLResponse,
+               httpResponse.statusCode == 200
+            {
+                return requestedWebSocketURL
             }
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -481,6 +483,7 @@ package actor AppServerSupervisor: AppServerManaging {
             startTime: runtimeState.processGroupLeaderStartTime
         )
 
+        _ = kill(processIdentity.pid, SIGTERM)
         _ = killpg(processGroupIdentity.pid, SIGTERM)
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while ContinuousClock.now < deadline {
@@ -495,6 +498,7 @@ package actor AppServerSupervisor: AppServerManaging {
         if isMatchingProcessIdentity(processIdentity)
             || isSupervisorProcessGroupAlive(processGroupIdentity)
         {
+            _ = kill(processIdentity.pid, SIGKILL)
             _ = killpg(processGroupIdentity.pid, SIGKILL)
         }
     }
@@ -665,10 +669,60 @@ private func stripANSIEscapeCodes(_ text: String) -> String {
 }
 
 package func makeLoopbackWebSocketListenURL() throws -> URL {
-    guard let url = URL(string: "ws://127.0.0.1:0") else {
+    let port = try reserveLoopbackPort()
+    guard let url = URL(string: "ws://127.0.0.1:\(port)") else {
         throw ReviewError.spawnFailed("failed to construct websocket listen URL.")
     }
     return url
+}
+
+private func reserveLoopbackPort() throws -> Int {
+    let descriptor = socket(AF_INET, SOCK_STREAM, 0)
+    guard descriptor >= 0 else {
+        throw ReviewError.spawnFailed("failed to reserve a loopback port.")
+    }
+    defer { close(descriptor) }
+
+    var reuseAddress: Int32 = 1
+    _ = setsockopt(
+        descriptor,
+        SOL_SOCKET,
+        SO_REUSEADDR,
+        &reuseAddress,
+        socklen_t(MemoryLayout<Int32>.size)
+    )
+
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(0).bigEndian
+    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+
+    let bindResult = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard bindResult == 0 else {
+        throw ReviewError.spawnFailed("failed to reserve a loopback port.")
+    }
+
+    var boundAddress = sockaddr_in()
+    var boundAddressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let nameResult = withUnsafeMutablePointer(to: &boundAddress) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            getsockname(descriptor, $0, &boundAddressLength)
+        }
+    }
+    guard nameResult == 0 else {
+        throw ReviewError.spawnFailed("failed to query reserved loopback port.")
+    }
+
+    let port = Int(UInt16(bigEndian: boundAddress.sin_port))
+    guard port > 0 else {
+        throw ReviewError.spawnFailed("failed to reserve a non-zero loopback port.")
+    }
+    return port
 }
 
 package func discoveredWebSocketURL(from stderrLines: [String]) -> URL? {

@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 import Testing
@@ -249,6 +250,41 @@ struct CodexReviewMonitorTests {
         #expect(diagnostics.failureMessage == nil)
         #expect(diagnostics.serverURL != nil)
     }
+
+    @Test func terminatingAppRemovesDiscoveryAndRuntimeState() async throws {
+        let scriptURL = try makeFakeAppServerScript(reviewText: Self.fixtureReviewText)
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+        let sharedHomeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CodexReviewMonitorTerminateHome-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: sharedHomeURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sharedHomeURL) }
+        let port = try nextAvailableTestPort(in: 39531 ... 39540)
+
+        let launchedApp = try LaunchedMonitorApp.start(
+            codexCommand: scriptURL.path,
+            port: port,
+            homeURL: sharedHomeURL
+        )
+        defer { launchedApp.terminate() }
+
+        let _: MonitorAppDiagnostics = try await waitUntilValue(
+            timeout: .seconds(20),
+            interval: .milliseconds(200)
+        ) {
+            guard let diagnostics = try launchedApp.readDiagnostics(),
+                  diagnostics.serverState == "Running"
+            else {
+                return nil
+            }
+            return diagnostics
+        }
+
+        try await launchedApp.requestTerminationAndWait()
+
+        #expect(FileManager.default.fileExists(atPath: launchedApp.discoveryFileURL.path) == false)
+        #expect(FileManager.default.fileExists(atPath: launchedApp.runtimeStateFileURL.path) == false)
+        #expect(try launchedApp.hasRunningProcessReferencingHome() == false)
+    }
 }
 
 private enum MonitorAppTestEnvironment {
@@ -316,6 +352,7 @@ private final class LaunchedMonitorApp {
     let launcherProcess: Process
     let appBundleURL: URL
     let appExecutableURL: URL
+    let homeURL: URL
     let diagnosticsURL: URL
     let stdoutURL: URL
     let stderrURL: URL
@@ -327,6 +364,7 @@ private final class LaunchedMonitorApp {
         launcherProcess: Process,
         appBundleURL: URL,
         appExecutableURL: URL,
+        homeURL: URL,
         diagnosticsURL: URL,
         stdoutURL: URL,
         stderrURL: URL,
@@ -337,6 +375,7 @@ private final class LaunchedMonitorApp {
         self.launcherProcess = launcherProcess
         self.appBundleURL = appBundleURL
         self.appExecutableURL = appExecutableURL
+        self.homeURL = homeURL
         self.diagnosticsURL = diagnosticsURL
         self.stdoutURL = stdoutURL
         self.stderrURL = stderrURL
@@ -417,6 +456,7 @@ private final class LaunchedMonitorApp {
             launcherProcess: process,
             appBundleURL: appBundleURL,
             appExecutableURL: executableURL,
+            homeURL: homeURL,
             diagnosticsURL: diagnosticsURL,
             stdoutURL: stdoutURL,
             stderrURL: stderrURL,
@@ -428,12 +468,31 @@ private final class LaunchedMonitorApp {
 
     func terminate() {
         if launcherProcess.isRunning {
-            launcherProcess.terminate()
+            if requestAppTermination() == false {
+                launcherProcess.terminate()
+            }
             launcherProcess.waitUntilExit()
         }
         Self.terminateMonitorProcesses(executableURL: appExecutableURL)
         try? stdoutHandle.close()
         try? stderrHandle.close()
+    }
+
+    func requestTerminationAndWait(timeout: Duration = .seconds(10)) async throws {
+        if launcherProcess.isRunning {
+            if requestAppTermination() == false {
+                launcherProcess.terminate()
+            }
+        }
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if launcherProcess.isRunning == false {
+                launcherProcess.waitUntilExit()
+                return
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw TestFailure("Timed out waiting for monitor app to terminate.\n\(failureContext())")
     }
 
     func readDiagnostics() throws -> MonitorAppDiagnostics? {
@@ -456,7 +515,20 @@ private final class LaunchedMonitorApp {
         stdout: \(stdoutURL.path)
         stderr: \(stderrURL.path)
         app: \(appBundleURL.path)
+        home: \(homeURL.path)
         """
+    }
+
+    var discoveryFileURL: URL {
+        homeURL
+            .appendingPathComponent(".codex_review", isDirectory: true)
+            .appendingPathComponent("endpoint.json")
+    }
+
+    var runtimeStateFileURL: URL {
+        homeURL
+            .appendingPathComponent(".codex_review", isDirectory: true)
+            .appendingPathComponent("runtime-state.json")
     }
 
     private static func terminateExistingMonitorProcesses(executableURL: URL) throws {
@@ -510,6 +582,29 @@ private final class LaunchedMonitorApp {
             return false
         }
     }
+
+    private func requestAppTermination() -> Bool {
+        guard let runningApplication = NSRunningApplication(
+            processIdentifier: launcherProcess.processIdentifier
+        ) else {
+            return false
+        }
+        return runningApplication.terminate()
+    }
+
+    func hasRunningProcessReferencingHome() throws -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["ax", "-o", "command="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        return output.split(separator: "\n").contains { line in
+            line.contains(homeURL.path) && line.contains("codex app-server")
+        }
+    }
 }
 
 private func makeFakeAppServerScript(
@@ -521,82 +616,267 @@ private func makeFakeAppServerScript(
     let reviewTextLiteral = try pythonLiteral(reviewText)
     let script = """
     #!/usr/bin/env python3
+    import base64
+    import hashlib
+    import http.server
     import json
     import os
+    import socket
+    import socketserver
+    import struct
     import sys
-    import time
+    import urllib.parse
 
     marker_path = \(markerPathLiteral)
     review_text = \(reviewTextLiteral)
     thread_id = "thr-review"
     turn_id = "turn-review"
+    websocket_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    args = sys.argv[1:]
 
-    if sys.argv[1:] != ["app-server", "--listen", "stdio://"]:
-        sys.stderr.write("unexpected args: " + " ".join(sys.argv[1:]) + "\\n")
+    if len(args) < 7 or args[0] != "app-server" or "--listen" not in args or "--ws-token-file" not in args:
+        sys.stderr.write("unexpected args: " + " ".join(args) + "\\n")
         sys.stderr.flush()
         sys.exit(2)
 
-    def send(obj, stream=sys.stdout):
-        stream.write(json.dumps(obj) + "\\n")
-        stream.flush()
+    listen_url = urllib.parse.urlparse(args[args.index("--listen") + 1])
+    token_file = args[args.index("--ws-token-file") + 1]
+    host = listen_url.hostname or "127.0.0.1"
+    port = listen_url.port
 
-    for raw in sys.stdin:
-        if not raw.strip():
-            continue
-        message = json.loads(raw)
-        method = message.get("method")
+    with open(token_file, "r", encoding="utf-8") as handle:
+        auth_token = handle.read().strip()
 
-        if method == "initialize":
-            send({
-                "id": message["id"],
-                "result": {
+    def recv_exact(connection, count):
+        data = b""
+        while len(data) < count:
+            chunk = connection.recv(count - len(data))
+            if not chunk:
+                raise EOFError()
+            data += chunk
+        return data
+
+    def read_frame(connection):
+        header = recv_exact(connection, 2)
+        opcode = header[0] & 0x0F
+        masked = (header[1] & 0x80) != 0
+        payload_length = header[1] & 0x7F
+        if payload_length == 126:
+            payload_length = struct.unpack("!H", recv_exact(connection, 2))[0]
+        elif payload_length == 127:
+            payload_length = struct.unpack("!Q", recv_exact(connection, 8))[0]
+        masking_key = recv_exact(connection, 4) if masked else b""
+        payload = bytearray(recv_exact(connection, payload_length))
+        if masked:
+            for index in range(payload_length):
+                payload[index] ^= masking_key[index % 4]
+        return opcode, bytes(payload)
+
+    def send_frame(connection, opcode, payload=b""):
+        header = bytearray()
+        header.append(0x80 | opcode)
+        payload_length = len(payload)
+        if payload_length < 126:
+            header.append(payload_length)
+        elif payload_length < 65536:
+            header.append(126)
+            header.extend(struct.pack("!H", payload_length))
+        else:
+            header.append(127)
+            header.extend(struct.pack("!Q", payload_length))
+        connection.sendall(bytes(header) + payload)
+
+    def send_json(connection, payload):
+        send_frame(connection, 0x1, json.dumps(payload).encode("utf-8"))
+
+    def send_response(connection, request_id, result):
+        send_json(connection, {"id": request_id, "result": result})
+
+    def send_notification(connection, method, params):
+        send_json(connection, {"method": method, "params": params})
+
+    def emit_review_notifications(connection):
+        send_notification(connection, "turn/started", {
+            "threadId": thread_id,
+            "turn": {"id": turn_id, "status": "inProgress", "error": None},
+        })
+        send_notification(connection, "item/started", {
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "item": {"type": "enteredReviewMode", "id": turn_id, "review": "current changes"},
+        })
+        send_notification(connection, "item/started", {
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "item": {
+                "type": "commandExecution",
+                "id": "cmd_1",
+                "command": "git diff --stat",
+                "status": "inProgress",
+                "aggregatedOutput": None,
+                "exitCode": None,
+            },
+        })
+        send_notification(connection, "item/commandExecution/outputDelta", {
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "itemId": "cmd_1",
+            "delta": "README.md | 1 +",
+        })
+        send_notification(connection, "item/completed", {
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "item": {
+                "type": "commandExecution",
+                "id": "cmd_1",
+                "command": "git diff --stat",
+                "status": "completed",
+                "aggregatedOutput": "README.md | 1 +",
+                "exitCode": 0,
+            },
+        })
+        send_notification(connection, "item/completed", {
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "item": {"type": "reasoning", "id": "rsn_1", "summary": ["Inspecting current changes"], "content": []},
+        })
+        send_notification(connection, "item/agentMessage/delta", {
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "itemId": "msg_1",
+            "delta": review_text,
+        })
+        sys.stderr.write("diagnostic: fake app-server\\n")
+        sys.stderr.flush()
+        send_notification(connection, "item/completed", {
+            "threadId": thread_id,
+            "turnId": turn_id,
+            "item": {"type": "exitedReviewMode", "id": turn_id, "review": review_text},
+        })
+        send_notification(connection, "turn/completed", {
+            "threadId": thread_id,
+            "turn": {"id": turn_id, "status": "completed", "error": None},
+        })
+
+    def handle_websocket(connection):
+        connection.settimeout(1.0)
+        while True:
+            try:
+                opcode, payload = read_frame(connection)
+            except socket.timeout:
+                continue
+            except EOFError:
+                return
+
+            if opcode == 0x8:
+                send_frame(connection, 0x8)
+                return
+            if opcode == 0x9:
+                send_frame(connection, 0xA, payload)
+                continue
+            if opcode == 0xA:
+                continue
+            if opcode != 0x1:
+                continue
+
+            message = json.loads(payload.decode("utf-8"))
+            method = message.get("method")
+            request_id = message.get("id")
+
+            if method == "initialize":
+                send_response(connection, request_id, {
                     "platformFamily": "macOS",
-                    "platformOs": "Darwin"
-                }
-            })
-        elif method == "initialized":
-            continue
-        elif method == "config/read":
-            send({
-                "id": message["id"],
-                "result": {
+                    "platformOs": "Darwin",
+                })
+            elif method == "initialized":
+                continue
+            elif method == "config/read":
+                send_response(connection, request_id, {
                     "config": {
                         "model": "gpt-5.4-mini",
-                        "review_model": "gpt-5.4-mini"
+                        "review_model": "gpt-5.4-mini",
                     }
-                }
-            })
-        elif method == "thread/start":
-            send({
-                "id": message["id"],
-                "result": {
+                })
+            elif method == "thread/start":
+                send_response(connection, request_id, {
                     "thread": {"id": thread_id},
-                    "model": "gpt-5.4-mini"
-                }
-            })
-        elif method == "review/start":
-            if marker_path is not None:
-                open(marker_path, "w", encoding="utf-8").close()
-            send({
-                "id": message["id"],
-                "result": {
+                    "model": "gpt-5.4-mini",
+                })
+            elif method == "review/start":
+                if marker_path is not None:
+                    open(marker_path, "w", encoding="utf-8").close()
+                send_response(connection, request_id, {
                     "turn": {"id": turn_id, "status": "inProgress", "error": None},
-                    "reviewThreadId": thread_id
-                }
-            })
-            send({"method": "turn/started", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "inProgress", "error": None}}})
-            send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "enteredReviewMode", "id": turn_id, "review": "current changes"}}})
-            send({"method": "item/started", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "inProgress", "aggregatedOutput": None, "exitCode": None}}})
-            send({"method": "item/commandExecution/outputDelta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "cmd_1", "delta": "README.md | 1 +"}})
-            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "commandExecution", "id": "cmd_1", "command": "git diff --stat", "status": "completed", "aggregatedOutput": "README.md | 1 +", "exitCode": 0}}})
-            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "reasoning", "id": "rsn_1", "summary": ["Inspecting current changes"], "content": []}}})
-            send({"method": "item/agentMessage/delta", "params": {"threadId": thread_id, "turnId": turn_id, "itemId": "msg_1", "delta": review_text}})
-            sys.stderr.write("diagnostic: fake app-server\\n")
-            sys.stderr.flush()
-            send({"method": "item/completed", "params": {"threadId": thread_id, "turnId": turn_id, "item": {"type": "exitedReviewMode", "id": turn_id, "review": review_text}}})
-            send({"method": "turn/completed", "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed", "error": None}}})
-            time.sleep(0.2)
-            sys.exit(0)
+                    "reviewThreadId": thread_id,
+                })
+                emit_review_notifications(connection)
+            elif method == "thread/backgroundTerminals/clean":
+                send_response(connection, request_id, {})
+            elif method == "thread/unsubscribe":
+                send_response(connection, request_id, {})
+            elif method == "turn/interrupt":
+                send_response(connection, request_id, {})
+                send_notification(connection, "turn/completed", {
+                    "threadId": thread_id,
+                    "turn": {"id": turn_id, "status": "interrupted", "error": None},
+                })
+            else:
+                send_json(connection, {
+                    "id": request_id,
+                    "error": {"code": -32601, "message": f"unsupported method: {method}"},
+                })
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            if self.path in ("/readyz", "/healthz"):
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            if self.headers.get("Upgrade", "").lower() != "websocket":
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            if self.headers.get("Authorization") != f"Bearer {auth_token}":
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            key = self.headers.get("Sec-WebSocket-Key")
+            if not key:
+                self.send_response(400)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            accept = base64.b64encode(
+                hashlib.sha1((key + websocket_guid).encode("utf-8")).digest()
+            ).decode("ascii")
+            self.send_response(101, "Switching Protocols")
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+            self.close_connection = True
+            handle_websocket(self.connection)
+
+        def log_message(self, format, *args):
+            return
+
+    class ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    sys.stderr.write(f"codex app-server (WebSockets)\\n  listening on: ws://{host}:{port}\\n  readyz: http://{host}:{port}/readyz\\n")
+    sys.stderr.flush()
+    httpd.serve_forever()
     """.trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
 
     try script.write(to: url, atomically: true, encoding: .utf8)

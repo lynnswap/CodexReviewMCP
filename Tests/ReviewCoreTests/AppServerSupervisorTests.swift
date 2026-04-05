@@ -2,12 +2,13 @@ import Foundation
 import Testing
 @testable import ReviewCore
 
-@Suite
+@Suite(.serialized)
 struct AppServerSupervisorTests {
-    @Test func loopbackWebSocketListenURLUsesEphemeralPort() throws {
+    @Test func loopbackWebSocketListenURLUsesReservedPort() throws {
         let url = try makeLoopbackWebSocketListenURL()
 
-        #expect(url.absoluteString == "ws://127.0.0.1:0")
+        #expect(url.host == "127.0.0.1")
+        #expect((url.port ?? 0) > 0)
     }
 
     @Test func discoveredWebSocketURLParsesStartupBannerLine() throws {
@@ -130,4 +131,167 @@ struct AppServerSupervisorTests {
         #expect(filtered.contains("http://localhost:9417/mcp") == false)
         #expect(filtered.contains("[mcp_servers.github]"))
     }
+
+    @Test func prepareUsesRequestedReadyURLWithoutStartupBanner() async throws {
+        let environment = try makeSupervisorEnvironment()
+        let commandURL = try makeFakeSupervisorCommand(
+            servesReadyz: true,
+            writesStartupBanner: false,
+            autoExitSeconds: 1
+        )
+        defer { try? FileManager.default.removeItem(at: commandURL) }
+
+        let supervisor = AppServerSupervisor(
+            configuration: .init(
+                codexCommand: commandURL.path,
+                environment: environment,
+                startupTimeout: .seconds(2)
+            )
+        )
+
+        let runtimeState = try await supervisor.prepare()
+
+        #expect(runtimeState.pid > 0)
+        await supervisor.shutdown()
+    }
+
+    @Test func prepareTimeoutStopsStartingProcess() async throws {
+        let environment = try makeSupervisorEnvironment()
+        let pidFileURL = URL(fileURLWithPath: environment["HOME"]!)
+            .appendingPathComponent("fake-app-server.pid")
+        let commandURL = try makeFakeSupervisorCommand(
+            servesReadyz: false,
+            writesStartupBanner: false,
+            pidFileURL: pidFileURL,
+            autoExitSeconds: 1
+        )
+        defer { try? FileManager.default.removeItem(at: commandURL) }
+
+        let supervisor = AppServerSupervisor(
+            configuration: .init(
+                codexCommand: commandURL.path,
+                environment: environment,
+                startupTimeout: .milliseconds(300)
+            )
+        )
+
+        do {
+            _ = try await supervisor.prepare()
+            Issue.record("prepare() unexpectedly succeeded without a ready endpoint.")
+        } catch {
+            #expect(error.localizedDescription.contains("timed out waiting for app-server readiness"))
+        }
+
+        let pidText = try String(contentsOf: pidFileURL, encoding: .utf8)
+        let pid = try #require(Int32(pidText.trimmingCharacters(in: .whitespacesAndNewlines)))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < deadline {
+            if isProcessAlive(pid) == false {
+                await supervisor.shutdown()
+                return
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        await supervisor.shutdown()
+        Issue.record("starting app-server child was still alive after prepare timed out.")
+    }
+}
+
+private func makeSupervisorEnvironment() throws -> [String: String] {
+    let homeURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AppServerSupervisorTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+    return [
+        "HOME": homeURL.path,
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    ]
+}
+
+private func makeFakeSupervisorCommand(
+    servesReadyz: Bool,
+    writesStartupBanner: Bool,
+    pidFileURL: URL? = nil,
+    autoExitSeconds: Double? = nil
+) throws -> URL {
+    let scriptURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: false)
+    let pidFileLiteral = pythonLiteral(pidFileURL?.path)
+    let servesReadyzLiteral = servesReadyz ? "True" : "False"
+    let writesStartupBannerLiteral = writesStartupBanner ? "True" : "False"
+    let autoExitSecondsLiteral = autoExitSeconds.map { String(describing: $0) } ?? "None"
+    let script = """
+    #!/usr/bin/env python3
+    import http.server
+    import os
+    import socketserver
+    import sys
+    import time
+    import urllib.parse
+
+    pid_file = \(pidFileLiteral)
+    serves_readyz = \(servesReadyzLiteral)
+    writes_startup_banner = \(writesStartupBannerLiteral)
+    auto_exit_seconds = \(autoExitSecondsLiteral)
+
+    if pid_file is not None:
+        with open(pid_file, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+
+    args = sys.argv[1:]
+    if len(args) < 5 or args[0] != "app-server":
+        sys.exit(2)
+
+    listen_index = args.index("--listen")
+    listen_url = urllib.parse.urlparse(args[listen_index + 1])
+    port = listen_url.port
+    host = listen_url.hostname or "127.0.0.1"
+    deadline = None if auto_exit_seconds is None else time.monotonic() + float(auto_exit_seconds)
+
+    if serves_readyz:
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path in ("/readyz", "/healthz"):
+                    self.send_response(200)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                return
+
+        class TCPServer(socketserver.TCPServer):
+            allow_reuse_address = True
+
+        httpd = TCPServer((host, port), Handler)
+        if writes_startup_banner:
+            sys.stderr.write(f"codex app-server (WebSockets)\\n  listening on: ws://{host}:{port}\\n")
+            sys.stderr.flush()
+        while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                os._exit(0)
+            httpd.handle_request()
+    else:
+        while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                os._exit(0)
+            time.sleep(0.05)
+    """
+
+    try script.write(to: scriptURL, atomically: true, encoding: String.Encoding.utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+    return scriptURL
+}
+
+private func pythonLiteral(_ value: String?) -> String {
+    guard let value else {
+        return "None"
+    }
+    let escaped = value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: "\\n")
+    return "\"\(escaped)\""
 }
