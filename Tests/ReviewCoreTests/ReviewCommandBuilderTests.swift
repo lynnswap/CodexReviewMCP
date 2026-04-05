@@ -140,7 +140,7 @@ import Testing
         let fallbackResolved = resolveInitialReviewModel(environment: ["HOME": tempHome.path])
 
         #expect(localResolved == "gpt-5.4-mini")
-        #expect(fallbackResolved == "gpt-5.4")
+        #expect(fallbackResolved == nil)
     }
 
     @Test func reviewLocalConfigReadsRootLevelValuesAndIgnoresSections() throws {
@@ -170,6 +170,24 @@ import Testing
         #expect(config.modelAutoCompactTokenLimit == 110_000)
     }
 
+    @Test func reviewLocalConfigScaffoldCreatesConfigAndAgentsFiles() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+        let config = try loadReviewLocalConfig(environment: ["HOME": tempHome.path])
+
+        #expect(config == .init())
+        #expect(
+            FileManager.default.fileExists(
+                atPath: tempHome.appendingPathComponent(".codex_review/config.toml").path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: tempHome.appendingPathComponent(".codex_review/AGENTS.md").path
+            )
+        )
+    }
+
     @Test func reviewLocalConfigRejectsInvalidValueTypes() throws {
         #expect(throws: ReviewLocalConfigError.self) {
             _ = try parseReviewLocalConfig(
@@ -184,7 +202,7 @@ import Testing
 
     @Test func fallbackAppServerConfigReadsProfileScopedValues() throws {
         let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let codexDirectory = tempHome.appendingPathComponent(".codex", isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
         try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
         try """
         profile = "reviewer"
@@ -233,12 +251,14 @@ import Testing
 
     @Test func modelsCachePathFollowsCodexHomeResolution() {
         #expect(
-            ReviewHomePaths.modelsCacheURL(environment: ["CODEX_HOME": "/tmp/custom-codex-home"])?.path
-            == "/tmp/custom-codex-home/models_cache.json"
+            ReviewHomePaths.modelsCacheURL(
+                environment: ["HOME": "/tmp/home", "CODEX_HOME": "/tmp/custom-codex-home"]
+            ).path
+            == "/tmp/home/.codex_review/models_cache.json"
         )
         #expect(
-            ReviewHomePaths.modelsCacheURL(environment: ["HOME": "/tmp/home"])?.path
-            == "/tmp/home/.codex/models_cache.json"
+            ReviewHomePaths.modelsCacheURL(environment: ["HOME": "/tmp/home"]).path
+            == "/tmp/home/.codex_review/models_cache.json"
         )
     }
 

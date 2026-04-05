@@ -132,6 +132,86 @@ struct AppServerSupervisorTests {
         #expect(filtered.contains("[mcp_servers.github]"))
     }
 
+    @Test func prepareIsolatedCodexHomeCopiesDedicatedHomeAndSkipsManagedFiles() throws {
+        let homeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppServerSupervisorSeed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+        let reviewHomeURL = homeURL.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: reviewHomeURL, withIntermediateDirectories: true)
+
+        try """
+        model = "gpt-5.4"
+
+        [mcp_servers.codex_review]
+        url = "http://localhost:9417/mcp"
+        """.write(
+            to: reviewHomeURL.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "review instructions".write(
+            to: reviewHomeURL.appendingPathComponent("AGENTS.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "auth".write(
+            to: reviewHomeURL.appendingPathComponent("auth.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "cache".write(
+            to: reviewHomeURL.appendingPathComponent("models_cache.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "managed".write(
+            to: reviewHomeURL.appendingPathComponent("review_mcp_endpoint.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "legacy".write(
+            to: reviewHomeURL.appendingPathComponent("endpoint.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "legacy token".write(
+            to: reviewHomeURL.appendingPathComponent("app-server-ws-token-legacy"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let isolatedURL = try prepareIsolatedCodexHome(
+            launchID: UUID(),
+            environment: ["HOME": homeURL.path]
+        )
+        defer { try? FileManager.default.removeItem(at: homeURL) }
+
+        #expect(FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("AGENTS.md").path))
+        #expect(FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("auth.json").path))
+        #expect(FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("models_cache.json").path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: isolatedURL.appendingPathComponent("review_mcp_endpoint.json").path
+            ) == false
+        )
+        #expect(
+            FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("endpoint.json").path)
+                == false
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: isolatedURL.appendingPathComponent("app-server-ws-token-legacy").path
+            ) == false
+        )
+
+        let configText = try String(
+            contentsOf: isolatedURL.appendingPathComponent("config.toml"),
+            encoding: .utf8
+        )
+        #expect(configText.contains("[mcp_servers.codex_review]") == false)
+        #expect(configText.contains("model = \"gpt-5.4\""))
+    }
+
     @Test func prepareUsesRequestedReadyURLWithoutStartupBanner() async throws {
         let environment = try makeSupervisorEnvironment()
         let commandURL = try makeFakeSupervisorCommand(

@@ -247,7 +247,7 @@ package actor AppServerSupervisor: AppServerManaging {
         trailingStandardErrorFragment = ""
         discoveredStartingWebSocketURL = nil
         let tokenFileURL = ReviewHomePaths.appServerWebSocketTokenFileURL(
-            filename: "app-server-ws-token-\(launchID.uuidString)",
+            launchID: launchID,
             environment: configuration.environment
         )
 
@@ -348,8 +348,12 @@ package actor AppServerSupervisor: AppServerManaging {
                 lifetimeTask = nil
             }
             try? FileManager.default.removeItem(at: tokenFileURL)
-            try? FileManager.default.removeItem(at: ReviewHomePaths.reviewHomeURL(environment: configuration.environment)
-                .appendingPathComponent("app-server-codex-home-\(launchID.uuidString)", isDirectory: true))
+            try? FileManager.default.removeItem(
+                at: ReviewHomePaths.appServerCodexHomeURL(
+                    launchID: launchID,
+                    environment: configuration.environment
+                )
+            )
         }
     }
 
@@ -614,45 +618,43 @@ private func makeAppServerConfiguration(
     )
 }
 
-private func prepareIsolatedCodexHome(
+package func prepareIsolatedCodexHome(
     launchID: UUID,
     environment: [String: String]
-) throws -> URL? {
-    let isolatedCodexHomeURL = ReviewHomePaths.reviewHomeURL(environment: environment)
-        .appendingPathComponent("app-server-codex-home-\(launchID.uuidString)", isDirectory: true)
+) throws -> URL {
+    try ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    let isolatedCodexHomeURL = ReviewHomePaths.appServerCodexHomeURL(
+        launchID: launchID,
+        environment: environment
+    )
+    let sourceCodexHomeURL = ReviewHomePaths.codexHomeURL(environment: environment)
     let fileManager = FileManager.default
     if fileManager.fileExists(atPath: isolatedCodexHomeURL.path) {
         try fileManager.removeItem(at: isolatedCodexHomeURL)
     }
     try fileManager.createDirectory(at: isolatedCodexHomeURL, withIntermediateDirectories: true)
 
-    guard let sourceCodexHomeURL = ReviewHomePaths.codexHomeURL(environment: environment),
-          fileManager.fileExists(atPath: sourceCodexHomeURL.path)
-    else {
-        return isolatedCodexHomeURL
-    }
-
-    for filename in ["auth.json", "models_cache.json", ".credentials.json"] {
-        let sourceURL = sourceCodexHomeURL.appendingPathComponent(filename)
-        guard fileManager.fileExists(atPath: sourceURL.path) else {
+    for sourceURL in try fileManager.contentsOfDirectory(
+        at: sourceCodexHomeURL,
+        includingPropertiesForKeys: nil,
+        options: []
+    ) {
+        let filename = sourceURL.lastPathComponent
+        guard ReviewHomePaths.shouldExcludeFromAppServerSeed(name: filename) == false else {
             continue
         }
         let destinationURL = isolatedCodexHomeURL.appendingPathComponent(filename)
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
+        if filename == "config.toml" {
+            let configText = try String(contentsOf: sourceURL, encoding: .utf8)
+            let filteredConfigText = isolatedCodexHomeConfigText(from: configText)
+            try filteredConfigText.write(
+                to: destinationURL,
+                atomically: true,
+                encoding: .utf8
+            )
+            continue
         }
         try fileManager.copyItem(at: sourceURL, to: destinationURL)
-    }
-
-    let sourceConfigURL = sourceCodexHomeURL.appendingPathComponent("config.toml")
-    if fileManager.fileExists(atPath: sourceConfigURL.path) {
-        let configText = try String(contentsOf: sourceConfigURL, encoding: .utf8)
-        let filteredConfigText = isolatedCodexHomeConfigText(from: configText)
-        try filteredConfigText.write(
-            to: isolatedCodexHomeURL.appendingPathComponent("config.toml"),
-            atomically: true,
-            encoding: .utf8
-        )
     }
 
     return isolatedCodexHomeURL

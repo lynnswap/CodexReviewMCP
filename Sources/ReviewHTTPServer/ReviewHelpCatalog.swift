@@ -314,9 +314,9 @@ package enum ReviewHelpCatalog {
             ReviewMCP resolves the reported review model in this order:
 
             1. `~/.codex_review/config.toml` `review_model`
-            2. app-server or local Codex config `review_model`
+            2. the effective dedicated Codex config in `~/.codex_review/config.toml` `review_model`
             3. backend-reported `thread/start.model`
-            4. app-server or local Codex config `model` only as a pre-thread-start fallback when the backend does not report a model
+            4. the effective dedicated Codex config in `~/.codex_review/config.toml` `model` only as a pre-thread-start fallback when the backend does not report a model
 
             ## Common Mistakes
 

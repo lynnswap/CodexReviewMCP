@@ -522,13 +522,13 @@ private final class LaunchedMonitorApp {
     var discoveryFileURL: URL {
         homeURL
             .appendingPathComponent(".codex_review", isDirectory: true)
-            .appendingPathComponent("endpoint.json")
+            .appendingPathComponent("review_mcp_endpoint.json")
     }
 
     var runtimeStateFileURL: URL {
         homeURL
             .appendingPathComponent(".codex_review", isDirectory: true)
-            .appendingPathComponent("runtime-state.json")
+            .appendingPathComponent("review_mcp_runtime_state.json")
     }
 
     private static func terminateExistingMonitorProcesses(executableURL: URL) throws {

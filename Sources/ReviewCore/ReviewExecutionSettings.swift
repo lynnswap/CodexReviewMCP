@@ -140,6 +140,9 @@ package func loadFallbackAppServerConfig(
     environment: [String: String] = ProcessInfo.processInfo.environment,
     codexHome: URL? = nil
 ) -> AppServerConfigReadResponse.Config {
+    if codexHome == nil {
+        try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    }
     let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
     let profile = readTopLevelString(from: configPath, key: "profile")
 

@@ -5,11 +5,11 @@ import Testing
 @Suite
 struct ReviewDiscoveryTests {
     @Test func discoveryDefaultFileURLUsesReviewMCPHome() {
-        #expect(ReviewDiscovery.defaultFileURL.path.hasSuffix("/.codex_review/endpoint.json"))
+        #expect(ReviewDiscovery.defaultFileURL.path.hasSuffix("/.codex_review/review_mcp_endpoint.json"))
     }
 
     @Test func runtimeStateFileURLUsesReviewMCPHome() {
-        #expect(ReviewRuntimeStateStore.defaultFileURL.path.hasSuffix("/.codex_review/runtime-state.json"))
+        #expect(ReviewRuntimeStateStore.defaultFileURL.path.hasSuffix("/.codex_review/review_mcp_runtime_state.json"))
     }
 
     @Test func discoveryReadsMatchingLiveRecord() throws {

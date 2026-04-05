@@ -11,6 +11,8 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
         let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
+        let reviewConfigURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        let reviewAgentsURL = ReviewHomePaths.reviewAgentsURL(environment: environment)
         ReviewDiscovery.remove(at: discoveryFileURL)
         ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
         defer {
@@ -43,6 +45,8 @@ struct CodexReviewMCPTests {
         #expect(persistedRuntimeState.serverPID == discovery.pid)
         #expect(persistedRuntimeState.serverStartTime == discovery.serverStartTime)
         #expect(persistedRuntimeState.appServerPID == runtimeState.pid)
+        #expect(FileManager.default.fileExists(atPath: reviewConfigURL.path))
+        #expect(FileManager.default.fileExists(atPath: reviewAgentsURL.path))
     }
 
     @Test func stoppingStoreRemovesDiscoveryAndRuntimeState() async throws {
