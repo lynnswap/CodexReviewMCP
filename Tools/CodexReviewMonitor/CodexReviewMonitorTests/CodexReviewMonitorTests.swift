@@ -303,6 +303,9 @@ private struct MonitorAppDiagnostics: Decodable {
 
     var serverState: String
     var failureMessage: String?
+    var authState: String?
+    var authDetail: String?
+    var authMethod: String?
     var serverURL: String?
     var childRuntimePath: String?
     var jobs: [Job]

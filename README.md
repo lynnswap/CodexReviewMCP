@@ -88,6 +88,7 @@ Debug binaries are written to:
 
 - `.build/debug/codex-review-mcp`
 - `.build/debug/codex-review-mcp-server`
+- `.build/debug/codex-review-mcp-login`
 
 Release build:
 
@@ -99,6 +100,7 @@ Release binaries are written to:
 
 - `.build/release/codex-review-mcp`
 - `.build/release/codex-review-mcp-server`
+- `.build/release/codex-review-mcp-login`
 
 ### Optional: copy binaries into your PATH
 
@@ -106,8 +108,34 @@ Release binaries are written to:
 mkdir -p "$HOME/.local/bin"
 cp .build/release/codex-review-mcp "$HOME/.local/bin/"
 cp .build/release/codex-review-mcp-server "$HOME/.local/bin/"
-chmod +x "$HOME/.local/bin/codex-review-mcp" "$HOME/.local/bin/codex-review-mcp-server"
+cp .build/release/codex-review-mcp-login "$HOME/.local/bin/"
+chmod +x "$HOME/.local/bin/codex-review-mcp" "$HOME/.local/bin/codex-review-mcp-server" "$HOME/.local/bin/codex-review-mcp-login"
 ```
+
+### Authenticate ReviewMCP Home
+
+ReviewMCP uses a dedicated Codex home at `~/.codex_review`. To authenticate it with the normal Codex OAuth flow, run:
+
+```bash
+codex-review-mcp-login
+```
+
+This signs in `~/.codex_review` directly using Codex's built-in account flow. Cached credentials may live in `~/.codex_review/auth.json` or in the OS credential store, depending on Codex configuration. ReviewMCP does not rely on symlinking or copying credentials from `~/.codex`.
+
+Useful variants:
+
+- `codex-review-mcp-login status`
+- `codex-review-mcp-login logout`
+
+### Authenticate From ReviewMonitor
+
+The ReviewMonitor app shows ReviewMCP authentication separately from server state.
+
+- Use the server status menu to:
+  - `Sign in with ChatGPT`
+  - `Sign Out`
+- ChatGPT sign-in opens the Codex browser login URL in your default browser and waits for Codex to complete the localhost callback flow.
+- If a review fails because authentication is missing or expired, the detail pane shows a sign-in action so you can re-authenticate and retry.
 
 ## Usage
 

@@ -236,7 +236,7 @@ extension CodexReviewStore {
             } else {
                 job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
             }
-            job.errorMessage = outcome.errorMessage
+            job.errorMessage = reviewAuthDisplayMessage(from: outcome.errorMessage)
             job.reviewThreadID = outcome.reviewThreadID ?? job.reviewThreadID
             job.threadID = outcome.threadID ?? job.threadID
             job.turnID = outcome.turnID ?? job.turnID
@@ -258,7 +258,7 @@ extension CodexReviewStore {
             job.status = .failed
             job.summary = "Failed to start review."
             job.model = model ?? job.model
-            job.errorMessage = message
+            job.errorMessage = reviewAuthDisplayMessage(from: message)
             job.startedAt = startedAt
             job.endedAt = endedAt
             if message.isEmpty == false {
@@ -918,6 +918,12 @@ extension CodexReviewStore {
 private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
     let appServerManager: any AppServerManaging
+    lazy var authManager = ReviewAuthManager(
+        configuration: .init(
+            codexCommand: configuration.codexCommand,
+            environment: configuration.environment
+        )
+    )
     lazy var executionCoordinator: ReviewExecutionCoordinator = {
         ReviewExecutionCoordinator(
             configuration: .init(
@@ -1037,6 +1043,43 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             sessionID: sessionID,
             reason: reason
         )
+    }
+
+    func refreshAuthState(auth: CodexReviewAuthModel) async {
+        let state = (try? await authManager.loadState()) ?? .signedOut
+        auth.updateState(state)
+    }
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async {
+        do {
+            try await authManager.beginAuthentication { state in
+                await MainActor.run {
+                    auth.updateState(state)
+                }
+            }
+            await appServerManager.shutdown()
+        } catch let error as ReviewAuthError {
+            auth.updateState(.failed(error.errorDescription ?? "Authentication failed."))
+        } catch {
+            auth.updateState(.failed(error.localizedDescription))
+        }
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        await authManager.cancelAuthentication()
+        await refreshAuthState(auth: auth)
+    }
+
+    func logout(auth: CodexReviewAuthModel) async {
+        do {
+            let state = try await authManager.logout()
+            auth.updateState(state)
+            await appServerManager.shutdown()
+        } catch let error as ReviewAuthError {
+            auth.updateState(.failed(error.errorDescription ?? "Failed to sign out."))
+        } catch {
+            auth.updateState(.failed(error.localizedDescription))
+        }
     }
 
     private func makeServer(store: CodexReviewStore) -> ReviewMCPHTTPServer {

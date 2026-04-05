@@ -555,6 +555,72 @@ struct CodexReviewUITests {
         }
     }
 
+    @Test func authFailedJobShowsNormalFailureDetails() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-auth",
+            status: .failed,
+            targetSummary: "Uncommitted changes",
+            summary: "Failed to start review.",
+            logText: "Authentication required. Sign in to ReviewMCP and retry."
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            authState: .signedOut,
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            let transport = viewController.transportViewControllerForTesting
+            guard transport.displayedSummaryForTesting == "Failed to start review.",
+                  transport.displayedLogForTesting == "Authentication required. Sign in to ReviewMCP and retry."
+            else {
+                return nil
+            }
+            return true
+        }
+    }
+
+    @Test func authenticatedAuthFailedJobStillShowsNormalFailureDetails() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-auth-restored",
+            status: .failed,
+            targetSummary: "Uncommitted changes",
+            summary: "Failed to start review.",
+            logText: "Authentication required. Sign in to ReviewMCP and retry."
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            authState: .signedIn(accountID: "review@example.com"),
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            let transport = viewController.transportViewControllerForTesting
+            guard transport.displayedSummaryForTesting == "Failed to start review.",
+                  transport.displayedLogForTesting == "Authentication required. Sign in to ReviewMCP and retry."
+            else {
+                return nil
+            }
+            return true
+        }
+    }
+
 }
 
 @MainActor
@@ -599,7 +665,8 @@ private func makeJob(
             (logText.isEmpty ? [] : [.init(kind: .agentMessage, text: logText.trimmingCharacters(in: .newlines))])
             + (rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map {
                 .init(kind: .diagnostic, text: String($0))
-            })
+            }),
+        errorMessage: status == .failed ? summary ?? status.displayText : nil
     )
 }
 
@@ -660,5 +727,21 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
         _ = reason
         _ = store
         throw ReviewError.io("Cancellation failed.")
+    }
+
+    func refreshAuthState(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func logout(auth: CodexReviewAuthModel) async {
+        _ = auth
     }
 }

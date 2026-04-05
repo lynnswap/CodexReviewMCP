@@ -529,6 +529,20 @@ private func decodeNotification(method: String, data: Data) -> AppServerServerNo
         ) {
             return .error(notification.params)
         }
+    case "account/login/completed":
+        if let notification = try? decoder.decode(
+            AppServerIncomingNotificationEnvelope<AppServerAccountLoginCompletedNotification>.self,
+            from: data
+        ) {
+            return .accountLoginCompleted(notification.params)
+        }
+    case "account/updated":
+        if let notification = try? decoder.decode(
+            AppServerIncomingNotificationEnvelope<AppServerAccountUpdatedNotification>.self,
+            from: data
+        ) {
+            return .accountUpdated(notification.params)
+        }
     default:
         break
     }

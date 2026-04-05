@@ -23,6 +23,13 @@ package enum ReviewHomePaths {
             .appendingPathComponent("config.toml")
     }
 
+    package static func reviewAuthURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        reviewHomeURL(environment: environment)
+            .appendingPathComponent("auth.json")
+    }
+
     package static func reviewAgentsURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {

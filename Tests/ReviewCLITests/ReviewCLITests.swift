@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import CodexReviewModel
 @testable import ReviewCore
 @testable import ReviewCLI
 
@@ -72,4 +73,67 @@ import Testing
         #expect(discoveryMatchesListenAddress(discovery, host: "review-box.local", port: 9417, resolver: resolver))
         #expect(discoveryMatchesListenAddress(discovery, host: "review-box.local", port: 9999, resolver: resolver) == false)
     }
+
+    @Test func parseLoginOptionsSeparatesWrapperFlagsFromCodexLoginArgs() throws {
+        let options = try parseLoginOptions(
+            args: [
+                "codex-review-mcp-login",
+                "--codex-command", "/opt/homebrew/bin/codex",
+            ]
+        )
+
+        #expect(options.codexCommand == "/opt/homebrew/bin/codex")
+        #expect(options.action == .login)
+    }
+
+    @Test func parseLoginOptionsRejectsDeviceAuthFlag() {
+        #expect(throws: Error.self) {
+            _ = try parseLoginOptions(
+                args: [
+                    "codex-review-mcp-login",
+                    "--device-auth",
+                ]
+            )
+        }
+    }
+
+    @Test func parseLoginOptionsRejectsAPIKeyFlag() {
+        #expect(throws: Error.self) {
+            _ = try parseLoginOptions(
+                args: [
+                    "codex-review-mcp-login",
+                    "--with-api-key",
+                ]
+            )
+        }
+    }
+
+    @Test func parseLoginOptionsSupportsStatusAndLogout() throws {
+        let status = try parseLoginOptions(args: ["codex-review-mcp-login", "status"])
+        let logout = try parseLoginOptions(args: ["codex-review-mcp-login", "logout"])
+
+        #expect(status.action == .status)
+        #expect(logout.action == .logout)
+    }
+
+    @Test func loginStatusMessageReflectsAuthenticationState() {
+        #expect(loginStatusMessage(.signedOut) == "Not logged in")
+        #expect(loginStatusMessage(.signedIn(accountID: "review@example.com")) == "Logged in using ChatGPT")
+    }
+
+    @Test func renderLoginUpdateIncludesBrowserFallbackURL() {
+        let rendered = renderLoginUpdate(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Finish signing in via your browser.",
+                    browserURL: "https://auth.openai.com/oauth/authorize?fake=1"
+                )
+            )
+        )
+
+        #expect(rendered.contains("If your browser did not open"))
+        #expect(rendered.contains("https://auth.openai.com/oauth/authorize?fake=1"))
+    }
+
 }

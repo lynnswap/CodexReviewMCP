@@ -1,11 +1,11 @@
 import Foundation
 import Observation
-import ReviewRuntime
 
 @MainActor
 @Observable
 public final class CodexReviewStore {
     public package(set) var serverState: CodexReviewServerState = .stopped
+    public let auth: CodexReviewAuthModel
     public package(set) var serverURL: URL?
     public package(set) var workspaces: [CodexReviewWorkspace] = []
 
@@ -18,9 +18,11 @@ public final class CodexReviewStore {
     ) {
         self.backend = backend
         self.diagnosticsURL = diagnosticsURL
+        self.auth = CodexReviewAuthModel(backend: backend)
     }
 
     public func start(forceRestartIfNeeded: Bool = false) async {
+        await auth.refresh()
         switch serverState {
         case .stopped, .failed:
             break
