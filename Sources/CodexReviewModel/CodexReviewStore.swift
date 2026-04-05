@@ -8,6 +8,9 @@ public final class CodexReviewStore {
     public let auth: CodexReviewAuthModel
     public package(set) var serverURL: URL?
     public package(set) var workspaces: [CodexReviewWorkspace] = []
+    package var shouldAutoStartEmbeddedServer: Bool {
+        backend.shouldAutoStartEmbeddedServer
+    }
 
     @ObservationIgnored package let diagnosticsURL: URL?
     @ObservationIgnored package let backend: any CodexReviewStoreBackend
@@ -22,7 +25,6 @@ public final class CodexReviewStore {
     }
 
     public func start(forceRestartIfNeeded: Bool = false) async {
-        await auth.refresh()
         switch serverState {
         case .stopped, .failed:
             break

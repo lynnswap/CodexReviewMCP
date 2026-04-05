@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 package protocol CodexReviewStoreBackend: AnyObject {
     var isActive: Bool { get }
+    var shouldAutoStartEmbeddedServer: Bool { get }
 
     func start(
         store: CodexReviewStore,
@@ -32,6 +33,7 @@ package protocol CodexReviewStoreBackend: AnyObject {
 @MainActor
 package final class CodexReviewPreviewStoreBackend: CodexReviewStoreBackend {
     package private(set) var isActive = false
+    package let shouldAutoStartEmbeddedServer = false
 
     package init() {}
 

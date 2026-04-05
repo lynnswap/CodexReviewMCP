@@ -921,12 +921,21 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
     let appServerManager: any AppServerManaging
     let authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)?
+    let shouldAutoStartEmbeddedServer = true
+    lazy var liveAuthSessionFactory: @Sendable () async throws -> any ReviewAuthSession = { [configuration] in
+        CLIReviewAuthSession(
+            configuration: .init(
+                codexCommand: configuration.codexCommand,
+                environment: configuration.environment
+            )
+        )
+    }
     lazy var authManager = ReviewAuthManager(
         configuration: .init(
             codexCommand: configuration.codexCommand,
             environment: configuration.environment
         ),
-        sessionFactory: authSessionFactory
+        sessionFactory: authSessionFactory ?? liveAuthSessionFactory
     )
     lazy var executionCoordinator: ReviewExecutionCoordinator = {
         ReviewExecutionCoordinator(
@@ -952,6 +961,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     private var server: ReviewMCPHTTPServer?
     private var waitTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
+    private var authRefreshTask: Task<Void, Never>?
     private var startupTaskID: UUID?
     var closedSessions: Set<String> = []
     private var discoveryFileURL: URL {
@@ -985,6 +995,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         forceRestartIfNeeded: Bool
     ) async {
         closedSessions = []
+        embeddedServerDebug("backend.start forceRestartIfNeeded=\(forceRestartIfNeeded)")
         let startupID = UUID()
         let task = Task { @MainActor [weak self, weak store] in
             guard let self, let store else {
@@ -1006,10 +1017,13 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     }
 
     func stop(store: CodexReviewStore) async {
+        embeddedServerDebug("backend.stop")
         let startupTask = self.startupTask
         self.startupTask = nil
         startupTaskID = nil
         startupTask?.cancel()
+        authRefreshTask?.cancel()
+        authRefreshTask = nil
         waitTask?.cancel()
         waitTask = nil
         await executionCoordinator.shutdown(reason: "Review server stopped.", store: store)
@@ -1052,37 +1066,59 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     }
 
     func refreshAuthState(auth: CodexReviewAuthModel) async {
-        let state = (try? await authManager.loadState()) ?? .signedOut
-        auth.updateState(state)
+        embeddedServerDebug("refreshAuthState begin state=\(auth.state)")
+        do {
+            let state = try await authManager.loadState()
+            if auth.isAuthenticating {
+                embeddedServerDebug("refreshAuthState skipped while authenticating")
+                return
+            }
+            embeddedServerDebug("refreshAuthState updateState=\(state)")
+            auth.updateState(state)
+        } catch {
+            embeddedServerDebug("refreshAuthState failed error=\(error.localizedDescription)")
+            if auth.isAuthenticating == false {
+                auth.updateState(.signedOut)
+            }
+        }
     }
 
     func beginAuthentication(auth: CodexReviewAuthModel) async {
+        authRefreshTask?.cancel()
+        authRefreshTask = nil
+        embeddedServerDebug("beginAuthentication storeState=\(auth.state)")
         do {
             try await authManager.beginAuthentication { state in
                 await MainActor.run {
+                    embeddedServerDebug("beginAuthentication updateState=\(state)")
                     auth.updateState(state)
                 }
             }
-            await appServerManager.shutdown()
         } catch ReviewAuthError.cancelled {
+            embeddedServerDebug("beginAuthentication cancelled")
             auth.updateState(.signedOut)
         } catch let error as ReviewAuthError {
+            embeddedServerDebug("beginAuthentication failed reviewAuthError=\(error.errorDescription ?? String(describing: error))")
             auth.updateState(.failed(error.errorDescription ?? "Authentication failed."))
         } catch {
+            embeddedServerDebug("beginAuthentication failed error=\(error.localizedDescription)")
             auth.updateState(.failed(error.localizedDescription))
         }
     }
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        embeddedServerDebug("cancelAuthentication")
         await authManager.cancelAuthentication()
         auth.updateState(.signedOut)
     }
 
     func logout(auth: CodexReviewAuthModel) async {
+        authRefreshTask?.cancel()
+        authRefreshTask = nil
+        embeddedServerDebug("logout")
         do {
             let state = try await authManager.logout()
             auth.updateState(state)
-            await appServerManager.shutdown()
         } catch let error as ReviewAuthError {
             auth.updateState(.failed(error.errorDescription ?? "Failed to sign out."))
         } catch {
@@ -1161,10 +1197,12 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     ) async {
         let server = makeServer(store: store)
         do {
+            embeddedServerDebug("performStartup begin startupID=\(startupID)")
             let url = try await startServer(
                 server,
                 forceRestartIfNeeded: forceRestartIfNeeded
             )
+            embeddedServerDebug("performStartup server.start completed url=\(url)")
             guard startupTaskID == startupID else {
                 await server.stop()
                 return
@@ -1173,7 +1211,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             self.server = server
             ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
 
+            embeddedServerDebug("performStartup appServerManager.prepare begin")
             let appServerRuntimeState = try await appServerManager.prepare()
+            embeddedServerDebug("performStartup appServerManager.prepare completed pid=\(appServerRuntimeState.pid)")
             guard startupTaskID == startupID, self.server === server else {
                 return
             }
@@ -1183,8 +1223,10 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 appServerRuntimeState: appServerRuntimeState
             )
             store.transitionToRunning(serverURL: url)
+            startAuthRefreshTask(auth: store.auth)
             observeServerLifecycle(server: server, store: store)
         } catch is CancellationError {
+            embeddedServerDebug("performStartup cancelled")
             guard startupTaskID == startupID else {
                 return
             }
@@ -1192,6 +1234,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             await appServerManager.shutdown()
             self.server = nil
         } catch {
+            embeddedServerDebug("performStartup failed error=\(error.localizedDescription)")
             guard startupTaskID == startupID else {
                 return
             }
@@ -1207,8 +1250,10 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         forceRestartIfNeeded: Bool
     ) async throws -> URL {
         do {
+            embeddedServerDebug("startServer begin")
             return try await server.start()
         } catch {
+            embeddedServerDebug("startServer first attempt failed error=\(error.localizedDescription)")
             guard forceRestartIfNeeded,
                   isAddressInUse(error)
             else {
@@ -1291,6 +1336,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
+                self.authRefreshTask?.cancel()
+                self.authRefreshTask = nil
                 self.closedSessions = []
                 store.transitionToStopped()
             } catch is CancellationError {
@@ -1304,12 +1351,24 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
+                self.authRefreshTask?.cancel()
+                self.authRefreshTask = nil
                 self.closedSessions = []
                 store.transitionToFailed(
                     CodexReviewStore.errorMessage(from: error),
                     resetJobs: true
                 )
             }
+        }
+    }
+
+    private func startAuthRefreshTask(auth: CodexReviewAuthModel) {
+        authRefreshTask?.cancel()
+        authRefreshTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await self.refreshAuthState(auth: auth)
         }
     }
 
@@ -1342,6 +1401,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             at: runtimeStateFileURL
         )
     }
+}
+
+private func embeddedServerDebug(_ message: String) {
+    let timestamp = ISO8601DateFormatter().string(from: Date())
+    fputs("[codex-review-mcp.backend] \(timestamp) \(message)\n", stderr)
 }
 
 @MainActor

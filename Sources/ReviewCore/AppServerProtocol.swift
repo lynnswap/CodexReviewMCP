@@ -324,11 +324,14 @@ package struct AppServerAccountReadResponse: Decodable, Sendable, Equatable {
 }
 
 package enum AppServerLoginAccountParams: Encodable, Sendable, Equatable {
+    case chatGPT
     case chatGPTDeviceCode
 
     package func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
+        case .chatGPT:
+            try container.encode("chatgpt", forKey: .type)
         case .chatGPTDeviceCode:
             try container.encode("chatgptDeviceCode", forKey: .type)
         }
@@ -340,11 +343,17 @@ package enum AppServerLoginAccountParams: Encodable, Sendable, Equatable {
 }
 
 package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
+    case chatGPT(loginID: String, authURL: String)
     case chatGPTDeviceCode(loginID: String, verificationURL: String, userCode: String)
 
     package init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(String.self, forKey: .type) {
+        case "chatgpt":
+            self = .chatGPT(
+                loginID: try container.decode(String.self, forKey: .loginID),
+                authURL: try container.decode(String.self, forKey: .authURL)
+            )
         case "chatgptDeviceCode":
             self = .chatGPTDeviceCode(
                 loginID: try container.decode(String.self, forKey: .loginID),
@@ -362,6 +371,8 @@ package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
 
     package var loginID: String? {
         switch self {
+        case .chatGPT(let loginID, _):
+            loginID
         case .chatGPTDeviceCode(let loginID, _, _):
             loginID
         }
@@ -370,6 +381,7 @@ package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case type
         case loginID = "loginId"
+        case authURL = "authUrl"
         case verificationURL = "verificationUrl"
         case userCode
     }
@@ -384,6 +396,19 @@ package struct AppServerCancelLoginAccountParams: Encodable, Sendable, Equatable
 
     package init(loginID: String) {
         self.loginID = loginID
+    }
+}
+
+package enum AppServerCancelLoginAccountStatus: String, Decodable, Sendable, Equatable {
+    case canceled = "canceled"
+    case notFound = "notFound"
+}
+
+package struct AppServerCancelLoginAccountResponse: Decodable, Sendable, Equatable {
+    package var status: AppServerCancelLoginAccountStatus
+
+    package init(status: AppServerCancelLoginAccountStatus) {
+        self.status = status
     }
 }
 

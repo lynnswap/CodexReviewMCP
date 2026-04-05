@@ -53,6 +53,7 @@ package actor AppServerSharedTransportConnection {
     private let requestTimeout: Duration = .seconds(30)
     private var nextRequestID = 1
     private var pendingResponses: [AppServerRequestID: CheckedContinuation<Data, Error>] = [:]
+    private var pendingRequestMethods: [AppServerRequestID: String] = [:]
     private var notificationSubscribers: [UUID: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation] = [:]
     private var closed = false
     private var disconnected: Error?
@@ -185,6 +186,7 @@ package actor AppServerSharedTransportConnection {
         let id = AppServerRequestID.integer(nextRequestID)
         nextRequestID += 1
         appServerTransportDebug("sending stdio request \(id): \(method)")
+        logAlwaysTransportEvent("outgoing request id=\(id) method=\(method)")
         let payload = try encoder.encode(
             AppServerRequestEnvelope(
                 id: id,
@@ -207,6 +209,7 @@ package actor AppServerSharedTransportConnection {
         let responseData = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
                 pendingResponses[id] = continuation
+                pendingRequestMethods[id] = method
                 Task {
                     do {
                         try await self.sendPayload(payload)
@@ -284,8 +287,10 @@ package actor AppServerSharedTransportConnection {
         guard let text = String(data: data, encoding: .utf8) else {
             throw ReviewError.io("failed to encode stdio payload as UTF-8 text.")
         }
+        logAlwaysTransportPayload("write", text: text)
         do {
             try await sendMessage(text + "\n")
+            logAlwaysTransportPayload("write completed", text: text)
         } catch {
             let disconnectError = ReviewError.io("app-server stdio disconnected: \(error.localizedDescription)")
             handleTransportFailure(disconnectError)
@@ -302,17 +307,28 @@ package actor AppServerSharedTransportConnection {
         if let idObject = object["id"], let requestID = AppServerRequestID(jsonObject: idObject) {
             if let method = object["method"] as? String {
                 appServerTransportDebug("server request over stdio: \(method)")
+                logAlwaysTransportEvent("incoming server request id=\(requestID) method=\(method)")
                 await rejectServerRequest(id: requestID, method: method)
                 return
             }
             guard let continuation = pendingResponses.removeValue(forKey: requestID) else {
                 appServerTransportDebug("response for unknown request id: \(requestID)")
+                logAlwaysTransportEvent("incoming response for unknown request id=\(requestID)")
                 return
             }
+            let requestMethod = pendingRequestMethods.removeValue(forKey: requestID)
             if let error = parseResponseError(from: object) {
                 appServerTransportDebug("response error for request id \(requestID): \(error.message)")
+                if let requestMethod {
+                    logAlwaysTransportEvent(
+                        "incoming response error id=\(requestID) method=\(requestMethod) error=\(error.message)"
+                    )
+                }
                 continuation.resume(throwing: error)
             } else {
+                if let requestMethod {
+                    logAlwaysTransportEvent("incoming response success id=\(requestID) method=\(requestMethod)")
+                }
                 continuation.resume(returning: data)
             }
             return
@@ -327,12 +343,14 @@ package actor AppServerSharedTransportConnection {
             appServerTransportDebug("ignored stdio notification \(method)")
         } else {
             appServerTransportDebug("stdio notification \(method)")
+            logAlwaysTransportEvent("incoming notification method=\(method)")
             broadcastNotification(notification)
         }
     }
 
     private func rejectServerRequest(id: AppServerRequestID, method: String) async {
         let payload = [
+            "jsonrpc": "2.0",
             "id": id.foundationObject,
             "error": [
                 "code": -32601,
@@ -373,9 +391,16 @@ package actor AppServerSharedTransportConnection {
             continuation.resume(throwing: error)
         }
         pendingResponses.removeAll()
+        pendingRequestMethods.removeAll()
     }
 
     private func failPendingResponse(id: AppServerRequestID, error: Error) {
+        let requestMethod = pendingRequestMethods.removeValue(forKey: id)
+        if let requestMethod {
+            logAlwaysTransportEvent(
+                "failing pending response id=\(id) method=\(requestMethod) error=\(error.localizedDescription)"
+            )
+        }
         guard let continuation = pendingResponses.removeValue(forKey: id) else {
             return
         }
@@ -502,12 +527,14 @@ package actor AppServerStdioTransportLease: AppServerSessionTransport {
 }
 
 private struct AppServerRequestEnvelope<Params: Encodable>: Encodable {
+    var jsonrpc = "2.0"
     var id: AppServerRequestID
     var method: String
     var params: Params
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(jsonrpc, forKey: .jsonrpc)
         switch id {
         case .string(let value):
             try container.encode(value, forKey: .id)
@@ -521,6 +548,7 @@ private struct AppServerRequestEnvelope<Params: Encodable>: Encodable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case jsonrpc
         case id
         case method
         case params
@@ -528,6 +556,7 @@ private struct AppServerRequestEnvelope<Params: Encodable>: Encodable {
 }
 
 private struct AppServerOutgoingNotificationEnvelope<Params: Encodable>: Encodable {
+    var jsonrpc = "2.0"
     var method: String
     var params: Params
 }
@@ -662,6 +691,35 @@ private func appServerTransportDebug(_ message: String) {
         return
     }
     fputs("[codex-review-mcp.transport] \(message)\n", stderr)
+}
+
+private func logAlwaysTransportPayload(_ prefix: String, text: String) {
+    guard let method = extractTransportMethod(from: text),
+          shouldAlwaysLogTransportMethod(method)
+    else {
+        return
+    }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    fputs("[codex-review-mcp.transport] \(prefix) \(trimmed)\n", stderr)
+}
+
+private func logAlwaysTransportEvent(_ message: String) {
+    fputs("[codex-review-mcp.transport] \(message)\n", stderr)
+}
+
+private func extractTransportMethod(from text: String) -> String? {
+    guard let data = text.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        return nil
+    }
+    return object["method"] as? String
+}
+
+private func shouldAlwaysLogTransportMethod(_ method: String) -> Bool {
+    method == "initialize"
+        || method == "initialized"
+        || method.hasPrefix("account/")
 }
 
 private let codexReviewMCPTransportDebugEnabled: Bool = {

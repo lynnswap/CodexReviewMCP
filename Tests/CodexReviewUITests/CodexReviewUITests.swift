@@ -58,6 +58,25 @@ struct CodexReviewUITests {
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
     }
 
+    @Test func splitViewStartsStoreOnceOnFirstAppearance() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend()
+        let store = CodexReviewStore(backend: backend)
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+
+        viewController.viewDidAppear()
+        viewController.viewDidAppear()
+
+        try? await Task.sleep(for: .milliseconds(50))
+
+        #expect(viewController.didTriggerStoreStartForTesting)
+        #expect(backend.startCallCount() == 1)
+    }
+
     @Test func splitViewSectionsByWorkspace() {
         guard #available(macOS 26.0, *) else {
             return
@@ -701,6 +720,7 @@ private struct TestFailure: Error {
 @MainActor
 private final class FailingCancellationBackend: CodexReviewStoreBackend {
     var isActive: Bool = false
+    let shouldAutoStartEmbeddedServer = false
 
     func start(
         store: CodexReviewStore,
@@ -743,5 +763,62 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
 
     func logout(auth: CodexReviewAuthModel) async {
         _ = auth
+    }
+}
+
+@MainActor
+private final class CountingStartBackend: CodexReviewStoreBackend {
+    let shouldAutoStartEmbeddedServer = true
+    private var startCalls = 0
+
+    var isActive: Bool {
+        startCalls > 0
+    }
+
+    func start(
+        store: CodexReviewStore,
+        forceRestartIfNeeded: Bool
+    ) async {
+        _ = store
+        _ = forceRestartIfNeeded
+        startCalls += 1
+    }
+
+    func stop(store: CodexReviewStore) async {
+        _ = store
+    }
+
+    func waitUntilStopped() async {}
+
+    func cancelReview(
+        jobID: String,
+        sessionID: String,
+        reason: String,
+        store: CodexReviewStore
+    ) async throws {
+        _ = jobID
+        _ = sessionID
+        _ = reason
+        _ = store
+    }
+
+    func refreshAuthState(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func logout(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func startCallCount() -> Int {
+        startCalls
     }
 }

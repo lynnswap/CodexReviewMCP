@@ -1,16 +1,11 @@
 import Darwin
 import Foundation
 import ReviewJobs
-import Subprocess
-#if canImport(System)
-import System
-#else
-import SystemPackage
-#endif
 
 package protocol AppServerManaging: Sendable {
     func prepare() async throws -> AppServerRuntimeState
     func checkoutTransport(sessionID: String) async throws -> any AppServerSessionTransport
+    func checkoutAuthTransport() async throws -> any AppServerSessionTransport
     func currentRuntimeState() async -> AppServerRuntimeState?
     func diagnosticLineStream() async -> AsyncStreamSubscription<String>
     func diagnosticsTail() async -> String
@@ -34,12 +29,32 @@ package actor AppServerSupervisor: AppServerManaging {
         }
     }
 
-    private struct RunningProcess: Sendable {
+    private final class RunningProcess: @unchecked Sendable {
         var launchID: UUID
         var runtimeState: AppServerRuntimeState
-        var execution: Execution
+        var process: Process
         var connection: AppServerSharedTransportConnection
+        var stdoutTask: Task<Void, Never>
+        var stderrTask: Task<Void, Never>
         var isolatedCodexHomeURL: URL?
+
+        init(
+            launchID: UUID,
+            runtimeState: AppServerRuntimeState,
+            process: Process,
+            connection: AppServerSharedTransportConnection,
+            stdoutTask: Task<Void, Never>,
+            stderrTask: Task<Void, Never>,
+            isolatedCodexHomeURL: URL?
+        ) {
+            self.launchID = launchID
+            self.runtimeState = runtimeState
+            self.process = process
+            self.connection = connection
+            self.stdoutTask = stdoutTask
+            self.stderrTask = stderrTask
+            self.isolatedCodexHomeURL = isolatedCodexHomeURL
+        }
     }
 
     private enum State {
@@ -62,11 +77,21 @@ package actor AppServerSupervisor: AppServerManaging {
     }
 
     package func prepare() async throws -> AppServerRuntimeState {
-        try await ensureRunning().runtimeState
+        appServerSupervisorDebug("prepare begin")
+        return try await ensureRunning().runtimeState
     }
 
     package func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        appServerSupervisorDebug("checkoutTransport begin")
         let running = try await ensureRunning()
+        appServerSupervisorDebug("checkoutTransport ready pid=\(running.runtimeState.pid)")
+        return await running.connection.checkoutTransport()
+    }
+
+    package func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        appServerSupervisorDebug("checkoutAuthTransport begin")
+        let running = try await ensureRunning()
+        appServerSupervisorDebug("checkoutAuthTransport ready pid=\(running.runtimeState.pid)")
         return await running.connection.checkoutTransport()
     }
 
@@ -140,6 +165,7 @@ package actor AppServerSupervisor: AppServerManaging {
     private func ensureRunning() async throws -> RunningProcess {
         switch state {
         case .running(let running):
+            appServerSupervisorDebug("ensureRunning state=running pid=\(running.runtimeState.pid)")
             let identity = ProcessIdentity(
                 pid: pid_t(running.runtimeState.pid),
                 startTime: running.runtimeState.startTime
@@ -154,8 +180,10 @@ package actor AppServerSupervisor: AppServerManaging {
             await terminateRunningProcess(running)
             return try await ensureRunning()
         case .starting:
+            appServerSupervisorDebug("ensureRunning state=starting")
             return try await waitForRunning()
         case .stopped:
+            appServerSupervisorDebug("ensureRunning state=stopped launch")
             let launchID = UUID()
             state = .starting(launchID, [])
             lifetimeTask = Task.detached { [weak self] in
@@ -207,95 +235,118 @@ package actor AppServerSupervisor: AppServerManaging {
         trailingStandardErrorFragment = ""
 
         do {
-            var launchedProcessIdentity: ProcessIdentity?
             let isolatedCodexHomeURL = try prepareIsolatedCodexHome(
                 launchID: launchID,
                 environment: self.configuration.environment
             )
 
-            let configuration = try makeAppServerConfiguration(
+            let launchCommand = try makeAppServerLaunchCommand(
                 codexCommand: self.configuration.codexCommand,
                 environment: self.configuration.environment,
                 isolatedCodexHomeURL: isolatedCodexHomeURL
             )
+            let stdinPipe = Pipe()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: launchCommand.executable)
+            process.arguments = launchCommand.arguments
+            process.environment = launchCommand.environment
+            process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            process.standardInput = stdinPipe
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
 
-            let outcome = try await Subprocess.run(
-                configuration,
-                preferredBufferSize: 4096
-            ) { execution, inputWriter, outputSequence, errorSequence in
-                let pid = execution.processIdentifier.value
-                guard let startTime = processStartTime(of: pid) else {
-                    throw ReviewError.spawnFailed("app-server started without a readable process start time.")
-                }
-                launchedProcessIdentity = .init(pid: pid, startTime: startTime)
-                let processGroupLeaderPID = currentProcessGroupID(of: pid) ?? pid
-                let processGroupLeaderStartTime = processStartTime(of: processGroupLeaderPID) ?? startTime
-                let runtimeState = AppServerRuntimeState(
-                    pid: Int(pid),
-                    startTime: startTime,
-                    processGroupLeaderPID: Int(processGroupLeaderPID),
-                    processGroupLeaderStartTime: processGroupLeaderStartTime
-                )
-                self.noteStartingRuntimeState(runtimeState)
-
-                let connection = AppServerSharedTransportConnection(
-                    sendMessage: { message in
-                        _ = try await inputWriter.write(message, using: UTF8.self)
-                    },
-                    closeInput: {
-                        try? await inputWriter.finish()
-                    }
-                )
-                let stdoutTask = self.startCapturingStandardOutput(
-                    from: outputSequence,
-                    connection: connection
-                )
-                let stderrTask = self.startCapturingStandardError(from: errorSequence)
-                do {
-                    try await self.waitUntilInitialized(
-                        connection: connection,
-                        processIdentity: .init(pid: pid, startTime: startTime)
-                    )
-
-                    self.finishStarting(
-                        launchID: launchID,
-                        .success(
-                            RunningProcess(
-                                launchID: launchID,
-                                runtimeState: runtimeState,
-                                execution: execution,
-                                connection: connection,
-                                isolatedCodexHomeURL: isolatedCodexHomeURL
-                            )
-                        )
-                    )
-
-                    let identity = ProcessIdentity(pid: pid, startTime: startTime)
-                    while isMatchingProcessIdentity(identity) {
-                        try? await Task.sleep(for: .milliseconds(100))
-                    }
-                    _ = await stdoutTask.value
-                    _ = await stderrTask.value
-                    return ()
-                } catch {
-                    await connection.shutdown()
-                    stdoutTask.cancel()
-                    stderrTask.cancel()
-                    _ = await stdoutTask.value
-                    _ = await stderrTask.value
-                    await self.terminateStartingProcess(runtimeState: runtimeState)
-                    throw error
-                }
+            appServerSupervisorDebug("launchProcessBackground process.run begin executable=\(launchCommand.executable)")
+            let launchHome = launchCommand.environment["HOME"] ?? "nil"
+            let launchCodexHome = launchCommand.environment["CODEX_HOME"] ?? "nil"
+            let launchFixedHome = launchCommand.environment["CFFIXED_USER_HOME"] ?? "nil"
+            let launchXPCServiceName = launchCommand.environment["XPC_SERVICE_NAME"] ?? "nil"
+            let launchOSActivityDTMode = launchCommand.environment["OS_ACTIVITY_DT_MODE"] ?? "nil"
+            let launchTerm = launchCommand.environment["TERM"] ?? "nil"
+            appServerSupervisorDebug(
+                "launchProcessBackground env HOME=\(launchHome) " +
+                "CODEX_HOME=\(launchCodexHome) " +
+                "CFFIXED_USER_HOME=\(launchFixedHome) " +
+                "XPC_SERVICE_NAME=\(launchXPCServiceName) " +
+                "OS_ACTIVITY_DT_MODE=\(launchOSActivityDTMode) " +
+                "TERM=\(launchTerm)"
+            )
+            try process.run()
+            let pid = process.processIdentifier
+            appServerSupervisorDebug("launchProcessBackground process.run pid=\(pid)")
+            guard let startTime = processStartTime(of: pid_t(pid)) else {
+                process.terminate()
+                throw ReviewError.spawnFailed("app-server started without a readable process start time.")
             }
 
-            _ = outcome
-            if let launchedProcessIdentity {
+            let runtimeState = AppServerRuntimeState(
+                pid: Int(pid),
+                startTime: startTime,
+                processGroupLeaderPID: Int(pid),
+                processGroupLeaderStartTime: startTime
+            )
+            self.noteStartingRuntimeState(runtimeState)
+
+            let connection = AppServerSharedTransportConnection(
+                sendMessage: { message in
+                    guard let data = message.data(using: .utf8) else {
+                        throw ReviewError.io("failed to encode stdio payload as UTF-8.")
+                    }
+                    try stdinPipe.fileHandleForWriting.write(contentsOf: data)
+                },
+                closeInput: {
+                    try? stdinPipe.fileHandleForWriting.close()
+                }
+            )
+            let stdoutTask = self.startCapturingStandardOutput(
+                handle: stdoutPipe.fileHandleForReading,
+                connection: connection
+            )
+            let stderrTask = self.startCapturingStandardError(
+                handle: stderrPipe.fileHandleForReading
+            )
+
+            do {
+                try await self.waitUntilInitialized(
+                    connection: connection,
+                    processIdentity: .init(pid: pid_t(pid), startTime: startTime)
+                )
+
+                self.finishStarting(
+                    launchID: launchID,
+                    .success(
+                        RunningProcess(
+                            launchID: launchID,
+                            runtimeState: runtimeState,
+                            process: process,
+                            connection: connection,
+                            stdoutTask: stdoutTask,
+                            stderrTask: stderrTask,
+                            isolatedCodexHomeURL: isolatedCodexHomeURL
+                        )
+                    )
+                )
+
+                let identity = ProcessIdentity(pid: pid_t(pid), startTime: startTime)
+                while isMatchingProcessIdentity(identity) {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                _ = await stdoutTask.value
+                _ = await stderrTask.value
                 startingRuntimeState = nil
                 handleProcessExit(
                     launchID: launchID,
-                    processIdentity: launchedProcessIdentity,
+                    processIdentity: identity,
                     isolatedCodexHomeURL: isolatedCodexHomeURL
                 )
+            } catch {
+                appServerSupervisorDebug("launchProcessBackground failed after spawn error=\(error.localizedDescription)")
+                await connection.shutdown()
+                await self.terminateStartingProcess(runtimeState: runtimeState)
+                _ = await stdoutTask.value
+                _ = await stderrTask.value
+                throw error
             }
         } catch {
             let startingRuntimeState = self.startingRuntimeState
@@ -316,26 +367,38 @@ package actor AppServerSupervisor: AppServerManaging {
     }
 
     private func startCapturingStandardOutput(
-        from sequence: AsyncBufferSequence,
+        handle: FileHandle,
         connection: AppServerSharedTransportConnection
     ) -> Task<Void, Never> {
         Task.detached {
+            var lineBuffer = Data()
             do {
-                for try await chunk in sequence {
-                    await connection.receive(Data(buffer: chunk))
+                for try await byte in handle.bytes {
+                    lineBuffer.append(byte)
+                    if byte == UInt8(ascii: "\n") {
+                        logAppServerStandardOutputLine(lineBuffer)
+                        lineBuffer.removeAll(keepingCapacity: true)
+                    }
+                    await connection.receive(Data([byte]))
+                }
+                if lineBuffer.isEmpty == false {
+                    logAppServerStandardOutputLine(lineBuffer)
                 }
                 await connection.finishReceiving(error: nil)
             } catch {
+                if lineBuffer.isEmpty == false {
+                    logAppServerStandardOutputLine(lineBuffer)
+                }
                 await connection.finishReceiving(error: error)
             }
         }
     }
 
-    private func startCapturingStandardError(from sequence: AsyncBufferSequence) -> Task<Void, Never> {
+    private func startCapturingStandardError(handle: FileHandle) -> Task<Void, Never> {
         Task.detached { [weak self] in
             do {
-                for try await chunk in sequence {
-                    await self?.appendStandardErrorData(Data(buffer: chunk))
+                for try await byte in handle.bytes {
+                    await self?.appendStandardErrorData(Data([byte]))
                 }
                 await self?.flushStandardErrorFragment()
             } catch {
@@ -391,6 +454,7 @@ package actor AppServerSupervisor: AppServerManaging {
     private func appendStandardErrorLines(_ lines: [String]) {
         stderrLines.append(contentsOf: lines)
         for line in lines {
+            fputs("[codex-review-mcp.app-server.stderr] \(line)\n", stderr)
             for continuation in diagnosticSubscribers.values {
                 continuation.yield(line)
             }
@@ -407,11 +471,13 @@ package actor AppServerSupervisor: AppServerManaging {
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
+                    appServerSupervisorDebug("waitUntilInitialized initialize begin pid=\(processIdentity.pid)")
                     _ = try await connection.initialize(
                         clientName: codexReviewMCPName,
                         clientTitle: "Codex Review MCP",
                         clientVersion: codexReviewMCPVersion
                     )
+                    appServerSupervisorDebug("waitUntilInitialized initialize completed pid=\(processIdentity.pid)")
                 }
                 group.addTask {
                     try await Task.sleep(for: self.configuration.startupTimeout)
@@ -538,8 +604,8 @@ package actor AppServerSupervisor: AppServerManaging {
             rootPID: processIdentity.pid,
             excludingGroupLeaderPID: processGroupIdentity.pid
         )
-        try? current.execution.send(signal: .terminate, toProcessGroup: false)
-        try? current.execution.send(signal: .terminate, toProcessGroup: true)
+        _ = kill(processIdentity.pid, SIGTERM)
+        _ = killpg(processGroupIdentity.pid, SIGTERM)
         signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while ContinuousClock.now < deadline {
@@ -555,10 +621,12 @@ package actor AppServerSupervisor: AppServerManaging {
             || isSupervisorProcessGroupAlive(processGroupIdentity)
             || hasLiveSupervisorChildGroups(childGroupIdentities)
         {
-            try? current.execution.send(signal: .kill, toProcessGroup: false)
-            try? current.execution.send(signal: .kill, toProcessGroup: true)
+            _ = kill(processIdentity.pid, SIGKILL)
+            _ = killpg(processGroupIdentity.pid, SIGKILL)
             signalSupervisorChildGroups(childGroupIdentities, signal: SIGKILL)
         }
+        _ = await current.stdoutTask.result
+        _ = await current.stderrTask.result
         await lifetimeTask?.value
     }
 }
@@ -580,11 +648,17 @@ package func splitStandardErrorChunk(
     return (Array(segments.dropLast()), segments.last ?? combined)
 }
 
-private func makeAppServerConfiguration(
+private struct AppServerLaunchCommand {
+    var executable: String
+    var arguments: [String]
+    var environment: [String: String]
+}
+
+private func makeAppServerLaunchCommand(
     codexCommand: String,
     environment: [String: String],
     isolatedCodexHomeURL: URL?
-) throws -> Configuration {
+) throws -> AppServerLaunchCommand {
     guard let resolvedExecutable = resolveCodexCommand(
         requestedCommand: codexCommand,
         environment: environment,
@@ -595,30 +669,18 @@ private func makeAppServerConfiguration(
         )
     }
 
-    var platformOptions = PlatformOptions()
-    platformOptions.processGroupID = 0
-    platformOptions.createSession = false
-
     var effectiveEnvironment = environment
     if let isolatedCodexHomeURL {
         effectiveEnvironment["CODEX_HOME"] = isolatedCodexHomeURL.path
     }
 
-    let subprocessEnvironment = Environment.custom(
-        effectiveEnvironment.reduce(into: [Environment.Key: String]()) { partialResult, entry in
-            partialResult[Environment.Key(stringLiteral: entry.key)] = entry.value
-        }
-    )
-
-    return Configuration(
-        executable: .path(FilePath(resolvedExecutable)),
+    return AppServerLaunchCommand(
+        executable: resolvedExecutable,
         arguments: [
             "app-server",
             "--listen", "stdio://"
         ],
-        environment: subprocessEnvironment,
-        workingDirectory: FilePath(FileManager.default.currentDirectoryPath),
-        platformOptions: platformOptions
+        environment: effectiveEnvironment
     )
 }
 
@@ -703,6 +765,15 @@ private func isSupervisorProcessGroupAlive(_ identity: ProcessIdentity) -> Bool 
     return true
 }
 
+private func logAppServerStandardOutputLine(_ data: Data) {
+    let text = String(decoding: data, as: UTF8.self)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard text.isEmpty == false else {
+        return
+    }
+    fputs("[codex-review-mcp.app-server.stdout] \(text)\n", stderr)
+}
+
 private func descendantProcessGroupIdentities(
     rootPID: pid_t,
     excludingGroupLeaderPID: pid_t
@@ -752,6 +823,11 @@ private func hasLiveSupervisorChildGroups(_ identities: [ProcessIdentity]) -> Bo
     Set(identities).contains { identity in
         isSupervisorProcessGroupAlive(identity)
     }
+}
+
+private func appServerSupervisorDebug(_ message: String) {
+    let timestamp = ISO8601DateFormatter().string(from: Date())
+    fputs("[codex-review-mcp.supervisor] \(timestamp) \(message)\n", stderr)
 }
 
 private extension NSLock {

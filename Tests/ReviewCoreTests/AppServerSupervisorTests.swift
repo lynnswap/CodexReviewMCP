@@ -186,6 +186,8 @@ struct AppServerSupervisorTests {
             sendMessage: { message in
                 guard let data = message.data(using: .utf8),
                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let jsonrpc = object["jsonrpc"] as? String,
+                      jsonrpc == "2.0",
                       let method = object["method"] as? String,
                       method == "initialize",
                       let id = object["id"]

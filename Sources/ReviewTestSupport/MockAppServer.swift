@@ -1155,6 +1155,10 @@ package actor MockAppServerManager: AppServerManaging {
         return transport
     }
 
+    package func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
     package func currentRuntimeState() async -> AppServerRuntimeState? {
         runtimeState
     }

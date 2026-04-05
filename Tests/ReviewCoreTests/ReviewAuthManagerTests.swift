@@ -23,6 +23,49 @@ struct ReviewAuthManagerTests {
             readResponses: [
                 .init(account: .chatGPT(email: "review@example.com", planType: "plus"), requiresOpenAIAuth: false),
             ],
+            loginResponse: .chatGPT(
+                loginID: "login-browser",
+                authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+            )
+        )
+        let manager = ReviewAuthManager(
+            configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        let task = Task {
+            try await manager.beginAuthentication { state in
+                await recorder.append(state)
+            }
+        }
+
+        try await waitUntil(timeout: .seconds(2)) {
+            let params = await session.recordedLoginParams()
+            return params == [.chatGPT] ? true : nil
+        }
+        await session.send(.accountUpdated(.init(authMode: .chatGPT, planType: "plus")))
+        await session.send(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
+
+        try await task.value
+
+        let updates = await recorder.values()
+        #expect(
+            updates.contains {
+                guard case .signingIn(let progress) = $0 else {
+                    return false
+                }
+                return progress.browserURL?.contains("/oauth/authorize") == true
+                    && progress.userCode == nil
+            }
+        )
+        #expect(updates.last == .signedIn(accountID: "review@example.com"))
+        #expect(await session.recordedRefreshRequests() == [true])
+    }
+
+    @Test func authManagerDeviceCodeLoginPublishesVerificationURLAndCode() async throws {
+        let session = FakeReviewAuthSession(
+            readResponses: [],
             loginResponse: .chatGPTDeviceCode(
                 loginID: "login-browser",
                 verificationURL: "https://auth.openai.com/codex/device",
@@ -43,25 +86,21 @@ struct ReviewAuthManagerTests {
 
         try await waitUntil(timeout: .seconds(2)) {
             let params = await session.recordedLoginParams()
-            return params == [.chatGPTDeviceCode] ? true : nil
+            return params == [.chatGPT] ? true : nil
         }
-        await session.send(.accountUpdated(.init(authMode: .chatGPT, planType: "plus")))
-        await session.send(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
-
-        try await task.value
+        await session.finishNotifications(with: CancellationError())
+        await #expect(throws: ReviewAuthError.cancelled) {
+            try await task.value
+        }
 
         let updates = await recorder.values()
-        #expect(
-            updates.contains {
-                guard case .signingIn(let progress) = $0 else {
-                    return false
-                }
-                return progress.browserURL?.contains("/codex/device") == true
-                    && progress.userCode == "ABCD-1234"
+        #expect(updates.contains {
+            guard case .signingIn(let progress) = $0 else {
+                return false
             }
-        )
-        #expect(updates.last == .signedIn(accountID: "review@example.com"))
-        #expect(await session.recordedRefreshRequests() == [true])
+            return progress.browserURL?.contains("/codex/device") == true
+                && progress.userCode == "ABCD-1234"
+        })
     }
 
     @Test func authManagerPublishesInitialProgressBeforeSessionCreationCompletes() async throws {
@@ -96,7 +135,7 @@ struct ReviewAuthManagerTests {
         await factory.resume()
         try await waitUntil(timeout: .seconds(2)) {
             let params = await session.recordedLoginParams()
-            return params == [.chatGPTDeviceCode] ? true : nil
+            return params == [.chatGPT] ? true : nil
         }
 
         await manager.cancelAuthentication()
@@ -138,7 +177,7 @@ struct ReviewAuthManagerTests {
 
         try await waitUntil(timeout: .seconds(2)) {
             let params = await session.recordedLoginParams()
-            return params == [.chatGPTDeviceCode] ? true : nil
+            return params == [.chatGPT] ? true : nil
         }
 
         await manager.cancelAuthentication()
@@ -197,6 +236,15 @@ struct ReviewAuthManagerTests {
                 from: "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header"
             ) == "Authentication required. Sign in to ReviewMCP and retry."
         )
+    }
+
+    @Test func cliAuthOutputHelpersExtractBrowserURLAndDeviceCode() {
+        let browserLine = "\u{001B}[94mhttps://auth.openai.com/oauth/authorize?foo=bar\u{001B}[0m"
+        let codeLine = "   \u{001B}[94m10Y1-AO4WU\u{001B}[0m"
+
+        #expect(sanitizeCLIAuthOutput(browserLine) == "https://auth.openai.com/oauth/authorize?foo=bar")
+        #expect(extractReviewAuthHTTPSURL(from: sanitizeCLIAuthOutput(browserLine)) == "https://auth.openai.com/oauth/authorize?foo=bar")
+        #expect(extractReviewAuthUserCode(from: sanitizeCLIAuthOutput(codeLine)) == "10Y1-AO4WU")
     }
 }
 

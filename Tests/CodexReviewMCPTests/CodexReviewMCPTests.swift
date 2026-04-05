@@ -50,6 +50,66 @@ struct CodexReviewMCPTests {
         #expect(FileManager.default.fileExists(atPath: reviewAgentsURL.path))
     }
 
+    @Test func startingStoreRefreshesAuthStateInBackgroundWithoutBlockingStartup() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = MockAppServerManager { _ in .success() }
+        let authSession = SlowReadAccountReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        let startTask = Task {
+            await store.start()
+        }
+        let completed = await taskCompletesWithin(startTask, timeout: .milliseconds(250))
+
+        #expect(completed)
+        #expect(store.serverState == .running)
+        try await waitUntilAsync(timeout: .seconds(2)) {
+            await authSession.readAccountCallCount() == 1
+        }
+
+        await store.stop()
+    }
+
+    @Test func startingStoreRestoresSignedInAuthStateFromBackgroundRefresh() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = MockAppServerManager { _ in .success() }
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+
+        try await waitUntilAsync(timeout: .seconds(2)) {
+            await store.auth.state == .signedIn(accountID: "review@example.com")
+        }
+
+        await store.stop()
+    }
+
     @Test func stoppingStoreRemovesDiscoveryAndRuntimeState() async throws {
         let environment = try isolatedHomeEnvironment()
         let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
@@ -318,7 +378,7 @@ struct CodexReviewMCPTests {
 
         try await waitUntilAsync(timeout: .seconds(2)) {
             let params = await authSession.recordedLoginParams()
-            return params == [.chatGPTDeviceCode]
+            return params == [.chatGPT]
         }
 
         await store.auth.cancelAuthentication()
@@ -327,6 +387,47 @@ struct CodexReviewMCPTests {
         #expect(store.auth.state == .signedOut)
         #expect(await authFactory.creationCount() == 1)
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
+    }
+
+    @Test func beginAuthenticationUsesInjectedAuthSessionWithoutAuthTransportCheckout() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = BlockingLoginReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        try await waitUntilAsync(timeout: .seconds(2)) {
+            let params = await authSession.recordedLoginParams()
+            return params == [.chatGPT]
+        }
+        try await waitUntilAsync(timeout: .seconds(2)) {
+            let authState = await store.auth.state
+            guard case .signingIn(let progress) = authState else {
+                return false
+            }
+            return progress.browserURL?.contains("/codex/device") == true
+        }
+
+        await store.auth.cancelAuthentication()
+        _ = await beginTask.value
+
+        #expect(await manager.authTransportCheckoutCount() == 0)
+        #expect(await manager.reviewTransportCheckoutCount() == 0)
+        #expect(await manager.shutdownCount() == 0)
+        #expect(store.auth.state == .signedOut)
     }
 
     @Test func forceRestartStopsServerAndRecordedAppServerGroup() async throws {
@@ -757,6 +858,10 @@ private actor DelayedShutdownAppServerManager: AppServerManaging {
         MockAppServerSessionTransport(mode: .success())
     }
 
+    func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
     func currentRuntimeState() async -> AppServerRuntimeState? {
         runtimeState
     }
@@ -842,6 +947,10 @@ private actor DelayedConnectAppServerManager: AppServerManaging {
         return transport
     }
 
+    func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
     func currentRuntimeState() async -> AppServerRuntimeState? {
         runtimeState
     }
@@ -914,6 +1023,10 @@ private actor BlockingPrepareAppServerManager: AppServerManaging {
     }
 
     func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
+    func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
         MockAppServerSessionTransport(mode: .success())
     }
 
@@ -1038,6 +1151,216 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
+private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
+    private var readAccountCallCountStorage = 0
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        readAccountCallCountStorage += 1
+        try await Task.sleep(for: .seconds(60))
+        return .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPTDeviceCode(
+            loginID: "login-browser",
+            verificationURL: "https://auth.openai.com/codex/device",
+            userCode: "ABCD-1234"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+
+    func readAccountCallCount() -> Int {
+        readAccountCallCountStorage
+    }
+}
+
+private actor ImmediateReadAccountReviewAuthSession: ReviewAuthSession {
+    private let response: AppServerAccountReadResponse
+
+    init(response: AppServerAccountReadResponse) {
+        self.response = response
+    }
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        response
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+}
+
+private actor AuthCapableAppServerManager: AppServerManaging {
+    private let runtimeState = AppServerRuntimeState(
+        pid: 200,
+        startTime: .init(seconds: 2, microseconds: 0),
+        processGroupLeaderPID: 200,
+        processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
+    )
+    private let authTransport = AuthCapableAppServerSessionTransport()
+    private var authCheckoutCountStorage = 0
+    private var reviewCheckoutCountStorage = 0
+    private var shutdownCountStorage = 0
+
+    func prepare() async throws -> AppServerRuntimeState {
+        runtimeState
+    }
+
+    func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        reviewCheckoutCountStorage += 1
+        return MockAppServerSessionTransport(mode: .success())
+    }
+
+    func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        authCheckoutCountStorage += 1
+        return authTransport
+    }
+
+    func currentRuntimeState() async -> AppServerRuntimeState? {
+        runtimeState
+    }
+
+    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
+    }
+
+    func diagnosticsTail() async -> String {
+        ""
+    }
+
+    func shutdown() async {
+        shutdownCountStorage += 1
+    }
+
+    func authTransportCheckoutCount() -> Int {
+        authCheckoutCountStorage
+    }
+
+    func reviewTransportCheckoutCount() -> Int {
+        reviewCheckoutCountStorage
+    }
+
+    func shutdownCount() -> Int {
+        shutdownCountStorage
+    }
+}
+
+private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var isClosedStorage = false
+
+    func initializeResponse() async -> AppServerInitializeResponse {
+        .init(
+            userAgent: nil,
+            codexHome: nil,
+            platformFamily: "macOS",
+            platformOs: "Darwin"
+        )
+    }
+
+    func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
+        method: String,
+        params: Params,
+        responseType: Response.Type
+    ) async throws -> Response {
+        _ = params
+        switch method {
+        case "account/read":
+            return try decode(
+                ["account": NSNull(), "requiresOpenaiAuth": true],
+                as: responseType
+            )
+        case "account/login/start":
+            return try decode(
+                [
+                    "type": "chatgptDeviceCode",
+                    "loginId": "login-browser",
+                    "verificationUrl": "https://auth.openai.com/codex/device",
+                    "userCode": "ABCD-1234",
+                ],
+                as: responseType
+            )
+        case "account/login/cancel":
+            return try decode([:], as: responseType)
+        case "account/logout":
+            return try decode([:], as: responseType)
+        default:
+            throw NSError(
+                domain: "CodexReviewMCPTests.AuthCapableAppServerSessionTransport",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "unsupported auth mock request: \(method)"]
+            )
+        }
+    }
+
+    func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
+            Task {
+                self.setContinuation(continuation)
+            }
+        }
+        return .init(
+            stream: stream,
+            cancel: { [self] in
+                await close()
+            }
+        )
+    }
+
+    func isClosed() async -> Bool {
+        isClosedStorage
+    }
+
+    func close() async {
+        isClosedStorage = true
+        continuation?.finish()
+        continuation = nil
+    }
+
+    private func setContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
+    ) {
+        self.continuation = continuation
+    }
+
+    private func decode<Response: Decodable & Sendable>(
+        _ object: Any,
+        as responseType: Response.Type
+    ) throws -> Response {
+        _ = responseType
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try JSONDecoder().decode(Response.self, from: data)
+    }
+}
+
 private func runWithRestartClock(
     _ clock: TestRestartClock,
     maxSteps: Int = 40,
@@ -1102,6 +1425,24 @@ private func waitUntilAsync(
         try await Task.sleep(for: interval)
     }
     throw TestFailure("timed out waiting for condition")
+}
+
+private func taskCompletesWithin(
+    _ task: Task<Void, Never>,
+    timeout: Duration
+) async -> Bool {
+    await withTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            await task.value
+            return true
+        }
+        group.addTask {
+            try? await Task.sleep(for: timeout)
+            return false
+        }
+        defer { group.cancelAll() }
+        return await group.next() ?? false
+    }
 }
 
 private final class FakeForcedRestartEnvironment: @unchecked Sendable {
