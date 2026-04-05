@@ -23,9 +23,10 @@ struct ReviewAuthManagerTests {
             readResponses: [
                 .init(account: .chatGPT(email: "review@example.com", planType: "plus"), requiresOpenAIAuth: false),
             ],
-            loginResponse: .chatGPT(
+            loginResponse: .chatGPTDeviceCode(
                 loginID: "login-browser",
-                authURL: "https://auth.openai.com/oauth/authorize?fake=1"
+                verificationURL: "https://auth.openai.com/codex/device",
+                userCode: "ABCD-1234"
             )
         )
         let manager = ReviewAuthManager(
@@ -42,7 +43,7 @@ struct ReviewAuthManagerTests {
 
         try await waitUntil(timeout: .seconds(2)) {
             let params = await session.recordedLoginParams()
-            return params == [.chatGPT] ? true : nil
+            return params == [.chatGPTDeviceCode] ? true : nil
         }
         await session.send(.accountUpdated(.init(authMode: .chatGPT, planType: "plus")))
         await session.send(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
@@ -55,11 +56,54 @@ struct ReviewAuthManagerTests {
                 guard case .signingIn(let progress) = $0 else {
                     return false
                 }
-                return progress.browserURL?.contains("oauth/authorize") == true
+                return progress.browserURL?.contains("/codex/device") == true
+                    && progress.userCode == "ABCD-1234"
             }
         )
         #expect(updates.last == .signedIn(accountID: "review@example.com"))
         #expect(await session.recordedRefreshRequests() == [true])
+    }
+
+    @Test func authManagerPublishesInitialProgressBeforeSessionCreationCompletes() async throws {
+        let session = FakeReviewAuthSession(readResponses: [])
+        let factory = BlockingReviewAuthSessionFactory(session: session)
+        let manager = ReviewAuthManager(
+            configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
+            sessionFactory: {
+                try await factory.makeSession()
+            }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        let task = Task {
+            try await manager.beginAuthentication { state in
+                await recorder.append(state)
+            }
+        }
+
+        await factory.waitForRequest()
+        try await waitUntil(timeout: .seconds(2)) {
+            let updates = await recorder.values()
+            return updates.contains {
+                guard case .signingIn(let progress) = $0 else {
+                    return false
+                }
+                return progress.browserURL == nil
+                    && progress.detail == "Preparing browser sign-in."
+            } ? true : nil
+        }
+
+        await factory.resume()
+        try await waitUntil(timeout: .seconds(2)) {
+            let params = await session.recordedLoginParams()
+            return params == [.chatGPTDeviceCode] ? true : nil
+        }
+
+        await manager.cancelAuthentication()
+        await session.finishNotifications(with: CancellationError())
+        await #expect(throws: ReviewAuthError.cancelled) {
+            try await task.value
+        }
     }
 
     @Test func authManagerTreatsUnsupportedAccountAsSignedOut() async throws {
@@ -77,9 +121,10 @@ struct ReviewAuthManagerTests {
     @Test func authManagerCancelAuthenticationCancelsActiveLoginID() async throws {
         let session = FakeReviewAuthSession(
             readResponses: [],
-            loginResponse: .chatGPT(
+            loginResponse: .chatGPTDeviceCode(
                 loginID: "login-browser",
-                authURL: "https://auth.openai.com/oauth/authorize?fake=1"
+                verificationURL: "https://auth.openai.com/codex/device",
+                userCode: "ABCD-1234"
             )
         )
         let manager = ReviewAuthManager(
@@ -93,7 +138,7 @@ struct ReviewAuthManagerTests {
 
         try await waitUntil(timeout: .seconds(2)) {
             let params = await session.recordedLoginParams()
-            return params == [.chatGPT] ? true : nil
+            return params == [.chatGPTDeviceCode] ? true : nil
         }
 
         await manager.cancelAuthentication()
@@ -120,25 +165,25 @@ struct ReviewAuthManagerTests {
         #expect(await session.logoutCallCount() == 1)
     }
 
-    @Test func realAppServerChatGPTStartReturnsAuthURLAndLoginID() async throws {
-        let environment = try makeRealCodexEnvironment()
-        let session = try await makeLiveReviewAuthSession(
-            configuration: .init(environment: environment)
+    @Test func fakeReviewAuthSessionDeviceCodeStartReturnsVerificationURLAndLoginID() async throws {
+        let session = FakeReviewAuthSession(
+            readResponses: [],
+            loginResponse: .chatGPTDeviceCode(
+                loginID: "login-browser",
+                verificationURL: "https://auth.openai.com/codex/device",
+                userCode: "ABCD-1234"
+            )
         )
-        defer {
-            Task {
-                await session.close()
-            }
-        }
 
-        let response = try await session.startLogin(.chatGPT)
+        let response = try await session.startLogin(.chatGPTDeviceCode)
 
-        guard case .chatGPT(let loginID, let authURL) = response else {
-            Issue.record("Expected chatgpt login response, got \(response)")
+        guard case .chatGPTDeviceCode(let loginID, let verificationURL, let userCode) = response else {
+            Issue.record("Expected chatgpt device code response, got \(response)")
             return
         }
         #expect(loginID.isEmpty == false)
-        #expect(authURL.contains("redirect_uri=http%3A%2F%2Flocalhost%3A"))
+        #expect(verificationURL.contains("/codex/device"))
+        #expect(userCode == "ABCD-1234")
     }
 
     @Test func reviewAuthRequirementDetectsUnauthorizedFailures() {
@@ -167,6 +212,55 @@ private actor AuthUpdateRecorder {
     }
 }
 
+private actor BlockingReviewAuthSessionFactory {
+    private let session: FakeReviewAuthSession
+    private var requested = false
+    private var requestWaiters: [CheckedContinuation<Void, Never>] = []
+    private var resumeWaiters: [CheckedContinuation<Void, Never>] = []
+    private var resumed = false
+
+    init(session: FakeReviewAuthSession) {
+        self.session = session
+    }
+
+    func makeSession() async throws -> any ReviewAuthSession {
+        requested = true
+        let waiters = requestWaiters
+        requestWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters {
+            waiter.resume()
+        }
+        if resumed == false {
+            await withCheckedContinuation { continuation in
+                resumeWaiters.append(continuation)
+            }
+        }
+        return session
+    }
+
+    func waitForRequest() async {
+        if requested {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if requested {
+                continuation.resume()
+            } else {
+                requestWaiters.append(continuation)
+            }
+        }
+    }
+
+    func resume() {
+        resumed = true
+        let waiters = resumeWaiters
+        resumeWaiters.removeAll(keepingCapacity: false)
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+}
+
 private actor FakeReviewAuthSession: ReviewAuthSession {
     private var readResponses: [AppServerAccountReadResponse]
     private let loginResponse: AppServerLoginAccountResponse
@@ -178,9 +272,10 @@ private actor FakeReviewAuthSession: ReviewAuthSession {
 
     init(
         readResponses: [AppServerAccountReadResponse],
-        loginResponse: AppServerLoginAccountResponse = .chatGPT(
+        loginResponse: AppServerLoginAccountResponse = .chatGPTDeviceCode(
             loginID: "login-default",
-            authURL: "https://auth.openai.com/oauth/authorize?fake=default"
+            verificationURL: "https://auth.openai.com/codex/device",
+            userCode: "WXYZ-9876"
         )
     ) {
         self.readResponses = readResponses
@@ -281,21 +376,6 @@ private func makeTemporaryRoot() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
-}
-
-private func makeRealCodexEnvironment() throws -> [String: String] {
-    let rootURL = makeTemporaryRoot()
-    let environment = ["HOME": rootURL.path]
-    let reviewHomeURL = ReviewHomePaths.reviewHomeURL(environment: environment)
-    try ReviewHomePaths.ensureReviewHomeScaffold(at: reviewHomeURL)
-    try """
-    cli_auth_credentials_store = "file"
-    """.write(
-        to: ReviewHomePaths.reviewConfigURL(environment: environment),
-        atomically: true,
-        encoding: .utf8
-    )
-    return environment
 }
 
 private struct TestFailure: Error {

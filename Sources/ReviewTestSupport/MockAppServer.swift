@@ -74,6 +74,13 @@ package enum MockAppServerMode: Sendable {
         model: String = "gpt-5.4-mini",
         finalReview: String = "Looks solid overall."
     )
+    case unrelatedTurnStartedBeforeReviewStartThenSuccess(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall."
+    )
     case nonRetryErrorWithoutTurnCompletion(
         reviewThreadID: String = "thr-review",
         threadID: String = "thr-review",
@@ -394,6 +401,31 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 enqueueNotification(
                     AppServerServerNotification.error(unrelatedError)
                 )
+                enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .unrelatedTurnStartedBeforeReviewStartThenSuccess(
+                let reviewThreadID,
+                _,
+                let turnID,
+                _,
+                let finalReview
+            ):
+                currentTurnID = turnID
+                enqueueNotification(
+                    .turnStarted(
+                        .init(
+                            threadID: "thr-unrelated",
+                            turn: .init(id: "turn-unrelated", status: .inProgress, error: nil)
+                        )
+                    )
+                )
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
                 return try decodeResponse(
                     [
@@ -840,7 +872,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             return try decodeResponse([:], as: responseType)
         case "thread/unsubscribe":
             unsubscribeCount += 1
-            return try decodeResponse([:], as: responseType)
+            return try decodeResponse(["status": "unsubscribed"], as: responseType)
         default:
             throw ReviewError.io("unsupported mock request: \(method)")
         }
@@ -1072,13 +1104,18 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
 }
 
 package actor MockAppServerManager: AppServerManaging {
+    private struct TransportWaiter {
+        var index: Int
+        var continuation: CheckedContinuation<MockAppServerSessionTransport, Never>
+    }
+
     private let modeProvider: @Sendable (String) -> MockAppServerMode
     private let runtimeState: AppServerRuntimeState
     private var prepareCountStorage = 0
     private var shutdownCountStorage = 0
-    private var transports: [String: MockAppServerSessionTransport] = [:]
+    private var transports: [String: [MockAppServerSessionTransport]] = [:]
     private var transportCreationCounts: [String: Int] = [:]
-    private var transportWaiters: [String: [CheckedContinuation<MockAppServerSessionTransport, Never>]] = [:]
+    private var transportWaiters: [String: [TransportWaiter]] = [:]
 
     package init(
         modeProvider: @escaping @Sendable (String) -> MockAppServerMode,
@@ -1098,13 +1135,22 @@ package actor MockAppServerManager: AppServerManaging {
         return runtimeState
     }
 
-    package func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport {
+    package func checkoutTransport(sessionID: String) async throws -> any AppServerSessionTransport {
         let transport = MockAppServerSessionTransport(mode: modeProvider(sessionID))
-        transports[sessionID] = transport
+        transports[sessionID, default: []].append(transport)
         transportCreationCounts[sessionID, default: 0] += 1
+        let availableTransports = transports[sessionID] ?? []
         let waiters = transportWaiters.removeValue(forKey: sessionID) ?? []
+        var remainingWaiters: [TransportWaiter] = []
         for waiter in waiters {
-            waiter.resume(returning: transport)
+            if availableTransports.indices.contains(waiter.index) {
+                waiter.continuation.resume(returning: availableTransports[waiter.index])
+            } else {
+                remainingWaiters.append(waiter)
+            }
+        }
+        if remainingWaiters.isEmpty == false {
+            transportWaiters[sessionID] = remainingWaiters
         }
         return transport
     }
@@ -1128,25 +1174,32 @@ package actor MockAppServerManager: AppServerManaging {
 
     package func shutdown() async {
         shutdownCountStorage += 1
-        for (_, transport) in transports {
-            await transport.close()
+        for (_, sessionTransports) in transports {
+            for transport in sessionTransports {
+                await transport.close()
+            }
         }
         transports.removeAll()
     }
 
     package func transport(for sessionID: String) async -> MockAppServerSessionTransport? {
-        transports[sessionID]
+        transports[sessionID]?.last
     }
 
-    package func waitForTransport(sessionID: String) async -> MockAppServerSessionTransport {
-        if let transport = transports[sessionID] {
-            return transport
+    package func waitForTransport(
+        sessionID: String,
+        at index: Int = 0
+    ) async -> MockAppServerSessionTransport {
+        if let transport = transports[sessionID], transport.indices.contains(index) {
+            return transport[index]
         }
         return await withCheckedContinuation { continuation in
-            if let transport = transports[sessionID] {
-                continuation.resume(returning: transport)
+            if let transports = transports[sessionID], transports.indices.contains(index) {
+                continuation.resume(returning: transports[index])
             } else {
-                transportWaiters[sessionID, default: []].append(continuation)
+                transportWaiters[sessionID, default: []].append(
+                    .init(index: index, continuation: continuation)
+                )
             }
         }
     }
@@ -1169,5 +1222,67 @@ private struct EncodableBox<Value: Encodable>: Encodable {
 
     func encode(to encoder: Encoder) throws {
         try value.encode(to: encoder)
+    }
+}
+
+package actor StubReviewAuthSession: ReviewAuthSession {
+    private var accountResponse: AppServerAccountReadResponse
+    private let loginResponse: AppServerLoginAccountResponse
+
+    package init(
+        accountResponse: AppServerAccountReadResponse = .init(
+            account: nil,
+            requiresOpenAIAuth: true
+        ),
+        loginResponse: AppServerLoginAccountResponse = .chatGPTDeviceCode(
+            loginID: "login-stub",
+            verificationURL: "https://example.invalid/device",
+            userCode: "ABCD-1234"
+        )
+    ) {
+        self.accountResponse = accountResponse
+        self.loginResponse = loginResponse
+    }
+
+    package func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        accountResponse
+    }
+
+    package func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return loginResponse
+    }
+
+    package func cancelLogin(loginID _: String) async throws {}
+
+    package func logout() async throws {
+        accountResponse = .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
+    }
+
+    package func close() async {}
+}
+
+package func makeStubReviewAuthSessionFactory(
+    accountResponse: AppServerAccountReadResponse = .init(
+        account: nil,
+        requiresOpenAIAuth: true
+    ),
+    loginResponse: AppServerLoginAccountResponse = .chatGPTDeviceCode(
+        loginID: "login-stub",
+        verificationURL: "https://example.invalid/device",
+        userCode: "ABCD-1234"
+    )
+) -> @Sendable () async throws -> any ReviewAuthSession {
+    {
+        StubReviewAuthSession(
+            accountResponse: accountResponse,
+            loginResponse: loginResponse
+        )
     }
 }

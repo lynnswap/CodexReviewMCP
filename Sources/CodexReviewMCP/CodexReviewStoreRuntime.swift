@@ -26,12 +26,14 @@ extension CodexReviewStore {
     package convenience init(
         configuration: ReviewServerConfiguration,
         diagnosticsURL: URL? = nil,
-        appServerManager: (any AppServerManaging)? = nil
+        appServerManager: (any AppServerManaging)? = nil,
+        authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil
     ) {
         self.init(
             backend: CodexReviewEmbeddedServerBackend(
                 configuration: configuration,
-                appServerManager: appServerManager
+                appServerManager: appServerManager,
+                authSessionFactory: authSessionFactory
             ),
             diagnosticsURL: diagnosticsURL
         )
@@ -918,11 +920,13 @@ extension CodexReviewStore {
 private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
     let appServerManager: any AppServerManaging
+    let authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)?
     lazy var authManager = ReviewAuthManager(
         configuration: .init(
             codexCommand: configuration.codexCommand,
             environment: configuration.environment
-        )
+        ),
+        sessionFactory: authSessionFactory
     )
     lazy var executionCoordinator: ReviewExecutionCoordinator = {
         ReviewExecutionCoordinator(
@@ -963,7 +967,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     init(
         configuration: ReviewServerConfiguration,
-        appServerManager: (any AppServerManaging)? = nil
+        appServerManager: (any AppServerManaging)? = nil,
+        authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil
     ) {
         self.configuration = configuration
         self.appServerManager = appServerManager ?? AppServerSupervisor(
@@ -972,6 +977,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 environment: configuration.environment
             )
         )
+        self.authSessionFactory = authSessionFactory
     }
 
     func start(
@@ -1058,6 +1064,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 }
             }
             await appServerManager.shutdown()
+        } catch ReviewAuthError.cancelled {
+            auth.updateState(.signedOut)
         } catch let error as ReviewAuthError {
             auth.updateState(.failed(error.errorDescription ?? "Authentication failed."))
         } catch {
@@ -1067,7 +1075,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
         await authManager.cancelAuthentication()
-        await refreshAuthState(auth: auth)
+        auth.updateState(.signedOut)
     }
 
     func logout(auth: CodexReviewAuthModel) async {

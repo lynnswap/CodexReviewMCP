@@ -3,6 +3,7 @@ import Testing
 import ReviewTestSupport
 @_spi(Testing) @testable import CodexReviewMCP
 @testable import ReviewCore
+@testable import ReviewHTTPServer
 
 @Suite(.serialized)
 @MainActor
@@ -27,7 +28,7 @@ struct CodexReviewMCPTests {
             processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
         )
         let manager = MockAppServerManager(modeProvider: { _ in .success() }, runtimeState: runtimeState)
-        let store = CodexReviewStore(
+        let store = makeTestStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -61,7 +62,7 @@ struct CodexReviewMCPTests {
         }
 
         let manager = MockAppServerManager { _ in .success() }
-        let store = CodexReviewStore(
+        let store = makeTestStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -91,7 +92,7 @@ struct CodexReviewMCPTests {
                 processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
             )
         )
-        let store = CodexReviewStore(
+        let store = makeTestStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -129,7 +130,7 @@ struct CodexReviewMCPTests {
             processGroupLeaderPID: 300,
             processGroupLeaderStartTime: .init(seconds: 3, microseconds: 0)
         ))
-        let store = CodexReviewStore(
+        let store = makeTestStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -167,7 +168,7 @@ struct CodexReviewMCPTests {
             processGroupLeaderPID: 400,
             processGroupLeaderStartTime: .init(seconds: 4, microseconds: 0)
         ))
-        let store = CodexReviewStore(
+        let store = makeTestStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -201,7 +202,7 @@ struct CodexReviewMCPTests {
         let manager = MockAppServerManager { sessionID in
             sessionID == "session-a" ? .interruptFailure() : .longRunning()
         }
-        let store = CodexReviewStore(
+        let store = makeTestStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -263,7 +264,7 @@ struct CodexReviewMCPTests {
                 processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
             )
         )
-        let store = CodexReviewStore(
+        let store = makeTestStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -293,6 +294,39 @@ struct CodexReviewMCPTests {
         let transport = try #require(await manager.createdTransport())
         #expect(result.status == .cancelled)
         #expect(await transport.isClosed())
+    }
+
+    @Test func cancelAuthenticationClosesStateWithoutStartingAnotherAuthSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = BlockingLoginReviewAuthSession()
+        let authFactory = CountingReviewAuthSessionFactory(session: authSession)
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                try await authFactory.makeSession()
+            }
+        )
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        try await waitUntilAsync(timeout: .seconds(2)) {
+            let params = await authSession.recordedLoginParams()
+            return params == [.chatGPTDeviceCode]
+        }
+
+        await store.auth.cancelAuthentication()
+        _ = await beginTask.value
+
+        #expect(store.auth.state == .signedOut)
+        #expect(await authFactory.creationCount() == 1)
+        #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
     }
 
     @Test func forceRestartStopsServerAndRecordedAppServerGroup() async throws {
@@ -719,7 +753,7 @@ private actor DelayedShutdownAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func makeSessionTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+    func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
         MockAppServerSessionTransport(mode: .success())
     }
 
@@ -791,7 +825,7 @@ private actor DelayedConnectAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func makeSessionTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+    func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
         connectStarted = true
         let startWaiters = connectStartWaiters
         connectStartWaiters.removeAll(keepingCapacity: false)
@@ -879,7 +913,7 @@ private actor BlockingPrepareAppServerManager: AppServerManaging {
         return runtimeState
     }
 
-    func makeSessionTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+    func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
         MockAppServerSessionTransport(mode: .success())
     }
 
@@ -928,6 +962,82 @@ private actor BlockingPrepareAppServerManager: AppServerManaging {
     }
 }
 
+private actor CountingReviewAuthSessionFactory {
+    private let session: BlockingLoginReviewAuthSession
+    private var creationCountStorage = 0
+
+    init(session: BlockingLoginReviewAuthSession) {
+        self.session = session
+    }
+
+    func makeSession() async throws -> any ReviewAuthSession {
+        creationCountStorage += 1
+        return session
+    }
+
+    func creationCount() -> Int {
+        creationCountStorage
+    }
+}
+
+private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
+    private var loginParams: [AppServerLoginAccountParams] = []
+    private var cancelledIDs: [String] = []
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        loginParams.append(params)
+        return .chatGPTDeviceCode(
+            loginID: "login-browser",
+            verificationURL: "https://auth.openai.com/codex/device",
+            userCode: "ABCD-1234"
+        )
+    }
+
+    func cancelLogin(loginID: String) async throws {
+        cancelledIDs.append(loginID)
+    }
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
+            Task {
+                self.setContinuation(continuation)
+            }
+        }
+        return .init(
+            stream: stream,
+            cancel: { [self] in
+                await close()
+            }
+        )
+    }
+
+    func close() async {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    func recordedLoginParams() -> [AppServerLoginAccountParams] {
+        loginParams
+    }
+
+    func cancelledLoginIDs() -> [String] {
+        cancelledIDs
+    }
+
+    private func setContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
+    ) {
+        self.continuation = continuation
+    }
+}
+
 private func runWithRestartClock(
     _ clock: TestRestartClock,
     maxSteps: Int = 40,
@@ -972,6 +1082,21 @@ private func waitUntil(
     let deadline = ContinuousClock.now.advanced(by: timeout)
     while ContinuousClock.now < deadline {
         if condition() {
+            return
+        }
+        try await Task.sleep(for: interval)
+    }
+    throw TestFailure("timed out waiting for condition")
+}
+
+private func waitUntilAsync(
+    timeout: Duration,
+    interval: Duration = .milliseconds(50),
+    condition: @escaping @Sendable () async -> Bool
+) async throws {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if await condition() {
             return
         }
         try await Task.sleep(for: interval)
@@ -1128,6 +1253,18 @@ private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [S
         environment[key] = value
     }
     return environment
+}
+
+@MainActor
+private func makeTestStore(
+    configuration: ReviewServerConfiguration,
+    appServerManager: any AppServerManaging
+) -> CodexReviewStore {
+    CodexReviewStore(
+        configuration: configuration,
+        appServerManager: appServerManager,
+        authSessionFactory: makeStubReviewAuthSessionFactory()
+    )
 }
 
 private func makeTemporaryDirectory() throws -> URL {

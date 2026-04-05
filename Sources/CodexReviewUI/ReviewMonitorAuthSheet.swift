@@ -1,10 +1,10 @@
+import AppKit
 import SwiftUI
 import CodexReviewModel
 
 @available(macOS 26.0, *)
 struct ReviewMonitorAuthSheet: View {
     let auth: CodexReviewAuthModel
-    @Environment(\.openURL) private var openURL
     @State private var openedBrowserURL: String?
 
     var body: some View {
@@ -17,7 +17,25 @@ struct ReviewMonitorAuthSheet: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let userCode = progress?.userCode?.nilIfEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Code")
+                        .font(.headline)
+                    Text(userCode)
+                        .font(.system(.title3, design: .monospaced).weight(.semibold))
+                        .textSelection(.enabled)
+                }
+            }
+
             HStack {
+                if let browserURL = progress?.browserURL,
+                   let url = URL(string: browserURL)
+                {
+                    Button("Open Browser") {
+                        openedBrowserURL = browserURL
+                        NSWorkspace.shared.open(url)
+                    }
+                }
                 Spacer()
                 Button("Cancel") {
                     Task {
@@ -36,7 +54,7 @@ struct ReviewMonitorAuthSheet: View {
                 return
             }
             openedBrowserURL = browserURL
-            openURL(url)
+            NSWorkspace.shared.open(url)
         }
     }
 

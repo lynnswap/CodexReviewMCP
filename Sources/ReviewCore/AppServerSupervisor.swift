@@ -10,7 +10,7 @@ import SystemPackage
 
 package protocol AppServerManaging: Sendable {
     func prepare() async throws -> AppServerRuntimeState
-    func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport
+    func checkoutTransport(sessionID: String) async throws -> any AppServerSessionTransport
     func currentRuntimeState() async -> AppServerRuntimeState?
     func diagnosticLineStream() async -> AsyncStreamSubscription<String>
     func diagnosticsTail() async -> String
@@ -36,11 +36,9 @@ package actor AppServerSupervisor: AppServerManaging {
 
     private struct RunningProcess: Sendable {
         var launchID: UUID
-        var websocketURL: URL
-        var authToken: String
         var runtimeState: AppServerRuntimeState
         var execution: Execution
-        var tokenFileURL: URL
+        var connection: AppServerSharedTransportConnection
         var isolatedCodexHomeURL: URL?
     }
 
@@ -56,7 +54,6 @@ package actor AppServerSupervisor: AppServerManaging {
     private var pendingStandardErrorBytes = Data()
     private var trailingStandardErrorFragment = ""
     private var startingRuntimeState: AppServerRuntimeState?
-    private var discoveredStartingWebSocketURL: URL?
     private var lifetimeTask: Task<Void, Never>?
     private var diagnosticSubscribers: [UUID: AsyncStream<String>.Continuation] = [:]
 
@@ -68,16 +65,9 @@ package actor AppServerSupervisor: AppServerManaging {
         try await ensureRunning().runtimeState
     }
 
-    package func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport {
+    package func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
         let running = try await ensureRunning()
-        _ = sessionID
-        return try await AppServerWebSocketSessionTransport.connect(
-            websocketURL: running.websocketURL,
-            authToken: running.authToken,
-            clientName: codexReviewMCPName,
-            clientTitle: "Codex Review MCP",
-            clientVersion: codexReviewMCPVersion
-        )
+        return await running.connection.checkoutTransport()
     }
 
     package func currentRuntimeState() async -> AppServerRuntimeState? {
@@ -118,42 +108,8 @@ package actor AppServerSupervisor: AppServerManaging {
         case .running(let current):
             state = .stopped
             finishDiagnosticSubscribers()
-            let processIdentity = ProcessIdentity(
-                pid: pid_t(current.runtimeState.pid),
-                startTime: current.runtimeState.startTime
-            )
-            let processGroupIdentity = ProcessIdentity(
-                pid: pid_t(current.runtimeState.processGroupLeaderPID),
-                startTime: current.runtimeState.processGroupLeaderStartTime
-            )
-            let childGroupIdentities = descendantProcessGroupIdentities(
-                rootPID: processIdentity.pid,
-                excludingGroupLeaderPID: processGroupIdentity.pid
-            )
-            try? current.execution.send(signal: .terminate, toProcessGroup: false)
-            try? current.execution.send(signal: .terminate, toProcessGroup: true)
-            signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
-            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-            while ContinuousClock.now < deadline {
-                if isMatchingProcessIdentity(processIdentity) == false,
-                   isSupervisorProcessGroupAlive(processGroupIdentity) == false,
-                   hasLiveSupervisorChildGroups(childGroupIdentities) == false
-                {
-                    break
-                }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            if isMatchingProcessIdentity(processIdentity)
-                || isSupervisorProcessGroupAlive(processGroupIdentity)
-                || hasLiveSupervisorChildGroups(childGroupIdentities)
-            {
-                try? current.execution.send(signal: .kill, toProcessGroup: false)
-                try? current.execution.send(signal: .kill, toProcessGroup: true)
-                signalSupervisorChildGroups(childGroupIdentities, signal: SIGKILL)
-            }
-            await lifetimeTask?.value
+            await terminateRunningProcess(current)
             lifetimeTask = nil
-            try? FileManager.default.removeItem(at: current.tokenFileURL)
             if let isolatedCodexHomeURL = current.isolatedCodexHomeURL {
                 try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
             }
@@ -188,10 +144,14 @@ package actor AppServerSupervisor: AppServerManaging {
                 pid: pid_t(running.runtimeState.pid),
                 startTime: running.runtimeState.startTime
             )
-            if isMatchingProcessIdentity(identity) {
+            if isMatchingProcessIdentity(identity),
+               await running.connection.isClosed() == false
+            {
                 return running
             }
             state = .stopped
+            finishDiagnosticSubscribers()
+            await terminateRunningProcess(running)
             return try await ensureRunning()
         case .starting:
             return try await waitForRunning()
@@ -245,39 +205,24 @@ package actor AppServerSupervisor: AppServerManaging {
         stderrLines.removeAll(keepingCapacity: false)
         pendingStandardErrorBytes.removeAll(keepingCapacity: false)
         trailingStandardErrorFragment = ""
-        discoveredStartingWebSocketURL = nil
-        let tokenFileURL = ReviewHomePaths.appServerWebSocketTokenFileURL(
-            launchID: launchID,
-            environment: configuration.environment
-        )
 
         do {
-            let authToken = UUID().uuidString
             var launchedProcessIdentity: ProcessIdentity?
-            let requestedWebSocketURL = try makeLoopbackWebSocketListenURL()
             let isolatedCodexHomeURL = try prepareIsolatedCodexHome(
                 launchID: launchID,
                 environment: self.configuration.environment
             )
-            try FileManager.default.createDirectory(
-                at: tokenFileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try authToken.write(to: tokenFileURL, atomically: true, encoding: .utf8)
 
             let configuration = try makeAppServerConfiguration(
                 codexCommand: self.configuration.codexCommand,
                 environment: self.configuration.environment,
-                listenAddress: requestedWebSocketURL.absoluteString,
-                tokenFileURL: tokenFileURL,
                 isolatedCodexHomeURL: isolatedCodexHomeURL
             )
 
             let outcome = try await Subprocess.run(
                 configuration,
-                output: .discarded,
                 preferredBufferSize: 4096
-            ) { execution, errorSequence in
+            ) { execution, inputWriter, outputSequence, errorSequence in
                 let pid = execution.processIdentifier.value
                 guard let startTime = processStartTime(of: pid) else {
                     throw ReviewError.spawnFailed("app-server started without a readable process start time.")
@@ -293,35 +238,50 @@ package actor AppServerSupervisor: AppServerManaging {
                 )
                 self.noteStartingRuntimeState(runtimeState)
 
+                let connection = AppServerSharedTransportConnection(
+                    sendMessage: { message in
+                        _ = try await inputWriter.write(message, using: UTF8.self)
+                    },
+                    closeInput: {
+                        try? await inputWriter.finish()
+                    }
+                )
+                let stdoutTask = self.startCapturingStandardOutput(
+                    from: outputSequence,
+                    connection: connection
+                )
                 let stderrTask = self.startCapturingStandardError(from: errorSequence)
                 do {
-                    let websocketURL = try await self.waitUntilReady(
-                        processIdentity: .init(pid: pid, startTime: startTime),
-                        requestedWebSocketURL: requestedWebSocketURL
+                    try await self.waitUntilInitialized(
+                        connection: connection,
+                        processIdentity: .init(pid: pid, startTime: startTime)
                     )
 
                     self.finishStarting(
                         launchID: launchID,
                         .success(
-                        RunningProcess(
-                            launchID: launchID,
-                            websocketURL: websocketURL,
-                            authToken: authToken,
-                            runtimeState: runtimeState,
-                            execution: execution,
-                            tokenFileURL: tokenFileURL,
-                            isolatedCodexHomeURL: isolatedCodexHomeURL
+                            RunningProcess(
+                                launchID: launchID,
+                                runtimeState: runtimeState,
+                                execution: execution,
+                                connection: connection,
+                                isolatedCodexHomeURL: isolatedCodexHomeURL
+                            )
                         )
-                    ))
+                    )
 
                     let identity = ProcessIdentity(pid: pid, startTime: startTime)
                     while isMatchingProcessIdentity(identity) {
                         try? await Task.sleep(for: .milliseconds(100))
                     }
+                    _ = await stdoutTask.value
                     _ = await stderrTask.value
                     return ()
                 } catch {
+                    await connection.shutdown()
+                    stdoutTask.cancel()
                     stderrTask.cancel()
+                    _ = await stdoutTask.value
                     _ = await stderrTask.value
                     await self.terminateStartingProcess(runtimeState: runtimeState)
                     throw error
@@ -334,7 +294,6 @@ package actor AppServerSupervisor: AppServerManaging {
                 handleProcessExit(
                     launchID: launchID,
                     processIdentity: launchedProcessIdentity,
-                    tokenFileURL: tokenFileURL,
                     isolatedCodexHomeURL: isolatedCodexHomeURL
                 )
             }
@@ -347,13 +306,28 @@ package actor AppServerSupervisor: AppServerManaging {
             if currentLaunchID == launchID {
                 lifetimeTask = nil
             }
-            try? FileManager.default.removeItem(at: tokenFileURL)
             try? FileManager.default.removeItem(
                 at: ReviewHomePaths.appServerCodexHomeURL(
                     launchID: launchID,
                     environment: configuration.environment
                 )
             )
+        }
+    }
+
+    private func startCapturingStandardOutput(
+        from sequence: AsyncBufferSequence,
+        connection: AppServerSharedTransportConnection
+    ) -> Task<Void, Never> {
+        Task.detached {
+            do {
+                for try await chunk in sequence {
+                    await connection.receive(Data(buffer: chunk))
+                }
+                await connection.finishReceiving(error: nil)
+            } catch {
+                await connection.finishReceiving(error: error)
+            }
         }
     }
 
@@ -416,10 +390,6 @@ package actor AppServerSupervisor: AppServerManaging {
 
     private func appendStandardErrorLines(_ lines: [String]) {
         stderrLines.append(contentsOf: lines)
-        discoveredStartingWebSocketURL = nextDiscoveredWebSocketURL(
-            cached: discoveredStartingWebSocketURL,
-            stderrLines: lines
-        )
         for line in lines {
             for continuation in diagnosticSubscribers.values {
                 continuation.yield(line)
@@ -430,38 +400,41 @@ package actor AppServerSupervisor: AppServerManaging {
         }
     }
 
-    private func waitUntilReady(
-        processIdentity: ProcessIdentity,
-        requestedWebSocketURL: URL
-    ) async throws -> URL {
-
-        let deadline = ContinuousClock.now.advanced(by: configuration.startupTimeout)
-        let session = URLSession(configuration: .ephemeral)
-        defer { session.invalidateAndCancel() }
-        let readyURL = try makeReadyURL(from: requestedWebSocketURL)
-
-        while ContinuousClock.now < deadline {
-            try Task.checkCancellation()
-
+    private func waitUntilInitialized(
+        connection: AppServerSharedTransportConnection,
+        processIdentity: ProcessIdentity
+    ) async throws {
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    _ = try await connection.initialize(
+                        clientName: codexReviewMCPName,
+                        clientTitle: "Codex Review MCP",
+                        clientVersion: codexReviewMCPVersion
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(for: self.configuration.startupTimeout)
+                    throw ReviewError.spawnFailed("timed out waiting for app-server initialization.")
+                }
+                defer { group.cancelAll() }
+                _ = try await group.next()
+            }
+        } catch let error as ReviewError {
             if isMatchingProcessIdentity(processIdentity) == false {
                 let diagnostics = await diagnosticsTail()
                 let suffix = diagnostics.nilIfEmpty.map { ": \($0)" } ?? ""
                 throw ReviewError.spawnFailed("app-server exited before becoming ready\(suffix)")
             }
-
-            var request = URLRequest(url: readyURL)
-            request.httpMethod = "GET"
-            request.timeoutInterval = 1
-            if let (_, response) = try? await session.data(for: request),
-               let httpResponse = response as? HTTPURLResponse,
-               httpResponse.statusCode == 200
-            {
-                return requestedWebSocketURL
+            throw error
+        } catch {
+            if isMatchingProcessIdentity(processIdentity) == false {
+                let diagnostics = await diagnosticsTail()
+                let suffix = diagnostics.nilIfEmpty.map { ": \($0)" } ?? ""
+                throw ReviewError.spawnFailed("app-server exited before becoming ready\(suffix)")
             }
-            try await Task.sleep(for: .milliseconds(100))
+            throw ReviewError.spawnFailed(error.localizedDescription)
         }
-
-        throw ReviewError.spawnFailed("timed out waiting for app-server readiness.")
     }
 
     private var currentLaunchID: UUID? {
@@ -478,7 +451,6 @@ package actor AppServerSupervisor: AppServerManaging {
     private func handleProcessExit(
         launchID: UUID,
         processIdentity: ProcessIdentity,
-        tokenFileURL: URL,
         isolatedCodexHomeURL: URL?
     ) {
         startingRuntimeState = nil
@@ -490,9 +462,7 @@ package actor AppServerSupervisor: AppServerManaging {
             state = .stopped
             lifetimeTask = nil
         }
-        discoveredStartingWebSocketURL = nil
         finishDiagnosticSubscribers()
-        try? FileManager.default.removeItem(at: tokenFileURL)
         if let isolatedCodexHomeURL {
             try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
         }
@@ -553,6 +523,44 @@ package actor AppServerSupervisor: AppServerManaging {
             _ = killpg(processGroupIdentity.pid, SIGKILL)
         }
     }
+
+    private func terminateRunningProcess(_ current: RunningProcess) async {
+        await current.connection.shutdown()
+        let processIdentity = ProcessIdentity(
+            pid: pid_t(current.runtimeState.pid),
+            startTime: current.runtimeState.startTime
+        )
+        let processGroupIdentity = ProcessIdentity(
+            pid: pid_t(current.runtimeState.processGroupLeaderPID),
+            startTime: current.runtimeState.processGroupLeaderStartTime
+        )
+        let childGroupIdentities = descendantProcessGroupIdentities(
+            rootPID: processIdentity.pid,
+            excludingGroupLeaderPID: processGroupIdentity.pid
+        )
+        try? current.execution.send(signal: .terminate, toProcessGroup: false)
+        try? current.execution.send(signal: .terminate, toProcessGroup: true)
+        signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < deadline {
+            if isMatchingProcessIdentity(processIdentity) == false,
+               isSupervisorProcessGroupAlive(processGroupIdentity) == false,
+               hasLiveSupervisorChildGroups(childGroupIdentities) == false
+            {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        if isMatchingProcessIdentity(processIdentity)
+            || isSupervisorProcessGroupAlive(processGroupIdentity)
+            || hasLiveSupervisorChildGroups(childGroupIdentities)
+        {
+            try? current.execution.send(signal: .kill, toProcessGroup: false)
+            try? current.execution.send(signal: .kill, toProcessGroup: true)
+            signalSupervisorChildGroups(childGroupIdentities, signal: SIGKILL)
+        }
+        await lifetimeTask?.value
+    }
 }
 
 package func splitStandardErrorChunk(
@@ -575,8 +583,6 @@ package func splitStandardErrorChunk(
 private func makeAppServerConfiguration(
     codexCommand: String,
     environment: [String: String],
-    listenAddress: String,
-    tokenFileURL: URL,
     isolatedCodexHomeURL: URL?
 ) throws -> Configuration {
     guard let resolvedExecutable = resolveCodexCommand(
@@ -608,9 +614,7 @@ private func makeAppServerConfiguration(
         executable: .path(FilePath(resolvedExecutable)),
         arguments: [
             "app-server",
-            "--listen", listenAddress,
-            "--ws-auth", "capability-token",
-            "--ws-token-file", tokenFileURL.path
+            "--listen", "stdio://"
         ],
         environment: subprocessEnvironment,
         workingDirectory: FilePath(FileManager.default.currentDirectoryPath),
@@ -686,121 +690,6 @@ package func isolatedCodexHomeConfigText(from configText: String) -> String {
     }
 
     return keptLines.joined(separator: "\n")
-}
-
-private func makeReadyURL(from websocketURL: URL) throws -> URL {
-    guard var components = URLComponents(url: websocketURL, resolvingAgainstBaseURL: false) else {
-        throw ReviewError.spawnFailed("failed to construct readyz URL for app-server startup.")
-    }
-    components.scheme = "http"
-    components.path = "/readyz"
-    guard let url = components.url else {
-        throw ReviewError.spawnFailed("failed to construct readyz URL for app-server startup.")
-    }
-    return url
-}
-
-private func stripANSIEscapeCodes(_ text: String) -> String {
-    var stripped = String()
-    var iterator = text.makeIterator()
-    while let character = iterator.next() {
-        if character == "\u{1b}", iterator.next() == "[" {
-            while let next = iterator.next() {
-                if ("@"..."~").contains(next) {
-                    break
-                }
-            }
-            continue
-        }
-        stripped.append(character)
-    }
-    return stripped
-}
-
-package func makeLoopbackWebSocketListenURL() throws -> URL {
-    let port = try reserveLoopbackPort()
-    guard let url = URL(string: "ws://127.0.0.1:\(port)") else {
-        throw ReviewError.spawnFailed("failed to construct websocket listen URL.")
-    }
-    return url
-}
-
-private func reserveLoopbackPort() throws -> Int {
-    let descriptor = socket(AF_INET, SOCK_STREAM, 0)
-    guard descriptor >= 0 else {
-        throw ReviewError.spawnFailed("failed to reserve a loopback port.")
-    }
-    defer { close(descriptor) }
-
-    var reuseAddress: Int32 = 1
-    _ = setsockopt(
-        descriptor,
-        SOL_SOCKET,
-        SO_REUSEADDR,
-        &reuseAddress,
-        socklen_t(MemoryLayout<Int32>.size)
-    )
-
-    var address = sockaddr_in()
-    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-    address.sin_family = sa_family_t(AF_INET)
-    address.sin_port = in_port_t(0).bigEndian
-    address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
-
-    let bindResult = withUnsafePointer(to: &address) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-        }
-    }
-    guard bindResult == 0 else {
-        throw ReviewError.spawnFailed("failed to reserve a loopback port.")
-    }
-
-    var boundAddress = sockaddr_in()
-    var boundAddressLength = socklen_t(MemoryLayout<sockaddr_in>.size)
-    let nameResult = withUnsafeMutablePointer(to: &boundAddress) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            getsockname(descriptor, $0, &boundAddressLength)
-        }
-    }
-    guard nameResult == 0 else {
-        throw ReviewError.spawnFailed("failed to query reserved loopback port.")
-    }
-
-    let port = Int(UInt16(bigEndian: boundAddress.sin_port))
-    guard port > 0 else {
-        throw ReviewError.spawnFailed("failed to reserve a non-zero loopback port.")
-    }
-    return port
-}
-
-package func discoveredWebSocketURL(from stderrLines: [String]) -> URL? {
-    let bannerPatterns = [
-        #"listening on:\s+(ws://127\.0\.0\.1:\d+)"#,
-        #"app-server websocket listening on\s+(ws://127\.0\.0\.1:\d+)"#,
-    ]
-    for line in stderrLines.reversed() {
-        let stripped = stripANSIEscapeCodes(line)
-        for pattern in bannerPatterns {
-            guard let range = stripped.range(of: pattern, options: .regularExpression) else {
-                continue
-            }
-            let match = String(stripped[range])
-            let urlString = match.split(separator: " ").last.map(String.init) ?? match
-            guard let url = URL(string: urlString) else {
-                continue
-            }
-            guard url.port != 0 else {
-                continue
-            }
-            return url
-        }
-    }
-    return nil
-}
-
-package func nextDiscoveredWebSocketURL(cached: URL?, stderrLines: [String]) -> URL? {
-    cached ?? discoveredWebSocketURL(from: stderrLines)
 }
 
 private func isSupervisorProcessGroupAlive(_ identity: ProcessIdentity) -> Bool {

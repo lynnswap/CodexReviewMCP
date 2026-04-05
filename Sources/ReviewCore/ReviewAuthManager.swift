@@ -77,13 +77,13 @@ package actor ReviewAuthManager {
         }
         try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
 
-        let loginParams = AppServerLoginAccountParams.chatGPT
-        let session = try await makeSession()
-        activeSession = session
-        activeLoginID = nil
+        let loginParams = AppServerLoginAccountParams.chatGPTDeviceCode
+        await onUpdate(Self.initialProgressState())
 
         do {
-            await onUpdate(Self.initialProgressState())
+            let session = try await makeSession()
+            activeSession = session
+            activeLoginID = nil
             let response = try await session.startLogin(loginParams)
             if let loginID = response.loginID {
                 activeLoginID = loginID
@@ -92,7 +92,7 @@ package actor ReviewAuthManager {
 
             let finalState: CodexReviewAuthModel.State
             switch response {
-            case .chatGPT(let loginID, _):
+            case .chatGPTDeviceCode(let loginID, _, _):
                 finalState = try await waitForAuthenticationCompletion(
                     session: session,
                     loginID: loginID,
@@ -250,12 +250,13 @@ package actor ReviewAuthManager {
         for response: AppServerLoginAccountResponse
     ) -> CodexReviewAuthModel.State {
         switch response {
-        case .chatGPT(_, let authURL):
+        case .chatGPTDeviceCode(_, let verificationURL, let userCode):
             return .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
-                    detail: "Finish signing in via your browser.",
-                    browserURL: authURL
+                    detail: "Open the browser and enter the code below.",
+                    browserURL: verificationURL,
+                    userCode: userCode
                 )
             )
         }
@@ -280,24 +281,27 @@ package func makeLiveReviewAuthSession(
 }
 
 package actor ReviewAuthAppServerSession: ReviewAuthSession {
+    private let connection: AppServerSharedTransportConnection
     private let transport: any AppServerSessionTransport
     private let process: Process
+    private let stdoutTask: Task<Void, Never>
     private let stderrTask: Task<Void, Never>
-    private let tokenFileURL: URL
     private let diagnostics: ReviewAuthDiagnosticsBuffer
     private var isClosed = false
 
     private init(
+        connection: AppServerSharedTransportConnection,
         transport: any AppServerSessionTransport,
         process: Process,
+        stdoutTask: Task<Void, Never>,
         stderrTask: Task<Void, Never>,
-        tokenFileURL: URL,
         diagnostics: ReviewAuthDiagnosticsBuffer
     ) {
+        self.connection = connection
         self.transport = transport
         self.process = process
+        self.stdoutTask = stdoutTask
         self.stderrTask = stderrTask
-        self.tokenFileURL = tokenFileURL
         self.diagnostics = diagnostics
     }
 
@@ -306,40 +310,46 @@ package actor ReviewAuthAppServerSession: ReviewAuthSession {
     ) async throws -> ReviewAuthAppServerSession {
         try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
 
-        let tokenFileURL = ReviewHomePaths.appServerWebSocketTokenFileURL(
-            launchID: UUID(),
-            environment: configuration.environment
-        )
-        let authToken = UUID().uuidString
-        try Data(authToken.utf8).write(to: tokenFileURL, options: .atomic)
-
         let command = try resolvedCodexCommand(configuration: configuration)
-        let websocketURL = try makeLoopbackWebSocketListenURL()
         let diagnostics = ReviewAuthDiagnosticsBuffer()
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command)
         process.arguments = [
             "app-server",
-            "--listen", websocketURL.absoluteString,
-            "--ws-auth", "capability-token",
-            "--ws-token-file", tokenFileURL.path,
+            "--listen", "stdio://",
         ]
         process.environment = dedicatedEnvironment(configuration: configuration)
         process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = FileHandle.nullDevice
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
         do {
             try process.run()
         } catch {
-            try? FileManager.default.removeItem(at: tokenFileURL)
             throw ReviewAuthError.loginFailed(
                 "Failed to start authentication service: \(error.localizedDescription)"
             )
         }
 
+        let connection = AppServerSharedTransportConnection(
+            sendMessage: { message in
+                guard let data = message.data(using: .utf8) else {
+                    throw ReviewAuthError.loginFailed("Failed to encode authentication transport payload.")
+                }
+                try stdinPipe.fileHandleForWriting.write(contentsOf: data)
+            },
+            closeInput: {
+                try? stdinPipe.fileHandleForWriting.close()
+            }
+        )
+        let stdoutTask = startReadingAuthStdout(
+            handle: stdoutPipe.fileHandleForReading,
+            connection: connection
+        )
         let stderrTask = Task.detached {
             var buffer = Data()
             do {
@@ -367,32 +377,28 @@ package actor ReviewAuthAppServerSession: ReviewAuthSession {
         }
 
         do {
-            try await waitUntilReady(
-                process: process,
-                websocketURL: websocketURL,
+            try await runAuthStartupHandshake(
+                connection: connection,
                 diagnostics: diagnostics,
+                process: process,
                 timeout: configuration.startupTimeout
             )
-            let transport = try await AppServerWebSocketSessionTransport.connect(
-                websocketURL: websocketURL,
-                authToken: authToken,
-                clientName: codexReviewMCPName,
-                clientTitle: "Codex Review MCP Login",
-                clientVersion: codexReviewMCPVersion
-            )
+            let transport = await connection.checkoutTransport()
             return ReviewAuthAppServerSession(
+                connection: connection,
                 transport: transport,
                 process: process,
+                stdoutTask: stdoutTask,
                 stderrTask: stderrTask,
-                tokenFileURL: tokenFileURL,
                 diagnostics: diagnostics
             )
         } catch {
             let session = ReviewAuthAppServerSession(
+                connection: connection,
                 transport: ClosedAuthTransport(),
                 process: process,
+                stdoutTask: stdoutTask,
                 stderrTask: stderrTask,
-                tokenFileURL: tokenFileURL,
                 diagnostics: diagnostics
             )
             await session.close()
@@ -442,6 +448,7 @@ package actor ReviewAuthAppServerSession: ReviewAuthSession {
         }
         isClosed = true
         await transport.close()
+        await connection.shutdown()
         process.terminate()
         if process.isRunning {
             do {
@@ -458,9 +465,10 @@ package actor ReviewAuthAppServerSession: ReviewAuthSession {
         if process.isRunning {
             process.waitUntilExit()
         }
+        stdoutTask.cancel()
         stderrTask.cancel()
+        _ = await stdoutTask.result
         _ = await stderrTask.result
-        try? FileManager.default.removeItem(at: tokenFileURL)
     }
 }
 
@@ -557,48 +565,55 @@ private func resolvedCodexCommand(
     return command
 }
 
-private func waitUntilReady(
-    process: Process,
-    websocketURL: URL,
-    diagnostics: ReviewAuthDiagnosticsBuffer,
-    timeout: Duration
-) async throws {
-    let readyURL = try authReadyURL(from: websocketURL)
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    let session = URLSession(configuration: .ephemeral)
-    defer { session.invalidateAndCancel() }
-
-    while ContinuousClock.now < deadline {
-        if process.isRunning == false {
-            let suffix = diagnostics.snapshot().joined(separator: "\n").nilIfEmpty.map { ": \($0)" } ?? ""
-            throw ReviewAuthError.loginFailed("Authentication service exited before becoming ready\(suffix)")
+private func startReadingAuthStdout(
+    handle: FileHandle,
+    connection: AppServerSharedTransportConnection
+) -> Task<Void, Never> {
+    Task.detached {
+        do {
+            for try await byte in handle.bytes {
+                await connection.receive(Data([byte]))
+            }
+            await connection.finishReceiving(error: nil)
+        } catch {
+            await connection.finishReceiving(error: error)
         }
-
-        var request = URLRequest(url: readyURL)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 1
-        if let (_, response) = try? await session.data(for: request),
-           let httpResponse = response as? HTTPURLResponse,
-           httpResponse.statusCode == 200
-        {
-            return
-        }
-        try await Task.sleep(for: .milliseconds(100))
     }
-
-    throw ReviewAuthError.loginFailed("Timed out waiting for authentication service to become ready.")
 }
 
-private func authReadyURL(from websocketURL: URL) throws -> URL {
-    guard var components = URLComponents(url: websocketURL, resolvingAgainstBaseURL: false) else {
-        throw ReviewAuthError.loginFailed("Failed to construct readyz URL.")
+private func runAuthStartupHandshake(
+    connection: AppServerSharedTransportConnection,
+    diagnostics: ReviewAuthDiagnosticsBuffer,
+    process: Process,
+    timeout: Duration
+) async throws {
+    do {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                _ = try await connection.initialize(
+                    clientName: codexReviewMCPName,
+                    clientTitle: "Codex Review MCP Login",
+                    clientVersion: codexReviewMCPVersion
+                )
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw ReviewAuthError.loginFailed("Timed out waiting for authentication service to become ready.")
+            }
+            defer { group.cancelAll() }
+            _ = try await group.next()
+        }
+    } catch let error as ReviewAuthError {
+        throw error
+    } catch {
+        if process.isRunning == false {
+            let suffix = diagnostics.snapshot().joined(separator: "\n").nilIfEmpty.map { ": \($0)" } ?? ""
+            throw ReviewAuthError.loginFailed(
+                "Authentication service exited before becoming ready\(suffix)"
+            )
+        }
+        throw ReviewAuthError.loginFailed(error.localizedDescription)
     }
-    components.scheme = "http"
-    components.path = "/readyz"
-    guard let url = components.url else {
-        throw ReviewAuthError.loginFailed("Failed to construct readyz URL.")
-    }
-    return url
 }
 
 package func reviewRequiresAuthentication(from message: String?) -> Bool {

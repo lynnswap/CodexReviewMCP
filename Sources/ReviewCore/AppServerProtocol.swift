@@ -324,13 +324,13 @@ package struct AppServerAccountReadResponse: Decodable, Sendable, Equatable {
 }
 
 package enum AppServerLoginAccountParams: Encodable, Sendable, Equatable {
-    case chatGPT
+    case chatGPTDeviceCode
 
     package func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .chatGPT:
-            try container.encode("chatgpt", forKey: .type)
+        case .chatGPTDeviceCode:
+            try container.encode("chatgptDeviceCode", forKey: .type)
         }
     }
 
@@ -340,15 +340,16 @@ package enum AppServerLoginAccountParams: Encodable, Sendable, Equatable {
 }
 
 package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
-    case chatGPT(loginID: String, authURL: String)
+    case chatGPTDeviceCode(loginID: String, verificationURL: String, userCode: String)
 
     package init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(String.self, forKey: .type) {
-        case "chatgpt":
-            self = .chatGPT(
+        case "chatgptDeviceCode":
+            self = .chatGPTDeviceCode(
                 loginID: try container.decode(String.self, forKey: .loginID),
-                authURL: try container.decode(String.self, forKey: .authURL)
+                verificationURL: try container.decode(String.self, forKey: .verificationURL),
+                userCode: try container.decode(String.self, forKey: .userCode)
             )
         default:
             throw DecodingError.dataCorruptedError(
@@ -361,7 +362,7 @@ package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
 
     package var loginID: String? {
         switch self {
-        case .chatGPT(let loginID, _):
+        case .chatGPTDeviceCode(let loginID, _, _):
             loginID
         }
     }
@@ -369,7 +370,8 @@ package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case type
         case loginID = "loginId"
-        case authURL = "authUrl"
+        case verificationURL = "verificationUrl"
+        case userCode
     }
 }
 
@@ -422,6 +424,20 @@ package struct AppServerThreadUnsubscribeParams: Encodable, Sendable {
 
     package enum CodingKeys: String, CodingKey {
         case threadID = "threadId"
+    }
+}
+
+package enum AppServerThreadUnsubscribeStatus: String, Decodable, Sendable {
+    case unsubscribed
+    case notSubscribed
+    case notLoaded
+}
+
+package struct AppServerThreadUnsubscribeResponse: Decodable, Sendable {
+    package var status: AppServerThreadUnsubscribeStatus
+
+    package init(status: AppServerThreadUnsubscribeStatus) {
+        self.status = status
     }
 }
 

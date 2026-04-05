@@ -51,14 +51,6 @@ package enum ReviewHomePaths {
             .appendingPathComponent("review_mcp_runtime_state.json")
     }
 
-    package static func appServerWebSocketTokenFileURL(
-        launchID: UUID,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> URL {
-        reviewHomeURL(environment: environment)
-            .appendingPathComponent("review_mcp_app_server_ws_token-\(launchID.uuidString)")
-    }
-
     package static func appServerCodexHomeURL(
         launchID: UUID,
         environment: [String: String] = ProcessInfo.processInfo.environment

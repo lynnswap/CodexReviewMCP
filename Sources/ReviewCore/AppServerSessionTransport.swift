@@ -40,80 +40,138 @@ package protocol AppServerSessionTransport: Sendable {
     func close() async
 }
 
-package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
-    private let session: URLSession
-    private let task: URLSessionWebSocketTask
+package actor AppServerSharedTransportConnection {
+    package typealias SendMessage = @Sendable (String) async throws -> Void
+    package typealias CloseInput = @Sendable () async -> Void
+
+    private let sendMessage: SendMessage
+    private let closeInput: CloseInput
     private var initializePayload: AppServerInitializeResponse
+    private var framer = AppServerJSONLFramer()
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private let requestTimeout: Duration = .seconds(30)
     private var nextRequestID = 1
     private var pendingResponses: [AppServerRequestID: CheckedContinuation<Data, Error>] = [:]
     private var notificationSubscribers: [UUID: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation] = [:]
-    private var receiveTask: Task<Void, Never>?
     private var closed = false
     private var disconnected: Error?
 
     package static func connect(
-        websocketURL: URL,
-        authToken: String,
+        sendMessage: @escaping SendMessage,
+        closeInput: @escaping CloseInput = {},
         clientName: String,
         clientTitle: String,
         clientVersion: String
-    ) async throws -> AppServerWebSocketSessionTransport {
-        let configuration = URLSessionConfiguration.ephemeral
-        let session = URLSession(configuration: configuration)
-        var request = URLRequest(url: websocketURL)
-        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
-        let task = session.webSocketTask(with: request)
-        task.resume()
+    ) async throws -> AppServerSharedTransportConnection {
+        let connection = AppServerSharedTransportConnection(
+            sendMessage: sendMessage,
+            closeInput: closeInput,
+            initializePayload: .init(
+                userAgent: nil,
+                codexHome: nil,
+                platformFamily: nil,
+                platformOs: nil
+            )
+        )
+        do {
+            _ = try await connection.initialize(
+                clientName: clientName,
+                clientTitle: clientTitle,
+                clientVersion: clientVersion
+            )
+            return connection
+        } catch {
+            await connection.shutdown()
+            throw error
+        }
+    }
 
-        let initializePayload = AppServerInitializeResponse(
+    package init(
+        sendMessage: @escaping SendMessage,
+        closeInput: @escaping CloseInput,
+        initializePayload: AppServerInitializeResponse = .init(
             userAgent: nil,
             codexHome: nil,
             platformFamily: nil,
             platformOs: nil
         )
-        let transport = AppServerWebSocketSessionTransport(
-            session: session,
-            task: task,
-            initializePayload: initializePayload
-        )
-        do {
-            await transport.startReceiving()
-            let initializeResponse: AppServerInitializeResponse = try await transport.request(
-                method: "initialize",
-                params: AppServerInitializeParams(
-                    clientInfo: .init(
-                        name: clientName,
-                        title: clientTitle,
-                        version: clientVersion
-                    ),
-                    capabilities: .init(experimentalApi: true)
-                ),
-                responseType: AppServerInitializeResponse.self
-            )
-            await transport.storeInitializeResponse(initializeResponse)
-            try await transport.notify(method: "initialized", params: AppServerInitializedParams())
-            return transport
-        } catch {
-            await transport.close()
-            throw error
-        }
-    }
-
-    private init(
-        session: URLSession,
-        task: URLSessionWebSocketTask,
-        initializePayload: AppServerInitializeResponse
     ) {
-        self.session = session
-        self.task = task
+        self.sendMessage = sendMessage
+        self.closeInput = closeInput
         self.initializePayload = initializePayload
     }
 
-    package func initializeResponse() async -> AppServerInitializeResponse {
+    package func initializeResponse() -> AppServerInitializeResponse {
         initializePayload
+    }
+
+    package func initialize(
+        clientName: String,
+        clientTitle: String,
+        clientVersion: String
+    ) async throws -> AppServerInitializeResponse {
+        let initializeResponse: AppServerInitializeResponse = try await request(
+            method: "initialize",
+            params: AppServerInitializeParams(
+                clientInfo: .init(
+                    name: clientName,
+                    title: clientTitle,
+                    version: clientVersion
+                ),
+                capabilities: .init(experimentalApi: true)
+            ),
+            responseType: AppServerInitializeResponse.self
+        )
+        storeInitializeResponse(initializeResponse)
+        try await notify(method: "initialized", params: AppServerInitializedParams())
+        return initializeResponse
+    }
+
+    package func checkoutTransport() -> any AppServerSessionTransport {
+        AppServerStdioTransportLease(connection: self)
+    }
+
+    package func isClosed() -> Bool {
+        closed
+    }
+
+    package func shutdown() async {
+        guard closed == false else {
+            return
+        }
+        closed = true
+        failPendingResponses(with: ReviewError.io("app-server stdio connection closed."))
+        finishNotificationSubscribers(failing: nil)
+        await closeInput()
+    }
+
+    package func receive(_ data: Data) async {
+        guard closed == false else {
+            return
+        }
+        let messages = framer.append(data)
+        for message in messages {
+            await processIncomingMessageData(message)
+        }
+    }
+
+    package func finishReceiving(error: Error?) async {
+        let messages = framer.finish()
+        for message in messages {
+            await processIncomingMessageData(message)
+        }
+
+        guard closed == false else {
+            return
+        }
+
+        let disconnectError: Error = if let error {
+            ReviewError.io("app-server stdio disconnected: \(error.localizedDescription)")
+        } else {
+            ReviewError.io("app-server stdio connection closed.")
+        }
+        handleTransportFailure(disconnectError)
     }
 
     package func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
@@ -121,16 +179,12 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         params: Params,
         responseType: Response.Type
     ) async throws -> Response {
-        if let disconnected {
-            throw disconnected
-        }
-        if closed {
-            throw ReviewError.io("app-server websocket session is closed.")
-        }
+        _ = responseType
+        try throwIfClosed()
 
         let id = AppServerRequestID.integer(nextRequestID)
         nextRequestID += 1
-        appServerTransportDebug("sending websocket request \(id): \(method)")
+        appServerTransportDebug("sending stdio request \(id): \(method)")
         let payload = try encoder.encode(
             AppServerRequestEnvelope(
                 id: id,
@@ -139,15 +193,14 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
             )
         )
 
-        let timeoutError = ReviewError.io("app-server websocket request `\(method)` timed out.")
-        let requestTimeout = self.requestTimeout
-        let timeoutTask = Task { [weak self] in
+        let timeoutError = ReviewError.io("app-server stdio request `\(method)` timed out.")
+        let timeoutTask = Task { [requestTimeout] in
             do {
                 try await Task.sleep(for: requestTimeout)
             } catch {
                 return
             }
-            await self?.failPendingResponseIfPresent(id: id, error: timeoutError)
+            self.failPendingResponseIfPresent(id: id, error: timeoutError)
         }
         defer { timeoutTask.cancel() }
 
@@ -156,7 +209,7 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
                 pendingResponses[id] = continuation
                 Task {
                     do {
-                        try await self.send(payload)
+                        try await self.sendPayload(payload)
                     } catch {
                         self.failPendingResponseIfPresent(id: id, error: error)
                     }
@@ -167,27 +220,23 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
                 await self.failPendingResponseIfPresent(id: id, error: CancellationError())
             }
         }
+
         return try decoder.decode(AppServerResponseEnvelope<Response>.self, from: responseData).result
     }
 
     package func notify<Params: Encodable & Sendable>(method: String, params: Params) async throws {
-        if let disconnected {
-            throw disconnected
-        }
-        if closed {
-            throw ReviewError.io("app-server websocket session is closed.")
-        }
-        appServerTransportDebug("sending websocket notification: \(method)")
+        try throwIfClosed()
+        appServerTransportDebug("sending stdio notification: \(method)")
         let payload = try encoder.encode(
             AppServerOutgoingNotificationEnvelope(
                 method: method,
                 params: params
             )
         )
-        try await send(payload)
+        try await sendPayload(payload)
     }
 
-    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    package func notificationStream() -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
         let disconnected = self.disconnected
         let closed = self.closed
         var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation!
@@ -212,79 +261,47 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         }
         return .init(
             stream: stream,
-            cancel: { [weak self] in
-                await self?.cancelNotificationSubscriber(id: subscriberID)
+            cancel: { [self] in
+                await self.cancelNotificationSubscriber(id: subscriberID)
             }
         )
-    }
-
-    package func isClosed() async -> Bool {
-        closed
-    }
-
-    package func close() async {
-        guard closed == false else {
-            return
-        }
-        closed = true
-        finishNotificationSubscribers(failing: nil)
-        receiveTask?.cancel()
-        receiveTask = nil
-        failPendingResponses(with: ReviewError.io("app-server websocket session closed."))
-        task.cancel(with: .normalClosure, reason: nil)
-        session.invalidateAndCancel()
     }
 
     private func storeInitializeResponse(_ response: AppServerInitializeResponse) {
         initializePayload = response
     }
 
-    private func startReceiving() {
-        guard receiveTask == nil else {
-            return
+    private func throwIfClosed() throws {
+        if let disconnected {
+            throw disconnected
         }
-        receiveTask = Task { [weak self] in
-            guard let self else { return }
-            await self.receiveLoop()
-        }
-    }
-
-    private func receiveLoop() async {
-        while Task.isCancelled == false {
-            do {
-                let message = try await task.receive()
-                switch message {
-                case .string(let text):
-                    await processIncomingText(text)
-                case .data(let data):
-                    await processIncomingText(String(decoding: data, as: UTF8.self))
-                @unknown default:
-                    continue
-                }
-            } catch {
-                if closed {
-                    return
-                }
-                let disconnectError = ReviewError.io("app-server websocket disconnected: \(error.localizedDescription)")
-                closed = true
-                disconnected = disconnectError
-                failPendingResponses(with: disconnectError)
-                finishNotificationSubscribers(failing: disconnectError)
-                return
-            }
+        if closed {
+            throw ReviewError.io("app-server stdio connection is closed.")
         }
     }
 
-    private func processIncomingText(_ text: String) async {
-        let data = Data(text.utf8)
+    private func sendPayload(_ data: Data) async throws {
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw ReviewError.io("failed to encode stdio payload as UTF-8 text.")
+        }
+        do {
+            try await sendMessage(text + "\n")
+        } catch {
+            let disconnectError = ReviewError.io("app-server stdio disconnected: \(error.localizedDescription)")
+            handleTransportFailure(disconnectError)
+            throw disconnectError
+        }
+    }
+
+    private func processIncomingMessageData(_ data: Data) async {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            appServerTransportDebug("non-JSON websocket payload: \(String(text.prefix(400)))")
+            appServerTransportDebug("non-JSON stdio payload: \(String(decoding: data.prefix(400), as: UTF8.self))")
             return
         }
 
         if let idObject = object["id"], let requestID = AppServerRequestID(jsonObject: idObject) {
             if let method = object["method"] as? String {
-                appServerTransportDebug("server request over websocket: \(method)")
+                appServerTransportDebug("server request over stdio: \(method)")
                 await rejectServerRequest(id: requestID, method: method)
                 return
             }
@@ -302,23 +319,16 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         }
 
         guard let method = object["method"] as? String else {
-            appServerTransportDebug("websocket notification missing method: \(String(text.prefix(400)))")
+            appServerTransportDebug("stdio notification missing method: \(String(decoding: data.prefix(400), as: UTF8.self))")
             return
         }
         let notification = decodeNotification(method: method, data: data)
         if case .ignored = notification {
-            appServerTransportDebug("ignored websocket notification \(method): \(String(text.prefix(400)))")
+            appServerTransportDebug("ignored stdio notification \(method)")
         } else {
-            appServerTransportDebug("websocket notification \(method)")
+            appServerTransportDebug("stdio notification \(method)")
             broadcastNotification(notification)
         }
-    }
-
-    private func send(_ data: Data) async throws {
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw ReviewError.io("failed to encode websocket payload as UTF-8 text.")
-        }
-        try await task.send(.string(text))
     }
 
     private func rejectServerRequest(id: AppServerRequestID, method: String) async {
@@ -332,7 +342,10 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
             return
         }
-        try? await send(data)
+        do {
+            try await sendPayload(data)
+        } catch {
+        }
     }
 
     private func parseResponseError(from object: [String: Any]) -> AppServerResponseError? {
@@ -343,6 +356,16 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
             ?? (error["code"] as? NSNumber)?.intValue
         let message = (error["message"] as? String)?.nilIfEmpty ?? "app-server request failed."
         return AppServerResponseError(code: code, message: message)
+    }
+
+    private func handleTransportFailure(_ error: Error) {
+        guard closed == false else {
+            return
+        }
+        closed = true
+        disconnected = error
+        failPendingResponses(with: error)
+        finishNotificationSubscribers(failing: error)
     }
 
     private func failPendingResponses(with error: Error) {
@@ -390,6 +413,91 @@ package actor AppServerWebSocketSessionTransport: AppServerSessionTransport {
             return
         }
         continuation.finish()
+    }
+}
+
+package actor AppServerStdioTransportLease: AppServerSessionTransport {
+    private let connection: AppServerSharedTransportConnection
+    private var closed = false
+    private var notificationCancels: [UUID: @Sendable () async -> Void] = [:]
+
+    package init(connection: AppServerSharedTransportConnection) {
+        self.connection = connection
+    }
+
+    package func initializeResponse() async -> AppServerInitializeResponse {
+        await connection.initializeResponse()
+    }
+
+    package func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
+        method: String,
+        params: Params,
+        responseType: Response.Type
+    ) async throws -> Response {
+        try throwIfLeaseClosed()
+        return try await connection.request(
+            method: method,
+            params: params,
+            responseType: responseType
+        )
+    }
+
+    package func notify<Params: Encodable & Sendable>(method: String, params: Params) async throws {
+        try throwIfLeaseClosed()
+        try await connection.notify(method: method, params: params)
+    }
+
+    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        if closed {
+            return .init(
+                stream: .init { continuation in
+                    continuation.finish()
+                },
+                cancel: {}
+            )
+        }
+
+        let token = UUID()
+        let baseSubscription = await connection.notificationStream()
+        notificationCancels[token] = baseSubscription.cancel
+        return .init(
+            stream: baseSubscription.stream,
+            cancel: { [self] in
+                await self.cancelNotificationSubscription(id: token)
+            }
+        )
+    }
+
+    package func isClosed() async -> Bool {
+        if closed {
+            return true
+        }
+        return await connection.isClosed()
+    }
+
+    package func close() async {
+        guard closed == false else {
+            return
+        }
+        closed = true
+        let cancels = Array(notificationCancels.values)
+        notificationCancels.removeAll()
+        for cancel in cancels {
+            await cancel()
+        }
+    }
+
+    private func throwIfLeaseClosed() throws {
+        if closed {
+            throw ReviewError.io("app-server transport lease is closed.")
+        }
+    }
+
+    private func cancelNotificationSubscription(id: UUID) async {
+        guard let cancel = notificationCancels.removeValue(forKey: id) else {
+            return
+        }
+        await cancel()
     }
 }
 
@@ -550,14 +658,14 @@ private func decodeNotification(method: String, data: Data) -> AppServerServerNo
 }
 
 private func appServerTransportDebug(_ message: String) {
-    guard codexReviewMCPWebSocketDebugEnabled else {
+    guard codexReviewMCPTransportDebugEnabled else {
         return
     }
-    fputs("[codex-review-mcp.ws] \(message)\n", stderr)
+    fputs("[codex-review-mcp.transport] \(message)\n", stderr)
 }
 
-private let codexReviewMCPWebSocketDebugEnabled: Bool = {
-    let value = ProcessInfo.processInfo.environment["CODEX_REVIEW_MCP_DEBUG_WS"]?
+private let codexReviewMCPTransportDebugEnabled: Bool = {
+    let value = ProcessInfo.processInfo.environment["CODEX_REVIEW_MCP_DEBUG_TRANSPORT"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .lowercased()
     switch value {

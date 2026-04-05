@@ -51,6 +51,11 @@ private enum AppServerNotificationDeliveryTier: Sendable {
     case auxiliary
 }
 
+private struct AppServerTrackedNotificationDisposition: Sendable {
+    var shouldProcess: Bool
+    var countsAsActivity: Bool
+}
+
 private func codexNotificationDeliveryTier(
     _ notification: AppServerServerNotification
 ) -> AppServerNotificationDeliveryTier {
@@ -355,6 +360,7 @@ package struct AppServerReviewRunner: Sendable {
                 model: effectiveModel
             )
         }
+        await state.noteActiveThread(threadID: threadResponse.thread.id)
         effectiveModel = if reviewSpecificModel != nil {
             resolvedModels.reportedModelBeforeThreadStart
                 ?? threadResponse.model?.nilIfEmpty
@@ -675,8 +681,11 @@ package struct AppServerReviewRunner: Sendable {
 
             switch signal {
             case .notification(let notification):
-                trackedActivity = await state.containsTrackedActivity([notification])
-                await handle(notification: notification, state: state, onEvent: onEvent)
+                let disposition = await state.trackingDisposition(for: notification)
+                trackedActivity = disposition.countsAsActivity
+                if disposition.shouldProcess {
+                    await handle(notification: notification, state: state, onEvent: onEvent)
+                }
             case .diagnosticLine(let line):
                 await onEvent(.rawLine(line))
             case .stateChanged:
@@ -702,7 +711,7 @@ package struct AppServerReviewRunner: Sendable {
             case .interruptResolutionCheck:
                 break
             case .transportClosed:
-                noteTransportDisconnect(reason: "app-server websocket session closed.")
+                noteTransportDisconnect(reason: "app-server stdio transport closed.")
             case .transportDisconnected(let message):
                 noteTransportDisconnect(reason: message)
             }
@@ -719,7 +728,7 @@ package struct AppServerReviewRunner: Sendable {
             {
                 throw ReviewBootstrapFailure(
                     message: bootstrapFailureMessage(
-                        prefix: pendingTransportDisconnectReason ?? "app-server websocket disconnected.",
+                        prefix: pendingTransportDisconnectReason ?? "app-server stdio transport disconnected.",
                         diagnostics: await diagnosticsTail()
                     ),
                     model: effectiveModel
@@ -1143,27 +1152,22 @@ package struct AppServerReviewRunner: Sendable {
         session: any AppServerSessionTransport,
         threadID: String
     ) async {
-        var cleanupSucceeded = true
-        do {
-            let _: AppServerEmptyResponse = try await session.request(
-                method: "thread/backgroundTerminals/clean",
-                params: AppServerThreadBackgroundTerminalsCleanParams(threadID: threadID),
-                responseType: AppServerEmptyResponse.self
-            )
-        } catch {
-            cleanupSucceeded = false
-        }
-        do {
-            let _: AppServerEmptyResponse = try await session.request(
-                method: "thread/unsubscribe",
-                params: AppServerThreadUnsubscribeParams(threadID: threadID),
-                responseType: AppServerEmptyResponse.self
-            )
-        } catch {
-            cleanupSucceeded = false
-        }
-        if cleanupSucceeded == false {
-            await session.close()
+        _ = try? await session.request(
+            method: "thread/backgroundTerminals/clean",
+            params: AppServerThreadBackgroundTerminalsCleanParams(threadID: threadID),
+            responseType: AppServerEmptyResponse.self
+        ) as AppServerEmptyResponse
+
+        let unsubscribeResponse = try? await session.request(
+            method: "thread/unsubscribe",
+            params: AppServerThreadUnsubscribeParams(threadID: threadID),
+            responseType: AppServerThreadUnsubscribeResponse.self
+        ) as AppServerThreadUnsubscribeResponse
+        switch unsubscribeResponse?.status {
+        case .unsubscribed, .notSubscribed, .notLoaded:
+            return
+        case nil:
+            return
         }
     }
 }
@@ -1462,6 +1466,10 @@ private actor AppServerReviewState {
     private var completedReasoningItemIDs: Set<String> = []
     private var toolCallLabelsByItemID: [String: String] = [:]
 
+    func noteActiveThread(threadID: String) {
+        self.threadID = threadID
+    }
+
     func markReviewStarted(
         reviewThreadID: String,
         threadID: String,
@@ -1698,45 +1706,96 @@ private actor AppServerReviewState {
         )
     }
 
-    func containsTrackedActivity(_ notifications: [AppServerServerNotification]) -> Bool {
-        notifications.contains { notification in
-            guard codexNotificationDeliveryTier(notification) != .bestEffort else {
-                return false
-            }
-            switch notification {
-            case .threadStatusChanged(let payload):
-                return isActiveReviewThread(payload.threadID)
-            case .threadClosed(let payload):
-                return isActiveReviewThread(payload.threadID)
-            case .turnStarted(let payload):
-                return isActiveReviewThread(payload.threadID) || isTrackedTurn(payload.turn.id)
-            case .turnCompleted(let payload):
-                return isActiveReviewThread(payload.threadID) || isTrackedTurn(payload.turn.id)
-            case .error(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .itemStarted(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .itemCompleted(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .agentMessageDelta(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .planDelta(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .commandExecutionOutputDelta:
-                return false
-            case .reasoningSummaryTextDelta(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .reasoningSummaryPartAdded(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .reasoningTextDelta(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .mcpToolCallProgress(let payload):
-                return isActiveReviewThread(payload.threadID) && isTrackedTurn(payload.turnID)
-            case .accountLoginCompleted, .accountUpdated:
-                return false
-            case .ignored:
-                return false
-            }
+    func trackingDisposition(
+        for notification: AppServerServerNotification
+    ) -> AppServerTrackedNotificationDisposition {
+        switch notification {
+        case .threadStatusChanged(let payload):
+            let isTracked = isActiveReviewThread(payload.threadID)
+            return .init(
+                shouldProcess: isTracked,
+                countsAsActivity: isTracked
+            )
+        case .threadClosed(let payload):
+            let isTracked = isActiveReviewThread(payload.threadID)
+            return .init(
+                shouldProcess: isTracked,
+                countsAsActivity: isTracked
+            )
+        case .turnStarted(let payload):
+            let isTracked = isTrackedTurnLifecycle(threadID: payload.threadID, turnID: payload.turn.id)
+            return .init(
+                shouldProcess: isTracked,
+                countsAsActivity: isTracked
+            )
+        case .turnCompleted(let payload):
+            let isTracked = isTrackedTurnLifecycle(threadID: payload.threadID, turnID: payload.turn.id)
+            return .init(
+                shouldProcess: isTracked,
+                countsAsActivity: isTracked
+            )
+        case .itemStarted(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: true
+            )
+        case .itemCompleted(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: true
+            )
+        case .agentMessageDelta(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: codexNotificationDeliveryTier(notification) != .bestEffort
+            )
+        case .planDelta(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: codexNotificationDeliveryTier(notification) != .bestEffort
+            )
+        case .commandExecutionOutputDelta(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: false
+            )
+        case .reasoningSummaryTextDelta(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: codexNotificationDeliveryTier(notification) != .bestEffort
+            )
+        case .reasoningSummaryPartAdded(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: codexNotificationDeliveryTier(notification) != .bestEffort
+            )
+        case .reasoningTextDelta(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: codexNotificationDeliveryTier(notification) != .bestEffort
+            )
+        case .mcpToolCallProgress(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: codexNotificationDeliveryTier(notification) != .bestEffort
+            )
+        case .error(let payload):
+            return dispositionForTrackedTurnEvent(
+                threadID: payload.threadID,
+                turnID: payload.turnID,
+                countsAsActivity: codexNotificationDeliveryTier(notification) != .bestEffort
+            )
+        case .accountLoginCompleted, .accountUpdated, .ignored:
+            return .init(shouldProcess: false, countsAsActivity: false)
         }
     }
 
@@ -1778,6 +1837,32 @@ private actor AppServerReviewState {
             return false
         }
         return threadID == activeThreadID
+    }
+
+    private func isTrackedTurnLifecycle(threadID: String, turnID: String) -> Bool {
+        isActiveReviewThread(threadID) || isTrackedTurn(turnID)
+    }
+
+    private func dispositionForTrackedTurnEvent(
+        threadID: String,
+        turnID: String,
+        countsAsActivity: Bool
+    ) -> AppServerTrackedNotificationDisposition {
+        let isTracked = isTrackedTurnEvent(threadID: threadID, turnID: turnID)
+        return .init(
+            shouldProcess: isTracked,
+            countsAsActivity: isTracked && countsAsActivity
+        )
+    }
+
+    private func isTrackedTurnEvent(threadID: String, turnID: String) -> Bool {
+        guard isActiveReviewThread(threadID) else {
+            return false
+        }
+        if let trackedTurnID = self.turnID {
+            return trackedTurnID == turnID
+        }
+        return true
     }
 
     private func isTrackedTurn(_ turnID: String) -> Bool {

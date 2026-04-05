@@ -565,6 +565,32 @@ struct AppServerReviewRunnerTests {
         #expect(result.content == "Looks solid overall.")
     }
 
+    @Test func appServerReviewRunnerIgnoresUnrelatedTurnStartedBeforeReviewStartResponse() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = MockAppServerSessionTransport(
+            mode: .unrelatedTurnStartedBeforeReviewStartThenSuccess()
+        )
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == .succeeded)
+        #expect(result.turnID == "turn-review")
+        #expect(result.threadID == "thr-review")
+        #expect(result.content == "Looks solid overall.")
+    }
+
     @Test func appServerReviewRunnerIgnoresParentThreadClosureForDetachedReviews() async throws {
         let cwd = try makeTemporaryDirectory()
         let runner = AppServerReviewRunner(

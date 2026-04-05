@@ -4,56 +4,24 @@ import Testing
 
 @Suite(.serialized)
 struct AppServerSupervisorTests {
-    @Test func loopbackWebSocketListenURLUsesReservedPort() throws {
-        let url = try makeLoopbackWebSocketListenURL()
-
-        #expect(url.host == "127.0.0.1")
-        #expect((url.port ?? 0) > 0)
-    }
-
-    @Test func discoveredWebSocketURLParsesStartupBannerLine() throws {
-        let url = discoveredWebSocketURL(from: [
-            "codex app-server (WebSockets)",
-            "  listening on: ws://127.0.0.1:60421",
-            "  readyz: http://127.0.0.1:60421/readyz",
-        ])
-
-        #expect(url?.absoluteString == "ws://127.0.0.1:60421")
-    }
-
-    @Test func discoveredWebSocketURLStripsANSIEscapeCodes() throws {
-        let url = discoveredWebSocketURL(from: [
-            "\u{1b}[2m  listening on:\u{1b}[0m \u{1b}[32mws://127.0.0.1:60422\u{1b}[0m"
-        ])
-
-        #expect(url?.absoluteString == "ws://127.0.0.1:60422")
-    }
-
-    @Test func discoveredWebSocketURLIgnoresEphemeralPlaceholderPort() {
-        let url = discoveredWebSocketURL(from: [
-            "ws://127.0.0.1:0"
-        ])
-
-        #expect(url == nil)
-    }
-
-    @Test func discoveredWebSocketURLIgnoresNonBannerWebSocketLines() {
-        let url = discoveredWebSocketURL(from: [
-            "debug: retrying ws://127.0.0.1:60424 after auth failure"
-        ])
-
-        #expect(url == nil)
-    }
-
-    @Test func nextDiscoveredWebSocketURLKeepsCachedURLAfterBannerEviction() throws {
-        let cached = URL(string: "ws://127.0.0.1:60423")
-
-        let url = nextDiscoveredWebSocketURL(
-            cached: cached,
-            stderrLines: Array(repeating: "other stderr", count: 400)
+    @Test func splitStandardErrorChunkSeparatesCompleteLines() {
+        let result = splitStandardErrorChunk(
+            existingFragment: "",
+            chunk: "first\nsecond\n"
         )
 
-        #expect(url?.absoluteString == "ws://127.0.0.1:60423")
+        #expect(result.completeLines == ["first", "second", ""])
+        #expect(result.trailingFragment.isEmpty)
+    }
+
+    @Test func splitStandardErrorChunkPreservesTrailingFragment() {
+        let result = splitStandardErrorChunk(
+            existingFragment: "pre",
+            chunk: "fix\npartial"
+        )
+
+        #expect(result.completeLines == ["prefix"])
+        #expect(result.trailingFragment == "partial")
     }
 
     @Test func isolatedCodexHomeConfigRemovesCodexReviewServerSection() {
@@ -212,27 +180,43 @@ struct AppServerSupervisorTests {
         #expect(configText.contains("model = \"gpt-5.4\""))
     }
 
-    @Test func prepareUsesRequestedReadyURLWithoutStartupBanner() async throws {
-        let environment = try makeSupervisorEnvironment()
-        let commandURL = try makeFakeSupervisorCommand(
-            servesReadyz: true,
-            writesStartupBanner: false,
-            autoExitSeconds: 1
+    @Test func sharedTransportInitializeCompletesOverMockedStdio() async throws {
+        let box = ConnectionBox()
+        let connection = AppServerSharedTransportConnection(
+            sendMessage: { message in
+                guard let data = message.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let method = object["method"] as? String,
+                      method == "initialize",
+                      let id = object["id"]
+                else {
+                    return
+                }
+                let response = try JSONSerialization.data(
+                    withJSONObject: [
+                        "id": id,
+                        "result": [
+                            "platformFamily": "macOS",
+                            "platformOs": "Darwin",
+                        ],
+                    ]
+                )
+                if let connection = await box.connection() {
+                    await connection.receive(response + Data([0x0A]))
+                }
+            },
+            closeInput: {}
         )
-        defer { try? FileManager.default.removeItem(at: commandURL) }
+        await box.setConnection(connection)
 
-        let supervisor = AppServerSupervisor(
-            configuration: .init(
-                codexCommand: commandURL.path,
-                environment: environment,
-                startupTimeout: .seconds(2)
-            )
+        let response = try await connection.initialize(
+            clientName: "test-client",
+            clientTitle: "Test Client",
+            clientVersion: "0.1"
         )
 
-        let runtimeState = try await supervisor.prepare()
-
-        #expect(runtimeState.pid > 0)
-        await supervisor.shutdown()
+        #expect(response.platformFamily == "macOS")
+        #expect(response.platformOs == "Darwin")
     }
 
     @Test func prepareTimeoutStopsStartingProcess() async throws {
@@ -240,8 +224,7 @@ struct AppServerSupervisorTests {
         let pidFileURL = URL(fileURLWithPath: environment["HOME"]!)
             .appendingPathComponent("fake-app-server.pid")
         let commandURL = try makeFakeSupervisorCommand(
-            servesReadyz: false,
-            writesStartupBanner: false,
+            respondsToInitialize: false,
             pidFileURL: pidFileURL,
             autoExitSeconds: 1
         )
@@ -257,9 +240,9 @@ struct AppServerSupervisorTests {
 
         do {
             _ = try await supervisor.prepare()
-            Issue.record("prepare() unexpectedly succeeded without a ready endpoint.")
+            Issue.record("prepare() unexpectedly succeeded without an initialize response.")
         } catch {
-            #expect(error.localizedDescription.contains("timed out waiting for app-server readiness"))
+            #expect(error.localizedDescription.contains("timed out waiting for app-server initialization"))
         }
 
         let pidText = try String(contentsOf: pidFileURL, encoding: .utf8)
@@ -288,29 +271,24 @@ private func makeSupervisorEnvironment() throws -> [String: String] {
 }
 
 private func makeFakeSupervisorCommand(
-    servesReadyz: Bool,
-    writesStartupBanner: Bool,
+    respondsToInitialize: Bool,
     pidFileURL: URL? = nil,
     autoExitSeconds: Double? = nil
 ) throws -> URL {
     let scriptURL = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: false)
     let pidFileLiteral = pythonLiteral(pidFileURL?.path)
-    let servesReadyzLiteral = servesReadyz ? "True" : "False"
-    let writesStartupBannerLiteral = writesStartupBanner ? "True" : "False"
+    let respondsToInitializeLiteral = respondsToInitialize ? "True" : "False"
     let autoExitSecondsLiteral = autoExitSeconds.map { String(describing: $0) } ?? "None"
     let script = """
     #!/usr/bin/env python3
-    import http.server
+    import json
     import os
-    import socketserver
     import sys
     import time
-    import urllib.parse
 
     pid_file = \(pidFileLiteral)
-    serves_readyz = \(servesReadyzLiteral)
-    writes_startup_banner = \(writesStartupBannerLiteral)
+    responds_to_initialize = \(respondsToInitializeLiteral)
     auto_exit_seconds = \(autoExitSecondsLiteral)
 
     if pid_file is not None:
@@ -318,46 +296,29 @@ private func makeFakeSupervisorCommand(
             handle.write(str(os.getpid()))
 
     args = sys.argv[1:]
-    if len(args) < 5 or args[0] != "app-server":
+    if len(args) < 3 or args[0] != "app-server":
         sys.exit(2)
 
-    listen_index = args.index("--listen")
-    listen_url = urllib.parse.urlparse(args[listen_index + 1])
-    port = listen_url.port
-    host = listen_url.hostname or "127.0.0.1"
     deadline = None if auto_exit_seconds is None else time.monotonic() + float(auto_exit_seconds)
 
-    if serves_readyz:
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path in ("/readyz", "/healthz"):
-                    self.send_response(200)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
-                self.send_response(404)
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-
-            def log_message(self, format, *args):
-                return
-
-        class TCPServer(socketserver.TCPServer):
-            allow_reuse_address = True
-
-        httpd = TCPServer((host, port), Handler)
-        if writes_startup_banner:
-            sys.stderr.write(f"codex app-server (WebSockets)\\n  listening on: ws://{host}:{port}\\n")
-            sys.stderr.flush()
-        while True:
-            if deadline is not None and time.monotonic() >= deadline:
-                os._exit(0)
-            httpd.handle_request()
-    else:
-        while True:
-            if deadline is not None and time.monotonic() >= deadline:
-                os._exit(0)
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            os._exit(0)
+        line = sys.stdin.buffer.readline()
+        if line == b"":
             time.sleep(0.05)
+            continue
+        message = json.loads(line.decode("utf-8"))
+        if message.get("method") == "initialize" and responds_to_initialize:
+            response = {
+                "id": message.get("id"),
+                "result": {
+                    "platformFamily": "macOS",
+                    "platformOs": "Darwin"
+                }
+            }
+            sys.stdout.buffer.write((json.dumps(response) + "\\n").encode("utf-8"))
+            sys.stdout.buffer.flush()
     """
 
     try script.write(to: scriptURL, atomically: true, encoding: String.Encoding.utf8)
@@ -374,4 +335,16 @@ private func pythonLiteral(_ value: String?) -> String {
         .replacingOccurrences(of: "\"", with: "\\\"")
         .replacingOccurrences(of: "\n", with: "\\n")
     return "\"\(escaped)\""
+}
+
+private actor ConnectionBox {
+    private var storedConnection: AppServerSharedTransportConnection?
+
+    func setConnection(_ connection: AppServerSharedTransportConnection) {
+        storedConnection = connection
+    }
+
+    func connection() -> AppServerSharedTransportConnection? {
+        storedConnection
+    }
 }

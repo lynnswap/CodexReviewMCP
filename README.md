@@ -53,8 +53,8 @@ entry to include the timeout values.
   - Multi-session
   - Session-scoped review jobs
   - One long-lived `codex app-server` backend process
-  - One websocket connection per MCP session
-  - Reviews serialize within a session and may run concurrently across sessions
+  - One shared STDIO transport to the backend process
+  - Review jobs run concurrently across sessions and within the same session
 - Discovery
   - Writes the resolved endpoint to `~/.codex_review/review_mcp_endpoint.json`
   - Stores internal supervisor state in `~/.codex_review/review_mcp_runtime_state.json`
@@ -67,7 +67,7 @@ Pre-1.0 note:
 
 ### `review_start`
 
-Runs a review through the shared long-lived `codex app-server` backend and blocks until the final result is ready.
+Runs a review through the shared long-lived `codex app-server` backend over STDIO and blocks until the final result is ready.
 
 Key inputs:
 

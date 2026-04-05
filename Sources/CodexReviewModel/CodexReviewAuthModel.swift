@@ -8,15 +8,18 @@ public final class CodexReviewAuthModel {
         public var title: String
         public var detail: String
         public var browserURL: String?
+        public var userCode: String?
 
         public init(
             title: String,
             detail: String,
-            browserURL: String? = nil
+            browserURL: String? = nil,
+            userCode: String? = nil
         ) {
             self.title = title
             self.detail = detail
             self.browserURL = browserURL
+            self.userCode = userCode
         }
     }
 
