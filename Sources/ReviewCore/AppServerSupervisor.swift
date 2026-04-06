@@ -32,8 +32,8 @@ package actor AppServerSupervisor: AppServerManaging {
     private final class RunningProcess: @unchecked Sendable {
         var launchID: UUID
         var runtimeState: AppServerRuntimeState
-        var process: Process
         var connection: AppServerSharedTransportConnection
+        var waitTask: Task<Void, Never>
         var stdoutTask: Task<Void, Never>
         var stderrTask: Task<Void, Never>
         var isolatedCodexHomeURL: URL?
@@ -41,16 +41,16 @@ package actor AppServerSupervisor: AppServerManaging {
         init(
             launchID: UUID,
             runtimeState: AppServerRuntimeState,
-            process: Process,
             connection: AppServerSharedTransportConnection,
+            waitTask: Task<Void, Never>,
             stdoutTask: Task<Void, Never>,
             stderrTask: Task<Void, Never>,
             isolatedCodexHomeURL: URL?
         ) {
             self.launchID = launchID
             self.runtimeState = runtimeState
-            self.process = process
             self.connection = connection
+            self.waitTask = waitTask
             self.stdoutTask = stdoutTask
             self.stderrTask = stderrTask
             self.isolatedCodexHomeURL = isolatedCodexHomeURL
@@ -239,23 +239,39 @@ package actor AppServerSupervisor: AppServerManaging {
                 environment: self.configuration.environment,
                 isolatedCodexHomeURL: isolatedCodexHomeURL
             )
-            let stdinPipe = Pipe()
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: launchCommand.executable)
-            process.arguments = launchCommand.arguments
-            process.environment = launchCommand.environment
-            process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            process.standardInput = stdinPipe
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            try process.run()
-            let pid = process.processIdentifier
+            let spawnedProcess = try spawnAppServerProcess(launchCommand)
+            let stdinPipe = spawnedProcess.stdinPipe
+            let stdoutPipe = spawnedProcess.stdoutPipe
+            let stderrPipe = spawnedProcess.stderrPipe
+            let pid = spawnedProcess.pid
             guard let startTime = processStartTime(of: pid_t(pid)) else {
-                process.terminate()
+                await terminateSpawnedProcessWithoutIdentity(pid: pid_t(pid))
                 throw ReviewError.spawnFailed("app-server started without a readable process start time.")
+            }
+            let processIdentity = ProcessIdentity(pid: pid_t(pid), startTime: startTime)
+            let startupDescendantIdentities = descendantProcessIdentities(rootIdentity: processIdentity)
+            let startupProcessGroupLeaderPID = currentProcessGroupID(of: pid_t(pid)) ?? pid_t(pid)
+            let startupChildGroupIdentities = descendantProcessGroupIdentities(
+                rootIdentity: processIdentity,
+                excludingGroupLeaderPID: startupProcessGroupLeaderPID
+            )
+            guard startupProcessGroupLeaderPID == pid_t(pid) else {
+                await terminateStartingProcess(
+                    runtimeState: .init(
+                        pid: Int(pid),
+                        startTime: startTime,
+                        processGroupLeaderPID: Int(pid),
+                        processGroupLeaderStartTime: startTime
+                    ),
+                    signalProcessGroup: false,
+                    seedDescendantIdentities: startupDescendantIdentities,
+                    seedChildGroupIdentities: startupChildGroupIdentities
+                )
+                await reapSpawnedProcessAsync(pid: pid_t(pid))
+                throw ReviewError.spawnFailed("app-server did not enter its dedicated process group.")
+            }
+            let waitTask = Task.detached { @Sendable in
+                reapSpawnedProcess(pid: pid_t(pid))
             }
 
             let runtimeState = AppServerRuntimeState(
@@ -297,8 +313,8 @@ package actor AppServerSupervisor: AppServerManaging {
                         RunningProcess(
                             launchID: launchID,
                             runtimeState: runtimeState,
-                            process: process,
                             connection: connection,
+                            waitTask: waitTask,
                             stdoutTask: stdoutTask,
                             stderrTask: stderrTask,
                             isolatedCodexHomeURL: isolatedCodexHomeURL
@@ -310,6 +326,7 @@ package actor AppServerSupervisor: AppServerManaging {
                 while isMatchingProcessIdentity(identity) {
                     try? await Task.sleep(for: .milliseconds(100))
                 }
+                _ = await waitTask.result
                 _ = await stdoutTask.value
                 _ = await stderrTask.value
                 startingRuntimeState = nil
@@ -320,7 +337,12 @@ package actor AppServerSupervisor: AppServerManaging {
                 )
             } catch {
                 await connection.shutdown()
-                await self.terminateStartingProcess(runtimeState: runtimeState)
+                await self.terminateStartingProcess(
+                    runtimeState: runtimeState,
+                    seedDescendantIdentities: startupDescendantIdentities,
+                    seedChildGroupIdentities: startupChildGroupIdentities
+                )
+                _ = await waitTask.result
                 _ = await stdoutTask.value
                 _ = await stderrTask.value
                 throw error
@@ -554,38 +576,100 @@ package actor AppServerSupervisor: AppServerManaging {
         startingRuntimeState = runtimeState
     }
 
-    private func terminateStartingProcess(runtimeState: AppServerRuntimeState) async {
+    private func terminateStartingProcess(
+        runtimeState: AppServerRuntimeState,
+        signalProcessGroup: Bool = true,
+        seedDescendantIdentities: [ProcessIdentity] = [],
+        seedChildGroupIdentities: [ProcessIdentity] = []
+    ) async {
         let processIdentity = ProcessIdentity(
             pid: pid_t(runtimeState.pid),
             startTime: runtimeState.startTime
         )
+        let currentProcessGroupLeaderPID = currentProcessGroupID(of: processIdentity.pid) ?? processIdentity.pid
         let processGroupIdentity = ProcessIdentity(
             pid: pid_t(runtimeState.processGroupLeaderPID),
             startTime: runtimeState.processGroupLeaderStartTime
         )
+        let initialDescendantIdentities = mergeProcessIdentities(
+            seedDescendantIdentities,
+            descendantProcessIdentities(rootIdentity: processIdentity)
+        )
+        let initialChildGroupIdentities = signalProcessGroup
+            ? mergeProcessIdentities(
+                seedChildGroupIdentities,
+                descendantProcessGroupIdentities(
+                    rootIdentity: processIdentity,
+                    excludingGroupLeaderPID: processGroupIdentity.pid
+                )
+            )
+            : seedChildGroupIdentities.filter { $0.pid != currentProcessGroupLeaderPID }
+
+        let shouldSignalChildGroups = initialChildGroupIdentities.isEmpty == false
 
         _ = kill(processIdentity.pid, SIGTERM)
-        _ = killpg(processGroupIdentity.pid, SIGTERM)
+        if signalProcessGroup {
+            _ = killpg(processGroupIdentity.pid, SIGTERM)
+        }
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while ContinuousClock.now < deadline {
+            let descendantIdentities = mergeProcessIdentities(
+                initialDescendantIdentities,
+                descendantProcessIdentities(rootIdentity: processIdentity)
+            )
+            let childGroupIdentities = mergeProcessIdentities(
+                initialChildGroupIdentities,
+                shouldSignalChildGroups
+                    ? descendantProcessGroupIdentities(
+                        rootIdentity: processIdentity,
+                        excludingGroupLeaderPID: signalProcessGroup ? processGroupIdentity.pid : currentProcessGroupLeaderPID
+                    )
+                    : []
+            )
+            signalProcesses(descendantIdentities, signal: SIGTERM)
+            if shouldSignalChildGroups {
+                signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
+            }
             if isMatchingProcessIdentity(processIdentity) == false,
-               isSupervisorProcessGroupAlive(processGroupIdentity) == false
+               (signalProcessGroup == false || isSupervisorProcessGroupAlive(processGroupIdentity) == false),
+               hasLiveProcesses(descendantIdentities) == false,
+               (shouldSignalChildGroups == false || hasLiveSupervisorChildGroups(childGroupIdentities) == false)
             {
                 return
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
 
+        let descendantIdentities = mergeProcessIdentities(
+            initialDescendantIdentities,
+            descendantProcessIdentities(rootIdentity: processIdentity)
+        )
+        let childGroupIdentities = mergeProcessIdentities(
+            initialChildGroupIdentities,
+            shouldSignalChildGroups
+                ? descendantProcessGroupIdentities(
+                    rootIdentity: processIdentity,
+                    excludingGroupLeaderPID: signalProcessGroup ? processGroupIdentity.pid : currentProcessGroupLeaderPID
+                )
+                : []
+        )
         if isMatchingProcessIdentity(processIdentity)
-            || isSupervisorProcessGroupAlive(processGroupIdentity)
+            || (signalProcessGroup && isSupervisorProcessGroupAlive(processGroupIdentity))
+            || hasLiveProcesses(descendantIdentities)
+            || (shouldSignalChildGroups && hasLiveSupervisorChildGroups(childGroupIdentities))
         {
             _ = kill(processIdentity.pid, SIGKILL)
-            _ = killpg(processGroupIdentity.pid, SIGKILL)
+            if signalProcessGroup {
+                _ = killpg(processGroupIdentity.pid, SIGKILL)
+            }
+            if shouldSignalChildGroups {
+                signalSupervisorChildGroups(childGroupIdentities, signal: SIGKILL)
+            }
+            signalProcesses(descendantIdentities, signal: SIGKILL)
         }
     }
 
     private func terminateRunningProcess(_ current: RunningProcess) async {
-        await current.connection.shutdown()
         let processIdentity = ProcessIdentity(
             pid: pid_t(current.runtimeState.pid),
             startTime: current.runtimeState.startTime
@@ -594,29 +678,68 @@ package actor AppServerSupervisor: AppServerManaging {
             pid: pid_t(current.runtimeState.processGroupLeaderPID),
             startTime: current.runtimeState.processGroupLeaderStartTime
         )
-        let childGroupIdentities = descendantProcessGroupIdentities(
-            rootPID: processIdentity.pid,
+        let preShutdownDescendantIdentities = descendantProcessIdentities(rootIdentity: processIdentity)
+        let preShutdownChildGroupIdentities = descendantProcessGroupIdentities(
+            rootIdentity: processIdentity,
             excludingGroupLeaderPID: processGroupIdentity.pid
+        )
+        await current.connection.shutdown()
+        let trackedDescendantIdentities = mergeProcessIdentities(
+            preShutdownDescendantIdentities,
+            descendantProcessIdentities(rootIdentity: processIdentity)
+        )
+        let trackedChildGroupIdentities = mergeProcessIdentities(
+            preShutdownChildGroupIdentities,
+            descendantProcessGroupIdentities(
+                rootIdentity: processIdentity,
+                excludingGroupLeaderPID: processGroupIdentity.pid
+            )
         )
         _ = kill(processIdentity.pid, SIGTERM)
         _ = killpg(processGroupIdentity.pid, SIGTERM)
-        signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while ContinuousClock.now < deadline {
+            let descendantIdentities = mergeProcessIdentities(
+                trackedDescendantIdentities,
+                descendantProcessIdentities(rootIdentity: processIdentity)
+            )
+            let childGroupIdentities = mergeProcessIdentities(
+                trackedChildGroupIdentities,
+                descendantProcessGroupIdentities(
+                    rootIdentity: processIdentity,
+                    excludingGroupLeaderPID: processGroupIdentity.pid
+                )
+            )
+            signalProcesses(descendantIdentities, signal: SIGTERM)
+            signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
             if isMatchingProcessIdentity(processIdentity) == false,
                isSupervisorProcessGroupAlive(processGroupIdentity) == false,
+               hasLiveProcesses(descendantIdentities) == false,
                hasLiveSupervisorChildGroups(childGroupIdentities) == false
             {
                 break
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
+        let descendantIdentities = mergeProcessIdentities(
+            trackedDescendantIdentities,
+            descendantProcessIdentities(rootIdentity: processIdentity)
+        )
+        let childGroupIdentities = mergeProcessIdentities(
+            trackedChildGroupIdentities,
+            descendantProcessGroupIdentities(
+                rootIdentity: processIdentity,
+                excludingGroupLeaderPID: processGroupIdentity.pid
+            )
+        )
         if isMatchingProcessIdentity(processIdentity)
             || isSupervisorProcessGroupAlive(processGroupIdentity)
+            || hasLiveProcesses(descendantIdentities)
             || hasLiveSupervisorChildGroups(childGroupIdentities)
         {
             _ = kill(processIdentity.pid, SIGKILL)
             _ = killpg(processGroupIdentity.pid, SIGKILL)
+            signalProcesses(descendantIdentities, signal: SIGKILL)
             signalSupervisorChildGroups(childGroupIdentities, signal: SIGKILL)
         }
         _ = await current.stdoutTask.result
@@ -648,6 +771,13 @@ private struct AppServerLaunchCommand {
     var environment: [String: String]
 }
 
+private struct SpawnedAppServerProcess {
+    var pid: pid_t
+    var stdinPipe: Pipe
+    var stdoutPipe: Pipe
+    var stderrPipe: Pipe
+}
+
 private func makeAppServerLaunchCommand(
     codexCommand: String,
     environment: [String: String],
@@ -676,6 +806,169 @@ private func makeAppServerLaunchCommand(
         ]),
         environment: effectiveEnvironment
     )
+}
+
+private func spawnAppServerProcess(
+    _ command: AppServerLaunchCommand
+) throws -> SpawnedAppServerProcess {
+    let stdinPipe = Pipe()
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+
+    var fileActions: posix_spawn_file_actions_t? = nil
+    guard posix_spawn_file_actions_init(&fileActions) == 0 else {
+        throw ReviewError.spawnFailed("failed to initialize app-server spawn file actions.")
+    }
+    defer { posix_spawn_file_actions_destroy(&fileActions) }
+
+    let stdinReadFD = stdinPipe.fileHandleForReading.fileDescriptor
+    let stdinWriteFD = stdinPipe.fileHandleForWriting.fileDescriptor
+    let stdoutReadFD = stdoutPipe.fileHandleForReading.fileDescriptor
+    let stdoutWriteFD = stdoutPipe.fileHandleForWriting.fileDescriptor
+    let stderrReadFD = stderrPipe.fileHandleForReading.fileDescriptor
+    let stderrWriteFD = stderrPipe.fileHandleForWriting.fileDescriptor
+
+    let stdioMappings: [(source: Int32, destination: Int32)] = [
+        (stdinReadFD, STDIN_FILENO),
+        (stdoutWriteFD, STDOUT_FILENO),
+        (stderrWriteFD, STDERR_FILENO),
+    ]
+
+    for fileDescriptor in [
+        stdinWriteFD,
+        stdoutReadFD,
+        stderrReadFD,
+    ] {
+        let status = posix_spawn_file_actions_addclose(&fileActions, fileDescriptor)
+        guard status == 0 else {
+            throw ReviewError.spawnFailed("failed to configure app-server stdio cleanup.")
+        }
+    }
+
+    for mapping in stdioMappings where mapping.source != mapping.destination {
+        let status = posix_spawn_file_actions_adddup2(
+            &fileActions,
+            mapping.source,
+            mapping.destination
+        )
+        guard status == 0 else {
+            throw ReviewError.spawnFailed("failed to configure app-server stdio redirection.")
+        }
+    }
+
+    for mapping in stdioMappings where mapping.source != mapping.destination {
+        let status = posix_spawn_file_actions_addclose(&fileActions, mapping.source)
+        guard status == 0 else {
+            throw ReviewError.spawnFailed("failed to configure app-server stdio source cleanup.")
+        }
+    }
+
+    var spawnAttributes: posix_spawnattr_t? = nil
+    guard posix_spawnattr_init(&spawnAttributes) == 0 else {
+        throw ReviewError.spawnFailed("failed to initialize app-server spawn attributes.")
+    }
+    defer { posix_spawnattr_destroy(&spawnAttributes) }
+
+    let spawnFlags = Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
+    guard posix_spawnattr_setflags(&spawnAttributes, spawnFlags) == 0,
+          posix_spawnattr_setpgroup(&spawnAttributes, 0) == 0
+    else {
+        throw ReviewError.spawnFailed("failed to configure app-server process group.")
+    }
+
+    let argv = try allocateCStringArray([command.executable] + command.arguments)
+    let envp = try allocateCStringArray(command.environment.map { "\($0.key)=\($0.value)" })
+    defer {
+        for pointer in argv where pointer != nil {
+            free(pointer)
+        }
+        for pointer in envp where pointer != nil {
+            free(pointer)
+        }
+    }
+
+    var pid: pid_t = 0
+    let spawnStatus = posix_spawn(
+        &pid,
+        command.executable,
+        &fileActions,
+        &spawnAttributes,
+        argv,
+        envp
+    )
+    guard spawnStatus == 0 else {
+        let message = String(cString: strerror(spawnStatus))
+        throw ReviewError.spawnFailed("failed to start app-server: \(message)")
+    }
+    let spawnedPID = pid
+
+    try? stdinPipe.fileHandleForReading.close()
+    try? stdoutPipe.fileHandleForWriting.close()
+    try? stderrPipe.fileHandleForWriting.close()
+
+    return SpawnedAppServerProcess(
+        pid: spawnedPID,
+        stdinPipe: stdinPipe,
+        stdoutPipe: stdoutPipe,
+        stderrPipe: stderrPipe
+    )
+}
+
+private func reapSpawnedProcess(pid: pid_t) {
+    var status: Int32 = 0
+    while true {
+        let result = waitpid(pid, &status, 0)
+        if result == pid || (result == -1 && errno == ECHILD) {
+            return
+        }
+        if result == -1 && errno == EINTR {
+            continue
+        }
+        return
+    }
+}
+
+private func reapSpawnedProcessAsync(pid: pid_t) async {
+    await Task.detached { @Sendable in
+        reapSpawnedProcess(pid: pid)
+    }.value
+}
+
+private func terminateSpawnedProcessWithoutIdentity(pid: pid_t) async {
+    var status: Int32 = 0
+    _ = kill(pid, SIGTERM)
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while ContinuousClock.now < deadline {
+        let result = waitpid(pid, &status, WNOHANG)
+        if result == pid || (result == -1 && errno == ECHILD) {
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+    _ = kill(pid, SIGKILL)
+    reapSpawnedProcess(pid: pid)
+}
+
+private func allocateCStringArray(
+    _ strings: [String]
+) throws -> [UnsafeMutablePointer<CChar>?] {
+    var pointers: [UnsafeMutablePointer<CChar>?] = []
+    pointers.reserveCapacity(strings.count + 1)
+    do {
+        for string in strings {
+            guard let pointer = strdup(string) else {
+                throw ReviewError.spawnFailed("failed to allocate app-server spawn arguments.")
+            }
+            pointers.append(pointer)
+        }
+        pointers.append(nil)
+        return pointers
+    } catch {
+        for pointer in pointers where pointer != nil {
+            free(pointer)
+        }
+        throw error
+    }
 }
 
 package func prepareIsolatedCodexHome(
@@ -769,24 +1062,24 @@ private func isSupervisorProcessGroupAlive(_ identity: ProcessIdentity) -> Bool 
 }
 
 private func descendantProcessGroupIdentities(
-    rootPID: pid_t,
+    rootIdentity: ProcessIdentity,
     excludingGroupLeaderPID: pid_t
 ) -> [ProcessIdentity] {
-    var pending = childProcessIDs(of: rootPID)
-    var visited: Set<pid_t> = []
+    guard canTraverseDescendants(of: rootIdentity) else {
+        return []
+    }
+
+    var pending = snapshotChildProcessIdentities(of: rootIdentity)
+    var visited: Set<ProcessIdentity> = []
     var identities: Set<ProcessIdentity> = []
 
-    while let pid = pending.popLast() {
-        if visited.insert(pid).inserted == false {
+    while let identity = pending.popLast() {
+        if visited.insert(identity).inserted == false {
             continue
         }
-        guard isProcessAlive(pid) else {
-            continue
-        }
+        pending.append(contentsOf: snapshotChildProcessIdentities(of: identity))
 
-        pending.append(contentsOf: childProcessIDs(of: pid))
-
-        let groupLeaderPID = currentProcessGroupID(of: pid) ?? pid
+        let groupLeaderPID = currentProcessGroupID(of: identity.pid) ?? identity.pid
         guard groupLeaderPID > 0,
               groupLeaderPID != excludingGroupLeaderPID,
               let groupLeaderStartTime = processStartTime(of: groupLeaderPID)
@@ -804,6 +1097,49 @@ private func descendantProcessGroupIdentities(
     return Array(identities)
 }
 
+private func descendantProcessIdentities(rootIdentity: ProcessIdentity) -> [ProcessIdentity] {
+    guard canTraverseDescendants(of: rootIdentity) else {
+        return []
+    }
+
+    var pending = snapshotChildProcessIdentities(of: rootIdentity)
+    var visited: Set<ProcessIdentity> = []
+    var identities: [ProcessIdentity] = []
+
+    while let identity = pending.popLast() {
+        if visited.insert(identity).inserted == false {
+            continue
+        }
+        identities.append(identity)
+        pending.append(contentsOf: snapshotChildProcessIdentities(of: identity))
+    }
+
+    return identities
+}
+
+private func mergeProcessIdentities(
+    _ lhs: [ProcessIdentity],
+    _ rhs: [ProcessIdentity]
+) -> [ProcessIdentity] {
+    Array(Set(lhs).union(rhs))
+}
+
+private func canTraverseDescendants(of identity: ProcessIdentity) -> Bool {
+    processStartTime(of: identity.pid) == identity.startTime
+}
+
+private func snapshotChildProcessIdentities(of parentIdentity: ProcessIdentity) -> [ProcessIdentity] {
+    guard canTraverseDescendants(of: parentIdentity) else {
+        return []
+    }
+    return childProcessIDs(of: parentIdentity.pid).compactMap { childPID in
+        guard let startTime = processStartTime(of: childPID) else {
+            return nil
+        }
+        return .init(pid: childPID, startTime: startTime)
+    }
+}
+
 private func signalSupervisorChildGroups(
     _ identities: [ProcessIdentity],
     signal: Int32
@@ -816,6 +1152,21 @@ private func signalSupervisorChildGroups(
 private func hasLiveSupervisorChildGroups(_ identities: [ProcessIdentity]) -> Bool {
     Set(identities).contains { identity in
         isSupervisorProcessGroupAlive(identity)
+    }
+}
+
+private func signalProcesses(
+    _ identities: [ProcessIdentity],
+    signal: Int32
+) {
+    for identity in Set(identities) where isMatchingProcessIdentity(identity) {
+        _ = kill(identity.pid, signal)
+    }
+}
+
+private func hasLiveProcesses(_ identities: [ProcessIdentity]) -> Bool {
+    Set(identities).contains { identity in
+        isMatchingProcessIdentity(identity)
     }
 }
 

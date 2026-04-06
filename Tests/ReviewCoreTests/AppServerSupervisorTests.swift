@@ -303,7 +303,7 @@ struct AppServerSupervisorTests {
         let commandURL = try makeFakeSupervisorCommand(
             respondsToInitialize: false,
             pidFileURL: pidFileURL,
-            autoExitSeconds: 1
+            autoExitSeconds: 30
         )
         defer { try? FileManager.default.removeItem(at: commandURL) }
 
@@ -330,9 +330,14 @@ struct AppServerSupervisorTests {
         }
         let pidText = try String(contentsOf: pidFileURL, encoding: .utf8)
         let pid = try #require(Int32(pidText.trimmingCharacters(in: .whitespacesAndNewlines)))
+        guard let startTime = processStartTime(of: pid) else {
+            await supervisor.shutdown()
+            return
+        }
+        let identity = ProcessIdentity(pid: pid, startTime: startTime)
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while ContinuousClock.now < deadline {
-            if isProcessAlive(pid) == false {
+            if isMatchingProcessIdentity(identity) == false {
                 await supervisor.shutdown()
                 return
             }
@@ -340,6 +345,30 @@ struct AppServerSupervisorTests {
         }
         await supervisor.shutdown()
         Issue.record("starting app-server child was still alive after prepare timed out.")
+    }
+
+    @Test func preparePlacesAppServerInDedicatedProcessGroup() async throws {
+        let environment = try makeSupervisorEnvironment()
+        let commandURL = try makeFakeSupervisorCommand(
+            respondsToInitialize: true
+        )
+        defer { try? FileManager.default.removeItem(at: commandURL) }
+
+        let supervisor = AppServerSupervisor(
+            configuration: .init(
+                codexCommand: commandURL.path,
+                environment: environment,
+                startupTimeout: .seconds(1)
+            )
+        )
+
+        let runtimeState = try await supervisor.prepare()
+        let expectedGroupLeaderPID = try #require(currentProcessGroupID(of: pid_t(runtimeState.pid)))
+
+        #expect(expectedGroupLeaderPID == pid_t(runtimeState.pid))
+        #expect(runtimeState.processGroupLeaderPID == runtimeState.pid)
+        #expect(runtimeState.processGroupLeaderStartTime == runtimeState.startTime)
+        await supervisor.shutdown()
     }
 }
 
