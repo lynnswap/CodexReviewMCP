@@ -203,6 +203,9 @@ package struct AppServerReviewRunner: Sendable {
         self.settingsBuilder = settingsBuilder
     }
 
+    /// `requestedTerminationReason` can change while the review is running.
+    /// Callers must provide `stateChangeSubscription` and yield it whenever that
+    /// termination reason changes so the runner can wake and observe the update.
     package func run(
         session: any AppServerSessionTransport,
         request: ReviewRequestOptions,
@@ -214,12 +217,7 @@ package struct AppServerReviewRunner: Sendable {
             },
             cancel: {}
         ),
-        stateChangeSubscription: AsyncStreamSubscription<Void> = .init(
-            stream: AsyncStream { continuation in
-                continuation.finish()
-            },
-            cancel: {}
-        ),
+        stateChangeSubscription: AsyncStreamSubscription<Void>,
         diagnosticsTail: @escaping @Sendable () async -> String = { "" },
         onStart: @escaping @Sendable (Date) async -> Void,
         onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void,
@@ -395,6 +393,9 @@ package struct AppServerReviewRunner: Sendable {
             makeStringSourceTask(subscription: diagnosticLineSubscription, emitter: signalEmitter),
             makeVoidSourceTask(subscription: stateChangeSubscription, emitter: signalEmitter),
         ]
+        if await requestedTerminationReason() != nil {
+            await signalEmitter.yield(.stateChanged)
+        }
         if let timeoutSeconds {
             sourceTasks.append(
                 makeDelayedSignalTask(

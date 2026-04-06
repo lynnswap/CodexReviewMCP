@@ -22,6 +22,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { event in
                 await recorder.record(event)
@@ -59,6 +60,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -81,6 +83,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -106,6 +109,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
+                stateChangeSubscription: await StateChangeSignal().subscription(),
                 onStart: { _ in },
                 onEvent: { _ in },
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -117,6 +121,7 @@ struct AppServerReviewRunnerTests {
         let cwd = try makeTemporaryDirectory()
         let cancellation = CancellationFlag()
         let reviewStarted = ReviewStartedProbe()
+        let stateChanges = StateChangeSignal()
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
@@ -129,6 +134,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
+                stateChangeSubscription: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -142,6 +148,7 @@ struct AppServerReviewRunnerTests {
         await Task.yield()
         await reviewStarted.wait()
         await cancellation.cancel("Cancellation requested.")
+        await stateChanges.yield()
         let result = try await task.value
 
         #expect(result.state == ReviewJobState.cancelled)
@@ -149,10 +156,11 @@ struct AppServerReviewRunnerTests {
         #expect(await session.unsubscribeCount >= 1)
     }
 
-    @Test func appServerReviewRunnerCancelsBeforeFirstTurnStatusArrives() async throws {
+    @Test func appServerReviewRunnerCancelsWithoutObservedTurnStart() async throws {
         let cwd = try makeTemporaryDirectory()
         let cancellation = CancellationFlag()
         let reviewStarted = ReviewStartedProbe()
+        let stateChanges = StateChangeSignal()
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
@@ -165,6 +173,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
+                stateChangeSubscription: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -178,6 +187,7 @@ struct AppServerReviewRunnerTests {
         await Task.yield()
         await reviewStarted.wait()
         await cancellation.cancel("Cancellation requested before turn/started.")
+        await stateChanges.yield()
         let result = try await task.value
 
         #expect(result.state == .cancelled)
@@ -185,9 +195,45 @@ struct AppServerReviewRunnerTests {
         #expect(await session.unsubscribeCount >= 1)
     }
 
+    @Test func appServerReviewRunnerReplaysPendingCancellationAfterStateSubscriptionAttaches() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let cancellation = CancellationFlag()
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = NotificationHookAppServerSessionTransport(
+            base: MockAppServerSessionTransport(mode: .longRunning()),
+            onNotificationStream: {
+                await cancellation.cancel("Cancellation requested before state stream started consuming.")
+            }
+        )
+
+        let task = Task {
+            try await runner.run(
+                session: session,
+                request: .init(cwd: cwd.path, target: .uncommittedChanges),
+                defaultTimeoutSeconds: nil as Int?,
+                stateChangeSubscription: await StateChangeSignal().subscription(),
+                onStart: { _ in },
+                onEvent: { _ in },
+                requestedTerminationReason: {
+                    await cancellation.reason
+                }
+            )
+        }
+
+        let result = try await awaitTaskValue(task, timeout: .seconds(1))
+
+        #expect(result.state == .cancelled)
+        #expect(result.errorMessage == "Cancellation requested before state stream started consuming.")
+    }
+
     @Test func appServerReviewRunnerPreservesParentThreadIDWhenReviewThreadDiffers() async throws {
         let cwd = try makeTemporaryDirectory()
         let reviewStarted = ReviewStartedProbe()
+        let stateChanges = StateChangeSignal()
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
@@ -201,6 +247,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
+                stateChangeSubscription: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -214,6 +261,7 @@ struct AppServerReviewRunnerTests {
         await Task.yield()
         await reviewStarted.wait()
         await cancellation.cancel("Cancelled from detached test.")
+        await stateChanges.yield()
         let result = try await task.value
 
         #expect(result.state == ReviewJobState.cancelled)
@@ -225,6 +273,7 @@ struct AppServerReviewRunnerTests {
         let cwd = try makeTemporaryDirectory()
         let reviewStarted = ReviewStartedProbe()
         let cancellation = CancellationFlag()
+        let stateChanges = StateChangeSignal()
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
@@ -237,6 +286,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
+                stateChangeSubscription: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -250,6 +300,7 @@ struct AppServerReviewRunnerTests {
         await Task.yield()
         await reviewStarted.wait()
         await cancellation.cancel("Cancellation requested.")
+        await stateChanges.yield()
         let result = try await task.value
 
         #expect(result.state == ReviewJobState.cancelled)
@@ -271,6 +322,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: 0,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? },
@@ -288,6 +340,7 @@ struct AppServerReviewRunnerTests {
         let cwd = try makeTemporaryDirectory()
         let reviewStarted = ReviewStartedProbe()
         let cancellation = CancellationFlag()
+        let stateChanges = StateChangeSignal()
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 environment: try isolatedHomeEnvironment()
@@ -300,6 +353,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil,
+                stateChangeSubscription: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -316,6 +370,7 @@ struct AppServerReviewRunnerTests {
         await Task.yield()
         await reviewStarted.wait()
         await cancellation.cancel("Cancellation requested.")
+        await stateChanges.yield()
         let result = try await task.value
 
         #expect(result.state == .cancelled)
@@ -336,6 +391,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
+                stateChangeSubscription: await StateChangeSignal().subscription(),
                 onStart: { _ in },
                 onEvent: { _ in },
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -357,6 +413,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
+                stateChangeSubscription: await StateChangeSignal().subscription(),
                 onStart: { _ in },
                 onEvent: { _ in },
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -381,6 +438,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { event in
                 await recorder.record(event)
@@ -406,6 +464,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -429,6 +488,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -453,6 +513,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -478,6 +539,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -504,6 +566,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
+                stateChangeSubscription: await StateChangeSignal().subscription(),
                 onStart: { _ in },
                 onEvent: { _ in },
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -534,6 +597,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -556,6 +620,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -580,6 +645,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -606,6 +672,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -630,6 +697,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -652,6 +720,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -674,6 +743,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -699,6 +769,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -724,6 +795,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -749,6 +821,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -812,6 +885,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: 0,
+            stateChangeSubscription: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -909,6 +983,48 @@ private actor StateChangeSignal {
     func finish() {
         continuation?.finish()
         continuation = nil
+    }
+}
+
+private actor NotificationHookAppServerSessionTransport: AppServerSessionTransport {
+    private let base: MockAppServerSessionTransport
+    private let onNotificationStream: @Sendable () async -> Void
+
+    init(
+        base: MockAppServerSessionTransport,
+        onNotificationStream: @escaping @Sendable () async -> Void
+    ) {
+        self.base = base
+        self.onNotificationStream = onNotificationStream
+    }
+
+    func initializeResponse() async -> AppServerInitializeResponse {
+        await base.initializeResponse()
+    }
+
+    func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
+        method: String,
+        params: Params,
+        responseType: Response.Type
+    ) async throws -> Response {
+        try await base.request(method: method, params: params, responseType: responseType)
+    }
+
+    func notify<Params: Encodable & Sendable>(method: String, params: Params) async throws {
+        try await base.notify(method: method, params: params)
+    }
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        await onNotificationStream()
+        return await base.notificationStream()
+    }
+
+    func isClosed() async -> Bool {
+        await base.isClosed()
+    }
+
+    func close() async {
+        await base.close()
     }
 }
 
