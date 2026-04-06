@@ -77,6 +77,24 @@ struct CodexReviewUITests {
         #expect(backend.startCallCount() == 1)
     }
 
+    @Test func splitViewSkipsStoreStartWhenAutoStartIsDisabled() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
+        let store = CodexReviewStore(backend: backend)
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+
+        viewController.viewDidAppear()
+
+        try? await Task.sleep(for: .milliseconds(50))
+
+        #expect(viewController.didTriggerStoreStartForTesting == false)
+        #expect(backend.startCallCount() == 0)
+    }
+
     @Test func splitViewSectionsByWorkspace() {
         guard #available(macOS 26.0, *) else {
             return
@@ -768,8 +786,12 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
 
 @MainActor
 private final class CountingStartBackend: CodexReviewStoreBackend {
-    let shouldAutoStartEmbeddedServer = true
+    let shouldAutoStartEmbeddedServer: Bool
     private var startCalls = 0
+
+    init(shouldAutoStartEmbeddedServer: Bool = true) {
+        self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
+    }
 
     var isActive: Bool {
         startCalls > 0

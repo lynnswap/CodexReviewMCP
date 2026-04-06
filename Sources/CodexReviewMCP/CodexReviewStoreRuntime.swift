@@ -494,6 +494,10 @@ extension CodexReviewStore {
         return .init(
             port: port,
             codexCommand: codexCommand,
+            shouldAutoStartEmbeddedServer: CodexReviewStoreLaunchPolicy.shouldAutoStartEmbeddedServer(
+                environment: environment,
+                arguments: arguments
+            ),
             environment: environment
         )
     }
@@ -921,7 +925,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
     let appServerManager: any AppServerManaging
     let authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)?
-    let shouldAutoStartEmbeddedServer = true
+    let shouldAutoStartEmbeddedServer: Bool
     lazy var liveAuthSessionFactory: @Sendable () async throws -> any ReviewAuthSession = { [configuration] in
         CLIReviewAuthSession(
             configuration: .init(
@@ -988,6 +992,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             )
         )
         self.authSessionFactory = authSessionFactory
+        self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
     }
 
     func start(

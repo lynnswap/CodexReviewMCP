@@ -10,6 +10,7 @@ package struct ReviewServerConfiguration: Sendable {
     package var endpoint: String
     package var sessionTimeoutSeconds: TimeInterval
     package var codexCommand: String
+    package var shouldAutoStartEmbeddedServer: Bool
     package var environment: [String: String]
 
     package init(
@@ -18,6 +19,7 @@ package struct ReviewServerConfiguration: Sendable {
         endpoint: String = ReviewDefaults.shared.server.endpointPath,
         sessionTimeoutSeconds: TimeInterval = ReviewDefaults.shared.server.sessionTimeoutSeconds,
         codexCommand: String = "codex",
+        shouldAutoStartEmbeddedServer: Bool = true,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.host = host
@@ -25,6 +27,7 @@ package struct ReviewServerConfiguration: Sendable {
         self.endpoint = normalizeEndpointPath(endpoint)
         self.sessionTimeoutSeconds = sessionTimeoutSeconds
         self.codexCommand = codexCommand
+        self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
         self.environment = environment
     }
 }

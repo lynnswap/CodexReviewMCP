@@ -399,6 +399,35 @@ struct ReviewAuthManagerTests {
         #expect(sanitizeCLIAuthOutput(browserLine) == "https://auth.openai.com/oauth/authorize?foo=bar")
         #expect(extractReviewAuthHTTPSURL(from: sanitizeCLIAuthOutput(browserLine)) == "https://auth.openai.com/oauth/authorize?foo=bar")
     }
+
+    @Test func cliAccountReadResponseTreatsSignedOutStatusBeforeGenericLoggedInMatch() throws {
+        let response = try makeCLIAccountReadResponse(
+            exitCode: 0,
+            combinedOutput: "Not logged in",
+            storedEmail: "review@example.com",
+            storedPlanType: "plus"
+        )
+
+        #expect(response.account == nil)
+        #expect(response.requiresOpenAIAuth)
+    }
+
+    @Test func cliAccountReadResponseUsesStoredAccountForSignedInStatus() throws {
+        let response = try makeCLIAccountReadResponse(
+            exitCode: 0,
+            combinedOutput: "Logged in as review@example.com",
+            storedEmail: "review@example.com",
+            storedPlanType: "plus"
+        )
+
+        guard case .chatGPT(let email, let planType)? = response.account else {
+            Issue.record("Expected chatGPT account, got \(String(describing: response.account))")
+            return
+        }
+        #expect(email == "review@example.com")
+        #expect(planType == "plus")
+        #expect(response.requiresOpenAIAuth == false)
+    }
 }
 
 private actor AuthUpdateRecorder {

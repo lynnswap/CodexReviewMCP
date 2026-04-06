@@ -577,21 +577,13 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
     package func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         let result = try await runCodexCommand(arguments: ["login", "status"])
         let combinedOutput = sanitizeCLIAuthOutput(result.stderr + "\n" + result.stdout)
-
-        if result.exitCode == 0, combinedOutput.localizedCaseInsensitiveContains("Logged in") {
-            let storedAccount = loadStoredCLIAuthAccount(environment: configuration.environment)
-            return .init(
-                account: .chatGPT(
-                    email: storedAccount?.email?.nilIfEmpty ?? "ChatGPT",
-                    planType: storedAccount?.planType?.nilIfEmpty ?? "unknown"
-                ),
-                requiresOpenAIAuth: false
-            )
-        }
-        if combinedOutput.localizedCaseInsensitiveContains("Not logged in") {
-            return .init(account: nil, requiresOpenAIAuth: true)
-        }
-        throw ReviewAuthError.authenticationRequired(combinedOutput.nilIfEmpty ?? "Unable to determine authentication state.")
+        let storedAccount = loadStoredCLIAuthAccount(environment: configuration.environment)
+        return try makeCLIAccountReadResponse(
+            exitCode: result.exitCode,
+            combinedOutput: combinedOutput,
+            storedEmail: storedAccount?.email,
+            storedPlanType: storedAccount?.planType
+        )
     }
 
     package func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
@@ -962,6 +954,27 @@ private extension AppServerAccountReadResponse {
             return .signedOut
         }
     }
+}
+
+package func makeCLIAccountReadResponse(
+    exitCode: Int32,
+    combinedOutput: String,
+    storedEmail: String?,
+    storedPlanType: String?
+) throws -> AppServerAccountReadResponse {
+    if combinedOutput.localizedCaseInsensitiveContains("Not logged in") {
+        return .init(account: nil, requiresOpenAIAuth: true)
+    }
+    if exitCode == 0, combinedOutput.localizedCaseInsensitiveContains("Logged in") {
+        return .init(
+            account: .chatGPT(
+                email: storedEmail?.nilIfEmpty ?? "ChatGPT",
+                planType: storedPlanType?.nilIfEmpty ?? "unknown"
+            ),
+            requiresOpenAIAuth: false
+        )
+    }
+    throw ReviewAuthError.authenticationRequired(combinedOutput.nilIfEmpty ?? "Unable to determine authentication state.")
 }
 
 private func withTimeout<T: Sendable>(
