@@ -405,7 +405,7 @@ package actor ReviewAuthManager {
         var sawSignedOut = false
         var sawUnavailable = false
         let maxAttempts = max(1, configuration.durableAuthMaxAttempts ?? .max)
-        let deadline = ContinuousClock.now.advanced(by: timeout ?? configuration.startupTimeout)
+        let deadline = configuration.clock.now.advanced(by: timeout ?? configuration.startupTimeout)
         var attempt = 0
 
         while attempt < maxAttempts {
@@ -436,7 +436,7 @@ package actor ReviewAuthManager {
             {
                 break
             }
-            if ContinuousClock.now >= deadline {
+            if configuration.clock.now >= deadline {
                 break
             }
 

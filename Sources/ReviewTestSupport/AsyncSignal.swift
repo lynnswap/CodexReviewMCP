@@ -1,8 +1,13 @@
 import Foundation
 
 public actor AsyncSignal {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
     private var countStorage = 0
-    private var waiters: [Int: [CheckedContinuation<Void, Never>]] = [:]
+    private var waiters: [Int: [Waiter]] = [:]
 
     public init() {}
 
@@ -11,9 +16,9 @@ public actor AsyncSignal {
 
         let readyTargets = waiters.keys.filter { $0 <= countStorage }.sorted()
         for target in readyTargets {
-            let continuations = waiters.removeValue(forKey: target) ?? []
-            for continuation in continuations {
-                continuation.resume()
+            let waitersForTarget = waiters.removeValue(forKey: target) ?? []
+            for waiter in waitersForTarget {
+                waiter.continuation.resume()
             }
         }
     }
@@ -27,31 +32,40 @@ public actor AsyncSignal {
             return
         }
 
+        let id = UUID()
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 if countStorage >= target {
                     continuation.resume()
                     return
                 }
-                waiters[target, default: []].append(continuation)
+                waiters[target, default: []].append(
+                    .init(id: id, continuation: continuation)
+                )
             }
         } onCancel: {
             Task {
-                await self.cancelWaiter(target: target)
+                await self.cancelWaiter(id: id, target: target)
             }
         }
     }
 
-    private func cancelWaiter(target: Int) {
-        guard var continuations = waiters[target], continuations.isEmpty == false else {
+    package func waiterCount(forTarget target: Int) -> Int {
+        waiters[target]?.count ?? 0
+    }
+
+    private func cancelWaiter(id: UUID, target: Int) {
+        guard var waitersForTarget = waiters[target],
+              let index = waitersForTarget.firstIndex(where: { $0.id == id })
+        else {
             return
         }
-        let continuation = continuations.removeFirst()
-        if continuations.isEmpty {
+        let waiter = waitersForTarget.remove(at: index)
+        if waitersForTarget.isEmpty {
             waiters[target] = nil
         } else {
-            waiters[target] = continuations
+            waiters[target] = waitersForTarget
         }
-        continuation.resume()
+        waiter.continuation.resume()
     }
 }

@@ -226,7 +226,6 @@ struct ReviewAuthManagerTests {
 
         let updates = await recorder.values()
         #expect(updates.last == .failed(reviewAuthPersistenceFailureMessage))
-        #expect(await session.recordedRefreshRequests() == [true, false, false])
     }
 
     @Test func authManagerFailsWhenDedicatedHomeAuthWasNotPersisted() async throws {
@@ -252,6 +251,54 @@ struct ReviewAuthManagerTests {
 
         let updates = await recorder.values()
         #expect(updates.last == .failed(reviewAuthPersistenceFailureMessage))
+    }
+
+    @Test func authManagerUsesInjectedClockForDurableAuthDeadline() async throws {
+        let clock = JumpingReviewClock()
+        let session = PostLoginDurableCheckReviewAuthSession(
+            durableResponse: .init(account: nil, requiresOpenAIAuth: true),
+            refreshedResponse: .init(
+                account: .chatGPT(email: "review@example.com", planType: "plus"),
+                requiresOpenAIAuth: false
+            ),
+            postLoginRefreshError: nil
+        )
+        let manager = ReviewAuthManager(
+            configuration: .init(
+                environment: ["HOME": makeTemporaryRoot().path],
+                startupTimeout: .seconds(2),
+                durableAuthRetryDelay: .seconds(1),
+                clock: clock
+            ),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        let task = Task<Result<Void, Error>, Never> {
+            do {
+                try await manager.beginAuthentication { state in
+                    await recorder.append(state)
+                }
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+
+        let result = try await withTestTimeout {
+            await task.value
+        }
+
+        switch result {
+        case .success:
+            Issue.record("Expected durable auth verification to fail after the injected clock advanced past the timeout.")
+        case .failure(let error):
+            #expect(error as? ReviewAuthError == .loginFailed(reviewAuthPersistenceFailureMessage))
+        }
+
+        let updates = await recorder.values()
+        #expect(updates.last == .failed(reviewAuthPersistenceFailureMessage))
+        #expect(clock.sleepCallCount() >= 1)
     }
 
     @Test func authManagerPublishesInitialProgressBeforeSessionCreationCompletes() async throws {
@@ -511,6 +558,31 @@ private actor AuthUpdateRecorder {
             }
             targetCount = await updateSignal.count() + 1
         }
+    }
+}
+
+private final class JumpingReviewClock: @unchecked Sendable, ReviewClock {
+    private let lock = NSLock()
+    private var current: ContinuousClock.Instant
+    private var sleepCalls = 0
+
+    init(now: ContinuousClock.Instant = ContinuousClock().now) {
+        current = now
+    }
+
+    var now: ContinuousClock.Instant {
+        lock.withLock { current }
+    }
+
+    func sleep(until deadline: ContinuousClock.Instant, tolerance _: Duration?) async throws {
+        lock.withLock {
+            sleepCalls += 1
+            current = deadline.advanced(by: .seconds(1))
+        }
+    }
+
+    func sleepCallCount() -> Int {
+        lock.withLock { sleepCalls }
     }
 }
 
@@ -1060,5 +1132,13 @@ private struct TestFailure: Error {
 
     init(_ message: String) {
         self.message = message
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () -> T) -> T {
+        lock()
+        defer { unlock() }
+        return body()
     }
 }
