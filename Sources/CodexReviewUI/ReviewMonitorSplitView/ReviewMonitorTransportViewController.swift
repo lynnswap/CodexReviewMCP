@@ -44,6 +44,10 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private var uiStateObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationGeneration: UInt64 = 0
+#if DEBUG
+    private var renderCountForTestingStorage = 0
+    private var renderWaitersForTesting: [Int: [CheckedContinuation<Void, Never>]] = [:]
+#endif
 
     init(uiState: ReviewMonitorUIState) {
         self.uiState = uiState
@@ -170,13 +174,14 @@ final class ReviewMonitorTransportViewController: NSViewController {
         turnLabel.stringValue = job.turnID.map { "Turn: \($0)" } ?? ""
         summaryLabel.stringValue = job.summary
         summaryLabel.isHidden = job.summary.isEmpty
-        logScrollView.setText(job.logText)
+        logScrollView.setText(job.reviewMonitorLogText)
 
         titleLabel.isHidden = false
         metadataStack.isHidden = false
         sectionTitleLabel.isHidden = false
         logScrollView.isHidden = false
         emptyStateView.isHidden = true
+        noteRenderForTesting()
     }
 
     private func renderEmptyState() {
@@ -195,12 +200,33 @@ final class ReviewMonitorTransportViewController: NSViewController {
         sectionTitleLabel.isHidden = true
         logScrollView.isHidden = true
         emptyStateView.isHidden = false
+        noteRenderForTesting()
+    }
+
+    private func noteRenderForTesting() {
+#if DEBUG
+        renderCountForTestingStorage += 1
+        let readyCounts = renderWaitersForTesting.keys.filter { $0 <= renderCountForTestingStorage }
+        for count in readyCounts {
+            let continuations = renderWaitersForTesting.removeValue(forKey: count) ?? []
+            for continuation in continuations {
+                continuation.resume()
+            }
+        }
+#endif
     }
 }
 
 #if DEBUG
 @MainActor
 extension ReviewMonitorTransportViewController {
+    struct RenderSnapshotForTesting: Equatable {
+        let title: String?
+        let summary: String?
+        let log: String
+        let isShowingEmptyState: Bool
+    }
+
     var displayedTitleForTesting: String? {
         titleLabel.isHidden ? nil : titleLabel.stringValue
     }
@@ -215,6 +241,40 @@ extension ReviewMonitorTransportViewController {
 
     var isShowingEmptyStateForTesting: Bool {
         emptyStateView.isHidden == false
+    }
+
+    var renderCountForTesting: Int {
+        renderCountForTestingStorage
+    }
+
+    var renderSnapshotForTesting: RenderSnapshotForTesting {
+        .init(
+            title: displayedTitleForTesting,
+            summary: displayedSummaryForTesting,
+            log: displayedLogForTesting,
+            isShowingEmptyState: isShowingEmptyStateForTesting
+        )
+    }
+
+    func waitForRenderCountForTesting(_ targetCount: Int) async {
+        if renderCountForTestingStorage >= targetCount {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if renderCountForTestingStorage >= targetCount {
+                continuation.resume()
+                return
+            }
+            renderWaitersForTesting[targetCount, default: []].append(continuation)
+        }
+    }
+
+    func flushMainQueueForTesting() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
     }
 }
 #endif

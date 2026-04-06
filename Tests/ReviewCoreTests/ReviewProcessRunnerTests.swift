@@ -224,7 +224,9 @@ struct AppServerReviewRunnerTests {
             )
         }
 
-        let result = try await awaitTaskValue(task, timeout: .seconds(1))
+        let result = try await withTestTimeout {
+            try await task.value
+        }
 
         #expect(result.state == .cancelled)
         #expect(result.errorMessage == "Cancellation requested before state stream started consuming.")
@@ -556,13 +558,16 @@ struct AppServerReviewRunnerTests {
                 environment: try isolatedHomeEnvironment()
             )
         )
+        let clock = ManualTestClock()
         runner.threadUnavailableGracePeriod = .seconds(1)
+        runner.clock = clock
         let session = MockAppServerSessionTransport(
             mode: .commandOutputThenTransportDisconnect()
         )
+        let completionSignal = AsyncSignal()
 
         let task = Task {
-            try await runner.run(
+            let result = try await runner.run(
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
@@ -571,11 +576,17 @@ struct AppServerReviewRunnerTests {
                 onEvent: { _ in },
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
             )
+            await completionSignal.signal()
+            return result
         }
 
-        #expect(await taskCompletesWithin(task, timeout: .milliseconds(100)) == false)
+        await clock.sleepUntilSuspendedBy(1)
+        #expect(await completionSignal.count() == 0)
+        clock.advance(by: .seconds(1))
 
-        let result = try await task.value
+        let result = try await withTestTimeout {
+            try await task.value
+        }
 
         #expect(result.state == .failed)
         #expect(result.errorMessage == "mock app-server transport disconnected")
@@ -865,7 +876,9 @@ struct AppServerReviewRunnerTests {
         await reviewStarted.wait()
         await cancellation.cancel("Cancellation requested after completed turn.")
         await stateChanges.yield()
-        let result = try await awaitTaskValue(task, timeout: .seconds(1))
+        let result = try await withTestTimeout {
+            try await task.value
+        }
 
         #expect(result.state == .cancelled)
         #expect(result.errorMessage == "Cancellation requested after completed turn.")
@@ -897,11 +910,11 @@ struct AppServerReviewRunnerTests {
     }
 
     @Test func remainingReviewTimeoutDurationSubtractsElapsedBootstrapTime() throws {
-        let startedAt = Date(timeIntervalSinceReferenceDate: 100)
+        let startedAt = ContinuousClock().now
         let duration = try remainingReviewTimeoutDuration(
             timeoutSeconds: 30,
             startedAt: startedAt,
-            now: Date(timeIntervalSinceReferenceDate: 110.25)
+            now: startedAt.advanced(by: .milliseconds(10_250))
         )
 
         #expect(duration == .milliseconds(19_750))
@@ -1039,47 +1052,24 @@ private actor NotificationHookAppServerSessionTransport: AppServerSessionTranspo
     }
 }
 
-private struct TaskAwaitTimeoutError: Error {}
-
-private func taskCompletesWithin<T: Sendable>(
-    _ task: Task<T, Error>,
-    timeout: Duration
-) async -> Bool {
-    await withTaskGroup(of: Bool.self) { group in
-        group.addTask {
-            _ = try? await task.value
-            return true
-        }
-        group.addTask {
-            try? await Task.sleep(for: timeout)
-            return false
-        }
-        let completed = await group.next() ?? false
-        group.cancelAll()
-        return completed
-    }
-}
-
-private func awaitTaskValue<T: Sendable>(
-    _ task: Task<T, Error>,
-    timeout: Duration
+private func withTestTimeout<T: Sendable>(
+    _ timeout: Duration = .seconds(2),
+    operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
-    defer { task.cancel() }
-    return try await withThrowingTaskGroup(of: T.self) { group in
+    try await withThrowingTaskGroup(of: T.self) { group in
         group.addTask {
-            try await task.value
+            try await operation()
         }
         group.addTask {
             try await Task.sleep(for: timeout)
-            throw TaskAwaitTimeoutError()
+            throw ReviewProcessRunnerTimeoutError()
         }
         defer { group.cancelAll() }
-        guard let result = try await group.next() else {
-            throw TaskAwaitTimeoutError()
-        }
-        return result
+        return try await #require(group.next())
     }
 }
+
+private struct ReviewProcessRunnerTimeoutError: Error {}
 
 private func writeReviewLocalConfig(homeURL: URL, content: String) throws {
     let configDirectory = homeURL.appendingPathComponent(".codex_review", isDirectory: true)

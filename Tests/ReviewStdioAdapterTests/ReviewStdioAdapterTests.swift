@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ReviewTestSupport
 @testable import ReviewStdioAdapter
 
 @Suite(.serialized) struct ReviewStdioAdapterTests {
@@ -74,9 +75,7 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await transport.postCalls().count == 3
-        }
+        await transport.waitForPostCount(3)
         let methods = await transport.postCalls().map(\.method)
         #expect(methods == ["initialize", "notifications/initialized", "tools/call"])
         await harness.stop()
@@ -110,19 +109,13 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await gate.reviewStarted
-        }
+        await gate.waitForReviewStarted()
         try await harness.send(cancelNotification(requestID: 2))
 
-        try await waitUntil {
-            await gate.cancelSeen
-        }
+        await gate.waitForCancelSeen()
 
         await gate.resume()
-        try await waitUntil {
-            await transport.postCalls().count == 4
-        }
+        await transport.waitForPostCount(4)
         let methods = await transport.postCalls().map(\.method)
         #expect(Array(methods.suffix(2)) == ["tools/call", "notifications/cancelled"])
         await harness.stop()
@@ -156,19 +149,13 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await gate.reviewStarted
-        }
+        await gate.waitForReviewStarted()
         try await harness.send(statusToolCallRequest(id: 3))
 
-        try await waitUntil {
-            await gate.cancelSeen
-        }
+        await gate.waitForCancelSeen()
 
         await gate.resume()
-        try await waitUntil {
-            await transport.postCalls().count == 4
-        }
+        await transport.waitForPostCount(4)
         await harness.stop()
     }
 
@@ -204,9 +191,7 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await transport.postCalls().count == 6
-        }
+        await transport.waitForPostCount(6)
         let calls = await transport.postCalls()
         #expect(calls.map(\.sessionID) == [nil, "session-1", "session-1", nil, "session-2", "session-2"])
         await harness.stop()
@@ -223,7 +208,7 @@ import Testing
                     return ReviewStdioHTTPResponse(statusCode: 202, sessionID: nil, body: nil)
                 case 3:
                     await gate.markReviewStarted()
-                    try await Task.sleep(for: .seconds(30))
+                    await gate.waitForResume()
                     return ReviewStdioHTTPResponse(statusCode: 200, sessionID: nil, body: successResponse(id: 2))
                 case 4:
                     return ReviewStdioHTTPResponse(statusCode: 200, sessionID: "session-2", body: successResponse(id: 10))
@@ -240,22 +225,19 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await gate.reviewStarted
-        }
+        await gate.waitForReviewStarted()
 
         try await harness.send(initializeRequest(id: 10))
         try await harness.send(initializedNotification())
 
-        try await waitUntil {
-            await transport.postCalls().count == 5
-        }
+        await transport.waitForPostCount(5)
 
         let outputs = try await harness.waitForOutputs(count: 2, timeout: .seconds(5))
         #expect(outputs.count == 2)
         #expect(outputs.contains(where: { $0.contains("\"id\":1") }))
         #expect(outputs.contains(where: { $0.contains("\"id\":10") }))
         #expect(outputs.contains(where: { $0.contains("\"id\":2") }) == false)
+        await gate.resume()
         await harness.stop()
     }
 
@@ -284,13 +266,11 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            let postCount = await transport.postCalls().count
-            let deletedSessions = await transport.deleteCalls()
-            return postCount == 5 && deletedSessions == ["session-2"]
-        }
+        await transport.waitForPostCount(5)
+        await transport.waitForDeleteCount(1)
 
         let outputs = try await harness.waitForOutputs(count: 2, timeout: .seconds(5))
+        #expect(await transport.deleteCalls() == ["session-2"])
         #expect(outputs.contains(where: { $0.contains("\"id\":2") }))
         await harness.stop()
     }
@@ -344,9 +324,7 @@ import Testing
 
         let outputs = try await harness.waitForOutputs(count: 1, timeout: .seconds(5))
         #expect(outputs[0].contains("\"id\":1"))
-        try await waitUntil {
-            await transport.deleteCalls() == ["session-1"]
-        }
+        await transport.waitForDeleteCount(1)
         #expect(await transport.deleteCalls() == ["session-1"])
         await harness.stop()
     }
@@ -403,9 +381,7 @@ import Testing
         try await harness.send(initializeRequest(id: 1))
         try await harness.send(initializedNotification())
 
-        try await waitUntil(timeout: .seconds(3)) {
-            await transport.sseCalls().count >= 2
-        }
+        await transport.waitForSSECount(2)
         let sseCalls = await transport.sseCalls()
         #expect(sseCalls.prefix(2).map(\.sessionID) == ["session-1", "session-1"])
         #expect(sseCalls.dropFirst().first?.lastEventID == "event-1")
@@ -442,11 +418,8 @@ import Testing
         try await harness.send(initializeRequest(id: 1))
         try await harness.send(initializedNotification())
 
-        try await waitUntil(timeout: .seconds(3)) {
-            let postCount = await transport.postCalls().count
-            let sseCount = await transport.sseCalls().count
-            return postCount == 4 && sseCount == 2
-        }
+        await transport.waitForPostCount(4)
+        await transport.waitForSSECount(2)
         let postMethods = await transport.postCalls().map(\.method)
         #expect(postMethods == ["initialize", "notifications/initialized", "initialize", "notifications/initialized"])
         let sseCalls = await transport.sseCalls().map(\.sessionID)
@@ -497,9 +470,7 @@ import Testing
         ].joined(separator: Data([0x0A]))) + Data([0x0A])
         await harness.adapter.receiveChunkForTesting(chunk)
 
-        try await waitUntil {
-            await transport.postCalls().count == 2
-        }
+        await transport.waitForPostCount(2)
         let outputs = try await harness.waitForOutputs(count: 1, timeout: .seconds(5))
         #expect(outputs[0].contains("\"id\":2"))
         await harness.stop()
@@ -524,13 +495,12 @@ import Testing
         let harness = try await AdapterHarness.make(transport: transport)
 
         try await harness.send(initializeRequest(id: 1))
-        try await waitUntil {
-            await gate.reviewStarted
-        }
+        await gate.waitForReviewStarted()
         try await harness.send(initializeRequest(id: 2))
         await gate.resume()
 
         let outputs = try await harness.waitForOutputs(count: 1, timeout: .seconds(5))
+        await transport.waitForDeleteCount(1)
         #expect(outputs.count == 1)
         #expect(outputs[0].contains("\"id\":2"))
         #expect(outputs.contains(where: { $0.contains("\"id\":1") }) == false)
@@ -565,24 +535,17 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await gate.reviewStarted
-        }
+        await gate.waitForReviewStarted()
         try await harness.send(cancelNotification(requestID: 2))
-        try await waitUntil {
-            await gate.cancelSeen
-        }
+        await gate.waitForCancelSeen()
         await gate.resume()
-        try await waitUntil {
-            await transport.postCalls().count == 4
-        }
-        try await Task.sleep(for: .milliseconds(100))
+        await transport.waitForPostCount(4)
+        await harness.stop()
 
         let outputs = harness.outputSink.outputs()
         #expect(outputs.count == 1)
         #expect(outputs[0].contains("\"id\":1"))
         #expect(outputs.contains(where: { $0.contains("\"id\":2") }) == false)
-        await harness.stop()
     }
 
     @Test func requestIDCanBeReusedAfterCancelledRequestCompletes() async throws {
@@ -614,17 +577,11 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await gate.reviewStarted
-        }
+        await gate.waitForReviewStarted()
         try await harness.send(cancelNotification(requestID: 2))
-        try await waitUntil {
-            await gate.cancelSeen
-        }
+        await gate.waitForCancelSeen()
         await gate.resume()
-        try await waitUntil {
-            await transport.postCalls().count == 4
-        }
+        await transport.waitForPostCount(4)
 
         try await harness.send(toolCallRequest(id: 2))
         let outputs = try await harness.waitForOutputs(count: 2, timeout: .seconds(5))
@@ -691,16 +648,13 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await gate.reviewStarted
-        }
+        await gate.waitForReviewStarted()
 
         await harness.stop()
         await gate.resume()
 
-        try await waitUntil {
-            await transport.deleteCalls().contains("session-2")
-        }
+        await transport.waitForDeleteCount(1)
+        #expect(await transport.deleteCalls().contains("session-2"))
     }
 
     @Test func cancelledRequestIsNotRetriedAfter404Recovery() async throws {
@@ -731,23 +685,17 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await gate.reviewStarted
-        }
+        await gate.waitForReviewStarted()
         try await harness.send(cancelNotification(requestID: 2))
         await gate.resume()
 
-        try await waitUntil {
-            await transport.postCalls().count == 5
-        }
-
-        try await Task.sleep(for: .milliseconds(100))
+        await transport.waitForPostCount(5)
+        await harness.stop()
 
         let outputs = harness.outputSink.outputs()
         #expect(outputs.count == 1)
         #expect(outputs[0].contains("\"id\":1"))
         #expect(outputs.contains(where: { $0.contains("\"id\":2") }) == false)
-        await harness.stop()
     }
 
     @Test func queuedRequestRunsAfterRecoveryBecomesReady() async throws {
@@ -782,15 +730,11 @@ import Testing
         try await harness.send(initializedNotification())
         try await harness.send(toolCallRequest(id: 2))
 
-        try await waitUntil {
-            await gate.reviewStarted
-        }
+        await gate.waitForReviewStarted()
         try await harness.send(statusToolCallRequest(id: 3))
         await gate.resume()
 
-        try await waitUntil {
-            await transport.postCalls().count == 7
-        }
+        await transport.waitForPostCount(7)
 
         let outputs = try await harness.waitForOutputs(count: 3, timeout: .seconds(5))
         #expect(outputs.contains(where: { $0.contains("\"id\":2") }))
@@ -823,8 +767,8 @@ private struct AdapterHarness {
     }
 
     func waitForOutputs(count: Int, timeout: Duration = .seconds(2)) async throws -> [String] {
-        try await waitUntil(timeout: timeout) {
-            outputSink.outputs().count >= count
+        try await withTestTimeout(timeout) {
+            try await outputSink.waitForCount(count)
         }
         return outputSink.outputs()
     }
@@ -837,11 +781,16 @@ private struct AdapterHarness {
 private final class RecordingOutputSink: ReviewStdioOutputSink, @unchecked Sendable {
     private let lock = NSLock()
     private var lines: [String] = []
+    private let outputQueue = AsyncValueQueue<String>()
 
     func send(_ data: Data) {
+        let line = String(decoding: data, as: UTF8.self)
         lock.lock()
         defer { lock.unlock() }
-        lines.append(String(decoding: data, as: UTF8.self))
+        lines.append(line)
+        Task {
+            await outputQueue.push(line)
+        }
     }
 
     func outputs() -> [String] {
@@ -849,30 +798,43 @@ private final class RecordingOutputSink: ReviewStdioOutputSink, @unchecked Senda
         defer { lock.unlock() }
         return lines
     }
+
+    func waitForCount(_ count: Int) async throws {
+        while outputs().count < count {
+            guard await outputQueue.next() != nil else {
+                throw TestFailure("output stream ended before reaching \(count) lines")
+            }
+        }
+    }
 }
 
 private actor ReviewGate {
-    private var continuation: CheckedContinuation<Void, Never>?
-    private(set) var reviewStarted = false
-    private(set) var cancelSeen = false
+    private let reviewStartedSignal = AsyncSignal()
+    private let cancelSeenSignal = AsyncSignal()
+    private let resumeGate = OneShotGate()
 
-    func markReviewStarted() {
-        reviewStarted = true
+    func markReviewStarted() async {
+        await reviewStartedSignal.signal()
     }
 
-    func markCancelSeen() {
-        cancelSeen = true
+    func markCancelSeen() async {
+        await cancelSeenSignal.signal()
     }
 
     func waitForResume() async {
-        await withCheckedContinuation { continuation in
-            self.continuation = continuation
-        }
+        await resumeGate.wait()
     }
 
-    func resume() {
-        continuation?.resume()
-        continuation = nil
+    func resume() async {
+        await resumeGate.open()
+    }
+
+    func waitForReviewStarted() async {
+        await reviewStartedSignal.wait()
+    }
+
+    func waitForCancelSeen() async {
+        await cancelSeenSignal.wait()
     }
 }
 
@@ -895,6 +857,9 @@ private actor TestTransport: ReviewStdioUpstreamTransport {
     private let postHandler: POSTHandler
     private let sseHandler: SSEHandler
     private let deleteHandler: DeleteHandler
+    private let postSignal = AsyncSignal()
+    private let sseSignal = AsyncSignal()
+    private let deleteSignal = AsyncSignal()
     private var postLog: [RecordedPost] = []
     struct RecordedSSE: Sendable {
         let sessionID: String
@@ -927,6 +892,7 @@ private actor TestTransport: ReviewStdioUpstreamTransport {
             data: data
         )
         postLog.append(recorded)
+        await postSignal.signal()
         return try await postHandler(recorded)
     }
 
@@ -936,6 +902,7 @@ private actor TestTransport: ReviewStdioUpstreamTransport {
         lastEventID: String?
     ) async throws -> AsyncThrowingStream<ReviewStdioSSEEvent, Error> {
         sseLog.append(RecordedSSE(sessionID: sessionID, lastEventID: lastEventID))
+        await sseSignal.signal()
         return try await sseHandler(sessionID, lastEventID, sseLog.count)
     }
 
@@ -944,6 +911,7 @@ private actor TestTransport: ReviewStdioUpstreamTransport {
         sessionID: String
     ) async {
         deleteLog.append(sessionID)
+        await deleteSignal.signal()
         await deleteHandler(sessionID)
     }
 
@@ -961,21 +929,35 @@ private actor TestTransport: ReviewStdioUpstreamTransport {
     func deleteCalls() -> [String] {
         deleteLog
     }
+
+    func waitForPostCount(_ count: Int) async {
+        await postSignal.wait(untilCount: count)
+    }
+
+    func waitForDeleteCount(_ count: Int) async {
+        await deleteSignal.wait(untilCount: count)
+    }
+
+    func waitForSSECount(_ count: Int) async {
+        await sseSignal.wait(untilCount: count)
+    }
 }
 
-private func waitUntil(
-    timeout: Duration = .seconds(2),
-    interval: Duration = .milliseconds(20),
-    condition: @escaping @Sendable () async -> Bool
-) async throws {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if await condition() {
-            return
+private func withTestTimeout<T: Sendable>(
+    _ timeout: Duration = .seconds(2),
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
         }
-        try await Task.sleep(for: interval)
+        group.addTask {
+            try await Task.sleep(for: timeout)
+            throw TestFailure("timed out")
+        }
+        defer { group.cancelAll() }
+        return try await #require(group.next())
     }
-    throw TestFailure("timed out")
 }
 
 private func initializeRequest(id: Int) -> [String: Any] {

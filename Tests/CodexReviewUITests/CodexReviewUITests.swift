@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @_spi(Testing) @testable import CodexReviewModel
 @testable import CodexReviewUI
+import ReviewTestSupport
 import ReviewJobs
 import ReviewRuntime
 
@@ -71,8 +72,9 @@ struct CodexReviewUITests {
         viewController.viewDidAppear()
         viewController.viewDidAppear()
 
-        let _: Bool = try await waitUntilValue {
-            backend.startCallCount() == 1 ? true : nil
+        let backendBox = UncheckedSendableBox(backend)
+        try await withTestTimeout {
+            await backendBox.value.waitForStartCallCount(1)
         }
 
         #expect(viewController.didTriggerStoreStartForTesting)
@@ -252,27 +254,72 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
 
+        let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            let transport = viewController.transportViewControllerForTesting
-            guard transport.displayedTitleForTesting == recentJob.displayTitle,
-                  transport.displayedSummaryForTesting == recentJob.summary,
-                  transport.displayedLogForTesting == recentJob.logText
-            else {
-                return nil
-            }
-            return true
-        }
+        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(
+            selectedSnapshot == .init(
+                title: recentJob.displayTitle,
+                summary: recentJob.summary,
+                log: recentJob.logText,
+                isShowingEmptyState: false
+            )
+        )
 
+        let stableRenderCount = transport.renderCountForTesting
         activeJob.summary = "Old selection should not render."
         activeJob.logEntries = [.init(kind: .agentMessage, text: "Old selection log")]
-        try await Task.sleep(for: .milliseconds(200))
+        await transport.flushMainQueueForTesting()
 
-        #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == recentJob.displayTitle)
-        #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == recentJob.summary)
-        #expect(viewController.transportViewControllerForTesting.displayedLogForTesting == recentJob.logText)
+        #expect(transport.renderCountForTesting == stableRenderCount)
+        #expect(transport.renderSnapshotForTesting == selectedSnapshot)
+    }
+
+    @Test func detailPaneHidesCommandOutputButKeepsCommandEntries() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-command-output",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Uncommitted changes",
+            threadID: UUID().uuidString,
+            turnID: UUID().uuidString,
+            status: .succeeded,
+            startedAt: Date(timeIntervalSince1970: 200),
+            endedAt: Date(timeIntervalSince1970: 201),
+            summary: "Review completed.",
+            hasFinalReview: true,
+            lastAgentMessage: "No correctness issues found.",
+            logEntries: [
+                .init(kind: .command, text: "$ git diff --stat"),
+                .init(kind: .commandOutput, groupID: "cmd_1", text: "README.md | 1 +"),
+                .init(kind: .agentMessage, text: "No correctness issues found.")
+            ]
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+
+        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(selectedSnapshot.title == job.displayTitle)
+        #expect(selectedSnapshot.summary == job.summary)
+
+        let displayedLog = transport.displayedLogForTesting
+        #expect(displayedLog.contains("$ git diff --stat"))
+        #expect(displayedLog.contains("No correctness issues found."))
+        #expect(displayedLog.contains("README.md | 1 +") == false)
     }
 
     @Test func switchingSelectedJobRebindsDetailPane() async throws {
@@ -300,27 +347,26 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let firstRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            guard viewController.transportViewControllerForTesting.displayedTitleForTesting == activeJob.displayTitle else {
-                return nil
-            }
-            return true
-        }
+        let activeSnapshot = try await awaitTransportRender(transport, after: firstRenderCount)
+        #expect(activeSnapshot.title == activeJob.displayTitle)
 
+        let secondRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            let transport = viewController.transportViewControllerForTesting
-            guard transport.displayedTitleForTesting == recentJob.displayTitle,
-                  transport.displayedSummaryForTesting == recentJob.summary,
-                  transport.displayedLogForTesting == recentJob.logText
-            else {
-                return nil
-            }
-            return true
-        }
+        let recentSnapshot = try await awaitTransportRender(transport, after: secondRenderCount)
+        #expect(
+            recentSnapshot == .init(
+                title: recentJob.displayTitle,
+                summary: recentJob.summary,
+                log: recentJob.logText,
+                isShowingEmptyState: false
+            )
+        )
     }
 
     @Test func clickingSidebarBlankAreaKeepsSelectionAndDetailPane() async throws {
@@ -345,25 +391,20 @@ struct CodexReviewUITests {
         window.setContentSize(NSSize(width: 900, height: 600))
         viewController.loadViewIfNeeded()
         viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            let transport = viewController.transportViewControllerForTesting
-            guard transport.displayedTitleForTesting == job.displayTitle,
-                  transport.displayedSummaryForTesting == job.summary,
-                  transport.displayedLogForTesting == job.logText
-            else {
-                return nil
-            }
-            return true
-        }
+        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
 
+        let stableRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.clickBlankAreaForTesting()
+        await transport.flushMainQueueForTesting()
 
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting?.id == job.id)
-        #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == job.displayTitle)
-        #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == job.summary)
-        #expect(viewController.transportViewControllerForTesting.displayedLogForTesting == job.logText)
+        #expect(transport.renderCountForTesting == stableRenderCount)
+        #expect(transport.renderSnapshotForTesting == selectedSnapshot)
     }
 
     @Test func clickingWorkspaceHeaderKeepsSelectionAndDetailPane() async throws {
@@ -394,25 +435,20 @@ struct CodexReviewUITests {
         window.setContentSize(NSSize(width: 900, height: 600))
         viewController.loadViewIfNeeded()
         viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            let transport = viewController.transportViewControllerForTesting
-            guard transport.displayedTitleForTesting == job.displayTitle,
-                  transport.displayedSummaryForTesting == job.summary,
-                  transport.displayedLogForTesting == job.logText
-            else {
-                return nil
-            }
-            return true
-        }
+        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
 
+        let stableRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.clickWorkspaceHeaderForTesting(workspace)
+        await transport.flushMainQueueForTesting()
 
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting?.id == job.id)
-        #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == job.displayTitle)
-        #expect(viewController.transportViewControllerForTesting.displayedSummaryForTesting == job.summary)
-        #expect(viewController.transportViewControllerForTesting.displayedLogForTesting == job.logText)
+        #expect(transport.renderCountForTesting == stableRenderCount)
+        #expect(transport.renderSnapshotForTesting == selectedSnapshot)
     }
 
     @Test func newJobsArrivingWhileUnselectedDoNotAutoSelect() {
@@ -463,32 +499,25 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            guard viewController.transportViewControllerForTesting.displayedTitleForTesting == activeJob.displayTitle else {
-                return nil
-            }
-            return true
-        }
+        let activeSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(activeSnapshot.title == activeJob.displayTitle)
 
+        let removalRenderCount = transport.renderCountForTesting
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [recentJob])
         )
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            let sidebar = viewController.sidebarViewControllerForTesting
-            let transport = viewController.transportViewControllerForTesting
-            guard sidebar.selectedJobForTesting == nil,
-                  transport.isShowingEmptyStateForTesting,
-                  transport.displayedTitleForTesting == nil,
-                  transport.displayedSummaryForTesting == nil
-            else {
-                return nil
-            }
-            return true
-        }
+        let emptySnapshot = try await awaitTransportRender(transport, after: removalRenderCount)
+        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
+        #expect(emptySnapshot.isShowingEmptyState)
+        #expect(emptySnapshot.title == nil)
+        #expect(emptySnapshot.summary == nil)
     }
 
     @Test func clearingSelectionShowsEmptyStateAndClearsDetailPane() async throws {
@@ -511,35 +540,30 @@ struct CodexReviewUITests {
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            guard viewController.transportViewControllerForTesting.displayedTitleForTesting == job.displayTitle else {
-                return nil
-            }
-            return true
-        }
+        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(selectedSnapshot.title == job.displayTitle)
 
+        let clearRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.clearSelectionForTesting()
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            let transport = viewController.transportViewControllerForTesting
-            guard transport.isShowingEmptyStateForTesting,
-                  transport.displayedTitleForTesting == nil,
-                  transport.displayedSummaryForTesting == nil,
-                  transport.displayedLogForTesting.isEmpty
-            else {
-                return nil
-            }
-            return true
-        }
+        let emptySnapshot = try await awaitTransportRender(transport, after: clearRenderCount)
+        #expect(emptySnapshot.isShowingEmptyState)
+        #expect(emptySnapshot.title == nil)
+        #expect(emptySnapshot.summary == nil)
+        #expect(emptySnapshot.log.isEmpty)
 
+        let stableRenderCount = transport.renderCountForTesting
         job.summary = "Deselected summary"
         job.logEntries = [.init(kind: .agentMessage, text: "Deselected log")]
-        try await Task.sleep(for: .milliseconds(200))
+        await transport.flushMainQueueForTesting()
 
-        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.transportViewControllerForTesting.displayedLogForTesting.isEmpty)
+        #expect(transport.renderCountForTesting == stableRenderCount)
+        #expect(transport.renderSnapshotForTesting == emptySnapshot)
     }
 
     @Test func inPlaceJobUpdateKeepsSelectionAndRefreshesDetailPane() async throws {
@@ -560,36 +584,28 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
 
+        let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            guard viewController.transportViewControllerForTesting.displayedTitleForTesting == job.displayTitle else {
-                return nil
-            }
-            return true
-        }
+        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(selectedSnapshot.title == job.displayTitle)
 
         job.status = .succeeded
         job.summary = "Review completed successfully."
         job.logEntries = [.init(kind: .agentMessage, text: "Updated log")]
 
+        let updateRenderCount = transport.renderCountForTesting
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
         )
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            let sidebar = viewController.sidebarViewControllerForTesting
-            let transport = viewController.transportViewControllerForTesting
-            guard sidebar.selectedJobForTesting?.id == "job-1",
-                  transport.displayedSummaryForTesting == "Review completed successfully.",
-                  transport.displayedLogForTesting == "Updated log"
-            else {
-                return nil
-            }
-            return true
-        }
+        let updatedSnapshot = try await awaitTransportRender(transport, after: updateRenderCount)
+        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting?.id == "job-1")
+        #expect(updatedSnapshot.summary == "Review completed successfully.")
+        #expect(updatedSnapshot.log == "Updated log")
     }
 
     @Test func authFailedJobShowsNormalFailureDetails() async throws {
@@ -611,18 +627,14 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
 
+        let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            let transport = viewController.transportViewControllerForTesting
-            guard transport.displayedSummaryForTesting == "Failed to start review.",
-                  transport.displayedLogForTesting == "Authentication required. Sign in to ReviewMCP and retry."
-            else {
-                return nil
-            }
-            return true
-        }
+        let snapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(snapshot.summary == "Failed to start review.")
+        #expect(snapshot.log == "Authentication required. Sign in to ReviewMCP and retry.")
     }
 
     @Test func authenticatedAuthFailedJobStillShowsNormalFailureDetails() async throws {
@@ -644,36 +656,57 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
 
+        let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
-        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
-            let transport = viewController.transportViewControllerForTesting
-            guard transport.displayedSummaryForTesting == "Failed to start review.",
-                  transport.displayedLogForTesting == "Authentication required. Sign in to ReviewMCP and retry."
-            else {
-                return nil
-            }
-            return true
-        }
+        let snapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(snapshot.summary == "Failed to start review.")
+        #expect(snapshot.log == "Authentication required. Sign in to ReviewMCP and retry.")
     }
 
 }
 
 @MainActor
-private func waitUntilValue<T>(
-    timeout: Duration = .seconds(2),
-    interval: Duration = .milliseconds(20),
-    action: @escaping () async throws -> T?
+private func withTestTimeout<T: Sendable>(
+    _ timeout: Duration = .seconds(2),
+    operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if let value = try await action() {
-            return value
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
         }
-        try await Task.sleep(for: interval)
+        group.addTask {
+            try await Task.sleep(for: timeout)
+            throw TestFailure("timed out")
+        }
+        defer { group.cancelAll() }
+        return try await #require(group.next())
     }
-    throw TestFailure("timed out")
+}
+
+@MainActor
+private func awaitTransportRender(
+    _ transport: ReviewMonitorTransportViewController,
+    after renderCount: Int,
+    timeout: Duration = .seconds(2)
+) async throws -> ReviewMonitorTransportViewController.RenderSnapshotForTesting {
+    let transportBox = UncheckedSendableBox(transport)
+    return try await withTestTimeout(timeout) {
+        await transportBox.value.waitForRenderCountForTesting(renderCount + 1)
+        return await MainActor.run {
+            transportBox.value.renderSnapshotForTesting
+        }
+    }
+}
+
+private final class UncheckedSendableBox<Value>: @unchecked Sendable {
+    let value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
 }
 
 @MainActor
@@ -787,6 +820,7 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
 @MainActor
 private final class CountingStartBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer: Bool
+    private let startSignal = AsyncSignal()
     private var startCalls = 0
 
     init(shouldAutoStartEmbeddedServer: Bool = true) {
@@ -804,6 +838,7 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
         _ = store
         _ = forceRestartIfNeeded
         startCalls += 1
+        await startSignal.signal()
     }
 
     func stop(store: CodexReviewStore) async {
@@ -842,5 +877,12 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
 
     func startCallCount() -> Int {
         startCalls
+    }
+
+    func waitForStartCallCount(_ count: Int) async {
+        if startCalls >= count {
+            return
+        }
+        await startSignal.wait(untilCount: count)
     }
 }

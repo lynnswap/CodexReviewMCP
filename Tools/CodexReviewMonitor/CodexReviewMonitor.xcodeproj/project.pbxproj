@@ -10,6 +10,7 @@
 		AB663A752F7B9B7F0076BA6D /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = AB663A742F7B9B7F0076BA6D /* AppIcon.icon */; };
 		F0A100000000000000000001 /* CodexReviewMCP in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000003 /* CodexReviewMCP */; };
 		F0A100000000000000000004 /* CodexReviewUI in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000005 /* CodexReviewUI */; };
+		F0A100000000000000000006 /* ReviewTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000007 /* ReviewTestSupport */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -68,6 +69,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F0A100000000000000000006 /* ReviewTestSupport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -147,6 +149,7 @@
 			);
 			name = CodexReviewMonitorTests;
 			packageProductDependencies = (
+				F0A100000000000000000007 /* ReviewTestSupport */,
 			);
 			productName = CodexReviewMonitorTests;
 			productReference = AB19F43C2F77D8AD009726F1 /* CodexReviewMonitorTests.xctest */;
@@ -680,6 +683,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F0A100000000000000000002 /* XCLocalSwiftPackageReference "../.." */;
 			productName = CodexReviewUI;
+		};
+		F0A100000000000000000007 /* ReviewTestSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F0A100000000000000000002 /* XCLocalSwiftPackageReference "../.." */;
+			productName = ReviewTestSupport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
