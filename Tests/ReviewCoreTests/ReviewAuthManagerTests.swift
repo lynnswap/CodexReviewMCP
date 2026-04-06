@@ -396,6 +396,42 @@ struct ReviewAuthManagerTests {
         }
     }
 
+    @Test func cliReviewAuthSessionCloseTreatsCancelledStartupBeforeBrowserURLAsCancelled() async throws {
+        let root = makeTemporaryRoot()
+        let marker = root.appendingPathComponent("login-started")
+        let script = try makeExecutableScript(
+            at: root.appendingPathComponent("codex"),
+            contents: """
+            #!/bin/sh
+            touch "\(marker.path)"
+            trap 'echo "cancelled during startup" >&2; exit 0' TERM INT
+            while true; do
+              sleep 1
+            done
+            """
+        )
+        let session = CLIReviewAuthSession(
+            configuration: .init(
+                codexCommand: script.path,
+                environment: ["HOME": root.path]
+            )
+        )
+
+        let task = Task {
+            try await session.startLogin(.chatGPT)
+        }
+
+        try await waitUntil(timeout: .seconds(2)) {
+            FileManager.default.fileExists(atPath: marker.path) ? true : nil
+        }
+
+        await session.close()
+
+        await #expect(throws: ReviewAuthError.cancelled) {
+            try await task.value
+        }
+    }
+
     @Test func fakeReviewAuthSessionBrowserStartReturnsAuthURLAndLoginID() async throws {
         let session = FakeReviewAuthSession(
             readResponses: [],
@@ -994,6 +1030,18 @@ private func waitUntil(
 private func makeTemporaryRoot() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+private func makeExecutableScript(
+    at url: URL,
+    contents: String
+) throws -> URL {
+    try contents.write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: url.path
+    )
     return url
 }
 

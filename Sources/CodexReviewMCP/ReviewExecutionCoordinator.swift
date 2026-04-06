@@ -323,6 +323,9 @@ package actor ReviewExecutionCoordinator {
             sessionID: sessionID,
             reason: normalizedReason
         )
+        if result.signalled {
+            executions[job.id]?.task.cancel()
+        }
         let resolvedReviewThreadID = await job.reviewThreadID
         let resolvedThreadID = await job.threadID
         let status = await job.status.state

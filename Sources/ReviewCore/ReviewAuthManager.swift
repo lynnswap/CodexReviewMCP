@@ -549,6 +549,7 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         var stderrTask: Task<Void, Never>?
         var waitTask: Task<Void, Never>?
         var startResponseDelivered = false
+        var terminationRequested = false
         var browserURL: String?
         var outputLines: [String] = []
 
@@ -862,9 +863,20 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         }
 
         if activeLogin.startResponseDelivered == false {
-            let output = activeLogin.outputLines.joined(separator: "\n")
-            let message = output.nilIfEmpty ?? "Authentication did not produce a browser URL."
-            resolveStartResult(.failure(ReviewAuthError.loginFailed(message)))
+            if activeLogin.terminationRequested {
+                resolveStartResult(.failure(ReviewAuthError.cancelled))
+            } else {
+                let output = activeLogin.outputLines.joined(separator: "\n")
+                let message = output.nilIfEmpty ?? "Authentication did not produce a browser URL."
+                resolveStartResult(.failure(ReviewAuthError.loginFailed(message)))
+            }
+        }
+
+        if activeLogin.terminationRequested {
+            self.activeLogin = nil
+            _ = await activeLogin.stdoutTask?.result
+            _ = await activeLogin.stderrTask?.result
+            return
         }
 
         let success = exitCode == 0
@@ -890,6 +902,7 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         guard let activeLogin else {
             return
         }
+        activeLogin.terminationRequested = true
         if activeLogin.process.isRunning {
             activeLogin.process.terminate()
             try? await Task.sleep(for: .milliseconds(500))

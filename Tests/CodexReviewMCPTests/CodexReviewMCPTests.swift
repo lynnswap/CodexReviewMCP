@@ -356,6 +356,49 @@ struct CodexReviewMCPTests {
         #expect(await transport.isClosed())
     }
 
+    @Test func cancelReviewInterruptsInFlightBootstrapRequest() async throws {
+        let manager = BlockingBootstrapAppServerManager()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: try isolatedHomeEnvironment()
+            ),
+            appServerManager: manager
+        )
+
+        await store.start()
+        defer { Task { await store.stop() } }
+
+        let reviewTask = Task {
+            try await store.startReview(
+                sessionID: "session-bootstrap",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
+            )
+        }
+
+        let transport = await manager.sessionTransport()
+        await transport.waitForRequest("config/read")
+
+        let cancelResult = try await store.cancelReview(
+            selector: .init(reviewThreadID: nil, cwd: nil, statuses: [.running], latest: true),
+            sessionID: "session-bootstrap"
+        )
+
+        #expect(cancelResult.cancelled)
+
+        let result = try await withTestTimeout {
+            try await reviewTask.value
+        }
+
+        #expect(result.status == .cancelled)
+        #expect(result.error == "Cancellation requested.")
+        #expect(await transport.isClosed())
+    }
+
     @Test func cancelAuthenticationClosesStateWithoutStartingAnotherAuthSession() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
@@ -1502,6 +1545,113 @@ private actor AuthCapableAppServerManager: AppServerManaging {
     }
 }
 
+private actor BlockingBootstrapAppServerManager: AppServerManaging {
+    private let runtimeState = AppServerRuntimeState(
+        pid: 200,
+        startTime: .init(seconds: 2, microseconds: 0),
+        processGroupLeaderPID: 200,
+        processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
+    )
+    private let transportStorage = BlockingBootstrapTransport()
+
+    func prepare() async throws -> AppServerRuntimeState {
+        runtimeState
+    }
+
+    func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        transportStorage
+    }
+
+    func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        transportStorage
+    }
+
+    func currentRuntimeState() async -> AppServerRuntimeState? {
+        runtimeState
+    }
+
+    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
+    }
+
+    func diagnosticsTail() async -> String {
+        ""
+    }
+
+    func shutdown() async {}
+
+    func sessionTransport() -> BlockingBootstrapTransport {
+        transportStorage
+    }
+}
+
+private actor BlockingBootstrapTransport: AppServerSessionTransport {
+    private var requestCounts: [String: Int] = [:]
+    private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private var closedStorage = false
+
+    func initializeResponse() async -> AppServerInitializeResponse {
+        .init(
+            userAgent: nil,
+            codexHome: nil,
+            platformFamily: "macOS",
+            platformOs: "Darwin"
+        )
+    }
+
+    func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
+        method: String,
+        params _: Params,
+        responseType _: Response.Type
+    ) async throws -> Response {
+        noteRequest(method)
+        switch method {
+        case "config/read":
+            try await Task.sleep(for: .seconds(60))
+            throw TestFailure("config/read should have been cancelled")
+        default:
+            throw TestFailure("unexpected bootstrap request: \(method)")
+        }
+    }
+
+    func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func isClosed() async -> Bool {
+        closedStorage
+    }
+
+    func close() async {
+        closedStorage = true
+    }
+
+    func waitForRequest(_ method: String) async {
+        if requestCounts[method, default: 0] > 0 {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if requestCounts[method, default: 0] > 0 {
+                continuation.resume()
+            } else {
+                requestWaiters[method, default: []].append(continuation)
+            }
+        }
+    }
+
+    private func noteRequest(_ method: String) {
+        requestCounts[method, default: 0] += 1
+        let waiters = requestWaiters.removeValue(forKey: method) ?? []
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+}
+
 private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var isClosedStorage = false
@@ -1672,6 +1822,26 @@ private func taskCompletesWithin(
         }
         defer { group.cancelAll() }
         return await group.next() ?? false
+    }
+}
+
+private func withTestTimeout<T: Sendable>(
+    _ timeout: Duration = .seconds(2),
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        group.addTask {
+            try await Task.sleep(for: timeout)
+            throw TestFailure("timed out waiting for operation")
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else {
+            throw TestFailure("timed out waiting for operation")
+        }
+        return result
     }
 }
 
