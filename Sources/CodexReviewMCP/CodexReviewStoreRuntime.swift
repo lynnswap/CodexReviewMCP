@@ -26,12 +26,14 @@ extension CodexReviewStore {
     package convenience init(
         configuration: ReviewServerConfiguration,
         diagnosticsURL: URL? = nil,
-        appServerManager: (any AppServerManaging)? = nil
+        appServerManager: (any AppServerManaging)? = nil,
+        authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil
     ) {
         self.init(
             backend: CodexReviewEmbeddedServerBackend(
                 configuration: configuration,
-                appServerManager: appServerManager
+                appServerManager: appServerManager,
+                authSessionFactory: authSessionFactory
             ),
             diagnosticsURL: diagnosticsURL
         )
@@ -236,7 +238,7 @@ extension CodexReviewStore {
             } else {
                 job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
             }
-            job.errorMessage = outcome.errorMessage
+            job.errorMessage = reviewAuthDisplayMessage(from: outcome.errorMessage)
             job.reviewThreadID = outcome.reviewThreadID ?? job.reviewThreadID
             job.threadID = outcome.threadID ?? job.threadID
             job.turnID = outcome.turnID ?? job.turnID
@@ -258,7 +260,7 @@ extension CodexReviewStore {
             job.status = .failed
             job.summary = "Failed to start review."
             job.model = model ?? job.model
-            job.errorMessage = message
+            job.errorMessage = reviewAuthDisplayMessage(from: message)
             job.startedAt = startedAt
             job.endedAt = endedAt
             if message.isEmpty == false {
@@ -492,6 +494,10 @@ extension CodexReviewStore {
         return .init(
             port: port,
             codexCommand: codexCommand,
+            shouldAutoStartEmbeddedServer: CodexReviewStoreLaunchPolicy.shouldAutoStartEmbeddedServer(
+                environment: environment,
+                arguments: arguments
+            ),
             environment: environment
         )
     }
@@ -918,6 +924,23 @@ extension CodexReviewStore {
 private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
     let appServerManager: any AppServerManaging
+    let authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)?
+    let shouldAutoStartEmbeddedServer: Bool
+    lazy var liveAuthSessionFactory: @Sendable () async throws -> any ReviewAuthSession = { [configuration] in
+        CLIReviewAuthSession(
+            configuration: .init(
+                codexCommand: configuration.codexCommand,
+                environment: configuration.environment
+            )
+        )
+    }
+    lazy var authManager = ReviewAuthManager(
+        configuration: .init(
+            codexCommand: configuration.codexCommand,
+            environment: configuration.environment
+        ),
+        sessionFactory: authSessionFactory ?? liveAuthSessionFactory
+    )
     lazy var executionCoordinator: ReviewExecutionCoordinator = {
         ReviewExecutionCoordinator(
             configuration: .init(
@@ -941,6 +964,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     private var server: ReviewMCPHTTPServer?
     private var waitTask: Task<Void, Never>?
+    private var startupTask: Task<Void, Never>?
+    private var authRefreshTask: Task<Void, Never>?
+    private var startupTaskID: UUID?
     var closedSessions: Set<String> = []
     private var discoveryFileURL: URL {
         ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
@@ -950,12 +976,13 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     }
 
     var isActive: Bool {
-        server != nil || waitTask != nil
+        server != nil || waitTask != nil || startupTask != nil
     }
 
     init(
         configuration: ReviewServerConfiguration,
-        appServerManager: (any AppServerManaging)? = nil
+        appServerManager: (any AppServerManaging)? = nil,
+        authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil
     ) {
         self.configuration = configuration
         self.appServerManager = appServerManager ?? AppServerSupervisor(
@@ -964,6 +991,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 environment: configuration.environment
             )
         )
+        self.authSessionFactory = authSessionFactory
+        self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
     }
 
     func start(
@@ -971,59 +1000,56 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         forceRestartIfNeeded: Bool
     ) async {
         closedSessions = []
-
-        let server = makeServer(store: store)
-        do {
-            let url: URL
-            do {
-                url = try await server.start()
-            } catch {
-                guard forceRestartIfNeeded,
-                      isAddressInUse(error)
-                else {
-                    throw error
-                }
-                try await replayAddressInUseCleanup()
-                url = try await server.start()
+        let startupID = UUID()
+        let task = Task { @MainActor [weak self, weak store] in
+            guard let self, let store else {
+                return
             }
-
-            let appServerRuntimeState = try await appServerManager.prepare()
-            self.server = server
-            writeRuntimeState(
-                endpointRecord: server.currentEndpointRecord(),
-                appServerRuntimeState: appServerRuntimeState
+            await self.performStartup(
+                startupID: startupID,
+                store: store,
+                forceRestartIfNeeded: forceRestartIfNeeded
             )
-            store.transitionToRunning(serverURL: url)
-            observeServerLifecycle(server: server, store: store)
-        } catch {
-            await server.stop()
-            await appServerManager.shutdown()
-            self.server = nil
-            store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
+        }
+        startupTaskID = startupID
+        startupTask = task
+        await task.value
+        if startupTaskID == startupID {
+            startupTask = nil
+            startupTaskID = nil
         }
     }
 
     func stop(store: CodexReviewStore) async {
+        let startupTask = self.startupTask
+        self.startupTask = nil
+        startupTaskID = nil
+        startupTask?.cancel()
+        authRefreshTask?.cancel()
+        authRefreshTask = nil
         waitTask?.cancel()
         waitTask = nil
         await executionCoordinator.shutdown(reason: "Review server stopped.", store: store)
         if let server {
             let endpointRecord = server.currentEndpointRecord()
+            self.server = nil
             await server.stop()
             await appServerManager.shutdown()
             removeRuntimeState(endpointRecord: endpointRecord)
         } else {
             await appServerManager.shutdown()
         }
-        self.server = nil
         closedSessions = []
+        await startupTask?.value
     }
 
     func waitUntilStopped() async {
-        guard let waitTask else {
-            return
+        if let startupTask {
+            await startupTask.value
         }
-        _ = await waitTask.value
+        if let waitTask {
+            _ = await waitTask.value
+        }
     }
 
     func cancelReview(
@@ -1038,6 +1064,58 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             sessionID: sessionID,
             reason: reason
         )
+    }
+
+    func refreshAuthState(auth: CodexReviewAuthModel) async {
+        do {
+            let state = try await authManager.loadState()
+            if auth.isAuthenticating {
+                return
+            }
+            auth.updateState(state)
+        } catch {
+            if auth.isAuthenticating == false {
+                auth.updateState(.signedOut)
+            }
+        }
+    }
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async {
+        authRefreshTask?.cancel()
+        authRefreshTask = nil
+        do {
+            try await authManager.beginAuthentication { state in
+                await MainActor.run {
+                    auth.updateState(state)
+                }
+            }
+            await recycleSharedAppServerAfterAuthChange()
+        } catch ReviewAuthError.cancelled {
+            auth.updateState(.signedOut)
+        } catch let error as ReviewAuthError {
+            auth.updateState(.failed(error.errorDescription ?? "Authentication failed."))
+        } catch {
+            auth.updateState(.failed(error.localizedDescription))
+        }
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        await authManager.cancelAuthentication()
+        auth.updateState(.signedOut)
+    }
+
+    func logout(auth: CodexReviewAuthModel) async {
+        authRefreshTask?.cancel()
+        authRefreshTask = nil
+        do {
+            let state = try await authManager.logout()
+            auth.updateState(state)
+            await recycleSharedAppServerAfterAuthChange()
+        } catch let error as ReviewAuthError {
+            auth.updateState(.failed(error.errorDescription ?? "Failed to sign out."))
+        } catch {
+            auth.updateState(.failed(error.localizedDescription))
+        }
     }
 
     private func makeServer(store: CodexReviewStore) -> ReviewMCPHTTPServer {
@@ -1102,6 +1180,72 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 return store.hasActiveJobs(for: sessionID)
             }
         )
+    }
+
+    private func performStartup(
+        startupID: UUID,
+        store: CodexReviewStore,
+        forceRestartIfNeeded: Bool
+    ) async {
+        let server = makeServer(store: store)
+        do {
+            let url = try await startServer(
+                server,
+                forceRestartIfNeeded: forceRestartIfNeeded
+            )
+            guard startupTaskID == startupID else {
+                await server.stop()
+                return
+            }
+
+            self.server = server
+            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+
+            let appServerRuntimeState = try await appServerManager.prepare()
+            guard startupTaskID == startupID, self.server === server else {
+                return
+            }
+
+            writeRuntimeState(
+                endpointRecord: server.currentEndpointRecord(),
+                appServerRuntimeState: appServerRuntimeState
+            )
+            store.transitionToRunning(serverURL: url)
+            startAuthRefreshTask(auth: store.auth)
+            observeServerLifecycle(server: server, store: store)
+        } catch is CancellationError {
+            guard startupTaskID == startupID else {
+                return
+            }
+            await server.stop()
+            await appServerManager.shutdown()
+            self.server = nil
+        } catch {
+            guard startupTaskID == startupID else {
+                return
+            }
+            await server.stop()
+            await appServerManager.shutdown()
+            self.server = nil
+            store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
+        }
+    }
+
+    private func startServer(
+        _ server: ReviewMCPHTTPServer,
+        forceRestartIfNeeded: Bool
+    ) async throws -> URL {
+        do {
+            return try await server.start()
+        } catch {
+            guard forceRestartIfNeeded,
+                  isAddressInUse(error)
+            else {
+                throw error
+            }
+            try await replayAddressInUseCleanup()
+            return try await server.start()
+        }
     }
 
     private func replayAddressInUseCleanup() async throws {
@@ -1176,6 +1320,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
+                self.authRefreshTask?.cancel()
+                self.authRefreshTask = nil
                 self.closedSessions = []
                 store.transitionToStopped()
             } catch is CancellationError {
@@ -1189,12 +1335,40 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
+                self.authRefreshTask?.cancel()
+                self.authRefreshTask = nil
                 self.closedSessions = []
                 store.transitionToFailed(
                     CodexReviewStore.errorMessage(from: error),
                     resetJobs: true
                 )
             }
+        }
+    }
+
+    private func startAuthRefreshTask(auth: CodexReviewAuthModel) {
+        authRefreshTask?.cancel()
+        authRefreshTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await self.refreshAuthState(auth: auth)
+        }
+    }
+
+    private func recycleSharedAppServerAfterAuthChange() async {
+        guard let server else {
+            return
+        }
+
+        await appServerManager.shutdown()
+        do {
+            let runtimeState = try await appServerManager.prepare()
+            writeRuntimeState(
+                endpointRecord: server.currentEndpointRecord(),
+                appServerRuntimeState: runtimeState
+            )
+        } catch {
         }
     }
 

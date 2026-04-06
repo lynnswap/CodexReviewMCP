@@ -58,6 +58,43 @@ struct CodexReviewUITests {
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
     }
 
+    @Test func splitViewStartsStoreOnceOnFirstAppearance() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend()
+        let store = CodexReviewStore(backend: backend)
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+
+        viewController.viewDidAppear()
+        viewController.viewDidAppear()
+
+        let _: Bool = try await waitUntilValue {
+            backend.startCallCount() == 1 ? true : nil
+        }
+
+        #expect(viewController.didTriggerStoreStartForTesting)
+        #expect(backend.startCallCount() == 1)
+    }
+
+    @Test func splitViewSkipsStoreStartWhenAutoStartIsDisabled() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
+        let store = CodexReviewStore(backend: backend)
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+
+        viewController.viewDidAppear()
+
+        #expect(viewController.didTriggerStoreStartForTesting == false)
+        #expect(backend.startCallCount() == 0)
+    }
+
     @Test func splitViewSectionsByWorkspace() {
         guard #available(macOS 26.0, *) else {
             return
@@ -555,6 +592,72 @@ struct CodexReviewUITests {
         }
     }
 
+    @Test func authFailedJobShowsNormalFailureDetails() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-auth",
+            status: .failed,
+            targetSummary: "Uncommitted changes",
+            summary: "Failed to start review.",
+            logText: "Authentication required. Sign in to ReviewMCP and retry."
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            authState: .signedOut,
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            let transport = viewController.transportViewControllerForTesting
+            guard transport.displayedSummaryForTesting == "Failed to start review.",
+                  transport.displayedLogForTesting == "Authentication required. Sign in to ReviewMCP and retry."
+            else {
+                return nil
+            }
+            return true
+        }
+    }
+
+    @Test func authenticatedAuthFailedJobStillShowsNormalFailureDetails() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-auth-restored",
+            status: .failed,
+            targetSummary: "Uncommitted changes",
+            summary: "Failed to start review.",
+            logText: "Authentication required. Sign in to ReviewMCP and retry."
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            authState: .signedIn(accountID: "review@example.com"),
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+
+        let _: Bool = try await waitUntilValue(timeout: .seconds(5), interval: .milliseconds(50)) {
+            let transport = viewController.transportViewControllerForTesting
+            guard transport.displayedSummaryForTesting == "Failed to start review.",
+                  transport.displayedLogForTesting == "Authentication required. Sign in to ReviewMCP and retry."
+            else {
+                return nil
+            }
+            return true
+        }
+    }
+
 }
 
 @MainActor
@@ -599,7 +702,8 @@ private func makeJob(
             (logText.isEmpty ? [] : [.init(kind: .agentMessage, text: logText.trimmingCharacters(in: .newlines))])
             + (rawLogText.isEmpty ? [] : rawLogText.split(separator: "\n", omittingEmptySubsequences: false).map {
                 .init(kind: .diagnostic, text: String($0))
-            })
+            }),
+        errorMessage: status == .failed ? summary ?? status.displayText : nil
     )
 }
 
@@ -634,6 +738,7 @@ private struct TestFailure: Error {
 @MainActor
 private final class FailingCancellationBackend: CodexReviewStoreBackend {
     var isActive: Bool = false
+    let shouldAutoStartEmbeddedServer = false
 
     func start(
         store: CodexReviewStore,
@@ -660,5 +765,82 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
         _ = reason
         _ = store
         throw ReviewError.io("Cancellation failed.")
+    }
+
+    func refreshAuthState(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func logout(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+}
+
+@MainActor
+private final class CountingStartBackend: CodexReviewStoreBackend {
+    let shouldAutoStartEmbeddedServer: Bool
+    private var startCalls = 0
+
+    init(shouldAutoStartEmbeddedServer: Bool = true) {
+        self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
+    }
+
+    var isActive: Bool {
+        startCalls > 0
+    }
+
+    func start(
+        store: CodexReviewStore,
+        forceRestartIfNeeded: Bool
+    ) async {
+        _ = store
+        _ = forceRestartIfNeeded
+        startCalls += 1
+    }
+
+    func stop(store: CodexReviewStore) async {
+        _ = store
+    }
+
+    func waitUntilStopped() async {}
+
+    func cancelReview(
+        jobID: String,
+        sessionID: String,
+        reason: String,
+        store: CodexReviewStore
+    ) async throws {
+        _ = jobID
+        _ = sessionID
+        _ = reason
+        _ = store
+    }
+
+    func refreshAuthState(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func logout(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func startCallCount() -> Int {
+        startCalls
     }
 }

@@ -1,13 +1,16 @@
 import Foundation
 import Observation
-import ReviewRuntime
 
 @MainActor
 @Observable
 public final class CodexReviewStore {
     public package(set) var serverState: CodexReviewServerState = .stopped
+    public let auth: CodexReviewAuthModel
     public package(set) var serverURL: URL?
     public package(set) var workspaces: [CodexReviewWorkspace] = []
+    package var shouldAutoStartEmbeddedServer: Bool {
+        backend.shouldAutoStartEmbeddedServer
+    }
 
     @ObservationIgnored package let diagnosticsURL: URL?
     @ObservationIgnored package let backend: any CodexReviewStoreBackend
@@ -18,6 +21,7 @@ public final class CodexReviewStore {
     ) {
         self.backend = backend
         self.diagnosticsURL = diagnosticsURL
+        self.auth = CodexReviewAuthModel(backend: backend)
     }
 
     public func start(forceRestartIfNeeded: Bool = false) async {

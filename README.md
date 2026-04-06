@@ -1,22 +1,12 @@
 # CodexReviewMCP
 
-An MCP server and STDIO adapter for Codex reviews backed by `codex app-server`.
-
-`codex-review-mcp-server` runs as a persistent HTTP/SSE MCP server and keeps a
-single long-lived `codex app-server` backend process alive over loopback
-websocket transport. Review jobs are scoped per MCP session and share that
-backend through one websocket connection per session.
-`codex-review-mcp` is a thin STDIO adapter for clients that require STDIO transport.
+CodexReviewMCP exposes Codex review over MCP.
 
 ## Quick Start
 
-1. Start the server
+1. Launch ReviewMonitor.
 
-   ```bash
-   swift run codex-review-mcp-server
-   ```
-
-2. Register it in your MCP client
+2. Register the MCP server in your client:
 
    ```bash
    # Recommended: HTTP/SSE
@@ -42,8 +32,9 @@ backend through one websocket connection per session.
 ### Codex CLI timeout note
 
 `codex mcp add` does not currently expose MCP timeout flags. If you expect
-long-running reviews, add the timeout values manually in `~/.codex/config.toml`
-after registration:
+long-running reviews, add the timeout values manually in your client Codex
+config after registration. This client-side MCP entry is separate from
+ReviewMCP's dedicated backend home at `~/.codex_review/config.toml`:
 
 ```toml
 [mcp_servers.codex_review]
@@ -57,104 +48,26 @@ entry to include the timeout values.
 
 ## Architecture
 
-- `codex-review-mcp-server`
+- MCP server
   - Persistent HTTP/SSE MCP server
   - Multi-session
   - Session-scoped review jobs
   - One long-lived `codex app-server` backend process
-  - One websocket connection per MCP session
-  - Reviews serialize within a session and may run concurrently across sessions
-- `codex-review-mcp`
-  - JSON-RPC over STDIO adapter
-  - Forwards to the HTTP/SSE server
+  - One shared STDIO transport to the backend process
+  - Review jobs run concurrently across sessions and within the same session
 - Discovery
-  - Writes the resolved endpoint to `~/.codex_review/endpoint.json`
-  - Stores internal supervisor state in `~/.codex_review/runtime-state.json`
+  - Writes the resolved endpoint to `~/.codex_review/review_mcp_endpoint.json`
+  - Stores internal supervisor state in `~/.codex_review/review_mcp_runtime_state.json`
 
 Pre-1.0 note:
 
 - Discovery schema, runtime-state layout, and other internal file formats may change without migration before the first release.
 
-## Installation
-
-### Build from source
-
-```bash
-swift build
-```
-
-Debug binaries are written to:
-
-- `.build/debug/codex-review-mcp`
-- `.build/debug/codex-review-mcp-server`
-
-Release build:
-
-```bash
-swift build -c release
-```
-
-Release binaries are written to:
-
-- `.build/release/codex-review-mcp`
-- `.build/release/codex-review-mcp-server`
-
-### Optional: copy binaries into your PATH
-
-```bash
-mkdir -p "$HOME/.local/bin"
-cp .build/release/codex-review-mcp "$HOME/.local/bin/"
-cp .build/release/codex-review-mcp-server "$HOME/.local/bin/"
-chmod +x "$HOME/.local/bin/codex-review-mcp" "$HOME/.local/bin/codex-review-mcp-server"
-```
-
-## Usage
-
-### Server: `codex-review-mcp-server`
-
-Defaults:
-
-- listen: `localhost:9417`
-- endpoint: `/mcp`
-- session timeout: `3600` seconds
-- discovery file: `~/.codex_review/endpoint.json`
-
-Options:
-
-| Option | Description |
-|--------|-------------|
-| `--listen host:port` | Listen address for the HTTP/SSE MCP server |
-| `--session-timeout sec` | Session idle timeout in seconds |
-| `--codex-command path` | Override the `codex` executable path |
-| `--force-restart` | If the listen port is already in use, terminate the discovered existing server and restart |
-
-### Adapter: `codex-review-mcp`
-
-Options:
-
-| Option | Description |
-|--------|-------------|
-| `--url url` | Explicit upstream MCP URL |
-| `--request-timeout sec` | HTTP request timeout for the adapter |
-
-Environment variables:
-
-| Variable | Description |
-|----------|-------------|
-| `CODEX_REVIEW_MCP_ENDPOINT` | Override the upstream URL for the STDIO adapter |
-
-Adapter endpoint resolution order:
-
-1. `--url`
-2. `CODEX_REVIEW_MCP_ENDPOINT`
-3. Discovery file: `~/.codex_review/endpoint.json`
-4. Default: `http://localhost:9417/mcp`
-
 ## MCP Tools
 
 ### `review_start`
 
-Runs a review through the shared long-lived `codex app-server` backend and blocks until the final result is ready.
+Runs a review through the shared long-lived `codex app-server` backend over STDIO and blocks until the final result is ready.
 
 Key inputs:
 
@@ -183,9 +96,9 @@ Notes:
 - `review_start` is the primary client flow. It waits for terminal completion, so MCP clients should configure a sufficiently large tool timeout.
 - ReviewMCP resolves the reported review model in this order:
   1. `~/.codex_review/config.toml` `review_model`
-  2. app-server or local Codex config `review_model`
+  2. the effective dedicated Codex config in `~/.codex_review/config.toml` `review_model`
   3. backend-reported `thread/start.model`
-  4. app-server or local Codex config `model` only as a pre-thread-start fallback when the backend does not report a model
+  4. the effective dedicated Codex config in `~/.codex_review/config.toml` `model` only as a pre-thread-start fallback when the backend does not report a model
 - Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
 
 If you are unsure how to build the `target` object, read:
@@ -272,5 +185,5 @@ This server also exposes MCP resource templates for tool-specific and target-spe
 - The package depends on `swift-sdk` via a pinned release version in [Package.swift](Package.swift).
 - Server defaults plus clamp fallback metadata are loaded from [Sources/ReviewCore/Resources/defaults.json](Sources/ReviewCore/Resources/defaults.json).
 - ReviewMCP-only overrides live in `~/.codex_review/config.toml` and currently support root-level `review_model`, `model_reasoning_effort`, `model_context_window`, and `model_auto_compact_token_limit`.
-- `models_cache.json` is not stored in `~/.codex_review`; when clamp metadata is needed, ReviewMCP resolves it the same way Codex does via `CODEX_HOME` or `$HOME/.codex/models_cache.json`.
+- ReviewMCP's dedicated Codex home is `~/.codex_review`. `config.toml`, `AGENTS.md`, `models_cache.json`, and other home-scoped review files are resolved from there.
 - Review jobs are isolated per MCP session.

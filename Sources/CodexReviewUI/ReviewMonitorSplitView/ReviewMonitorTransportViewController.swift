@@ -1,5 +1,6 @@
 import AppKit
 import ObservationBridge
+import CodexReviewModel
 import ReviewRuntime
 
 @MainActor

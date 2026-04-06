@@ -1,17 +1,13 @@
 import Darwin
 import Foundation
 import ReviewJobs
-import Subprocess
-#if canImport(System)
-import System
-#else
-import SystemPackage
-#endif
 
 package protocol AppServerManaging: Sendable {
     func prepare() async throws -> AppServerRuntimeState
-    func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport
+    func checkoutTransport(sessionID: String) async throws -> any AppServerSessionTransport
+    func checkoutAuthTransport() async throws -> any AppServerSessionTransport
     func currentRuntimeState() async -> AppServerRuntimeState?
+    func diagnosticLineStream() async -> AsyncStreamSubscription<String>
     func diagnosticsTail() async -> String
     func shutdown() async
 }
@@ -33,30 +29,98 @@ package actor AppServerSupervisor: AppServerManaging {
         }
     }
 
-    private struct RunningProcess: Sendable {
-        var launchID: UUID
-        var websocketURL: URL
-        var authToken: String
-        var runtimeState: AppServerRuntimeState
-        var execution: Execution
-        var tokenFileURL: URL
-        var isolatedCodexHomeURL: URL?
+    private final class StartContext: @unchecked Sendable {
+        let launchID: UUID
+        let processIdentity: ProcessIdentity
+        let processGroupIdentity: ProcessIdentity
+        let runtimeState: AppServerRuntimeState
+        let stdinPipe: Pipe
+        let stdoutPipe: Pipe
+        let stderrPipe: Pipe
+        let connection: AppServerSharedTransportConnection
+        let waitTask: Task<Void, Never>
+        let stdoutTask: Task<Void, Never>
+        let stderrTask: Task<Void, Never>
+        let dedicatedProcessGroupEstablished: Bool
+        var startupTask: Task<Void, Never>?
+
+        init(
+            launchID: UUID,
+            processIdentity: ProcessIdentity,
+            processGroupIdentity: ProcessIdentity,
+            runtimeState: AppServerRuntimeState,
+            stdinPipe: Pipe,
+            stdoutPipe: Pipe,
+            stderrPipe: Pipe,
+            connection: AppServerSharedTransportConnection,
+            waitTask: Task<Void, Never>,
+            stdoutTask: Task<Void, Never>,
+            stderrTask: Task<Void, Never>,
+            dedicatedProcessGroupEstablished: Bool
+        ) {
+            self.launchID = launchID
+            self.processIdentity = processIdentity
+            self.processGroupIdentity = processGroupIdentity
+            self.runtimeState = runtimeState
+            self.stdinPipe = stdinPipe
+            self.stdoutPipe = stdoutPipe
+            self.stderrPipe = stderrPipe
+            self.connection = connection
+            self.waitTask = waitTask
+            self.stdoutTask = stdoutTask
+            self.stderrTask = stderrTask
+            self.dedicatedProcessGroupEstablished = dedicatedProcessGroupEstablished
+        }
+    }
+
+    private final class LaunchContext: @unchecked Sendable {
+        let launchID: UUID
+        var launchTask: Task<Void, Never>?
+
+        init(launchID: UUID) {
+            self.launchID = launchID
+        }
+    }
+
+    private final class RuntimeContext: @unchecked Sendable {
+        let launchID: UUID
+        let processIdentity: ProcessIdentity
+        let processGroupIdentity: ProcessIdentity
+        let runtimeState: AppServerRuntimeState
+        let connection: AppServerSharedTransportConnection
+        let waitTask: Task<Void, Never>
+        let stdoutTask: Task<Void, Never>
+        let stderrTask: Task<Void, Never>
+        let dedicatedProcessGroupEstablished: Bool
+        var exitMonitorTask: Task<Void, Never>?
+
+        init(startContext: StartContext) {
+            self.launchID = startContext.launchID
+            self.processIdentity = startContext.processIdentity
+            self.processGroupIdentity = startContext.processGroupIdentity
+            self.runtimeState = startContext.runtimeState
+            self.connection = startContext.connection
+            self.waitTask = startContext.waitTask
+            self.stdoutTask = startContext.stdoutTask
+            self.stderrTask = startContext.stderrTask
+            self.dedicatedProcessGroupEstablished = startContext.dedicatedProcessGroupEstablished
+        }
     }
 
     private enum State {
         case stopped
-        case starting(UUID, [CheckedContinuation<RunningProcess, Error>])
-        case running(RunningProcess)
+        case launching(LaunchContext, [CheckedContinuation<RuntimeContext, Error>])
+        case starting(StartContext, [CheckedContinuation<RuntimeContext, Error>])
+        case running(RuntimeContext)
     }
 
     private let configuration: Configuration
     private var state: State = .stopped
     private var stderrLines: [String] = []
+    private var diagnosticTailLines: [String] = []
     private var pendingStandardErrorBytes = Data()
     private var trailingStandardErrorFragment = ""
-    private var startingRuntimeState: AppServerRuntimeState?
-    private var discoveredStartingWebSocketURL: URL?
-    private var lifetimeTask: Task<Void, Never>?
+    private var diagnosticSubscribers: [UUID: AsyncStream<String>.Continuation] = [:]
 
     package init(configuration: Configuration = .init()) {
         self.configuration = configuration
@@ -66,275 +130,356 @@ package actor AppServerSupervisor: AppServerManaging {
         try await ensureRunning().runtimeState
     }
 
-    package func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport {
-        let running = try await ensureRunning()
-        _ = sessionID
-        return try await AppServerWebSocketSessionTransport.connect(
-            websocketURL: running.websocketURL,
-            authToken: running.authToken,
-            clientName: codexReviewMCPName,
-            clientTitle: "Codex Review MCP",
-            clientVersion: codexReviewMCPVersion,
-            diagnosticsProvider: { [weak self] in
-                await self?.diagnosticsTail() ?? ""
-            }
-        )
+    package func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        let runtimeContext = try await ensureRunning()
+        return await runtimeContext.connection.checkoutTransport()
+    }
+
+    package func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        let runtimeContext = try await ensureRunning()
+        return await runtimeContext.connection.checkoutTransport()
     }
 
     package func currentRuntimeState() async -> AppServerRuntimeState? {
         switch state {
-        case .running(let running):
-            return running.runtimeState
-        case .stopped, .starting:
+        case .running(let runtimeContext):
+            return runtimeContext.runtimeState
+        case .stopped, .launching, .starting:
             return nil
         }
     }
 
+    package func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        var continuation: AsyncStream<String>.Continuation!
+        let stream = AsyncStream<String>(bufferingPolicy: .unbounded) {
+            continuation = $0
+        }
+        let subscriberID = UUID()
+        diagnosticSubscribers[subscriberID] = continuation
+        continuation.onTermination = { _ in
+            Task {
+                await self.removeDiagnosticSubscriber(id: subscriberID)
+            }
+        }
+        return .init(
+            stream: stream,
+            cancel: { [weak self] in
+                await self?.cancelDiagnosticSubscriber(id: subscriberID)
+            }
+        )
+    }
+
     package func diagnosticsTail() async -> String {
-        stderrLines.suffix(100).joined(separator: "\n")
+        diagnosticTailLines.suffix(100).joined(separator: "\n")
     }
 
     package func shutdown() async {
         switch state {
-        case .running(let current):
+        case .running(let runtimeContext):
             state = .stopped
-            let processIdentity = ProcessIdentity(
-                pid: pid_t(current.runtimeState.pid),
-                startTime: current.runtimeState.startTime
-            )
-            let processGroupIdentity = ProcessIdentity(
-                pid: pid_t(current.runtimeState.processGroupLeaderPID),
-                startTime: current.runtimeState.processGroupLeaderStartTime
-            )
-            let childGroupIdentities = descendantProcessGroupIdentities(
-                rootPID: processIdentity.pid,
-                excludingGroupLeaderPID: processGroupIdentity.pid
-            )
-            try? current.execution.send(signal: .terminate, toProcessGroup: true)
-            signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
-            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-            while ContinuousClock.now < deadline {
-                if isMatchingProcessIdentity(processIdentity) == false,
-                   isSupervisorProcessGroupAlive(processGroupIdentity) == false,
-                   hasLiveSupervisorChildGroups(childGroupIdentities) == false
-                {
-                    break
-                }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            if isMatchingProcessIdentity(processIdentity)
-                || isSupervisorProcessGroupAlive(processGroupIdentity)
-                || hasLiveSupervisorChildGroups(childGroupIdentities)
-            {
-                try? current.execution.send(signal: .kill, toProcessGroup: true)
-                signalSupervisorChildGroups(childGroupIdentities, signal: SIGKILL)
-            }
-            await lifetimeTask?.value
-            lifetimeTask = nil
-            try? FileManager.default.removeItem(at: current.tokenFileURL)
-            if let isolatedCodexHomeURL = current.isolatedCodexHomeURL {
-                try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
-            }
-        case .starting(_, let waiters):
-            let task = lifetimeTask
-            let startingRuntimeState = self.startingRuntimeState
+            finishDiagnosticSubscribers()
+            await terminateRuntimeContext(runtimeContext)
+            await runtimeContext.exitMonitorTask?.value
+        case .launching(let launchContext, let waiters):
             state = .stopped
-            task?.cancel()
-            if let startingRuntimeState {
-                await terminateStartingProcess(runtimeState: startingRuntimeState)
-            }
+            finishDiagnosticSubscribers()
+            await launchContext.launchTask?.value
             let error = ReviewError.io("app-server supervisor stopped during startup.")
             for continuation in waiters {
                 continuation.resume(throwing: error)
             }
-            await task?.value
-            self.startingRuntimeState = nil
-            if lifetimeTask == task {
-                lifetimeTask = nil
+        case .starting(let startContext, let waiters):
+            state = .stopped
+            finishDiagnosticSubscribers()
+            startContext.startupTask?.cancel()
+            await startContext.connection.shutdown()
+            await terminateStartContext(startContext)
+            let error = ReviewError.io("app-server supervisor stopped during startup.")
+            for continuation in waiters {
+                continuation.resume(throwing: error)
             }
+            await startContext.startupTask?.value
         case .stopped:
-            return
+            finishDiagnosticSubscribers()
         }
     }
 
-    private func ensureRunning() async throws -> RunningProcess {
+    private func ensureRunning() async throws -> RuntimeContext {
         switch state {
-        case .running(let running):
-            let identity = ProcessIdentity(
-                pid: pid_t(running.runtimeState.pid),
-                startTime: running.runtimeState.startTime
-            )
-            if isMatchingProcessIdentity(identity) {
-                return running
+        case .running(let runtimeContext):
+            if isMatchingProcessIdentity(runtimeContext.processIdentity),
+               await runtimeContext.connection.isClosed() == false
+            {
+                return runtimeContext
             }
             state = .stopped
+            finishDiagnosticSubscribers()
+            await terminateRuntimeContext(runtimeContext)
+            await runtimeContext.exitMonitorTask?.value
             return try await ensureRunning()
-        case .starting:
+        case .launching, .starting:
             return try await waitForRunning()
         case .stopped:
-            let launchID = UUID()
-            state = .starting(launchID, [])
-            lifetimeTask = Task.detached { [weak self] in
-                await self?.launchProcessBackground(launchID: launchID)
+            resetDiagnostics()
+            let launchContext = LaunchContext(launchID: UUID())
+            state = .launching(launchContext, [])
+            launchContext.launchTask = Task.detached { [weak self] in
+                guard let self else {
+                    return
+                }
+                await self.beginLaunch(for: launchContext)
             }
             return try await waitForRunning()
         }
     }
 
-    private func waitForRunning() async throws -> RunningProcess {
+    private func waitForRunning() async throws -> RuntimeContext {
         try await withCheckedThrowingContinuation { continuation in
             switch state {
-            case .running(let running):
-                continuation.resume(returning: running)
-            case .starting(let launchID, var waiters):
+            case .running(let runtimeContext):
+                continuation.resume(returning: runtimeContext)
+            case .launching(let launchContext, var waiters):
                 waiters.append(continuation)
-                state = .starting(launchID, waiters)
+                state = .launching(launchContext, waiters)
+            case .starting(let startContext, var waiters):
+                waiters.append(continuation)
+                state = .starting(startContext, waiters)
             case .stopped:
                 continuation.resume(throwing: ReviewError.io("app-server supervisor is stopped."))
             }
         }
     }
 
-    private func finishStarting(
-        launchID: UUID,
-        _ result: Result<RunningProcess, Error>
-    ) {
-        guard case .starting(let currentLaunchID, let waiters) = state,
-              currentLaunchID == launchID
+    private func beginLaunch(for launchContext: LaunchContext) async {
+        do {
+            let startContext = try await makeStartContext(launchID: launchContext.launchID)
+            guard case .launching(let currentLaunchContext, let waiters) = state,
+                  currentLaunchContext.launchID == launchContext.launchID
+            else {
+                await startContext.connection.shutdown()
+                await terminateStartContext(startContext)
+                return
+            }
+
+            state = .starting(startContext, waiters)
+            let startupTask = Task.detached { [weak self] in
+                guard let self else {
+                    return
+                }
+                await self.completeStartup(for: startContext)
+            }
+            startContext.startupTask = startupTask
+        } catch {
+            guard case .launching(let currentLaunchContext, let waiters) = state,
+                  currentLaunchContext.launchID == launchContext.launchID
+            else {
+                return
+            }
+
+            state = .stopped
+            for continuation in waiters {
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+
+    private func completeStartup(for startContext: StartContext) async {
+        do {
+            try await waitUntilInitialized(
+                connection: startContext.connection,
+                processIdentity: startContext.processIdentity
+            )
+            try validateDedicatedProcessGroup(for: startContext)
+
+            let runtimeContext = RuntimeContext(startContext: startContext)
+            guard transitionToRunning(
+                startContext: startContext,
+                runtimeContext: runtimeContext
+            ) else {
+                await runtimeContext.connection.shutdown()
+                await terminateRuntimeContext(runtimeContext)
+                return
+            }
+
+            let exitMonitorTask = Task { [weak self] in
+                guard let self else {
+                    return
+                }
+                await self.monitorRuntimeExit(for: runtimeContext)
+            }
+            runtimeContext.exitMonitorTask = exitMonitorTask
+        } catch {
+            await failStartup(for: startContext, error: error)
+        }
+    }
+
+    private func transitionToRunning(
+        startContext: StartContext,
+        runtimeContext: RuntimeContext
+    ) -> Bool {
+        guard case .starting(let currentContext, let waiters) = state,
+              currentContext.launchID == startContext.launchID
+        else {
+            return false
+        }
+
+        state = .running(runtimeContext)
+        for continuation in waiters {
+            continuation.resume(returning: runtimeContext)
+        }
+        return true
+    }
+
+    private func failStartup(for startContext: StartContext, error: Error) async {
+        guard case .starting(let currentContext, let waiters) = state,
+              currentContext.launchID == startContext.launchID
         else {
             return
         }
-        startingRuntimeState = nil
-        switch result {
-        case .success(let running):
-            state = .running(running)
-        case .failure:
-            state = .stopped
-            lifetimeTask = nil
-        }
+
+        state = .stopped
+        finishDiagnosticSubscribers()
+        await startContext.connection.shutdown()
+        await terminateStartContext(startContext)
         for continuation in waiters {
-            continuation.resume(with: result)
+            continuation.resume(throwing: error)
         }
     }
 
-    private func launchProcessBackground(launchID: UUID) async {
-        stderrLines.removeAll(keepingCapacity: false)
-        pendingStandardErrorBytes.removeAll(keepingCapacity: false)
-        trailingStandardErrorFragment = ""
-        discoveredStartingWebSocketURL = nil
-        let tokenFileURL = ReviewHomePaths.appServerWebSocketTokenFileURL(
-            filename: "app-server-ws-token-\(launchID.uuidString)",
+    private func monitorRuntimeExit(for runtimeContext: RuntimeContext) async {
+        _ = await runtimeContext.waitTask.result
+        _ = await runtimeContext.stdoutTask.value
+        _ = await runtimeContext.stderrTask.value
+        await handleRuntimeExit(runtimeContext)
+    }
+
+    private func handleRuntimeExit(_ runtimeContext: RuntimeContext) async {
+        if case .running(let currentContext) = state,
+           currentContext.launchID == runtimeContext.launchID
+        {
+            state = .stopped
+            finishDiagnosticSubscribers()
+        }
+        await runtimeContext.connection.shutdown()
+    }
+
+    private func makeStartContext(launchID: UUID) async throws -> StartContext {
+        try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
+        // Intentionally use ~/.codex_review directly for app-server.
+        // We no longer create a per-launch isolated CODEX_HOME or strip codex_review from config.
+        let codexHomeURL = ReviewHomePaths.codexHomeURL(
             environment: configuration.environment
         )
 
-        do {
-            let authToken = UUID().uuidString
-            var launchedProcessIdentity: ProcessIdentity?
-            let requestedWebSocketURL = try makeLoopbackWebSocketListenURL()
-            let isolatedCodexHomeURL = try prepareIsolatedCodexHome(
-                launchID: launchID,
-                environment: self.configuration.environment
-            )
-            try FileManager.default.createDirectory(
-                at: tokenFileURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try authToken.write(to: tokenFileURL, atomically: true, encoding: .utf8)
+        let launchCommand = try makeAppServerLaunchCommand(
+            codexCommand: configuration.codexCommand,
+            environment: configuration.environment,
+            codexHomeURL: codexHomeURL
+        )
+        let spawnedProcess = try spawnAppServerProcess(launchCommand)
+        let pid = spawnedProcess.pid
 
-            let configuration = try makeAppServerConfiguration(
-                codexCommand: self.configuration.codexCommand,
-                environment: self.configuration.environment,
-                listenAddress: requestedWebSocketURL.absoluteString,
-                tokenFileURL: tokenFileURL,
-                isolatedCodexHomeURL: isolatedCodexHomeURL
-            )
+        guard let startTime = processStartTime(of: pid) else {
+            await terminateSpawnedProcessWithoutIdentity(pid: pid)
+            throw ReviewError.spawnFailed("app-server started without a readable process start time.")
+        }
 
-            let outcome = try await Subprocess.run(
-                configuration,
-                output: .discarded,
-                preferredBufferSize: 4096
-            ) { execution, errorSequence in
-                let pid = execution.processIdentifier.value
-                guard let startTime = processStartTime(of: pid) else {
-                    throw ReviewError.spawnFailed("app-server started without a readable process start time.")
+        let processIdentity = ProcessIdentity(pid: pid, startTime: startTime)
+        guard currentProcessGroupID(of: pid) == pid else {
+            await terminateFailedSpawnedProcess(
+                processIdentity: processIdentity,
+                processGroupLeaderPID: pid,
+                signalDedicatedProcessGroup: false
+            )
+            throw ReviewError.spawnFailed("app-server did not enter its dedicated process group.")
+        }
+
+        let waitTask = Task.detached { @Sendable in
+            reapSpawnedProcess(pid: pid)
+        }
+        let runtimeState = AppServerRuntimeState(
+            pid: Int(pid),
+            startTime: startTime,
+            processGroupLeaderPID: Int(pid),
+            processGroupLeaderStartTime: startTime
+        )
+        let processGroupIdentity = ProcessIdentity(pid: pid, startTime: startTime)
+        let connection = AppServerSharedTransportConnection(
+            sendMessage: { message in
+                guard let data = message.data(using: .utf8) else {
+                    throw ReviewError.io("failed to encode stdio payload as UTF-8.")
                 }
-                launchedProcessIdentity = .init(pid: pid, startTime: startTime)
-                let processGroupLeaderPID = currentProcessGroupID(of: pid) ?? pid
-                let processGroupLeaderStartTime = processStartTime(of: processGroupLeaderPID) ?? startTime
-                let runtimeState = AppServerRuntimeState(
-                    pid: Int(pid),
-                    startTime: startTime,
-                    processGroupLeaderPID: Int(processGroupLeaderPID),
-                    processGroupLeaderStartTime: processGroupLeaderStartTime
-                )
-                self.noteStartingRuntimeState(runtimeState)
+                try spawnedProcess.stdinPipe.fileHandleForWriting.write(contentsOf: data)
+            },
+            closeInput: {
+                try? spawnedProcess.stdinPipe.fileHandleForWriting.close()
+            }
+        )
+        let stdoutTask = startCapturingStandardOutput(
+            handle: spawnedProcess.stdoutPipe.fileHandleForReading,
+            connection: connection
+        )
+        let stderrTask = startCapturingStandardError(
+            handle: spawnedProcess.stderrPipe.fileHandleForReading
+        )
 
-                let stderrTask = self.startCapturingStandardError(from: errorSequence)
-                do {
-                    let websocketURL = try await self.waitUntilReady(
-                        processIdentity: .init(pid: pid, startTime: startTime),
-                        requestedWebSocketURL: requestedWebSocketURL
-                    )
+        return StartContext(
+            launchID: launchID,
+            processIdentity: processIdentity,
+            processGroupIdentity: processGroupIdentity,
+            runtimeState: runtimeState,
+            stdinPipe: spawnedProcess.stdinPipe,
+            stdoutPipe: spawnedProcess.stdoutPipe,
+            stderrPipe: spawnedProcess.stderrPipe,
+            connection: connection,
+            waitTask: waitTask,
+            stdoutTask: stdoutTask,
+            stderrTask: stderrTask,
+            dedicatedProcessGroupEstablished: true
+        )
+    }
 
-                    self.finishStarting(
-                        launchID: launchID,
-                        .success(
-                        RunningProcess(
-                            launchID: launchID,
-                            websocketURL: websocketURL,
-                            authToken: authToken,
-                            runtimeState: runtimeState,
-                            execution: execution,
-                            tokenFileURL: tokenFileURL,
-                            isolatedCodexHomeURL: isolatedCodexHomeURL
-                        )
-                    ))
-
-                    let identity = ProcessIdentity(pid: pid, startTime: startTime)
-                    while isMatchingProcessIdentity(identity) {
-                        try? await Task.sleep(for: .milliseconds(100))
-                    }
-                    _ = await stderrTask.value
-                    return ()
-                } catch {
-                    stderrTask.cancel()
-                    _ = await stderrTask.value
-                    throw error
+    private func startCapturingStandardOutput(
+        handle: FileHandle,
+        connection: AppServerSharedTransportConnection
+    ) -> Task<Void, Never> {
+        Task.detached { [weak self] in
+            var trailingFragment = ""
+            while true {
+                let data = handle.availableData
+                if data.isEmpty {
+                    break
                 }
+
+                let chunk = String(decoding: data, as: UTF8.self)
+                let split = splitStandardErrorChunk(
+                    existingFragment: trailingFragment,
+                    chunk: chunk
+                )
+                trailingFragment = split.trailingFragment
+                if split.completeLines.isEmpty == false {
+                    await self?.appendStandardOutputLines(split.completeLines)
+                }
+                await connection.receive(data)
             }
 
-            _ = outcome
-            if let launchedProcessIdentity {
-                startingRuntimeState = nil
-                handleProcessExit(
-                    launchID: launchID,
-                    processIdentity: launchedProcessIdentity,
-                    tokenFileURL: tokenFileURL,
-                    isolatedCodexHomeURL: isolatedCodexHomeURL
-                )
+            if trailingFragment.isEmpty == false {
+                await self?.appendStandardOutputLines([trailingFragment])
             }
-        } catch {
-            finishStarting(launchID: launchID, .failure(error))
-            if currentLaunchID == launchID {
-                lifetimeTask = nil
-            }
-            try? FileManager.default.removeItem(at: tokenFileURL)
-            try? FileManager.default.removeItem(at: ReviewHomePaths.reviewHomeURL(environment: configuration.environment)
-                .appendingPathComponent("app-server-codex-home-\(launchID.uuidString)", isDirectory: true))
+            await connection.finishReceiving(error: nil)
         }
     }
 
-    private func startCapturingStandardError(from sequence: AsyncBufferSequence) -> Task<Void, Never> {
+    private func startCapturingStandardError(handle: FileHandle) -> Task<Void, Never> {
         Task.detached { [weak self] in
-            do {
-                for try await chunk in sequence {
-                    await self?.appendStandardErrorData(Data(buffer: chunk))
+            while true {
+                let data = handle.availableData
+                if data.isEmpty {
+                    break
                 }
-                await self?.flushStandardErrorFragment()
-            } catch {
-                await self?.flushStandardErrorFragment()
-                return
+                await self?.appendStandardErrorData(data)
             }
+            await self?.flushStandardErrorFragment()
         }
     }
 
@@ -383,120 +528,127 @@ package actor AppServerSupervisor: AppServerManaging {
 
     private func appendStandardErrorLines(_ lines: [String]) {
         stderrLines.append(contentsOf: lines)
-        discoveredStartingWebSocketURL = nextDiscoveredWebSocketURL(
-            cached: discoveredStartingWebSocketURL,
-            stderrLines: lines
-        )
+        for line in lines {
+            for continuation in diagnosticSubscribers.values {
+                continuation.yield(line)
+            }
+        }
+        appendDiagnosticTailLines(lines.map { "stderr: \($0)" })
         if stderrLines.count > 200 {
             stderrLines.removeFirst(stderrLines.count - 200)
         }
     }
 
-    private func waitUntilReady(
-        processIdentity: ProcessIdentity,
-        requestedWebSocketURL: URL
-    ) async throws -> URL {
+    private func appendStandardOutputLines(_ lines: [String]) {
+        let normalizedLines = lines.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { $0.isEmpty == false }
+        guard normalizedLines.isEmpty == false else {
+            return
+        }
+        appendDiagnosticTailLines(normalizedLines.map { "stdout: \($0)" })
+    }
 
-        let deadline = ContinuousClock.now.advanced(by: configuration.startupTimeout)
-        let session = URLSession(configuration: .ephemeral)
-        defer { session.invalidateAndCancel() }
-        var cachedWebSocketURL = requestedWebSocketURL.port == 0 ? nil : requestedWebSocketURL
+    private func appendDiagnosticTailLines(_ lines: [String]) {
+        diagnosticTailLines.append(contentsOf: lines)
+        if diagnosticTailLines.count > 200 {
+            diagnosticTailLines.removeFirst(diagnosticTailLines.count - 200)
+        }
+    }
 
-        while ContinuousClock.now < deadline {
-            try Task.checkCancellation()
-
+    private func waitUntilInitialized(
+        connection: AppServerSharedTransportConnection,
+        processIdentity: ProcessIdentity
+    ) async throws {
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    _ = try await connection.initialize(
+                        clientName: codexReviewMCPName,
+                        clientTitle: "Codex Review MCP",
+                        clientVersion: codexReviewMCPVersion
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(for: self.configuration.startupTimeout)
+                    throw ReviewError.spawnFailed("timed out waiting for app-server initialization.")
+                }
+                defer { group.cancelAll() }
+                _ = try await group.next()
+            }
+        } catch let error as ReviewError {
             if isMatchingProcessIdentity(processIdentity) == false {
                 let diagnostics = await diagnosticsTail()
                 let suffix = diagnostics.nilIfEmpty.map { ": \($0)" } ?? ""
                 throw ReviewError.spawnFailed("app-server exited before becoming ready\(suffix)")
             }
-
-            cachedWebSocketURL = cachedWebSocketURL ?? discoveredStartingWebSocketURL
-            let websocketURL = cachedWebSocketURL
-            if let websocketURL {
-                let readyURL = try makeReadyURL(from: websocketURL)
-                var request = URLRequest(url: readyURL)
-                request.httpMethod = "GET"
-                request.timeoutInterval = 1
-                if let (_, response) = try? await session.data(for: request),
-                   let httpResponse = response as? HTTPURLResponse,
-                   httpResponse.statusCode == 200
-                {
-                    return websocketURL
-                }
+            throw error
+        } catch {
+            if isMatchingProcessIdentity(processIdentity) == false {
+                let diagnostics = await diagnosticsTail()
+                let suffix = diagnostics.nilIfEmpty.map { ": \($0)" } ?? ""
+                throw ReviewError.spawnFailed("app-server exited before becoming ready\(suffix)")
             }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-
-        throw ReviewError.spawnFailed("timed out waiting for app-server readiness.")
-    }
-
-    private var currentLaunchID: UUID? {
-        switch state {
-        case .stopped:
-            nil
-        case .starting(let launchID, _):
-            launchID
-        case .running(let running):
-            running.launchID
+            throw ReviewError.spawnFailed(error.localizedDescription)
         }
     }
 
-    private func handleProcessExit(
-        launchID: UUID,
-        processIdentity: ProcessIdentity,
-        tokenFileURL: URL,
-        isolatedCodexHomeURL: URL?
-    ) {
-        startingRuntimeState = nil
-        if case .running(let running) = state,
-           running.launchID == launchID,
-           running.runtimeState.pid == Int(processIdentity.pid),
-           running.runtimeState.startTime == processIdentity.startTime
-        {
-            state = .stopped
-            lifetimeTask = nil
-        }
-        discoveredStartingWebSocketURL = nil
-        try? FileManager.default.removeItem(at: tokenFileURL)
-        if let isolatedCodexHomeURL {
-            try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
+    private func resetDiagnostics() {
+        stderrLines.removeAll(keepingCapacity: false)
+        diagnosticTailLines.removeAll(keepingCapacity: false)
+        pendingStandardErrorBytes.removeAll(keepingCapacity: false)
+        trailingStandardErrorFragment = ""
+    }
+
+    private func validateDedicatedProcessGroup(for startContext: StartContext) throws {
+        guard isMatchingProcessIdentity(startContext.processIdentity),
+              currentProcessGroupID(of: startContext.processIdentity.pid) == startContext.processGroupIdentity.pid
+        else {
+            throw ReviewError.spawnFailed("app-server did not remain in its dedicated process group.")
         }
     }
 
-    private func noteStartingRuntimeState(_ runtimeState: AppServerRuntimeState) {
-        guard case .starting = state else {
+    private func finishDiagnosticSubscribers() {
+        let continuations = diagnosticSubscribers.values
+        diagnosticSubscribers.removeAll()
+        for continuation in continuations {
+            continuation.finish()
+        }
+    }
+
+    private func removeDiagnosticSubscriber(id: UUID) {
+        diagnosticSubscribers[id] = nil
+    }
+
+    private func cancelDiagnosticSubscriber(id: UUID) {
+        guard let continuation = diagnosticSubscribers.removeValue(forKey: id) else {
             return
         }
-        startingRuntimeState = runtimeState
+        continuation.finish()
     }
 
-    private func terminateStartingProcess(runtimeState: AppServerRuntimeState) async {
-        let processIdentity = ProcessIdentity(
-            pid: pid_t(runtimeState.pid),
-            startTime: runtimeState.startTime
+    private func terminateStartContext(_ startContext: StartContext) async {
+        await terminateManagedRuntime(
+            processIdentity: startContext.processIdentity,
+            processGroupIdentity: startContext.processGroupIdentity,
+            signalDedicatedProcessGroup: startContext.dedicatedProcessGroupEstablished,
+            connection: startContext.connection,
+            waitTask: startContext.waitTask,
+            stdoutTask: startContext.stdoutTask,
+            stderrTask: startContext.stderrTask
         )
-        let processGroupIdentity = ProcessIdentity(
-            pid: pid_t(runtimeState.processGroupLeaderPID),
-            startTime: runtimeState.processGroupLeaderStartTime
+    }
+
+    private func terminateRuntimeContext(_ runtimeContext: RuntimeContext) async {
+        await terminateManagedRuntime(
+            processIdentity: runtimeContext.processIdentity,
+            processGroupIdentity: runtimeContext.processGroupIdentity,
+            signalDedicatedProcessGroup: runtimeContext.dedicatedProcessGroupEstablished,
+            connection: runtimeContext.connection,
+            waitTask: runtimeContext.waitTask,
+            stdoutTask: runtimeContext.stdoutTask,
+            stderrTask: runtimeContext.stderrTask
         )
-
-        _ = killpg(processGroupIdentity.pid, SIGTERM)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while ContinuousClock.now < deadline {
-            if isMatchingProcessIdentity(processIdentity) == false,
-               isSupervisorProcessGroupAlive(processGroupIdentity) == false
-            {
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-
-        if isMatchingProcessIdentity(processIdentity)
-            || isSupervisorProcessGroupAlive(processGroupIdentity)
-        {
-            _ = killpg(processGroupIdentity.pid, SIGKILL)
-        }
     }
 }
 
@@ -517,13 +669,24 @@ package func splitStandardErrorChunk(
     return (Array(segments.dropLast()), segments.last ?? combined)
 }
 
-private func makeAppServerConfiguration(
+private struct AppServerLaunchCommand {
+    var executable: String
+    var arguments: [String]
+    var environment: [String: String]
+}
+
+private struct SpawnedAppServerProcess {
+    var pid: pid_t
+    var stdinPipe: Pipe
+    var stdoutPipe: Pipe
+    var stderrPipe: Pipe
+}
+
+private func makeAppServerLaunchCommand(
     codexCommand: String,
     environment: [String: String],
-    listenAddress: String,
-    tokenFileURL: URL,
-    isolatedCodexHomeURL: URL?
-) throws -> Configuration {
+    codexHomeURL: URL
+) throws -> AppServerLaunchCommand {
     guard let resolvedExecutable = resolveCodexCommand(
         requestedCommand: codexCommand,
         environment: environment,
@@ -534,208 +697,379 @@ private func makeAppServerConfiguration(
         )
     }
 
-    var platformOptions = PlatformOptions()
-    platformOptions.processGroupID = 0
-    platformOptions.createSession = false
-
     var effectiveEnvironment = environment
-    if let isolatedCodexHomeURL {
-        effectiveEnvironment["CODEX_HOME"] = isolatedCodexHomeURL.path
-    }
+    effectiveEnvironment["CODEX_HOME"] = codexHomeURL.path
 
-    let subprocessEnvironment = Environment.custom(
-        effectiveEnvironment.reduce(into: [Environment.Key: String]()) { partialResult, entry in
-            partialResult[Environment.Key(stringLiteral: entry.key)] = entry.value
-        }
-    )
-
-    return Configuration(
-        executable: .path(FilePath(resolvedExecutable)),
-        arguments: [
+    return AppServerLaunchCommand(
+        executable: resolvedExecutable,
+        arguments: reviewMCPCodexCommandArguments([
             "app-server",
-            "--listen", listenAddress,
-            "--ws-auth", "capability-token",
-            "--ws-token-file", tokenFileURL.path
-        ],
-        environment: subprocessEnvironment,
-        workingDirectory: FilePath(FileManager.default.currentDirectoryPath),
-        platformOptions: platformOptions
+            "--listen", "stdio://"
+        ]),
+        environment: effectiveEnvironment
     )
 }
 
-private func prepareIsolatedCodexHome(
-    launchID: UUID,
-    environment: [String: String]
-) throws -> URL? {
-    let isolatedCodexHomeURL = ReviewHomePaths.reviewHomeURL(environment: environment)
-        .appendingPathComponent("app-server-codex-home-\(launchID.uuidString)", isDirectory: true)
-    let fileManager = FileManager.default
-    if fileManager.fileExists(atPath: isolatedCodexHomeURL.path) {
-        try fileManager.removeItem(at: isolatedCodexHomeURL)
-    }
-    try fileManager.createDirectory(at: isolatedCodexHomeURL, withIntermediateDirectories: true)
+private func spawnAppServerProcess(
+    _ command: AppServerLaunchCommand
+) throws -> SpawnedAppServerProcess {
+    let stdinPipe = Pipe()
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
 
-    guard let sourceCodexHomeURL = ReviewHomePaths.codexHomeURL(environment: environment),
-          fileManager.fileExists(atPath: sourceCodexHomeURL.path)
+    var fileActions: posix_spawn_file_actions_t? = nil
+    guard posix_spawn_file_actions_init(&fileActions) == 0 else {
+        throw ReviewError.spawnFailed("failed to initialize app-server spawn file actions.")
+    }
+    defer { posix_spawn_file_actions_destroy(&fileActions) }
+
+    let stdinReadFD = stdinPipe.fileHandleForReading.fileDescriptor
+    let stdinWriteFD = stdinPipe.fileHandleForWriting.fileDescriptor
+    let stdoutReadFD = stdoutPipe.fileHandleForReading.fileDescriptor
+    let stdoutWriteFD = stdoutPipe.fileHandleForWriting.fileDescriptor
+    let stderrReadFD = stderrPipe.fileHandleForReading.fileDescriptor
+    let stderrWriteFD = stderrPipe.fileHandleForWriting.fileDescriptor
+
+    for fileDescriptor in [stdinWriteFD, stdoutReadFD, stderrReadFD] {
+        guard posix_spawn_file_actions_addclose(&fileActions, fileDescriptor) == 0 else {
+            throw ReviewError.spawnFailed("failed to configure app-server stdio cleanup.")
+        }
+    }
+
+    for (source, destination) in [
+        (stdinReadFD, STDIN_FILENO),
+        (stdoutWriteFD, STDOUT_FILENO),
+        (stderrWriteFD, STDERR_FILENO),
+    ] where source != destination {
+        guard posix_spawn_file_actions_adddup2(&fileActions, source, destination) == 0 else {
+            throw ReviewError.spawnFailed("failed to configure app-server stdio redirection.")
+        }
+        guard posix_spawn_file_actions_addclose(&fileActions, source) == 0 else {
+            throw ReviewError.spawnFailed("failed to configure app-server stdio source cleanup.")
+        }
+    }
+
+    var spawnAttributes: posix_spawnattr_t? = nil
+    guard posix_spawnattr_init(&spawnAttributes) == 0 else {
+        throw ReviewError.spawnFailed("failed to initialize app-server spawn attributes.")
+    }
+    defer { posix_spawnattr_destroy(&spawnAttributes) }
+
+    let spawnFlags = Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
+    guard posix_spawnattr_setflags(&spawnAttributes, spawnFlags) == 0,
+          posix_spawnattr_setpgroup(&spawnAttributes, 0) == 0
     else {
-        return isolatedCodexHomeURL
+        throw ReviewError.spawnFailed("failed to configure app-server process group.")
     }
 
-    for filename in ["auth.json", "models_cache.json", ".credentials.json"] {
-        let sourceURL = sourceCodexHomeURL.appendingPathComponent(filename)
-        guard fileManager.fileExists(atPath: sourceURL.path) else {
-            continue
+    let argv = try allocateCStringArray([command.executable] + command.arguments)
+    let envp = try allocateCStringArray(command.environment.map { "\($0.key)=\($0.value)" })
+    defer {
+        for pointer in argv where pointer != nil {
+            free(pointer)
         }
-        let destinationURL = isolatedCodexHomeURL.appendingPathComponent(filename)
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            try fileManager.removeItem(at: destinationURL)
+        for pointer in envp where pointer != nil {
+            free(pointer)
         }
-        try fileManager.copyItem(at: sourceURL, to: destinationURL)
     }
 
-    let sourceConfigURL = sourceCodexHomeURL.appendingPathComponent("config.toml")
-    if fileManager.fileExists(atPath: sourceConfigURL.path) {
-        let configText = try String(contentsOf: sourceConfigURL, encoding: .utf8)
-        let filteredConfigText = isolatedCodexHomeConfigText(from: configText)
-        try filteredConfigText.write(
-            to: isolatedCodexHomeURL.appendingPathComponent("config.toml"),
-            atomically: true,
-            encoding: .utf8
+    var pid: pid_t = 0
+    let spawnStatus = posix_spawn(
+        &pid,
+        command.executable,
+        &fileActions,
+        &spawnAttributes,
+        argv,
+        envp
+    )
+    guard spawnStatus == 0 else {
+        let message = String(cString: strerror(spawnStatus))
+        throw ReviewError.spawnFailed("failed to start app-server: \(message)")
+    }
+
+    try? stdinPipe.fileHandleForReading.close()
+    try? stdoutPipe.fileHandleForWriting.close()
+    try? stderrPipe.fileHandleForWriting.close()
+
+    return SpawnedAppServerProcess(
+        pid: pid,
+        stdinPipe: stdinPipe,
+        stdoutPipe: stdoutPipe,
+        stderrPipe: stderrPipe
+    )
+}
+
+private func terminateManagedRuntime(
+    processIdentity: ProcessIdentity,
+    processGroupIdentity: ProcessIdentity,
+    signalDedicatedProcessGroup: Bool,
+    connection: AppServerSharedTransportConnection,
+    waitTask: Task<Void, Never>,
+    stdoutTask: Task<Void, Never>,
+    stderrTask: Task<Void, Never>
+) async {
+    await connection.shutdown()
+    let excludedGroupLeaderPIDs = trackedGroupExclusionSet(
+        processIdentity: processIdentity,
+        processGroupIdentity: processGroupIdentity,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup
+    )
+    let individuallyTrackedGroupLeaderPID = individuallyTrackedProcessGroupLeaderPID(
+        processIdentity: processIdentity,
+        processGroupIdentity: processGroupIdentity,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup
+    )
+    var trackedChildGroupIdentities = descendantProcessGroupIdentities(
+        rootIdentity: processIdentity,
+        excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+    )
+    var trackedExcludedGroupProcessIdentities = individuallyTrackedGroupLeaderPID.map {
+        descendantProcessIdentities(rootIdentity: processIdentity, inProcessGroup: $0)
+    } ?? []
+    signalManagedRuntime(
+        processIdentity: processIdentity,
+        processGroupLeaderPID: processGroupIdentity.pid,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup,
+        signal: SIGTERM
+    )
+    signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
+    signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
+
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while ContinuousClock.now < deadline {
+        trackedChildGroupIdentities = mergeProcessIdentities(
+            trackedChildGroupIdentities,
+            descendantProcessGroupIdentities(
+                rootIdentity: processIdentity,
+                excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+            )
+        )
+        if let individuallyTrackedGroupLeaderPID {
+            trackedExcludedGroupProcessIdentities = mergeProcessIdentities(
+                trackedExcludedGroupProcessIdentities,
+                descendantProcessIdentities(
+                    rootIdentity: processIdentity,
+                    inProcessGroup: individuallyTrackedGroupLeaderPID
+                )
+            )
+        }
+        if managedRuntimeStopped(
+            processIdentity: processIdentity,
+            processGroupLeaderPID: processGroupIdentity.pid,
+            signalDedicatedProcessGroup: signalDedicatedProcessGroup
+        ) && hasLiveTrackedProcessGroups(trackedChildGroupIdentities) == false
+            && hasLiveTrackedProcesses(trackedExcludedGroupProcessIdentities) == false
+        {
+            break
+        }
+        signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
+        signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+
+    trackedChildGroupIdentities = mergeProcessIdentities(
+        trackedChildGroupIdentities,
+        descendantProcessGroupIdentities(
+            rootIdentity: processIdentity,
+            excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+        )
+    )
+    if let individuallyTrackedGroupLeaderPID {
+        trackedExcludedGroupProcessIdentities = mergeProcessIdentities(
+            trackedExcludedGroupProcessIdentities,
+            descendantProcessIdentities(
+                rootIdentity: processIdentity,
+                inProcessGroup: individuallyTrackedGroupLeaderPID
+            )
         )
     }
+    if managedRuntimeStopped(
+        processIdentity: processIdentity,
+        processGroupLeaderPID: processGroupIdentity.pid,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup
+    ) == false
+        || hasLiveTrackedProcessGroups(trackedChildGroupIdentities)
+        || hasLiveTrackedProcesses(trackedExcludedGroupProcessIdentities)
+    {
+        signalManagedRuntime(
+            processIdentity: processIdentity,
+            processGroupLeaderPID: processGroupIdentity.pid,
+            signalDedicatedProcessGroup: signalDedicatedProcessGroup,
+            signal: SIGKILL
+        )
+        signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGKILL)
+        signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGKILL)
+    }
 
-    return isolatedCodexHomeURL
+    _ = await waitTask.result
+    _ = await stdoutTask.value
+    _ = await stderrTask.value
 }
 
-package func isolatedCodexHomeConfigText(from configText: String) -> String {
-    let lines = configText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-    var keptLines: [String] = []
-    var inCodexReviewSection = false
+private func terminateFailedSpawnedProcess(
+    processIdentity: ProcessIdentity,
+    processGroupLeaderPID: pid_t,
+    signalDedicatedProcessGroup: Bool
+) async {
+    let excludedGroupLeaderPIDs: Set<pid_t> =
+        signalDedicatedProcessGroup && processGroupLeaderPID > 0 ? [processGroupLeaderPID] : []
+    let individuallyTrackedGroupLeaderPID = currentProcessGroupID(of: processIdentity.pid)
+    var trackedChildGroupIdentities = descendantProcessGroupIdentities(
+        rootIdentity: processIdentity,
+        excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+    )
+    var trackedExcludedGroupProcessIdentities = individuallyTrackedGroupLeaderPID.map {
+        descendantProcessIdentities(rootIdentity: processIdentity, inProcessGroup: $0)
+    } ?? []
+    signalManagedRuntime(
+        processIdentity: processIdentity,
+        processGroupLeaderPID: processGroupLeaderPID,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup,
+        signal: SIGTERM
+    )
+    signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
+    signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
 
-    for line in lines {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("["),
-           let closingBracketIndex = trimmed.firstIndex(of: "]")
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while ContinuousClock.now < deadline {
+        trackedChildGroupIdentities = mergeProcessIdentities(
+            trackedChildGroupIdentities,
+            descendantProcessGroupIdentities(
+                rootIdentity: processIdentity,
+                excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+            )
+        )
+        if let individuallyTrackedGroupLeaderPID {
+            trackedExcludedGroupProcessIdentities = mergeProcessIdentities(
+                trackedExcludedGroupProcessIdentities,
+                descendantProcessIdentities(
+                    rootIdentity: processIdentity,
+                    inProcessGroup: individuallyTrackedGroupLeaderPID
+                )
+            )
+        }
+        let result = waitpid(processIdentity.pid, nil, WNOHANG)
+        if (result == processIdentity.pid || (result == -1 && errno == ECHILD)),
+           hasLiveTrackedProcessGroups(trackedChildGroupIdentities) == false,
+           hasLiveTrackedProcesses(trackedExcludedGroupProcessIdentities) == false
         {
-            let sectionName = String(trimmed[trimmed.index(after: trimmed.startIndex)..<closingBracketIndex])
-            inCodexReviewSection = sectionName == "mcp_servers.codex_review"
-                || sectionName == "mcp_servers.\"codex_review\""
-                || sectionName == "mcp_servers.'codex_review'"
-            if inCodexReviewSection {
-                continue
-            }
+            return
         }
-
-        if inCodexReviewSection {
-            continue
-        }
-        keptLines.append(line)
+        signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
+        signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
+        try? await Task.sleep(for: .milliseconds(100))
     }
 
-    return keptLines.joined(separator: "\n")
+    trackedChildGroupIdentities = mergeProcessIdentities(
+        trackedChildGroupIdentities,
+        descendantProcessGroupIdentities(
+            rootIdentity: processIdentity,
+            excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+        )
+    )
+    if let individuallyTrackedGroupLeaderPID {
+        trackedExcludedGroupProcessIdentities = mergeProcessIdentities(
+            trackedExcludedGroupProcessIdentities,
+            descendantProcessIdentities(
+                rootIdentity: processIdentity,
+                inProcessGroup: individuallyTrackedGroupLeaderPID
+            )
+        )
+    }
+    signalManagedRuntime(
+        processIdentity: processIdentity,
+        processGroupLeaderPID: processGroupLeaderPID,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup,
+        signal: SIGKILL
+    )
+    signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGKILL)
+    signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGKILL)
+    reapSpawnedProcess(pid: processIdentity.pid)
 }
 
-private func makeReadyURL(from websocketURL: URL) throws -> URL {
-    guard var components = URLComponents(url: websocketURL, resolvingAgainstBaseURL: false) else {
-        throw ReviewError.spawnFailed("failed to construct readyz URL for app-server startup.")
+private func signalManagedRuntime(
+    processIdentity: ProcessIdentity,
+    processGroupLeaderPID: pid_t,
+    signalDedicatedProcessGroup: Bool,
+    signal: Int32
+) {
+    if isMatchingProcessIdentity(processIdentity) {
+        _ = kill(processIdentity.pid, signal)
     }
-    components.scheme = "http"
-    components.path = "/readyz"
-    guard let url = components.url else {
-        throw ReviewError.spawnFailed("failed to construct readyz URL for app-server startup.")
+    if signalDedicatedProcessGroup, processGroupLeaderPID > 0 {
+        _ = killpg(processGroupLeaderPID, signal)
     }
-    return url
 }
 
-private func stripANSIEscapeCodes(_ text: String) -> String {
-    var stripped = String()
-    var iterator = text.makeIterator()
-    while let character = iterator.next() {
-        if character == "\u{1b}", iterator.next() == "[" {
-            while let next = iterator.next() {
-                if ("@"..."~").contains(next) {
-                    break
-                }
-            }
-            continue
-        }
-        stripped.append(character)
+private func managedRuntimeStopped(
+    processIdentity: ProcessIdentity,
+    processGroupLeaderPID: pid_t,
+    signalDedicatedProcessGroup: Bool
+) -> Bool {
+    let processStopped = isMatchingProcessIdentity(processIdentity) == false
+    guard signalDedicatedProcessGroup else {
+        return processStopped
     }
-    return stripped
+    return processStopped && isProcessGroupGone(processGroupLeaderPID)
 }
 
-package func makeLoopbackWebSocketListenURL() throws -> URL {
-    guard let url = URL(string: "ws://127.0.0.1:0") else {
-        throw ReviewError.spawnFailed("failed to construct websocket listen URL.")
+private func trackedGroupExclusionSet(
+    processIdentity: ProcessIdentity,
+    processGroupIdentity: ProcessIdentity,
+    signalDedicatedProcessGroup: Bool
+) -> Set<pid_t> {
+    var excluded: Set<pid_t> = []
+    if signalDedicatedProcessGroup {
+        excluded.insert(processGroupIdentity.pid)
     }
-    return url
+    if let currentProcessGroupID = currentProcessGroupID(of: processIdentity.pid) {
+        excluded.insert(currentProcessGroupID)
+    }
+    return excluded.filter { $0 > 0 }
 }
 
-package func discoveredWebSocketURL(from stderrLines: [String]) -> URL? {
-    let bannerPatterns = [
-        #"listening on:\s+(ws://127\.0\.0\.1:\d+)"#,
-        #"app-server websocket listening on\s+(ws://127\.0\.0\.1:\d+)"#,
-    ]
-    for line in stderrLines.reversed() {
-        let stripped = stripANSIEscapeCodes(line)
-        for pattern in bannerPatterns {
-            guard let range = stripped.range(of: pattern, options: .regularExpression) else {
-                continue
-            }
-            let match = String(stripped[range])
-            let urlString = match.split(separator: " ").last.map(String.init) ?? match
-            guard let url = URL(string: urlString) else {
-                continue
-            }
-            guard url.port != 0 else {
-                continue
-            }
-            return url
-        }
+private func individuallyTrackedProcessGroupLeaderPID(
+    processIdentity: ProcessIdentity,
+    processGroupIdentity: ProcessIdentity,
+    signalDedicatedProcessGroup: Bool
+) -> pid_t? {
+    guard let currentProcessGroupID = currentProcessGroupID(of: processIdentity.pid),
+          currentProcessGroupID > 0
+    else {
+        return nil
     }
-    return nil
-}
-
-package func nextDiscoveredWebSocketURL(cached: URL?, stderrLines: [String]) -> URL? {
-    cached ?? discoveredWebSocketURL(from: stderrLines)
-}
-
-private func isSupervisorProcessGroupAlive(_ identity: ProcessIdentity) -> Bool {
-    let probe = killpg(identity.pid, 0)
-    guard probe == 0 || errno == EPERM else {
-        return false
+    if signalDedicatedProcessGroup, currentProcessGroupID == processGroupIdentity.pid {
+        return nil
     }
-    if let currentStartTime = processStartTime(of: identity.pid) {
-        return currentStartTime == identity.startTime
-    }
-    return true
+    return currentProcessGroupID
 }
 
 private func descendantProcessGroupIdentities(
-    rootPID: pid_t,
-    excludingGroupLeaderPID: pid_t
+    rootIdentity: ProcessIdentity,
+    excludingGroupLeaderPIDs: Set<pid_t>
 ) -> [ProcessIdentity] {
-    var pending = childProcessIDs(of: rootPID)
-    var visited: Set<pid_t> = []
+    guard canTraverseDescendants(of: rootIdentity) else {
+        return []
+    }
+
+    var pending = snapshotChildProcessIdentities(of: rootIdentity)
+    var visited: Set<ProcessIdentity> = []
     var identities: Set<ProcessIdentity> = []
 
-    while let pid = pending.popLast() {
-        if visited.insert(pid).inserted == false {
+    while let identity = pending.popLast() {
+        if visited.insert(identity).inserted == false {
             continue
         }
-        guard isProcessAlive(pid) else {
-            continue
-        }
+        pending.append(contentsOf: snapshotChildProcessIdentities(of: identity))
 
-        pending.append(contentsOf: childProcessIDs(of: pid))
-
-        let groupLeaderPID = currentProcessGroupID(of: pid) ?? pid
+        let groupLeaderPID = currentProcessGroupID(of: identity.pid) ?? identity.pid
         guard groupLeaderPID > 0,
-              groupLeaderPID != excludingGroupLeaderPID,
+              excludingGroupLeaderPIDs.contains(groupLeaderPID) == false,
               let groupLeaderStartTime = processStartTime(of: groupLeaderPID)
         else {
             continue
         }
+
         identities.insert(
             ProcessIdentity(
                 pid: groupLeaderPID,
@@ -747,25 +1081,160 @@ private func descendantProcessGroupIdentities(
     return Array(identities)
 }
 
-private func signalSupervisorChildGroups(
+private func descendantProcessIdentities(rootIdentity: ProcessIdentity) -> [ProcessIdentity] {
+    guard canTraverseDescendants(of: rootIdentity) else {
+        return []
+    }
+
+    var pending = snapshotChildProcessIdentities(of: rootIdentity)
+    var visited: Set<ProcessIdentity> = []
+    var identities: [ProcessIdentity] = []
+
+    while let identity = pending.popLast() {
+        if visited.insert(identity).inserted == false {
+            continue
+        }
+        identities.append(identity)
+        pending.append(contentsOf: snapshotChildProcessIdentities(of: identity))
+    }
+
+    return identities
+}
+
+private func descendantProcessIdentities(
+    rootIdentity: ProcessIdentity,
+    inProcessGroup processGroupLeaderPID: pid_t
+) -> [ProcessIdentity] {
+    guard processGroupLeaderPID > 0 else {
+        return []
+    }
+
+    return descendantProcessIdentities(rootIdentity: rootIdentity).filter { identity in
+        currentProcessGroupID(of: identity.pid) == processGroupLeaderPID
+    }
+}
+
+private func canTraverseDescendants(of identity: ProcessIdentity) -> Bool {
+    processStartTime(of: identity.pid) == identity.startTime
+}
+
+private func snapshotChildProcessIdentities(of parentIdentity: ProcessIdentity) -> [ProcessIdentity] {
+    guard canTraverseDescendants(of: parentIdentity) else {
+        return []
+    }
+
+    return childProcessIDs(of: parentIdentity.pid).compactMap { childPID in
+        guard let startTime = processStartTime(of: childPID) else {
+            return nil
+        }
+        return ProcessIdentity(pid: childPID, startTime: startTime)
+    }
+}
+
+private func mergeProcessIdentities(
+    _ lhs: [ProcessIdentity],
+    _ rhs: [ProcessIdentity]
+) -> [ProcessIdentity] {
+    Array(Set(lhs).union(rhs))
+}
+
+private func signalTrackedProcessGroups(
     _ identities: [ProcessIdentity],
     signal: Int32
 ) {
-    for identity in Set(identities) where isSupervisorProcessGroupAlive(identity) {
+    for identity in Set(identities) where isTrackedProcessGroupAlive(identity) {
         _ = killpg(identity.pid, signal)
     }
 }
 
-private func hasLiveSupervisorChildGroups(_ identities: [ProcessIdentity]) -> Bool {
+private func hasLiveTrackedProcessGroups(_ identities: [ProcessIdentity]) -> Bool {
     Set(identities).contains { identity in
-        isSupervisorProcessGroupAlive(identity)
+        isTrackedProcessGroupAlive(identity)
     }
 }
 
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return body()
+private func signalTrackedProcesses(
+    _ identities: [ProcessIdentity],
+    signal: Int32
+) {
+    for identity in Set(identities) where isMatchingProcessIdentity(identity) {
+        _ = kill(identity.pid, signal)
+    }
+}
+
+private func hasLiveTrackedProcesses(_ identities: [ProcessIdentity]) -> Bool {
+    Set(identities).contains { identity in
+        isMatchingProcessIdentity(identity)
+    }
+}
+
+private func isTrackedProcessGroupAlive(_ identity: ProcessIdentity) -> Bool {
+    let probe = killpg(identity.pid, 0)
+    guard probe == 0 || errno == EPERM else {
+        return false
+    }
+    if let currentStartTime = processStartTime(of: identity.pid) {
+        return currentStartTime == identity.startTime
+    }
+    return true
+}
+
+private func isProcessGroupGone(_ groupLeaderPID: pid_t) -> Bool {
+    guard groupLeaderPID > 0 else {
+        return true
+    }
+    errno = 0
+    let result = killpg(groupLeaderPID, 0)
+    return result == -1 && errno == ESRCH
+}
+
+private func reapSpawnedProcess(pid: pid_t) {
+    var status: Int32 = 0
+    while true {
+        let result = waitpid(pid, &status, 0)
+        if result == pid || (result == -1 && errno == ECHILD) {
+            return
+        }
+        if result == -1 && errno == EINTR {
+            continue
+        }
+        return
+    }
+}
+
+private func terminateSpawnedProcessWithoutIdentity(pid: pid_t) async {
+    var status: Int32 = 0
+    _ = kill(pid, SIGTERM)
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while ContinuousClock.now < deadline {
+        let result = waitpid(pid, &status, WNOHANG)
+        if result == pid || (result == -1 && errno == ECHILD) {
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+    _ = kill(pid, SIGKILL)
+    reapSpawnedProcess(pid: pid)
+}
+
+private func allocateCStringArray(
+    _ strings: [String]
+) throws -> [UnsafeMutablePointer<CChar>?] {
+    var pointers: [UnsafeMutablePointer<CChar>?] = []
+    pointers.reserveCapacity(strings.count + 1)
+    do {
+        for string in strings {
+            guard let pointer = strdup(string) else {
+                throw ReviewError.spawnFailed("failed to allocate app-server spawn arguments.")
+            }
+            pointers.append(pointer)
+        }
+        pointers.append(nil)
+        return pointers
+    } catch {
+        for pointer in pointers where pointer != nil {
+            free(pointer)
+        }
+        throw error
     }
 }

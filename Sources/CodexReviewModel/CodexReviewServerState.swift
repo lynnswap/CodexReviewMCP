@@ -6,9 +6,9 @@ public enum CodexReviewServerState: Sendable, Equatable {
 
     public var isRestartAvailable: Bool {
         switch self {
-        case .stopped, .failed:
+        case .stopped, .starting, .failed:
             true
-        case .starting, .running:
+        case .running:
             false
         }
     }

@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 package protocol CodexReviewStoreBackend: AnyObject {
     var isActive: Bool { get }
+    var shouldAutoStartEmbeddedServer: Bool { get }
 
     func start(
         store: CodexReviewStore,
@@ -19,11 +20,20 @@ package protocol CodexReviewStoreBackend: AnyObject {
         reason: String,
         store: CodexReviewStore
     ) async throws
+
+    func refreshAuthState(auth: CodexReviewAuthModel) async
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async
+
+    func logout(auth: CodexReviewAuthModel) async
 }
 
 @MainActor
 package final class CodexReviewPreviewStoreBackend: CodexReviewStoreBackend {
     package private(set) var isActive = false
+    package let shouldAutoStartEmbeddedServer = false
 
     package init() {}
 
@@ -53,5 +63,21 @@ package final class CodexReviewPreviewStoreBackend: CodexReviewStoreBackend {
             sessionID: sessionID,
             reason: reason
         )
+    }
+
+    package func refreshAuthState(auth: CodexReviewAuthModel) async {
+        auth.updateState(.signedOut)
+    }
+
+    package func beginAuthentication(auth: CodexReviewAuthModel) async {
+        auth.updateState(.failed("Authentication is unavailable in preview mode."))
+    }
+
+    package func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        auth.updateState(.signedOut)
+    }
+
+    package func logout(auth: CodexReviewAuthModel) async {
+        auth.updateState(.signedOut)
     }
 }

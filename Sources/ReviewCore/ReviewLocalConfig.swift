@@ -38,8 +38,10 @@ package func loadReviewLocalConfig(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) throws -> ReviewLocalConfig {
     let fileURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-    guard FileManager.default.fileExists(atPath: fileURL.path) else {
-        return .init()
+    do {
+        try ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    } catch {
+        throw ReviewLocalConfigError.unreadable(path: fileURL.path, message: error.localizedDescription)
     }
 
     let content: String

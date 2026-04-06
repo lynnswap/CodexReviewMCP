@@ -194,6 +194,15 @@ package struct AppServerInitializeResponse: Decodable, Sendable {
 
 package struct AppServerInitializedParams: Codable, Sendable {}
 
+package struct AppServerNullParams: Encodable, Sendable {
+    package init() {}
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encodeNil()
+    }
+}
+
 package struct AppServerConfigReadParams: Encodable, Sendable {
     package var cwd: String
     package var includeLayers: Bool
@@ -260,6 +269,139 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
     }
 }
 
+package struct AppServerAccountReadParams: Encodable, Sendable {
+    package var refreshToken: Bool
+
+    package enum CodingKeys: String, CodingKey {
+        case refreshToken
+    }
+
+    package init(refreshToken: Bool) {
+        self.refreshToken = refreshToken
+    }
+}
+
+package struct AppServerAccountReadResponse: Decodable, Sendable, Equatable {
+    package enum Account: Decodable, Sendable, Equatable {
+        case chatGPT(email: String, planType: String)
+        case unsupported
+
+        package init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            switch try container.decode(String.self, forKey: .type) {
+            case "chatgpt":
+                self = .chatGPT(
+                    email: try container.decode(String.self, forKey: .email),
+                    planType: try container.decode(String.self, forKey: .planType)
+                )
+            default:
+                self = .unsupported
+            }
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case type
+            case email
+            case planType
+        }
+    }
+
+    package var account: Account?
+    package var requiresOpenAIAuth: Bool
+
+    package enum CodingKeys: String, CodingKey {
+        case account
+        case requiresOpenAIAuth = "requiresOpenaiAuth"
+    }
+
+    package init(
+        account: Account?,
+        requiresOpenAIAuth: Bool
+    ) {
+        self.account = account
+        self.requiresOpenAIAuth = requiresOpenAIAuth
+    }
+}
+
+package enum AppServerLoginAccountParams: Encodable, Sendable, Equatable {
+    case chatGPT
+
+    package func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .chatGPT:
+            try container.encode("chatgpt", forKey: .type)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+    }
+}
+
+package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
+    case chatGPT(loginID: String, authURL: String)
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case "chatgpt":
+            self = .chatGPT(
+                loginID: try container.decode(String.self, forKey: .loginID),
+                authURL: try container.decode(String.self, forKey: .authURL)
+            )
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type,
+                in: container,
+                debugDescription: "Unsupported login response type."
+            )
+        }
+    }
+
+    package var loginID: String? {
+        switch self {
+        case .chatGPT(let loginID, _):
+            loginID
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case loginID = "loginId"
+        case authURL = "authUrl"
+    }
+}
+
+package struct AppServerCancelLoginAccountParams: Encodable, Sendable, Equatable {
+    package var loginID: String
+
+    package enum CodingKeys: String, CodingKey {
+        case loginID = "loginId"
+    }
+
+    package init(loginID: String) {
+        self.loginID = loginID
+    }
+}
+
+package enum AppServerCancelLoginAccountStatus: String, Decodable, Sendable, Equatable {
+    case canceled = "canceled"
+    case notFound = "notFound"
+}
+
+package struct AppServerCancelLoginAccountResponse: Decodable, Sendable, Equatable {
+    package var status: AppServerCancelLoginAccountStatus
+
+    package init(status: AppServerCancelLoginAccountStatus) {
+        self.status = status
+    }
+}
+
+package struct AppServerLogoutAccountResponse: Decodable, Sendable, Equatable {
+    package init() {}
+}
+
 package struct AppServerThreadStartParams: Encodable, Sendable {
     package var model: String?
     package var cwd: String?
@@ -293,6 +435,20 @@ package struct AppServerThreadUnsubscribeParams: Encodable, Sendable {
 
     package enum CodingKeys: String, CodingKey {
         case threadID = "threadId"
+    }
+}
+
+package enum AppServerThreadUnsubscribeStatus: String, Decodable, Sendable {
+    case unsubscribed
+    case notSubscribed
+    case notLoaded
+}
+
+package struct AppServerThreadUnsubscribeResponse: Decodable, Sendable {
+    package var status: AppServerThreadUnsubscribeStatus
+
+    package init(status: AppServerThreadUnsubscribeStatus) {
+        self.status = status
     }
 }
 
@@ -695,6 +851,41 @@ package struct AppServerErrorNotification: Decodable, Sendable {
     }
 }
 
+package struct AppServerAccountLoginCompletedNotification: Decodable, Sendable, Equatable {
+    package var error: String?
+    package var loginID: String?
+    package var success: Bool
+
+    package enum CodingKeys: String, CodingKey {
+        case error
+        case loginID = "loginId"
+        case success
+    }
+}
+
+package enum AppServerAccountAuthMode: Decodable, Sendable, Equatable {
+    case chatGPT
+    case chatGPTAuthTokens
+    case unsupported
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        switch try container.decode(String.self) {
+        case "chatgpt":
+            self = .chatGPT
+        case "chatgptAuthTokens":
+            self = .chatGPTAuthTokens
+        default:
+            self = .unsupported
+        }
+    }
+}
+
+package struct AppServerAccountUpdatedNotification: Decodable, Sendable, Equatable {
+    package var authMode: AppServerAccountAuthMode?
+    package var planType: String?
+}
+
 package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendable {
     package var code: Int?
     package var message: String
@@ -731,6 +922,8 @@ package enum AppServerServerNotification: Sendable {
     case reasoningTextDelta(AppServerReasoningTextDeltaNotification)
     case mcpToolCallProgress(AppServerMcpToolCallProgressNotification)
     case error(AppServerErrorNotification)
+    case accountLoginCompleted(AppServerAccountLoginCompletedNotification)
+    case accountUpdated(AppServerAccountUpdatedNotification)
     case ignored
 }
 

@@ -16,6 +16,7 @@ extension CodexReviewStore {
     @_spi(Testing)
     public func loadForTesting(
         serverState: CodexReviewServerState,
+        authState: CodexReviewAuthModel.State = .signedOut,
         serverURL: URL? = nil,
         workspaces: [CodexReviewWorkspace]
     ) {
@@ -24,6 +25,7 @@ extension CodexReviewStore {
             "loadForTesting must be called before the embedded server starts."
         )
         self.serverState = serverState
+        self.auth.updateState(authState)
         self.serverURL = serverURL
         var existingByCWD: [String: CodexReviewWorkspace] = [:]
         for workspace in self.workspaces {

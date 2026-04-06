@@ -37,7 +37,7 @@ def project_root() -> pathlib.Path:
 
 
 def default_server_bin() -> pathlib.Path:
-    return project_root() / ".build" / "debug" / "codex-review-mcp-server"
+    return project_root() / ".build" / "debug" / "CodexReviewMCPServerExecutable"
 
 
 def write_text(path: pathlib.Path, text: str) -> None:
@@ -176,7 +176,7 @@ def run_http_e2e(args: argparse.Namespace) -> int:
     server_bin = pathlib.Path(args.server_bin).resolve() if args.server_bin else default_server_bin()
     if not server_bin.exists():
         raise FileNotFoundError(
-            f"Server binary not found at {server_bin}. Run `swift build` first or pass --server-bin."
+            f"Server binary not found at {server_bin}. Run `swift build --target CodexReviewMCPServerExecutable` first or pass --server-bin."
         )
 
     host = "127.0.0.1"
@@ -306,7 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     http_e2e = subparsers.add_parser("http-e2e", help="Run server startup + MCP review_start smoke")
     http_e2e.add_argument("--cwd", required=True, help="Repository path to review")
     http_e2e.add_argument("--output-dir", help="Directory to write artifacts into")
-    http_e2e.add_argument("--server-bin", help="Path to codex-review-mcp-server")
+    http_e2e.add_argument("--server-bin", help="Path to the internal server executable")
     http_e2e.add_argument("--codex-command", default="codex", help="codex executable to use")
     http_e2e.add_argument("--endpoint", default="/mcp", help="Server endpoint path")
     http_e2e.add_argument("--port", type=int, help="Fixed port to bind")

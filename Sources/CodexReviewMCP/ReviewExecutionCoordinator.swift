@@ -23,13 +23,14 @@ package actor ReviewExecutionCoordinator {
         var sessionID: String
         var task: Task<Void, Error>
         var requestedTerminationReason: ReviewTerminationReason?
+        var stateChangeSignal: ReviewExecutionStateChangeSignal
+        var bootstrapInterrupter: (@Sendable () async -> Void)?
     }
 
     private let configuration: Configuration
     private let appServerManager: any AppServerManaging
     private let runtimeStateDidChange: @Sendable (AppServerRuntimeState) async -> Void
     private var executions: [String: ExecutionHandle] = [:]
-    private var sessionLanes: [String: ReviewSessionLane] = [:]
 
     package init(
         configuration: Configuration = .init(),
@@ -56,6 +57,7 @@ package actor ReviewExecutionCoordinator {
         )
 
         let startupGate = StartupGate()
+        let stateChangeSignal = ReviewExecutionStateChangeSignal()
         let task = Task {
             await startupGate.wait()
             try await self.runReview(
@@ -63,31 +65,36 @@ package actor ReviewExecutionCoordinator {
                 sessionID: sessionID,
                 request: requestOptions,
                 initialModel: initialResolvedModel,
+                stateChangeSubscription: await stateChangeSignal.subscription(),
                 store: store
             )
         }
         executions[jobID] = .init(
             sessionID: sessionID,
             task: task,
-            requestedTerminationReason: nil
+            requestedTerminationReason: nil,
+            stateChangeSignal: stateChangeSignal,
+            bootstrapInterrupter: {
+                task.cancel()
+            }
         )
         if let pendingTerminationReason = await store.pendingTerminationReason(
             jobID: jobID,
             sessionID: sessionID
         ) {
-            recordRequestedTerminationReason(jobID: jobID, reason: pendingTerminationReason)
+            await recordRequestedTerminationReason(jobID: jobID, reason: pendingTerminationReason)
         }
         await startupGate.open()
 
         do {
             try await task.value
         } catch {
-            executions[jobID] = nil
+            await removeExecution(jobID: jobID)
             throw error
         }
 
         let result = try await store.readReview(jobID: jobID, sessionID: sessionID)
-        executions[jobID] = nil
+        await removeExecution(jobID: jobID)
         await store.pruneClosedJobIfNeeded(jobID: jobID)
         return result
     }
@@ -133,10 +140,7 @@ package actor ReviewExecutionCoordinator {
         let targetIDs = await store.closeSessionState(sessionID)
         let closeReason = ReviewTerminationReason.cancelled(reason.nilIfEmpty ?? "Cancellation requested.")
         for jobID in targetIDs {
-            recordRequestedTerminationReason(jobID: jobID, reason: closeReason)
-        }
-        if let lane = sessionLanes[sessionID] {
-            await lane.notifyPendingStateChange()
+            await recordRequestedTerminationReason(jobID: jobID, reason: closeReason)
         }
         for jobID in targetIDs {
             guard let job = try? await store.resolveJob(jobID: jobID, sessionID: sessionID) else {
@@ -146,12 +150,8 @@ package actor ReviewExecutionCoordinator {
                 job: job,
                 sessionID: sessionID,
                 reason: reason,
-                store: store,
-                notifyLane: false
+                store: store
             )
-        }
-        if let lane = sessionLanes.removeValue(forKey: sessionID) {
-            await lane.close(reason: reason)
         }
         await store.pruneClosedSessionJobs(
             sessionID: sessionID,
@@ -173,15 +173,9 @@ package actor ReviewExecutionCoordinator {
             )
         }
 
-        for (_, lane) in sessionLanes {
-            await lane.close(reason: reason)
-        }
-
         for (_, handle) in snapshot {
             _ = try? await handle.task.value
         }
-
-        sessionLanes.removeAll()
     }
 
     private func runReview(
@@ -189,40 +183,89 @@ package actor ReviewExecutionCoordinator {
         sessionID: String,
         request: ReviewRequestOptions,
         initialModel: String?,
+        stateChangeSubscription: AsyncStreamSubscription<Void>,
         store: CodexReviewStore
     ) async throws {
         let now = Date()
-        let lane = sessionLane(for: sessionID)
         let runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: configuration.codexCommand,
                 environment: configuration.environment
             )
         )
+        let requestedTerminationReason: @Sendable () async -> ReviewTerminationReason? = { [weak self] in
+            guard let self else {
+                return nil
+            }
+            return await self.requestedTerminationReason(jobID: jobID)
+        }
 
         do {
-            let outcome = try await lane.runReview(
-                runner: runner,
+            if case .cancelled(let reason)? = await requestedTerminationReason() {
+                throw ReviewBootstrapFailure(message: reason, model: initialModel)
+            }
+
+            let transport = try await appServerManager.checkoutTransport(sessionID: sessionID)
+            defer {
+                clearBootstrapInterrupter(jobID: jobID)
+            }
+            defer {
+                Task {
+                    await transport.close()
+                }
+            }
+            if let runtimeState = await appServerManager.currentRuntimeState() {
+                await runtimeStateDidChange(runtimeState)
+            }
+            if case .cancelled(let reason)? = await requestedTerminationReason() {
+                throw ReviewBootstrapFailure(message: reason, model: initialModel)
+            }
+
+            let outcome = try await runner.run(
+                session: transport,
                 request: request,
                 defaultTimeoutSeconds: configuration.defaultTimeoutSeconds,
                 resolvedModelHint: initialModel,
+                diagnosticLineSubscription: await appServerManager.diagnosticLineStream(),
+                stateChangeSubscription: stateChangeSubscription,
+                diagnosticsTail: { [appServerManager] in
+                    await appServerManager.diagnosticsTail()
+                },
                 onStart: { startedAt in
                     await store.markStarted(
                         jobID: jobID,
                         startedAt: startedAt
                     )
                 },
+                onReviewStarted: {
+                    await self.clearBootstrapInterrupter(jobID: jobID)
+                },
                 onEvent: { event in
                     await store.handle(jobID: jobID, event: event)
                 },
                 requestedTerminationReason: {
-                    await self.requestedTerminationReason(jobID: jobID)
-                },
-                onUnrecoverableTransportFailure: {
-                    await self.handleUnrecoverableTransportFailure(sessionID: sessionID)
+                    await requestedTerminationReason()
                 }
             )
             await store.completeReview(jobID: jobID, outcome: outcome)
+        } catch is CancellationError {
+            if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
+                await store.markBootstrapCancelled(
+                    jobID: jobID,
+                    reason: reason,
+                    model: initialModel,
+                    startedAt: now,
+                    endedAt: Date()
+                )
+            } else {
+                await store.failToStart(
+                    jobID: jobID,
+                    message: "Failed to start review.",
+                    model: initialModel,
+                    startedAt: now,
+                    endedAt: Date()
+                )
+            }
         } catch let error as ReviewBootstrapFailure {
             if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
                 await store.markBootstrapCancelled(
@@ -271,20 +314,6 @@ package actor ReviewExecutionCoordinator {
         }
 
     }
-
-    private func sessionLane(for sessionID: String) -> ReviewSessionLane {
-        if let existing = sessionLanes[sessionID] {
-            return existing
-        }
-        let lane = ReviewSessionLane(
-            sessionID: sessionID,
-            appServerManager: appServerManager,
-            runtimeStateDidChange: runtimeStateDidChange
-        )
-        sessionLanes[sessionID] = lane
-        return lane
-    }
-
     private func requestedTerminationReason(jobID: String) -> ReviewTerminationReason? {
         executions[jobID]?.requestedTerminationReason
     }
@@ -292,34 +321,53 @@ package actor ReviewExecutionCoordinator {
     private func recordRequestedTerminationReason(
         jobID: String,
         reason: ReviewTerminationReason
-    ) {
+    ) async {
         guard var handle = executions[jobID] else {
             return
         }
         handle.requestedTerminationReason = reason
         executions[jobID] = handle
+        await handle.stateChangeSignal.yield()
+    }
+
+    private func removeExecution(jobID: String) async {
+        guard let handle = executions.removeValue(forKey: jobID) else {
+            return
+        }
+        await handle.stateChangeSignal.finish()
+    }
+
+    private func clearBootstrapInterrupter(jobID: String) {
+        guard var handle = executions[jobID] else {
+            return
+        }
+        handle.bootstrapInterrupter = nil
+        executions[jobID] = handle
+    }
+
+    private func interruptBootstrapIfPresent(jobID: String) async {
+        guard let interrupter = executions[jobID]?.bootstrapInterrupter else {
+            return
+        }
+        await interrupter()
     }
 
     private func cancelResolvedJob(
         job: CodexReviewJob,
         sessionID: String,
         reason: String,
-        store: CodexReviewStore,
-        notifyLane: Bool = true
+        store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         let normalizedReason = reason.nilIfEmpty ?? "Cancellation requested."
         let terminationReason = ReviewTerminationReason.cancelled(normalizedReason)
-        recordRequestedTerminationReason(jobID: job.id, reason: terminationReason)
-        if notifyLane, let lane = sessionLanes[sessionID] {
-            await lane.notifyPendingStateChange()
-        }
+        await recordRequestedTerminationReason(jobID: job.id, reason: terminationReason)
         let result = try await store.requestCancellation(
             jobID: job.id,
             sessionID: sessionID,
             reason: normalizedReason
         )
-        if result.signalled, let lane = sessionLanes[sessionID] {
-            await lane.invalidateTransport()
+        if result.signalled {
+            await interruptBootstrapIfPresent(jobID: job.id)
         }
         let resolvedReviewThreadID = await job.reviewThreadID
         let resolvedThreadID = await job.threadID
@@ -334,151 +382,29 @@ package actor ReviewExecutionCoordinator {
             status: status
         )
     }
-
-    private func handleUnrecoverableTransportFailure(sessionID: String) async {
-        guard let lane = sessionLanes[sessionID] else {
-            return
-        }
-        await lane.invalidateTransport()
-    }
 }
 
-private actor ReviewSessionLane {
-    private let sessionID: String
-    private let appServerManager: any AppServerManaging
-    private let runtimeStateDidChange: @Sendable (AppServerRuntimeState) async -> Void
-    private var transport: (any AppServerSessionTransport)?
-    private var reviewInFlight = false
-    private var isClosed = false
-    private var closeReason: String?
-    private var queuedReviewWaiters: [CheckedContinuation<Void, Never>] = []
+private actor ReviewExecutionStateChangeSignal {
+    private var continuation: AsyncStream<Void>.Continuation?
 
-    init(
-        sessionID: String,
-        appServerManager: any AppServerManaging,
-        runtimeStateDidChange: @escaping @Sendable (AppServerRuntimeState) async -> Void
-    ) {
-        self.sessionID = sessionID
-        self.appServerManager = appServerManager
-        self.runtimeStateDidChange = runtimeStateDidChange
-    }
-
-    func runReview(
-        runner: AppServerReviewRunner,
-        request: ReviewRequestOptions,
-        defaultTimeoutSeconds: Int?,
-        resolvedModelHint: String?,
-        onStart: @escaping @Sendable (Date) async -> Void,
-        onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void,
-        requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
-        onUnrecoverableTransportFailure: @escaping @Sendable () async -> Void
-    ) async throws -> ReviewProcessOutcome {
-        try await acquireReviewSlot(requestedTerminationReason: requestedTerminationReason)
-        defer { releaseReviewSlot() }
-
-        if case .cancelled(let reason)? = await requestedTerminationReason() {
-            throw ReviewBootstrapFailure(message: reason, model: nil)
-        }
-        let transport = try await connectedTransport()
-        do {
-            return try await runner.run(
-                session: transport,
-                request: request,
-                defaultTimeoutSeconds: defaultTimeoutSeconds,
-                resolvedModelHint: resolvedModelHint,
-                onStart: onStart,
-                onEvent: onEvent,
-                requestedTerminationReason: requestedTerminationReason,
-                onUnrecoverableTransportFailure: onUnrecoverableTransportFailure
-            )
-        } catch {
-            await transport.close()
-            self.transport = nil
-            throw error
-        }
-    }
-
-    func close() async {
-        await close(reason: nil)
-    }
-
-    func close(reason: String?) async {
-        isClosed = true
-        if let reason {
-            closeReason = reason
-        }
-        notifyPendingStateChange()
-        if let transport {
-            await transport.close()
-        }
-        transport = nil
-        _ = sessionID
-    }
-
-    private func connectedTransport() async throws -> any AppServerSessionTransport {
-        if isClosed {
-            throw ReviewBootstrapFailure(message: closeReason ?? "Review cancelled.", model: nil)
-        }
-        if let transport,
-           await transport.isClosed() == false,
-           await transport.disconnectError() == nil
-        {
-            return transport
-        }
-
-        let newTransport = try await appServerManager.makeSessionTransport(sessionID: sessionID)
-        if isClosed {
-            await newTransport.close()
-            throw ReviewBootstrapFailure(message: closeReason ?? "Review cancelled.", model: nil)
-        }
-        transport = newTransport
-        if let runtimeState = await appServerManager.currentRuntimeState() {
-            await runtimeStateDidChange(runtimeState)
-        }
-        return newTransport
-    }
-
-    func notifyPendingStateChange() {
-        guard queuedReviewWaiters.isEmpty == false else {
-            return
-        }
-        let continuations = queuedReviewWaiters
-        queuedReviewWaiters.removeAll(keepingCapacity: false)
-        for continuation in continuations {
-            continuation.resume()
-        }
-    }
-
-    private func acquireReviewSlot(
-        requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?
-    ) async throws {
-        while true {
-            if case .cancelled(let reason)? = await requestedTerminationReason() {
-                throw ReviewBootstrapFailure(message: reason, model: nil)
+    func subscription() -> AsyncStreamSubscription<Void> {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        self.continuation = continuation
+        return .init(
+            stream: stream,
+            cancel: {
+                await self.finish()
             }
-            if reviewInFlight == false {
-                reviewInFlight = true
-                return
-            }
-            await withCheckedContinuation { continuation in
-                queuedReviewWaiters.append(continuation)
-            }
-            if case .cancelled(let reason)? = await requestedTerminationReason() {
-                throw ReviewBootstrapFailure(message: reason, model: nil)
-            }
-        }
+        )
     }
 
-    private func releaseReviewSlot() {
-        reviewInFlight = false
-        notifyPendingStateChange()
+    func yield() {
+        continuation?.yield(())
     }
 
-    func invalidateTransport() async {
-        if let transport {
-            await transport.close()
-        }
-        transport = nil
+    func finish() {
+        continuation?.finish()
+        continuation = nil
     }
 }
 

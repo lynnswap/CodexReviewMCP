@@ -53,6 +53,13 @@ package enum MockAppServerMode: Sendable {
         model: String = "gpt-5.4-mini",
         finalReview: String = "Looks solid overall."
     )
+    case threadClosedThenTransportDisconnect(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        message: String = "mock app-server transport disconnected"
+    )
     case detachedParentThreadClosedBeforeCompletedNotifications(
         reviewThreadID: String = "thr-review",
         parentThreadID: String = "thr-parent",
@@ -61,6 +68,13 @@ package enum MockAppServerMode: Sendable {
         finalReview: String = "Looks solid overall."
     )
     case unrelatedNonRetryErrorThenSuccess(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall."
+    )
+    case unrelatedTurnStartedBeforeReviewStartThenSuccess(
         reviewThreadID: String = "thr-review",
         threadID: String = "thr-review",
         turnID: String = "turn-review",
@@ -104,6 +118,44 @@ package enum MockAppServerMode: Sendable {
         model: String = "gpt-5.4-mini",
         finalReview: String = "Looks solid overall."
     )
+    case threadUnavailableRescheduledByTrackedActivity(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall.",
+        activityDelta: String = "still running"
+    )
+    case completedWithoutFinalReviewThenThreadUnavailable(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini"
+    )
+    case commandOutputThenTransportDisconnect(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        outputDelta: String = "stdout chunk",
+        message: String = "mock app-server transport disconnected"
+    )
+    case commandOutputThenSuccessThenTransportDisconnect(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        finalReview: String = "Looks solid overall.",
+        outputDelta: String = "stdout chunk",
+        message: String = "mock app-server transport disconnected"
+    )
+    case turnCompletedThenTransportDisconnect(
+        reviewThreadID: String = "thr-review",
+        threadID: String = "thr-review",
+        turnID: String = "turn-review",
+        model: String = "gpt-5.4-mini",
+        message: String = "mock app-server transport disconnected"
+    )
     case batchedSuccess(
         reviewThreadID: String = "thr-review",
         threadID: String = "thr-review",
@@ -121,8 +173,10 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
 
     private let mode: MockAppServerMode
     private let initialize: AppServerInitializeResponse
-    private var notifications: [AppServerServerNotification] = []
+    private var notificationSubscribers: [UUID: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation] = [:]
     private var delayedNotifications: [AppServerServerNotification] = []
+    private var delayedNotificationFlushTask: Task<Void, Never>?
+    private var delayedDisconnectTask: Task<Void, Never>?
     private var requests: [RecordedRequest] = []
     private var requestCounts: [String: Int] = [:]
     private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
@@ -312,7 +366,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             ):
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
-                notifications.append(
+                enqueueNotification(
                     .threadStatusChanged(
                         .init(
                             threadID: parentThreadID,
@@ -320,7 +374,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         )
                     )
                 )
-                notifications.append(.threadClosed(.init(threadID: parentThreadID)))
+                enqueueNotification(.threadClosed(.init(threadID: parentThreadID)))
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
                 return try decodeResponse(
                     [
@@ -344,9 +398,34 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                     ],
                     as: AppServerErrorNotification.self
                 )
-                notifications.append(
+                enqueueNotification(
                     AppServerServerNotification.error(unrelatedError)
                 )
+                enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .unrelatedTurnStartedBeforeReviewStartThenSuccess(
+                let reviewThreadID,
+                _,
+                let turnID,
+                _,
+                let finalReview
+            ):
+                currentTurnID = turnID
+                enqueueNotification(
+                    .turnStarted(
+                        .init(
+                            threadID: "thr-unrelated",
+                            turn: .init(id: "turn-unrelated", status: .inProgress, error: nil)
+                        )
+                    )
+                )
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
                 return try decodeResponse(
                     [
@@ -371,7 +450,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                     ],
                     as: AppServerErrorNotification.self
                 )
-                notifications.append(.error(failure))
+                enqueueNotification(.error(failure))
                 return try decodeResponse(
                     [
                         "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
@@ -396,7 +475,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                     ],
                     as: AppServerErrorNotification.self
                 )
-                notifications.append(.error(failure))
+                enqueueNotification(.error(failure))
                 return try decodeResponse(
                     [
                         "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
@@ -420,7 +499,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                     ],
                     as: AppServerErrorNotification.self
                 )
-                notifications.append(.error(failure))
+                enqueueNotification(.error(failure))
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
                 return try decodeResponse(
                     [
@@ -433,7 +512,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 let threadID = currentThreadID ?? reviewThreadID
-                notifications.append(
+                enqueueNotification(
                     .threadStatusChanged(
                         .init(
                             threadID: threadID,
@@ -441,8 +520,8 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         )
                     )
                 )
-                notifications.append(.threadClosed(.init(threadID: threadID)))
-                notifications.append(
+                enqueueNotification(.threadClosed(.init(threadID: threadID)))
+                enqueueNotification(
                     .itemCompleted(
                         .init(
                             item: .exitedReviewMode(id: turnID, review: finalReview),
@@ -462,7 +541,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 let threadID = currentThreadID ?? reviewThreadID
-                notifications.append(
+                enqueueNotification(
                     .turnCompleted(
                         .init(
                             threadID: threadID,
@@ -470,7 +549,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         )
                     )
                 )
-                notifications.append(
+                enqueueNotification(
                     .threadStatusChanged(
                         .init(
                             threadID: threadID,
@@ -478,7 +557,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         )
                     )
                 )
-                notifications.append(.threadClosed(.init(threadID: threadID)))
+                enqueueNotification(.threadClosed(.init(threadID: threadID)))
                 delayedNotifications.append(
                     .itemCompleted(
                         .init(
@@ -488,6 +567,163 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         )
                     )
                 )
+                scheduleDelayedNotifications()
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .threadUnavailableRescheduledByTrackedActivity(
+                let reviewThreadID,
+                _,
+                let turnID,
+                _,
+                let finalReview,
+                let activityDelta
+            ):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
+                enqueueNotification(
+                    .threadStatusChanged(
+                        .init(
+                            threadID: threadID,
+                            status: .init(type: "notLoaded")
+                        )
+                    )
+                )
+                let trackedActivity: AppServerAgentMessageDeltaNotification = try decodeResponse(
+                    [
+                        "threadId": threadID,
+                        "turnId": turnID,
+                        "itemId": "msg-review",
+                        "delta": activityDelta,
+                    ],
+                    as: AppServerAgentMessageDeltaNotification.self
+                )
+                enqueueNotification(.agentMessageDelta(trackedActivity))
+                enqueueSuccessReview(
+                    reviewThreadID: reviewThreadID,
+                    turnID: turnID,
+                    finalReview: finalReview,
+                    into: &delayedNotifications
+                )
+                scheduleDelayedNotifications()
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .completedWithoutFinalReviewThenThreadUnavailable(let reviewThreadID, _, let turnID, _):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
+                enqueueNotification(
+                    .turnCompleted(
+                        .init(
+                            threadID: threadID,
+                            turn: .init(id: turnID, status: .completed, error: nil)
+                        )
+                    )
+                )
+                enqueueNotification(
+                    .threadStatusChanged(
+                        .init(
+                            threadID: threadID,
+                            status: .init(type: "notLoaded")
+                        )
+                    )
+                )
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .commandOutputThenTransportDisconnect(
+                let reviewThreadID,
+                _,
+                let turnID,
+                _,
+                let outputDelta,
+                let message
+            ):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
+                let output: AppServerCommandExecutionOutputDeltaNotification = try decodeResponse(
+                    [
+                        "threadId": threadID,
+                        "turnId": turnID,
+                        "itemId": "cmd-review",
+                        "delta": outputDelta,
+                    ],
+                    as: AppServerCommandExecutionOutputDeltaNotification.self
+                )
+                enqueueNotification(.commandExecutionOutputDelta(output))
+                scheduleDelayedDisconnect(message: message)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .commandOutputThenSuccessThenTransportDisconnect(
+                let reviewThreadID,
+                _,
+                let turnID,
+                _,
+                let finalReview,
+                let outputDelta,
+                let message
+            ):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
+                let output: AppServerCommandExecutionOutputDeltaNotification = try decodeResponse(
+                    [
+                        "threadId": threadID,
+                        "turnId": turnID,
+                        "itemId": "cmd-review",
+                        "delta": outputDelta,
+                    ],
+                    as: AppServerCommandExecutionOutputDeltaNotification.self
+                )
+                enqueueNotification(.commandExecutionOutputDelta(output))
+                enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                scheduleDelayedDisconnect(message: message)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .turnCompletedThenTransportDisconnect(
+                let reviewThreadID,
+                _,
+                let turnID,
+                _,
+                let message
+            ):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
+                enqueueNotification(
+                    .turnCompleted(
+                        .init(
+                            threadID: threadID,
+                            turn: .init(id: turnID, status: .completed, error: nil)
+                        )
+                    )
+                )
+                scheduleDelayedDisconnect(message: message)
                 return try decodeResponse(
                     [
                         "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
@@ -501,7 +737,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 let threadID = currentThreadID ?? reviewThreadID
-                notifications.append(
+                enqueueNotification(
                     .turnCompleted(
                         .init(
                             threadID: threadID,
@@ -520,7 +756,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 let threadID = currentThreadID ?? reviewThreadID
-                notifications.append(
+                enqueueNotification(
                     .threadStatusChanged(
                         .init(
                             threadID: threadID,
@@ -528,7 +764,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         )
                     )
                 )
-                notifications.append(.threadClosed(.init(threadID: threadID)))
+                enqueueNotification(.threadClosed(.init(threadID: threadID)))
                 return try decodeResponse(
                     [
                         "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
@@ -540,7 +776,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 currentTurnID = turnID
                 enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
                 let threadID = currentThreadID ?? reviewThreadID
-                notifications.append(
+                enqueueNotification(
                     .threadStatusChanged(
                         .init(
                             threadID: threadID,
@@ -548,8 +784,29 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                         )
                     )
                 )
-                notifications.append(.threadClosed(.init(threadID: threadID)))
+                enqueueNotification(.threadClosed(.init(threadID: threadID)))
                 enqueueSuccessReview(reviewThreadID: reviewThreadID, turnID: turnID, finalReview: finalReview)
+                return try decodeResponse(
+                    [
+                        "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
+                        "reviewThreadId": reviewThreadID,
+                    ],
+                    as: responseType
+                )
+            case .threadClosedThenTransportDisconnect(let reviewThreadID, _, let turnID, _, let message):
+                currentTurnID = turnID
+                enqueueReviewStarted(reviewThreadID: reviewThreadID, turnID: turnID)
+                let threadID = currentThreadID ?? reviewThreadID
+                enqueueNotification(
+                    .threadStatusChanged(
+                        .init(
+                            threadID: threadID,
+                            status: .init(type: "notLoaded")
+                        )
+                    )
+                )
+                enqueueNotification(.threadClosed(.init(threadID: threadID)))
+                scheduleDelayedDisconnect(message: message)
                 return try decodeResponse(
                     [
                         "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
@@ -566,6 +823,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                     finalReview: finalReview,
                     into: &delayedNotifications
                 )
+                scheduleDelayedNotifications()
                 return try decodeResponse(
                     [
                         "turn": ["id": turnID, "status": "inProgress", "error": NSNull()],
@@ -596,7 +854,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             }
             let threadID = currentThreadID ?? "thr-review"
             let turnID = currentTurnID ?? "turn-review"
-            notifications.append(
+            enqueueNotification(
                 .turnCompleted(
                     .init(
                         threadID: threadID,
@@ -614,7 +872,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             return try decodeResponse([:], as: responseType)
         case "thread/unsubscribe":
             unsubscribeCount += 1
-            return try decodeResponse([:], as: responseType)
+            return try decodeResponse(["status": "unsubscribed"], as: responseType)
         default:
             throw ReviewError.io("unsupported mock request: \(method)")
         }
@@ -627,24 +885,35 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         _ = method
     }
 
-    package func drainNotifications() async -> [AppServerServerNotification] {
-        if notifications.isEmpty, delayedNotifications.isEmpty == false {
-            notifications = delayedNotifications
-            delayedNotifications.removeAll(keepingCapacity: false)
+    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let disconnected = self.disconnected
+        let closed = self.closed
+        var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation!
+        let stream = AsyncThrowingStream<AppServerServerNotification, Error>(bufferingPolicy: .unbounded) {
+            continuation = $0
         }
-        defer { notifications.removeAll(keepingCapacity: true) }
-        return notifications
-    }
-
-    package func disconnectError() async -> Error? {
-        disconnected
-    }
-
-    package func diagnosticsTail() async -> String {
-        if case .bootstrapFailure(let message) = mode {
-            return message
+        if let disconnected {
+            continuation.finish(throwing: disconnected)
+            return .init(stream: stream, cancel: {})
         }
-        return ""
+        if closed {
+            continuation.finish()
+            return .init(stream: stream, cancel: {})
+        }
+
+        let subscriberID = UUID()
+        notificationSubscribers[subscriberID] = continuation
+        continuation.onTermination = { _ in
+            Task {
+                await self.removeNotificationSubscriber(id: subscriberID)
+            }
+        }
+        return .init(
+            stream: stream,
+            cancel: { [weak self] in
+                await self?.cancelNotificationSubscriber(id: subscriberID)
+            }
+        )
     }
 
     package func isClosed() async -> Bool {
@@ -653,10 +922,19 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
 
     package func close() async {
         closed = true
+        delayedNotificationFlushTask?.cancel()
+        delayedNotificationFlushTask = nil
+        delayedDisconnectTask?.cancel()
+        delayedDisconnectTask = nil
+        finishNotificationSubscribers(failing: nil)
     }
 
     package func recordedPayload(for method: String) async -> Data? {
         requests.last(where: { $0.method == method })?.payload
+    }
+
+    package func activeNotificationSubscriberCount() async -> Int {
+        notificationSubscribers.count
     }
 
     package func waitForRequest(_ method: String) async {
@@ -674,7 +952,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
 
     private func enqueueReviewStarted(reviewThreadID: String, turnID: String) {
         let threadID = currentThreadID ?? reviewThreadID
-        notifications.append(
+        enqueueNotification(
             .turnStarted(
                 .init(
                     threadID: threadID,
@@ -682,7 +960,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 )
             )
         )
-        notifications.append(
+        enqueueNotification(
             .itemStarted(
                 .init(
                     item: .enteredReviewMode(id: turnID, review: "current changes"),
@@ -694,11 +972,23 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
     }
 
     private func enqueueSuccessReview(reviewThreadID: String, turnID: String, finalReview: String) {
-        enqueueSuccessReview(
-            reviewThreadID: reviewThreadID,
-            turnID: turnID,
-            finalReview: finalReview,
-            into: &notifications
+        let threadID = currentThreadID ?? reviewThreadID
+        enqueueNotification(
+            .itemCompleted(
+                .init(
+                    item: .exitedReviewMode(id: turnID, review: finalReview),
+                    threadID: threadID,
+                    turnID: turnID
+                )
+            )
+        )
+        enqueueNotification(
+            .turnCompleted(
+                .init(
+                    threadID: threadID,
+                    turn: .init(id: turnID, status: .completed, error: nil)
+                )
+            )
         )
     }
 
@@ -743,16 +1033,89 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
             waiter.resume()
         }
     }
+
+    private func enqueueNotification(_ notification: AppServerServerNotification) {
+        for continuation in notificationSubscribers.values {
+            continuation.yield(notification)
+        }
+    }
+
+    private func scheduleDelayedNotifications() {
+        delayedNotificationFlushTask?.cancel()
+        delayedNotificationFlushTask = Task {
+            await Task.yield()
+            self.flushDelayedNotifications()
+        }
+    }
+
+    private func scheduleDelayedDisconnect(message: String) {
+        delayedDisconnectTask?.cancel()
+        delayedDisconnectTask = Task {
+            await Task.yield()
+            self.disconnect(message: message)
+        }
+    }
+
+    private func flushDelayedNotifications() {
+        delayedNotificationFlushTask = nil
+        guard delayedNotifications.isEmpty == false else {
+            return
+        }
+        let notifications = delayedNotifications
+        delayedNotifications.removeAll(keepingCapacity: false)
+        for notification in notifications {
+            enqueueNotification(notification)
+        }
+    }
+
+    private func finishNotificationSubscribers(failing error: Error?) {
+        let continuations = notificationSubscribers.values
+        notificationSubscribers.removeAll()
+        for continuation in continuations {
+            if let error {
+                continuation.finish(throwing: error)
+            } else {
+                continuation.finish()
+            }
+        }
+    }
+
+    private func disconnect(message: String) {
+        closed = true
+        delayedNotificationFlushTask?.cancel()
+        delayedNotificationFlushTask = nil
+        delayedDisconnectTask?.cancel()
+        delayedDisconnectTask = nil
+        let error = ReviewError.io(message)
+        disconnected = error
+        finishNotificationSubscribers(failing: error)
+    }
+
+    private func removeNotificationSubscriber(id: UUID) {
+        notificationSubscribers[id] = nil
+    }
+
+    private func cancelNotificationSubscriber(id: UUID) {
+        guard let continuation = notificationSubscribers.removeValue(forKey: id) else {
+            return
+        }
+        continuation.finish()
+    }
 }
 
 package actor MockAppServerManager: AppServerManaging {
+    private struct TransportWaiter {
+        var index: Int
+        var continuation: CheckedContinuation<MockAppServerSessionTransport, Never>
+    }
+
     private let modeProvider: @Sendable (String) -> MockAppServerMode
     private let runtimeState: AppServerRuntimeState
     private var prepareCountStorage = 0
     private var shutdownCountStorage = 0
-    private var transports: [String: MockAppServerSessionTransport] = [:]
+    private var transports: [String: [MockAppServerSessionTransport]] = [:]
     private var transportCreationCounts: [String: Int] = [:]
-    private var transportWaiters: [String: [CheckedContinuation<MockAppServerSessionTransport, Never>]] = [:]
+    private var transportWaiters: [String: [TransportWaiter]] = [:]
 
     package init(
         modeProvider: @escaping @Sendable (String) -> MockAppServerMode,
@@ -772,19 +1135,41 @@ package actor MockAppServerManager: AppServerManaging {
         return runtimeState
     }
 
-    package func makeSessionTransport(sessionID: String) async throws -> any AppServerSessionTransport {
+    package func checkoutTransport(sessionID: String) async throws -> any AppServerSessionTransport {
         let transport = MockAppServerSessionTransport(mode: modeProvider(sessionID))
-        transports[sessionID] = transport
+        transports[sessionID, default: []].append(transport)
         transportCreationCounts[sessionID, default: 0] += 1
+        let availableTransports = transports[sessionID] ?? []
         let waiters = transportWaiters.removeValue(forKey: sessionID) ?? []
+        var remainingWaiters: [TransportWaiter] = []
         for waiter in waiters {
-            waiter.resume(returning: transport)
+            if availableTransports.indices.contains(waiter.index) {
+                waiter.continuation.resume(returning: availableTransports[waiter.index])
+            } else {
+                remainingWaiters.append(waiter)
+            }
+        }
+        if remainingWaiters.isEmpty == false {
+            transportWaiters[sessionID] = remainingWaiters
         }
         return transport
     }
 
+    package func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
     package func currentRuntimeState() async -> AppServerRuntimeState? {
         runtimeState
+    }
+
+    package func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        var continuation: AsyncStream<String>.Continuation!
+        let stream = AsyncStream<String>(bufferingPolicy: .unbounded) {
+            continuation = $0
+        }
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
     }
 
     package func diagnosticsTail() async -> String {
@@ -793,25 +1178,32 @@ package actor MockAppServerManager: AppServerManaging {
 
     package func shutdown() async {
         shutdownCountStorage += 1
-        for (_, transport) in transports {
-            await transport.close()
+        for (_, sessionTransports) in transports {
+            for transport in sessionTransports {
+                await transport.close()
+            }
         }
         transports.removeAll()
     }
 
     package func transport(for sessionID: String) async -> MockAppServerSessionTransport? {
-        transports[sessionID]
+        transports[sessionID]?.last
     }
 
-    package func waitForTransport(sessionID: String) async -> MockAppServerSessionTransport {
-        if let transport = transports[sessionID] {
-            return transport
+    package func waitForTransport(
+        sessionID: String,
+        at index: Int = 0
+    ) async -> MockAppServerSessionTransport {
+        if let transport = transports[sessionID], transport.indices.contains(index) {
+            return transport[index]
         }
         return await withCheckedContinuation { continuation in
-            if let transport = transports[sessionID] {
-                continuation.resume(returning: transport)
+            if let transports = transports[sessionID], transports.indices.contains(index) {
+                continuation.resume(returning: transports[index])
             } else {
-                transportWaiters[sessionID, default: []].append(continuation)
+                transportWaiters[sessionID, default: []].append(
+                    .init(index: index, continuation: continuation)
+                )
             }
         }
     }
@@ -834,5 +1226,65 @@ private struct EncodableBox<Value: Encodable>: Encodable {
 
     func encode(to encoder: Encoder) throws {
         try value.encode(to: encoder)
+    }
+}
+
+package actor StubReviewAuthSession: ReviewAuthSession {
+    private var accountResponse: AppServerAccountReadResponse
+    private let loginResponse: AppServerLoginAccountResponse
+
+    package init(
+        accountResponse: AppServerAccountReadResponse = .init(
+            account: nil,
+            requiresOpenAIAuth: true
+        ),
+        loginResponse: AppServerLoginAccountResponse = .chatGPT(
+            loginID: "login-stub",
+            authURL: "https://example.invalid/oauth"
+        )
+    ) {
+        self.accountResponse = accountResponse
+        self.loginResponse = loginResponse
+    }
+
+    package func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        accountResponse
+    }
+
+    package func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return loginResponse
+    }
+
+    package func cancelLogin(loginID _: String) async throws {}
+
+    package func logout() async throws {
+        accountResponse = .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
+    }
+
+    package func close() async {}
+}
+
+package func makeStubReviewAuthSessionFactory(
+    accountResponse: AppServerAccountReadResponse = .init(
+        account: nil,
+        requiresOpenAIAuth: true
+    ),
+    loginResponse: AppServerLoginAccountResponse = .chatGPT(
+        loginID: "login-stub",
+        authURL: "https://example.invalid/oauth"
+    )
+) -> @Sendable () async throws -> any ReviewAuthSession {
+    {
+        StubReviewAuthSession(
+            accountResponse: accountResponse,
+            loginResponse: loginResponse
+        )
     }
 }

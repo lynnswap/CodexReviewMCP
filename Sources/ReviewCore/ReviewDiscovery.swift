@@ -61,10 +61,15 @@ package enum ReviewDiscovery {
 
     package static func write(_ record: LiveEndpointRecord, to overrideURL: URL? = nil) throws {
         let fileURL = overrideURL ?? defaultFileURL
-        try FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        let homeURL = fileURL.deletingLastPathComponent()
+        if homeURL.lastPathComponent == ".codex_review" {
+            try ReviewHomePaths.ensureReviewHomeScaffold(at: homeURL)
+        } else {
+            try FileManager.default.createDirectory(
+                at: homeURL,
+                withIntermediateDirectories: true
+            )
+        }
         try makeEncoder().encode(record).write(to: fileURL, options: [.atomic])
     }
 

@@ -30,6 +30,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var contentItem: NSSplitViewItem?
     private var toolbar: NSToolbar?
     private var observationHandles: Set<ObservationHandle> = []
+    private var didTriggerStoreStart = false
 
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState = ReviewMonitorUIState()) {
         self.store = store
@@ -76,6 +77,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         splitView.identifier = NSUserInterfaceItemIdentifier(Self.autosaveName)
         splitView.autosaveName = Self.autosaveName
         installToolbarIfNeeded()
+        triggerStoreStartIfNeeded()
     }
 
     private func bindWindowTitle() {
@@ -114,6 +116,21 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             window.toolbar = toolbar
         }
 
+    }
+
+    private func triggerStoreStartIfNeeded() {
+        guard didTriggerStoreStart == false,
+              store.shouldAutoStartEmbeddedServer
+        else {
+            return
+        }
+        didTriggerStoreStart = true
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await self.store.start()
+        }
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -191,6 +208,10 @@ extension ReviewMonitorSplitViewController {
 
     var sidebarAllowsFullHeightLayoutForTesting: Bool {
         sidebarItem?.allowsFullHeightLayout ?? false
+    }
+
+    var didTriggerStoreStartForTesting: Bool {
+        didTriggerStoreStart
     }
 }
 #endif

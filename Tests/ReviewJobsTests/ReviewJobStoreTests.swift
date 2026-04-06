@@ -11,13 +11,7 @@ import ReviewTestSupport
 struct ReviewJobStoreTests {
     @Test func codexReviewStoreStartReviewReturnsTerminalResult() async throws {
         let manager = MockAppServerManager { _ in .success(finalReview: "Review ok") }
-        let store = CodexReviewStore(
-            configuration: .init(
-                port: 0,
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
+        let store = try makeTestStore(manager: manager)
 
         await store.start()
         defer { Task { await store.stop() } }
@@ -35,50 +29,94 @@ struct ReviewJobStoreTests {
         #expect(await manager.prepareCount() == 1)
     }
 
-    @Test func codexReviewStoreReusesSessionTransportAcrossSequentialReviews() async throws {
+    @Test func codexReviewStoreChecksOutFreshTransportForSequentialReviews() async throws {
         let manager = MockAppServerManager { _ in .success(finalReview: "Review ok") }
-        let store = CodexReviewStore(
-            configuration: .init(
-                port: 0,
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
+        let store = try makeTestStore(manager: manager)
 
         await store.start()
         defer { Task { await store.stop() } }
 
-        let firstResult = try await store.startReview(
-            sessionID: "session-reuse",
-            request: .init(
-                cwd: FileManager.default.temporaryDirectory.path,
-                target: .uncommittedChanges
+        let firstReview = Task {
+            try await store.startReview(
+                sessionID: "session-reuse",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
             )
-        )
-        let transport = await manager.waitForTransport(sessionID: "session-reuse")
-        let secondResult = try await store.startReview(
-            sessionID: "session-reuse",
-            request: .init(
-                cwd: FileManager.default.temporaryDirectory.path,
-                target: .uncommittedChanges
+        }
+        let firstTransport = await manager.waitForTransport(sessionID: "session-reuse", at: 0)
+        let firstResult = try await firstReview.value
+
+        let secondReview = Task {
+            try await store.startReview(
+                sessionID: "session-reuse",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
             )
-        )
+        }
+        let secondTransport = await manager.waitForTransport(sessionID: "session-reuse", at: 1)
+        let secondResult = try await secondReview.value
 
         #expect(firstResult.status == .succeeded)
         #expect(secondResult.status == .succeeded)
-        #expect(await manager.transportCreationCount(for: "session-reuse") == 1)
-        #expect(await transport.isClosed() == false)
+        #expect(await manager.transportCreationCount(for: "session-reuse") == 2)
+        #expect(await firstTransport.isClosed())
+        #expect(await secondTransport.isClosed())
+    }
+
+    @Test func codexReviewStoreAllowsConcurrentReviewsWithinSameSession() async throws {
+        let manager = MockAppServerManager { _ in
+            let id = UUID().uuidString
+            return .longRunning(
+                reviewThreadID: "thr-review-\(id)",
+                threadID: "thr-thread-\(id)",
+                turnID: "turn-review-\(id)"
+            )
+        }
+        let store = try makeTestStore(manager: manager)
+
+        await store.start()
+        defer { Task { await store.stop() } }
+
+        let firstReview = Task {
+            try await store.startReview(
+                sessionID: "session-concurrent",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
+            )
+        }
+        let secondReview = Task {
+            try await store.startReview(
+                sessionID: "session-concurrent",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
+            )
+        }
+
+        let firstTransport = await manager.waitForTransport(sessionID: "session-concurrent", at: 0)
+        let secondTransport = await manager.waitForTransport(sessionID: "session-concurrent", at: 1)
+        await firstTransport.waitForRequest("review/start")
+        await secondTransport.waitForRequest("review/start")
+
+        await store.closeSession("session-concurrent", reason: "session closed")
+        let firstResult = try await firstReview.value
+        let secondResult = try await secondReview.value
+
+        #expect(firstResult.status == .cancelled)
+        #expect(secondResult.status == .cancelled)
+        #expect(await manager.transportCreationCount(for: "session-concurrent") == 2)
     }
 
     @Test func codexReviewStoreCancelsRunningJobBySelector() async throws {
         let manager = MockAppServerManager { _ in .longRunning() }
-        let store = CodexReviewStore(
-            configuration: .init(
-                port: 0,
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
+        let store = try makeTestStore(manager: manager)
 
         await store.start()
         defer { Task { await store.stop() } }
@@ -108,13 +146,7 @@ struct ReviewJobStoreTests {
 
     @Test func codexReviewStoreCloseSessionCancelsActiveReviews() async throws {
         let manager = MockAppServerManager { _ in .longRunning() }
-        let store = CodexReviewStore(
-            configuration: .init(
-                port: 0,
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
+        let store = try makeTestStore(manager: manager)
 
         await store.start()
         defer { Task { await store.stop() } }
@@ -140,13 +172,7 @@ struct ReviewJobStoreTests {
 
     @Test func codexReviewStoreFailsToStartWhenReviewStartFails() async throws {
         let manager = MockAppServerManager { _ in .reviewStartFailure() }
-        let store = CodexReviewStore(
-            configuration: .init(
-                port: 0,
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
+        let store = try makeTestStore(manager: manager)
 
         await store.start()
         defer { Task { await store.stop() } }
@@ -163,15 +189,9 @@ struct ReviewJobStoreTests {
         #expect(result.error?.contains("Failed to start review") == true)
     }
 
-    @Test func codexReviewStoreClosesSessionLaneAfterBootstrapFailure() async throws {
+    @Test func codexReviewStoreClosesTransportAfterBootstrapFailure() async throws {
         let manager = MockAppServerManager { _ in .configReadFailure() }
-        let store = CodexReviewStore(
-            configuration: .init(
-                port: 0,
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
+        let store = try makeTestStore(manager: manager)
 
         await store.start()
         defer { Task { await store.stop() } }
@@ -196,6 +216,18 @@ private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [S
         environment[key] = value
     }
     return environment
+}
+
+@MainActor
+private func makeTestStore(manager: any AppServerManaging) throws -> CodexReviewStore {
+    CodexReviewStore(
+        configuration: .init(
+            port: 0,
+            environment: try isolatedHomeEnvironment()
+        ),
+        appServerManager: manager,
+        authSessionFactory: makeStubReviewAuthSessionFactory()
+    )
 }
 
 private func makeTemporaryDirectory() throws -> URL {
