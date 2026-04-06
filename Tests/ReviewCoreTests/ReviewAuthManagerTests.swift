@@ -361,6 +361,41 @@ struct ReviewAuthManagerTests {
         #expect(await session.logoutCallCount() == 1)
     }
 
+    @Test func cliReviewAuthSessionReadAccountCompletesWhenCommandExitsDuringRun() async throws {
+        let session = CLIReviewAuthSession(
+            configuration: .init(
+                codexCommand: "/tmp/fake-codex",
+                environment: ["HOME": makeTemporaryRoot().path],
+                commandProcessFactory: {
+                    ImmediateExitProcess(stdout: "Not logged in\n")
+                }
+            )
+        )
+
+        let response = try await withTestTimeout {
+            try await session.readAccount(refreshToken: false)
+        }
+
+        #expect(response.account == nil)
+        #expect(response.requiresOpenAIAuth)
+    }
+
+    @Test func cliReviewAuthSessionLogoutCompletesWhenCommandExitsDuringRun() async throws {
+        let session = CLIReviewAuthSession(
+            configuration: .init(
+                codexCommand: "/tmp/fake-codex",
+                environment: ["HOME": makeTemporaryRoot().path],
+                commandProcessFactory: {
+                    ImmediateExitProcess(stdout: "Signed out\n")
+                }
+            )
+        )
+
+        try await withTestTimeout {
+            try await session.logout()
+        }
+    }
+
     @Test func fakeReviewAuthSessionBrowserStartReturnsAuthURLAndLoginID() async throws {
         let session = FakeReviewAuthSession(
             readResponses: [],
@@ -827,6 +862,117 @@ private actor SignedOutThenUnavailableReviewAuthSession: ReviewAuthSession {
         } else {
             bufferedNotifications.append(notification)
         }
+    }
+}
+
+private final class ImmediateExitProcess: Process, @unchecked Sendable {
+    private let exitStatus: Int32
+    private let stdoutData: Data
+    private let stderrData: Data
+    private var storedTerminationHandler: (@Sendable (Process) -> Void)?
+    private var storedExecutableURL: URL?
+    private var storedArguments: [String]?
+    private var storedEnvironment: [String: String]?
+    private var storedCurrentDirectoryURL: URL?
+    private var storedStandardInput: Any?
+    private var storedStandardOutput: Any?
+    private var storedStandardError: Any?
+
+    init(
+        terminationStatus: Int32 = 0,
+        stdout: String = "",
+        stderr: String = ""
+    ) {
+        self.exitStatus = terminationStatus
+        self.stdoutData = Data(stdout.utf8)
+        self.stderrData = Data(stderr.utf8)
+        super.init()
+    }
+
+    override var terminationStatus: Int32 {
+        exitStatus
+    }
+
+    override var executableURL: URL? {
+        get { storedExecutableURL }
+        set { storedExecutableURL = newValue }
+    }
+
+    override var arguments: [String]? {
+        get { storedArguments }
+        set { storedArguments = newValue }
+    }
+
+    override var environment: [String: String]? {
+        get { storedEnvironment }
+        set { storedEnvironment = newValue }
+    }
+
+    override var currentDirectoryURL: URL? {
+        get { storedCurrentDirectoryURL }
+        set { storedCurrentDirectoryURL = newValue }
+    }
+
+    override var standardInput: Any? {
+        get { storedStandardInput }
+        set { storedStandardInput = newValue }
+    }
+
+    override var standardOutput: Any? {
+        get { storedStandardOutput }
+        set { storedStandardOutput = newValue }
+    }
+
+    override var standardError: Any? {
+        get { storedStandardError }
+        set { storedStandardError = newValue }
+    }
+
+    override var terminationHandler: (@Sendable (Process) -> Void)? {
+        get { storedTerminationHandler }
+        set { storedTerminationHandler = newValue }
+    }
+
+    override func run() throws {
+        write(stdoutData, to: storedStandardOutput)
+        write(stderrData, to: storedStandardError)
+        storedTerminationHandler?(self)
+    }
+
+    override func waitUntilExit() {}
+
+    override func terminate() {}
+
+    override func interrupt() {}
+
+    private func write(_ data: Data, to destination: Any?) {
+        guard let pipe = destination as? Pipe else {
+            return
+        }
+        if data.isEmpty == false {
+            pipe.fileHandleForWriting.write(data)
+        }
+        pipe.fileHandleForWriting.closeFile()
+    }
+}
+
+private func withTestTimeout<T: Sendable>(
+    _ timeout: Duration = .seconds(2),
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        group.addTask {
+            try await Task.sleep(for: timeout)
+            throw TestFailure("timed out waiting for operation")
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else {
+            throw TestFailure("timed out waiting for operation")
+        }
+        return result
     }
 }
 

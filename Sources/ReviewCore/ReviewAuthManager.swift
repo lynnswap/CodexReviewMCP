@@ -47,6 +47,7 @@ package actor ReviewAuthManager {
         package var startupTimeout: Duration
         package var durableAuthMaxAttempts: Int?
         package var durableAuthRetryDelay: Duration
+        package var commandProcessFactory: @Sendable () -> Process
         package var sleep: @Sendable (Duration) async throws -> Void
 
         package init(
@@ -55,6 +56,7 @@ package actor ReviewAuthManager {
             startupTimeout: Duration = .seconds(30),
             durableAuthMaxAttempts: Int? = nil,
             durableAuthRetryDelay: Duration = .milliseconds(250),
+            commandProcessFactory: @escaping @Sendable () -> Process = { Process() },
             sleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
                 try await Task.sleep(for: duration)
             }
@@ -64,6 +66,7 @@ package actor ReviewAuthManager {
             self.startupTimeout = startupTimeout
             self.durableAuthMaxAttempts = durableAuthMaxAttempts
             self.durableAuthRetryDelay = durableAuthRetryDelay
+            self.commandProcessFactory = commandProcessFactory
             self.sleep = sleep
         }
     }
@@ -726,7 +729,7 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
-        let process = Process()
+        let process = configuration.commandProcessFactory()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = reviewMCPCodexCommandArguments(arguments)
         process.environment = makeCLIReviewAuthEnvironment(from: configuration.environment)
@@ -734,10 +737,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         process.standardInput = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-        try process.run()
-        if let stdinPipe = process.standardInput as? Pipe {
-            try? stdinPipe.fileHandleForWriting.close()
-        }
 
         let stdoutTask = Task.detached {
             let data = try stdoutPipe.fileHandleForReading.readToEnd() ?? Data()
@@ -747,9 +746,21 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
             let data = try stderrPipe.fileHandleForReading.readToEnd() ?? Data()
             return String(decoding: data, as: UTF8.self)
         }
-        let exitCode: Int32 = await withCheckedContinuation { continuation in
+        let exitCode: Int32 = try await withCheckedThrowingContinuation { continuation in
             process.terminationHandler = { process in
                 continuation.resume(returning: process.terminationStatus)
+            }
+
+            do {
+                try process.run()
+                if let stdinPipe = process.standardInput as? Pipe {
+                    try? stdinPipe.fileHandleForWriting.close()
+                }
+            } catch {
+                process.terminationHandler = nil
+                stdoutPipe.fileHandleForWriting.closeFile()
+                stderrPipe.fileHandleForWriting.closeFile()
+                continuation.resume(throwing: error)
             }
         }
 
