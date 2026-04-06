@@ -58,7 +58,7 @@ struct CodexReviewUITests {
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
     }
 
-    @Test func splitViewStartsStoreOnceOnFirstAppearance() async {
+    @Test func splitViewStartsStoreOnceOnFirstAppearance() async throws {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -71,7 +71,9 @@ struct CodexReviewUITests {
         viewController.viewDidAppear()
         viewController.viewDidAppear()
 
-        try? await Task.sleep(for: .milliseconds(50))
+        let _: Bool = try await waitUntilValue {
+            backend.startCallCount() == 1 ? true : nil
+        }
 
         #expect(viewController.didTriggerStoreStartForTesting)
         #expect(backend.startCallCount() == 1)
@@ -88,8 +90,6 @@ struct CodexReviewUITests {
         defer { window.close() }
 
         viewController.viewDidAppear()
-
-        try? await Task.sleep(for: .milliseconds(50))
 
         #expect(viewController.didTriggerStoreStartForTesting == false)
         #expect(backend.startCallCount() == 0)
