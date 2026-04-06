@@ -17,16 +17,6 @@ struct ReviewMonitorAuthSheet: View {
                     .foregroundStyle(.secondary)
             }
 
-            if let userCode = progress?.userCode?.nilIfEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Code")
-                        .font(.headline)
-                    Text(userCode)
-                        .font(.system(.title3, design: .monospaced).weight(.semibold))
-                        .textSelection(.enabled)
-                }
-            }
-
             HStack {
                 if let browserURL = progress?.browserURL,
                    let url = URL(string: browserURL)

@@ -1238,10 +1238,9 @@ package actor StubReviewAuthSession: ReviewAuthSession {
             account: nil,
             requiresOpenAIAuth: true
         ),
-        loginResponse: AppServerLoginAccountResponse = .chatGPTDeviceCode(
+        loginResponse: AppServerLoginAccountResponse = .chatGPT(
             loginID: "login-stub",
-            verificationURL: "https://example.invalid/device",
-            userCode: "ABCD-1234"
+            authURL: "https://example.invalid/oauth"
         )
     ) {
         self.accountResponse = accountResponse
@@ -1277,10 +1276,9 @@ package func makeStubReviewAuthSessionFactory(
         account: nil,
         requiresOpenAIAuth: true
     ),
-    loginResponse: AppServerLoginAccountResponse = .chatGPTDeviceCode(
+    loginResponse: AppServerLoginAccountResponse = .chatGPT(
         loginID: "login-stub",
-        verificationURL: "https://example.invalid/device",
-        userCode: "ABCD-1234"
+        authURL: "https://example.invalid/oauth"
     )
 ) -> @Sendable () async throws -> any ReviewAuthSession {
     {

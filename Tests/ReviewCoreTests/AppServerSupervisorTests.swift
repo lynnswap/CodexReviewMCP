@@ -284,7 +284,7 @@ struct AppServerSupervisorTests {
             configuration: .init(
                 codexCommand: commandURL.path,
                 environment: environment,
-                startupTimeout: .milliseconds(300)
+                startupTimeout: .seconds(1)
             )
         )
 
@@ -295,6 +295,12 @@ struct AppServerSupervisorTests {
             #expect(error.localizedDescription.contains("timed out waiting for app-server initialization"))
         }
 
+        let fileDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < fileDeadline,
+              FileManager.default.fileExists(atPath: pidFileURL.path) == false
+        {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         let pidText = try String(contentsOf: pidFileURL, encoding: .utf8)
         let pid = try #require(Int32(pidText.trimmingCharacters(in: .whitespacesAndNewlines)))
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))

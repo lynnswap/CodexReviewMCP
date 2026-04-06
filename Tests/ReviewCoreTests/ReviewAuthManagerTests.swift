@@ -56,51 +56,10 @@ struct ReviewAuthManagerTests {
                     return false
                 }
                 return progress.browserURL?.contains("/oauth/authorize") == true
-                    && progress.userCode == nil
             }
         )
         #expect(updates.last == .signedIn(accountID: "review@example.com"))
         #expect(await session.recordedRefreshRequests() == [true])
-    }
-
-    @Test func authManagerDeviceCodeLoginPublishesVerificationURLAndCode() async throws {
-        let session = FakeReviewAuthSession(
-            readResponses: [],
-            loginResponse: .chatGPTDeviceCode(
-                loginID: "login-browser",
-                verificationURL: "https://auth.openai.com/codex/device",
-                userCode: "ABCD-1234"
-            )
-        )
-        let manager = ReviewAuthManager(
-            configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
-            sessionFactory: { session }
-        )
-        let recorder = AuthUpdateRecorder()
-
-        let task = Task {
-            try await manager.beginAuthentication { state in
-                await recorder.append(state)
-            }
-        }
-
-        try await waitUntil(timeout: .seconds(2)) {
-            let params = await session.recordedLoginParams()
-            return params == [.chatGPT] ? true : nil
-        }
-        await session.finishNotifications(with: CancellationError())
-        await #expect(throws: ReviewAuthError.cancelled) {
-            try await task.value
-        }
-
-        let updates = await recorder.values()
-        #expect(updates.contains {
-            guard case .signingIn(let progress) = $0 else {
-                return false
-            }
-            return progress.browserURL?.contains("/codex/device") == true
-                && progress.userCode == "ABCD-1234"
-        })
     }
 
     @Test func authManagerPublishesInitialProgressBeforeSessionCreationCompletes() async throws {
@@ -160,10 +119,9 @@ struct ReviewAuthManagerTests {
     @Test func authManagerCancelAuthenticationCancelsActiveLoginID() async throws {
         let session = FakeReviewAuthSession(
             readResponses: [],
-            loginResponse: .chatGPTDeviceCode(
+            loginResponse: .chatGPT(
                 loginID: "login-browser",
-                verificationURL: "https://auth.openai.com/codex/device",
-                userCode: "ABCD-1234"
+                authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
             )
         )
         let manager = ReviewAuthManager(
@@ -204,25 +162,23 @@ struct ReviewAuthManagerTests {
         #expect(await session.logoutCallCount() == 1)
     }
 
-    @Test func fakeReviewAuthSessionDeviceCodeStartReturnsVerificationURLAndLoginID() async throws {
+    @Test func fakeReviewAuthSessionBrowserStartReturnsAuthURLAndLoginID() async throws {
         let session = FakeReviewAuthSession(
             readResponses: [],
-            loginResponse: .chatGPTDeviceCode(
+            loginResponse: .chatGPT(
                 loginID: "login-browser",
-                verificationURL: "https://auth.openai.com/codex/device",
-                userCode: "ABCD-1234"
+                authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
             )
         )
 
-        let response = try await session.startLogin(.chatGPTDeviceCode)
+        let response = try await session.startLogin(.chatGPT)
 
-        guard case .chatGPTDeviceCode(let loginID, let verificationURL, let userCode) = response else {
-            Issue.record("Expected chatgpt device code response, got \(response)")
+        guard case .chatGPT(let loginID, let authURL) = response else {
+            Issue.record("Expected chatgpt browser response, got \(response)")
             return
         }
         #expect(loginID.isEmpty == false)
-        #expect(verificationURL.contains("/codex/device"))
-        #expect(userCode == "ABCD-1234")
+        #expect(authURL.contains("/oauth/authorize"))
     }
 
     @Test func reviewAuthRequirementDetectsUnauthorizedFailures() {
@@ -238,13 +194,11 @@ struct ReviewAuthManagerTests {
         )
     }
 
-    @Test func cliAuthOutputHelpersExtractBrowserURLAndDeviceCode() {
+    @Test func cliAuthOutputHelpersExtractBrowserURL() {
         let browserLine = "\u{001B}[94mhttps://auth.openai.com/oauth/authorize?foo=bar\u{001B}[0m"
-        let codeLine = "   \u{001B}[94m10Y1-AO4WU\u{001B}[0m"
 
         #expect(sanitizeCLIAuthOutput(browserLine) == "https://auth.openai.com/oauth/authorize?foo=bar")
         #expect(extractReviewAuthHTTPSURL(from: sanitizeCLIAuthOutput(browserLine)) == "https://auth.openai.com/oauth/authorize?foo=bar")
-        #expect(extractReviewAuthUserCode(from: sanitizeCLIAuthOutput(codeLine)) == "10Y1-AO4WU")
     }
 }
 
@@ -320,10 +274,9 @@ private actor FakeReviewAuthSession: ReviewAuthSession {
 
     init(
         readResponses: [AppServerAccountReadResponse],
-        loginResponse: AppServerLoginAccountResponse = .chatGPTDeviceCode(
+        loginResponse: AppServerLoginAccountResponse = .chatGPT(
             loginID: "login-default",
-            verificationURL: "https://auth.openai.com/codex/device",
-            userCode: "WXYZ-9876"
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
         )
     ) {
         self.readResponses = readResponses

@@ -418,7 +418,7 @@ struct CodexReviewMCPTests {
             guard case .signingIn(let progress) = authState else {
                 return false
             }
-            return progress.browserURL?.contains("/codex/device") == true
+            return progress.browserURL?.contains("/oauth/authorize") == true
         }
 
         await store.auth.cancelAuthentication()
@@ -1157,10 +1157,9 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
 
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
         loginParams.append(params)
-        return .chatGPTDeviceCode(
+        return .chatGPT(
             loginID: "login-browser",
-            verificationURL: "https://auth.openai.com/codex/device",
-            userCode: "ABCD-1234"
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
         )
     }
 
@@ -1215,10 +1214,9 @@ private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
 
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
         _ = params
-        return .chatGPTDeviceCode(
+        return .chatGPT(
             loginID: "login-browser",
-            verificationURL: "https://auth.openai.com/codex/device",
-            userCode: "ABCD-1234"
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
         )
     }
 
@@ -1441,10 +1439,9 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         case "account/login/start":
             return try decode(
                 [
-                    "type": "chatgptDeviceCode",
+                    "type": "chatgpt",
                     "loginId": "login-browser",
-                    "verificationUrl": "https://auth.openai.com/codex/device",
-                    "userCode": "ABCD-1234",
+                    "authUrl": "https://auth.openai.com/oauth/authorize?foo=bar",
                 ],
                 as: responseType
             )

@@ -118,14 +118,6 @@ package actor ReviewAuthManager {
                     loginID: loginID,
                     onUpdate: onUpdate
                 )
-            case .chatGPTDeviceCode(let loginID, _, _):
-                reviewAuthDebug("beginAuthentication attempt=\(attemptID) waiting for completion loginID=\(loginID)")
-                finalState = try await waitForAuthenticationCompletion(
-                    session: session,
-                    attemptID: attemptID,
-                    loginID: loginID,
-                    onUpdate: onUpdate
-                )
             }
             if finalState == .signedOut {
                 throw ReviewAuthError.loginFailed("Authentication failed. Sign in again.")
@@ -363,15 +355,6 @@ package actor ReviewAuthManager {
                     browserURL: authURL
                 )
             )
-        case .chatGPTDeviceCode(_, let verificationURL, let userCode):
-            return .signingIn(
-                .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser and enter the code below.",
-                    browserURL: verificationURL,
-                    userCode: userCode
-                )
-            )
         }
     }
 
@@ -474,7 +457,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         var waitTask: Task<Void, Never>?
         var startResponseDelivered = false
         var browserURL: String?
-        var userCode: String?
         var outputLines: [String] = []
 
         init(
@@ -545,8 +527,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         switch params {
         case .chatGPT:
             arguments = ["login"]
-        case .chatGPTDeviceCode:
-            arguments = ["login", "--device-auth"]
         }
 
         let stdinPipe = Pipe()
@@ -766,17 +746,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
             {
                 activeLogin.browserURL = url
             }
-        case .chatGPTDeviceCode:
-            if activeLogin.browserURL == nil,
-               let url = extractReviewAuthHTTPSURL(from: cleaned)
-            {
-                activeLogin.browserURL = url
-            }
-            if activeLogin.userCode == nil,
-               let userCode = extractReviewAuthUserCode(from: cleaned)
-            {
-                activeLogin.userCode = userCode
-            }
         }
 
         maybeResolveStartResponse(for: activeLogin)
@@ -794,18 +763,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
                 response = .chatGPT(
                     loginID: activeLogin.loginID,
                     authURL: browserURL
-                )
-            } else {
-                response = nil
-            }
-        case .chatGPTDeviceCode:
-            if let browserURL = activeLogin.browserURL,
-               let userCode = activeLogin.userCode
-            {
-                response = .chatGPTDeviceCode(
-                    loginID: activeLogin.loginID,
-                    verificationURL: browserURL,
-                    userCode: userCode
                 )
             } else {
                 response = nil
@@ -984,16 +941,6 @@ package func sanitizeCLIAuthOutput(_ text: String) -> String {
 package func extractReviewAuthHTTPSURL(from text: String) -> String? {
     guard let range = text.range(
         of: #"https://[^\s]+"#,
-        options: .regularExpression
-    ) else {
-        return nil
-    }
-    return String(text[range])
-}
-
-package func extractReviewAuthUserCode(from text: String) -> String? {
-    guard let range = text.range(
-        of: #"\b[A-Z0-9]{4,5}-[A-Z0-9]{4,5}\b"#,
         options: .regularExpression
     ) else {
         return nil
