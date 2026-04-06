@@ -216,6 +216,50 @@ struct CodexReviewMCPTests {
         #expect(await manager.shutdownCount() == 1)
     }
 
+    @Test func stopWithoutLocalServerPreservesPersistedDiscoveryAndRuntimeState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
+        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
+        ReviewDiscovery.remove(at: discoveryFileURL)
+        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        defer {
+            ReviewDiscovery.remove(at: discoveryFileURL)
+            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+        }
+
+        let serverPID = getpid()
+        let serverStartTime = try #require(processStartTime(of: serverPID))
+        let endpointRecord = try #require(
+            ReviewDiscovery.makeRecord(host: "127.0.0.1", port: 9417, pid: Int(serverPID))
+        )
+        let runtimeState = ReviewRuntimeStateRecord(
+            serverPID: Int(serverPID),
+            serverStartTime: serverStartTime,
+            appServerPID: 999,
+            appServerStartTime: .init(seconds: 9, microseconds: 0),
+            appServerProcessGroupLeaderPID: 999,
+            appServerProcessGroupLeaderStartTime: .init(seconds: 9, microseconds: 0),
+            updatedAt: Date()
+        )
+        try ReviewDiscovery.write(endpointRecord, to: discoveryFileURL)
+        try ReviewRuntimeStateStore.write(runtimeState, to: runtimeStateFileURL)
+
+        let manager = MockAppServerManager { _ in .success() }
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager
+        )
+
+        await store.stop()
+
+        #expect(ReviewDiscovery.readPersisted(from: discoveryFileURL)?.pid == Int(serverPID))
+        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL)?.serverPID == Int(serverPID))
+    }
+
     @Test func restartRecoversFromPartialStartup() async throws {
         let environment = try isolatedHomeEnvironment()
         let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)

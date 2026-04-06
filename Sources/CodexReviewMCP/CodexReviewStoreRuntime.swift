@@ -1038,8 +1038,6 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             removeRuntimeState(endpointRecord: endpointRecord)
         } else {
             await appServerManager.shutdown()
-            ReviewDiscovery.remove(at: discoveryFileURL)
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
         }
         closedSessions = []
         await startupTask?.value
