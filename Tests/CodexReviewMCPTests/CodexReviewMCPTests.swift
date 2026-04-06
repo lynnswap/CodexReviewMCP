@@ -456,6 +456,32 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func failedAuthenticationWithoutPersistedDedicatedHomeAuthDoesNotRecycleSharedAppServer() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = NonPersistentSuccessfulLoginReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        await store.auth.beginAuthentication()
+
+        #expect(store.auth.state == .failed(reviewAuthPersistenceFailureMessage))
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 0)
+
+        await store.stop()
+    }
+
     @Test func logoutRecyclesSharedAppServer() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
@@ -1293,7 +1319,7 @@ private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
         let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
             Task {
-                await self.setContinuation(continuation)
+                self.setContinuation(continuation)
             }
         }
         return .init(stream: stream, cancel: {})
@@ -1346,6 +1372,71 @@ private actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
     }
 
     func close() async {}
+}
+
+private actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var bufferedNotifications: [AppServerServerNotification] = []
+    private var refreshRequests: [Bool] = []
+
+    func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
+        refreshRequests.append(refreshToken)
+        if refreshToken {
+            return .init(account: nil, requiresOpenAIAuth: true)
+        }
+        return .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        buffer(.accountUpdated(.init(authMode: .chatGPT, planType: nil)))
+        buffer(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
+            Task {
+                self.setContinuation(continuation)
+            }
+        }
+        return .init(stream: stream, cancel: {})
+    }
+
+    func close() async {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    func recordedRefreshRequests() -> [Bool] {
+        refreshRequests
+    }
+
+    private func setContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
+    ) {
+        self.continuation = continuation
+        let bufferedNotifications = self.bufferedNotifications
+        self.bufferedNotifications.removeAll(keepingCapacity: false)
+        for notification in bufferedNotifications {
+            continuation.yield(notification)
+        }
+    }
+
+    private func buffer(_ notification: AppServerServerNotification) {
+        if let continuation {
+            continuation.yield(notification)
+        } else {
+            bufferedNotifications.append(notification)
+        }
+    }
 }
 
 private actor AuthCapableAppServerManager: AppServerManaging {

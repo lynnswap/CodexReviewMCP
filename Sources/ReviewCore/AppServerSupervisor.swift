@@ -670,10 +670,10 @@ private func makeAppServerLaunchCommand(
 
     return AppServerLaunchCommand(
         executable: resolvedExecutable,
-        arguments: [
+        arguments: reviewMCPCodexCommandArguments([
             "app-server",
             "--listen", "stdio://"
-        ],
+        ]),
         environment: effectiveEnvironment
     )
 }
@@ -694,6 +694,22 @@ package func prepareIsolatedCodexHome(
     }
     try fileManager.createDirectory(at: isolatedCodexHomeURL, withIntermediateDirectories: true)
 
+    let sourceConfigURL = ReviewHomePaths.codexConfigURL(
+        environment: environment,
+        codexHome: sourceCodexHomeURL
+    )
+    let isolatedConfigURL = isolatedCodexHomeURL.appendingPathComponent("config.toml")
+    let configText = try String(contentsOf: sourceConfigURL, encoding: .utf8)
+    let filteredConfigText = isolatedCodexHomeConfigText(from: configText)
+    try filteredConfigText.write(
+        to: isolatedConfigURL,
+        atomically: true,
+        encoding: .utf8
+    )
+    guard fileManager.fileExists(atPath: isolatedConfigURL.path) else {
+        throw ReviewError.io("failed to materialize config.toml in isolated Codex home.")
+    }
+
     for sourceURL in try fileManager.contentsOfDirectory(
         at: sourceCodexHomeURL,
         includingPropertiesForKeys: nil,
@@ -705,13 +721,6 @@ package func prepareIsolatedCodexHome(
         }
         let destinationURL = isolatedCodexHomeURL.appendingPathComponent(filename)
         if filename == "config.toml" {
-            let configText = try String(contentsOf: sourceURL, encoding: .utf8)
-            let filteredConfigText = isolatedCodexHomeConfigText(from: configText)
-            try filteredConfigText.write(
-                to: destinationURL,
-                atomically: true,
-                encoding: .utf8
-            )
             continue
         }
         try fileManager.copyItem(at: sourceURL, to: destinationURL)

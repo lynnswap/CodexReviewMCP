@@ -10,7 +10,12 @@ struct ReviewAuthManagerTests {
             readResponses: [.init(account: nil, requiresOpenAIAuth: true)]
         )
         let manager = ReviewAuthManager(
-            configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
+            configuration: .init(
+                environment: ["HOME": makeTemporaryRoot().path],
+                durableAuthMaxAttempts: 3,
+                durableAuthRetryDelay: .zero,
+                sleep: { _ in }
+            ),
             sessionFactory: { session }
         )
 
@@ -22,6 +27,7 @@ struct ReviewAuthManagerTests {
         let session = FakeReviewAuthSession(
             readResponses: [
                 .init(account: .chatGPT(email: "review@example.com", planType: "plus"), requiresOpenAIAuth: false),
+                .init(account: .chatGPT(email: "review@example.com", planType: "plus"), requiresOpenAIAuth: false),
             ],
             loginResponse: .chatGPT(
                 loginID: "login-browser",
@@ -29,7 +35,12 @@ struct ReviewAuthManagerTests {
             )
         )
         let manager = ReviewAuthManager(
-            configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
+            configuration: .init(
+                environment: ["HOME": makeTemporaryRoot().path],
+                durableAuthMaxAttempts: 3,
+                durableAuthRetryDelay: .zero,
+                sleep: { _ in }
+            ),
             sessionFactory: { session }
         )
         let recorder = AuthUpdateRecorder()
@@ -59,7 +70,195 @@ struct ReviewAuthManagerTests {
             }
         )
         #expect(updates.last == .signedIn(accountID: "review@example.com"))
-        #expect(await session.recordedRefreshRequests() == [true])
+        #expect(await session.recordedRefreshRequests() == [true, false])
+    }
+
+    @Test func authManagerFallsBackToDurableSignedInStateAfterPostLoginReadFails() async throws {
+        let session = PostLoginDurableCheckReviewAuthSession(
+            durableResponse: .init(
+                account: .chatGPT(email: "review@example.com", planType: "plus"),
+                requiresOpenAIAuth: false
+            ),
+            postLoginRefreshError: NSError(
+                domain: "ReviewAuthManagerTests",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "refresh failed"]
+            )
+        )
+        let manager = ReviewAuthManager(
+            configuration: .init(
+                environment: ["HOME": makeTemporaryRoot().path],
+                durableAuthMaxAttempts: 3,
+                durableAuthRetryDelay: .zero,
+                sleep: { _ in }
+            ),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        try await manager.beginAuthentication { state in
+            await recorder.append(state)
+        }
+
+        let updates = await recorder.values()
+        #expect(updates.last == .signedIn(accountID: "review@example.com"))
+        #expect(await session.recordedRefreshRequests() == [true, false])
+    }
+
+    @Test func authManagerPrefersRefreshedIdentityWhenDurableCheckIsGeneric() async throws {
+        let session = PostLoginDurableCheckReviewAuthSession(
+            durableResponse: .init(
+                account: .chatGPT(email: "ChatGPT", planType: "unknown"),
+                requiresOpenAIAuth: false
+            ),
+            refreshedResponse: .init(
+                account: .chatGPT(email: "review@example.com", planType: "plus"),
+                requiresOpenAIAuth: false
+            ),
+            postLoginRefreshError: nil
+        )
+        let manager = ReviewAuthManager(
+            configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        try await manager.beginAuthentication { state in
+            await recorder.append(state)
+        }
+
+        let updates = await recorder.values()
+        #expect(updates.last == .signedIn(accountID: "review@example.com"))
+        #expect(await session.recordedRefreshRequests() == [true, false])
+    }
+
+    @Test func authManagerPrefersDurableIdentityWhenRefreshIsGeneric() async throws {
+        let session = PostLoginDurableCheckReviewAuthSession(
+            durableResponse: .init(
+                account: .chatGPT(email: "review@example.com", planType: "plus"),
+                requiresOpenAIAuth: false
+            ),
+            refreshedResponse: .init(
+                account: .chatGPT(email: "ChatGPT", planType: "unknown"),
+                requiresOpenAIAuth: false
+            ),
+            postLoginRefreshError: nil
+        )
+        let manager = ReviewAuthManager(
+            configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        try await manager.beginAuthentication { state in
+            await recorder.append(state)
+        }
+
+        let updates = await recorder.values()
+        #expect(updates.last == .signedIn(accountID: "review@example.com"))
+        #expect(await session.recordedRefreshRequests() == [true, false])
+    }
+
+    @Test func authManagerKeepsRefreshedIdentityWhenDurableProbeIsUnavailable() async throws {
+        let session = PostLoginDurableCheckReviewAuthSession(
+            durableResponse: .init(
+                account: .chatGPT(email: "review@example.com", planType: "plus"),
+                requiresOpenAIAuth: false
+            ),
+            refreshedResponse: .init(
+                account: .chatGPT(email: "review@example.com", planType: "plus"),
+                requiresOpenAIAuth: false
+            ),
+            postLoginRefreshError: nil,
+            durableCheckError: NSError(
+                domain: "ReviewAuthManagerTests",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "status unavailable"]
+            )
+        )
+        let manager = ReviewAuthManager(
+            configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        try await manager.beginAuthentication { state in
+            await recorder.append(state)
+        }
+
+        let updates = await recorder.values()
+        #expect(updates.last == .signedIn(accountID: "review@example.com"))
+    }
+
+    @Test func authManagerRetriesDurableProbeWhenAuthAppearsAfterPropagationLag() async throws {
+        let session = EventuallyPersistentLoginReviewAuthSession()
+        let manager = ReviewAuthManager(
+            configuration: .init(
+                environment: ["HOME": makeTemporaryRoot().path],
+                durableAuthMaxAttempts: 2,
+                durableAuthRetryDelay: .zero,
+                sleep: { _ in }
+            ),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        try await manager.beginAuthentication { state in
+            await recorder.append(state)
+        }
+
+        let updates = await recorder.values()
+        #expect(updates.last == .signedIn(accountID: "review@example.com"))
+        #expect(await session.recordedRefreshRequests() == [true, false, false])
+    }
+
+    @Test func authManagerFailsWhenSignedOutProbeIsFollowedByTransientError() async throws {
+        let session = SignedOutThenUnavailableReviewAuthSession()
+        let manager = ReviewAuthManager(
+            configuration: .init(
+                environment: ["HOME": makeTemporaryRoot().path],
+                durableAuthMaxAttempts: 2,
+                durableAuthRetryDelay: .zero,
+                sleep: { _ in }
+            ),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        await #expect(throws: ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)) {
+            try await manager.beginAuthentication { state in
+                await recorder.append(state)
+            }
+        }
+
+        let updates = await recorder.values()
+        #expect(updates.last == .failed(reviewAuthPersistenceFailureMessage))
+        #expect(await session.recordedRefreshRequests() == [true, false, false])
+    }
+
+    @Test func authManagerFailsWhenDedicatedHomeAuthWasNotPersisted() async throws {
+        let session = PostLoginDurableCheckReviewAuthSession(
+            durableResponse: .init(account: nil, requiresOpenAIAuth: true),
+            postLoginRefreshError: NSError(
+                domain: "ReviewAuthManagerTests",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "refresh failed"]
+            )
+        )
+        let manager = ReviewAuthManager(
+            configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        await #expect(throws: ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)) {
+            try await manager.beginAuthentication { state in
+                await recorder.append(state)
+            }
+        }
+
+        let updates = await recorder.values()
+        #expect(updates.last == .failed(reviewAuthPersistenceFailureMessage))
     }
 
     @Test func authManagerPublishesInitialProgressBeforeSessionCreationCompletes() async throws {
@@ -355,6 +554,250 @@ private actor FakeReviewAuthSession: ReviewAuthSession {
         _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
     ) {
         self.continuation = continuation
+    }
+}
+
+private actor PostLoginDurableCheckReviewAuthSession: ReviewAuthSession {
+    private let durableResponse: AppServerAccountReadResponse
+    private let refreshedResponse: AppServerAccountReadResponse?
+    private let postLoginRefreshError: Error?
+    private let durableCheckError: Error?
+    private var refreshRequests: [Bool] = []
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var bufferedNotifications: [AppServerServerNotification] = []
+    private var didFailPostLoginRefresh = false
+
+    init(
+        durableResponse: AppServerAccountReadResponse,
+        refreshedResponse: AppServerAccountReadResponse? = nil,
+        postLoginRefreshError: Error?,
+        durableCheckError: Error? = nil
+    ) {
+        self.durableResponse = durableResponse
+        self.refreshedResponse = refreshedResponse
+        self.postLoginRefreshError = postLoginRefreshError
+        self.durableCheckError = durableCheckError
+    }
+
+    func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
+        refreshRequests.append(refreshToken)
+        if refreshToken,
+           didFailPostLoginRefresh == false,
+           let postLoginRefreshError
+        {
+            didFailPostLoginRefresh = true
+            throw postLoginRefreshError
+        }
+        if refreshToken == false, let durableCheckError {
+            throw durableCheckError
+        }
+        if refreshToken {
+            return refreshedResponse ?? durableResponse
+        }
+        return durableResponse
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        buffer(.accountUpdated(.init(authMode: .chatGPT, planType: nil)))
+        buffer(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
+            Task {
+                self.setContinuation(continuation)
+            }
+        }
+        return .init(stream: stream, cancel: {})
+    }
+
+    func close() async {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    func recordedRefreshRequests() -> [Bool] {
+        refreshRequests
+    }
+
+    private func setContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
+    ) {
+        self.continuation = continuation
+        let bufferedNotifications = self.bufferedNotifications
+        self.bufferedNotifications.removeAll(keepingCapacity: false)
+        for notification in bufferedNotifications {
+            continuation.yield(notification)
+        }
+    }
+
+    private func buffer(_ notification: AppServerServerNotification) {
+        if let continuation {
+            continuation.yield(notification)
+        } else {
+            bufferedNotifications.append(notification)
+        }
+    }
+}
+
+private actor EventuallyPersistentLoginReviewAuthSession: ReviewAuthSession {
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var bufferedNotifications: [AppServerServerNotification] = []
+    private var refreshRequests: [Bool] = []
+    private var durableReadCount = 0
+
+    func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
+        refreshRequests.append(refreshToken)
+        if refreshToken {
+            return .init(account: nil, requiresOpenAIAuth: true)
+        }
+
+        durableReadCount += 1
+        if durableReadCount == 1 {
+            return .init(account: nil, requiresOpenAIAuth: true)
+        }
+        return .init(
+            account: .chatGPT(email: "review@example.com", planType: "plus"),
+            requiresOpenAIAuth: false
+        )
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        buffer(.accountUpdated(.init(authMode: .chatGPT, planType: nil)))
+        buffer(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
+            Task {
+                self.setContinuation(continuation)
+            }
+        }
+        return .init(stream: stream, cancel: {})
+    }
+
+    func close() async {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    func recordedRefreshRequests() -> [Bool] {
+        refreshRequests
+    }
+
+    private func setContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
+    ) {
+        self.continuation = continuation
+        let bufferedNotifications = self.bufferedNotifications
+        self.bufferedNotifications.removeAll(keepingCapacity: false)
+        for notification in bufferedNotifications {
+            continuation.yield(notification)
+        }
+    }
+
+    private func buffer(_ notification: AppServerServerNotification) {
+        if let continuation {
+            continuation.yield(notification)
+        } else {
+            bufferedNotifications.append(notification)
+        }
+    }
+}
+
+private actor SignedOutThenUnavailableReviewAuthSession: ReviewAuthSession {
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var bufferedNotifications: [AppServerServerNotification] = []
+    private var refreshRequests: [Bool] = []
+    private var durableReadCount = 0
+
+    func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
+        refreshRequests.append(refreshToken)
+        if refreshToken {
+            return .init(
+                account: .chatGPT(email: "review@example.com", planType: "plus"),
+                requiresOpenAIAuth: false
+            )
+        }
+
+        durableReadCount += 1
+        if durableReadCount == 1 {
+            return .init(account: nil, requiresOpenAIAuth: true)
+        }
+        throw NSError(
+            domain: "ReviewAuthManagerTests.SignedOutThenUnavailableReviewAuthSession",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "status unavailable"]
+        )
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        buffer(.accountUpdated(.init(authMode: .chatGPT, planType: nil)))
+        buffer(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
+            Task {
+                self.setContinuation(continuation)
+            }
+        }
+        return .init(stream: stream, cancel: {})
+    }
+
+    func close() async {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    func recordedRefreshRequests() -> [Bool] {
+        refreshRequests
+    }
+
+    private func setContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
+    ) {
+        self.continuation = continuation
+        let bufferedNotifications = self.bufferedNotifications
+        self.bufferedNotifications.removeAll(keepingCapacity: false)
+        for notification in bufferedNotifications {
+            continuation.yield(notification)
+        }
+    }
+
+    private func buffer(_ notification: AppServerServerNotification) {
+        if let continuation {
+            continuation.yield(notification)
+        } else {
+            bufferedNotifications.append(notification)
+        }
     }
 }
 

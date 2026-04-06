@@ -22,6 +22,15 @@ package enum ReviewAuthError: LocalizedError, Sendable, Equatable {
     }
 }
 
+package let reviewAuthPersistenceFailureMessage =
+    "Authentication completed in browser, but credentials were not persisted to ReviewMCP's dedicated home."
+
+private enum DurableAuthCheckResult: Sendable {
+    case signedIn(CodexReviewAuthModel.State)
+    case signedOut
+    case unavailable
+}
+
 package protocol ReviewAuthSession: Sendable {
     func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse
@@ -36,15 +45,26 @@ package actor ReviewAuthManager {
         package var codexCommand: String
         package var environment: [String: String]
         package var startupTimeout: Duration
+        package var durableAuthMaxAttempts: Int?
+        package var durableAuthRetryDelay: Duration
+        package var sleep: @Sendable (Duration) async throws -> Void
 
         package init(
             codexCommand: String = "codex",
             environment: [String: String] = ProcessInfo.processInfo.environment,
-            startupTimeout: Duration = .seconds(30)
+            startupTimeout: Duration = .seconds(30),
+            durableAuthMaxAttempts: Int? = nil,
+            durableAuthRetryDelay: Duration = .milliseconds(250),
+            sleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
+                try await Task.sleep(for: duration)
+            }
         ) {
             self.codexCommand = codexCommand
             self.environment = environment
             self.startupTimeout = startupTimeout
+            self.durableAuthMaxAttempts = durableAuthMaxAttempts
+            self.durableAuthRetryDelay = durableAuthRetryDelay
+            self.sleep = sleep
         }
     }
 
@@ -55,6 +75,7 @@ package actor ReviewAuthManager {
     private var activeAttemptID: UUID?
     private let accountReadTimeout: Duration = .seconds(2)
     private let postLoginAccountReadTimeout: Duration = .seconds(2)
+    private let refreshedStateDurableVerificationTimeout: Duration = .seconds(2)
 
     package init(
         configuration: Configuration = .init(),
@@ -301,13 +322,124 @@ package actor ReviewAuthManager {
     private func signedInStateAfterAuthentication(
         session: any ReviewAuthSession
     ) async throws -> CodexReviewAuthModel.State {
+        let refreshedState: CodexReviewAuthModel.State
         do {
             let account = try await withTimeout(postLoginAccountReadTimeout) {
                 try await session.readAccount(refreshToken: true)
             }
-            return Self.authState(from: account)
+            refreshedState = Self.authState(from: account)
         } catch {
-            return Self.loadStoredAuthState(environment: configuration.environment)
+            let durableResult = try await durableAuthCheckResult(timeout: refreshedStateDurableVerificationTimeout)
+            try ensureAuthenticationAttemptActive()
+            switch durableResult {
+            case .signedIn(let durableState):
+                return durableState
+            case .signedOut, .unavailable:
+                throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
+            }
+        }
+
+        let durableResult = try await durableAuthCheckResult(timeout: refreshedStateDurableVerificationTimeout)
+        try ensureAuthenticationAttemptActive()
+        switch durableResult {
+        case .signedIn(let durableState):
+            return Self.confirmedSignedInState(
+                refreshedState: refreshedState,
+                durableState: durableState
+            )
+        case .signedOut:
+            throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
+        case .unavailable:
+            guard refreshedState != .signedOut else {
+                throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
+            }
+            return refreshedState
+        }
+    }
+
+    private func ensureAuthenticationAttemptActive() throws {
+        guard activeAttemptID != nil else {
+            throw ReviewAuthError.cancelled
+        }
+    }
+
+    private func durableAuthCheckResult(
+        timeout: Duration? = nil
+    ) async throws -> DurableAuthCheckResult {
+        var sawSignedOut = false
+        var sawUnavailable = false
+        let maxAttempts = max(1, configuration.durableAuthMaxAttempts ?? .max)
+        let deadline = ContinuousClock.now.advanced(by: timeout ?? configuration.startupTimeout)
+        var attempt = 0
+
+        while attempt < maxAttempts {
+            guard activeAttemptID != nil else {
+                throw ReviewAuthError.cancelled
+            }
+            attempt += 1
+            do {
+                let state = try await withTimeout(accountReadTimeout) {
+                    try await self.withSession { session in
+                        let account = try await session.readAccount(refreshToken: false)
+                        return Self.authState(from: account)
+                    }
+                }
+                if state == .signedOut {
+                    sawSignedOut = true
+                } else {
+                    return .signedIn(state)
+                }
+            } catch is CancellationError {
+                throw ReviewAuthError.cancelled
+            } catch {
+                sawUnavailable = true
+            }
+
+            if let configuredAttempts = configuration.durableAuthMaxAttempts,
+               attempt >= max(1, configuredAttempts)
+            {
+                break
+            }
+            if ContinuousClock.now >= deadline {
+                break
+            }
+
+            do {
+                try await configuration.sleep(configuration.durableAuthRetryDelay)
+            } catch is CancellationError {
+                throw ReviewAuthError.cancelled
+            } catch {
+                sawUnavailable = true
+                break
+            }
+        }
+
+        if sawSignedOut {
+            return .signedOut
+        }
+        if sawUnavailable {
+            return .unavailable
+        }
+        return .signedOut
+    }
+
+    private static func confirmedSignedInState(
+        refreshedState: CodexReviewAuthModel.State,
+        durableState: CodexReviewAuthModel.State
+    ) -> CodexReviewAuthModel.State {
+        switch (refreshedState, durableState) {
+        case (.signedIn(let refreshedAccountID), .signedIn(let durableAccountID))
+            where refreshedAccountID == "ChatGPT" && durableAccountID != "ChatGPT":
+            return .signedIn(accountID: durableAccountID)
+        case (.signedIn(let refreshedAccountID), .signedIn)
+            where refreshedAccountID != "ChatGPT":
+            return .signedIn(accountID: refreshedAccountID)
+        case (.signedOut, .signedIn):
+            return durableState
+        case (.signedIn, .signedIn):
+            return refreshedState
+        default:
+            return durableState
         }
     }
 
@@ -346,14 +478,6 @@ package actor ReviewAuthManager {
         }
     }
 
-    private static func loadStoredAuthState(
-        environment: [String: String]
-    ) -> CodexReviewAuthModel.State {
-        guard let account = loadStoredCLIAuthAccount(environment: environment) else {
-            return .signedIn(accountID: "ChatGPT")
-        }
-        return .signedIn(accountID: account.email?.nilIfEmpty ?? "ChatGPT")
-    }
 }
 
 package actor SharedAppServerReviewAuthSession: ReviewAuthSession {
@@ -487,7 +611,7 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         let arguments: [String]
         switch params {
         case .chatGPT:
-            arguments = ["login"]
+            arguments = reviewMCPCodexCommandArguments(["login"])
         }
 
         let stdinPipe = Pipe()
@@ -612,7 +736,7 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         let stderrPipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
+        process.arguments = reviewMCPCodexCommandArguments(arguments)
         process.environment = makeCLIReviewAuthEnvironment(from: configuration.environment)
         process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory)
         process.standardInput = Pipe()

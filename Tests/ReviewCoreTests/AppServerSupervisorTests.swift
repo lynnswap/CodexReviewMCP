@@ -4,6 +4,13 @@ import Testing
 
 @Suite(.serialized)
 struct AppServerSupervisorTests {
+    @Test func reviewMCPCodexCommandArgumentsForceFileAuthStore() {
+        #expect(
+            reviewMCPCodexCommandArguments(["login", "status"])
+                == ["-c", reviewMCPPersistentAuthCLIOverride, "login", "status"]
+        )
+    }
+
     @Test func splitStandardErrorChunkSeparatesCompleteLines() {
         let result = splitStandardErrorChunk(
             existingFragment: "",
@@ -178,6 +185,26 @@ struct AppServerSupervisorTests {
         )
         #expect(configText.contains("[mcp_servers.codex_review]") == false)
         #expect(configText.contains("model = \"gpt-5.4\""))
+    }
+
+    @Test func prepareIsolatedCodexHomeLeavesAuthMissingWhenDedicatedHomeIsUnauthenticated() throws {
+        let homeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppServerSupervisorUnauth-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+        let reviewHomeURL = homeURL.appendingPathComponent(".codex_review", isDirectory: true)
+        try ReviewHomePaths.ensureReviewHomeScaffold(at: reviewHomeURL)
+
+        let isolatedURL = try prepareIsolatedCodexHome(
+            launchID: UUID(),
+            environment: ["HOME": homeURL.path]
+        )
+        defer { try? FileManager.default.removeItem(at: homeURL) }
+
+        #expect(FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("config.toml").path))
+        #expect(
+            FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("auth.json").path)
+                == false
+        )
     }
 
     @Test func sharedTransportInitializeCompletesOverMockedStdio() async throws {
@@ -358,6 +385,11 @@ private func makeFakeSupervisorCommand(
             handle.write(str(os.getpid()))
 
     args = sys.argv[1:]
+    while len(args) >= 2 and args[0] == "-c":
+        if args[1] != 'cli_auth_credentials_store="file"':
+            sys.exit(3)
+        args = args[2:]
+
     if len(args) < 3 or args[0] != "app-server":
         sys.exit(2)
 
