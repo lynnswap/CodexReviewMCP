@@ -1610,7 +1610,7 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
         switch method {
         case "config/read":
             try await Task.sleep(for: .seconds(60))
-            throw TestFailure("config/read should have been cancelled")
+            throw TestFailure("config/read should have been interrupted")
         default:
             throw TestFailure("unexpected bootstrap request: \(method)")
         }

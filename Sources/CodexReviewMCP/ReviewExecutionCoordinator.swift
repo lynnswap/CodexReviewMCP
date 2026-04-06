@@ -24,6 +24,7 @@ package actor ReviewExecutionCoordinator {
         var task: Task<Void, Error>
         var requestedTerminationReason: ReviewTerminationReason?
         var stateChangeSignal: ReviewExecutionStateChangeSignal
+        var bootstrapInterrupter: (@Sendable () async -> Void)?
     }
 
     private let configuration: Configuration
@@ -72,7 +73,10 @@ package actor ReviewExecutionCoordinator {
             sessionID: sessionID,
             task: task,
             requestedTerminationReason: nil,
-            stateChangeSignal: stateChangeSignal
+            stateChangeSignal: stateChangeSignal,
+            bootstrapInterrupter: {
+                task.cancel()
+            }
         )
         if let pendingTerminationReason = await store.pendingTerminationReason(
             jobID: jobID,
@@ -203,6 +207,9 @@ package actor ReviewExecutionCoordinator {
 
             let transport = try await appServerManager.checkoutTransport(sessionID: sessionID)
             defer {
+                clearBootstrapInterrupter(jobID: jobID)
+            }
+            defer {
                 Task {
                     await transport.close()
                 }
@@ -230,6 +237,9 @@ package actor ReviewExecutionCoordinator {
                         startedAt: startedAt
                     )
                 },
+                onReviewStarted: {
+                    await self.clearBootstrapInterrupter(jobID: jobID)
+                },
                 onEvent: { event in
                     await store.handle(jobID: jobID, event: event)
                 },
@@ -238,6 +248,24 @@ package actor ReviewExecutionCoordinator {
                 }
             )
             await store.completeReview(jobID: jobID, outcome: outcome)
+        } catch is CancellationError {
+            if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
+                await store.markBootstrapCancelled(
+                    jobID: jobID,
+                    reason: reason,
+                    model: initialModel,
+                    startedAt: now,
+                    endedAt: Date()
+                )
+            } else {
+                await store.failToStart(
+                    jobID: jobID,
+                    message: "Failed to start review.",
+                    model: initialModel,
+                    startedAt: now,
+                    endedAt: Date()
+                )
+            }
         } catch let error as ReviewBootstrapFailure {
             if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
                 await store.markBootstrapCancelled(
@@ -309,6 +337,21 @@ package actor ReviewExecutionCoordinator {
         await handle.stateChangeSignal.finish()
     }
 
+    private func clearBootstrapInterrupter(jobID: String) {
+        guard var handle = executions[jobID] else {
+            return
+        }
+        handle.bootstrapInterrupter = nil
+        executions[jobID] = handle
+    }
+
+    private func interruptBootstrapIfPresent(jobID: String) async {
+        guard let interrupter = executions[jobID]?.bootstrapInterrupter else {
+            return
+        }
+        await interrupter()
+    }
+
     private func cancelResolvedJob(
         job: CodexReviewJob,
         sessionID: String,
@@ -324,7 +367,7 @@ package actor ReviewExecutionCoordinator {
             reason: normalizedReason
         )
         if result.signalled {
-            executions[job.id]?.task.cancel()
+            await interruptBootstrapIfPresent(jobID: job.id)
         }
         let resolvedReviewThreadID = await job.reviewThreadID
         let resolvedThreadID = await job.threadID

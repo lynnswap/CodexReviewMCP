@@ -895,6 +895,17 @@ struct AppServerReviewRunnerTests {
         #expect(result.exitCode == 124)
         #expect(result.errorMessage == "Review timed out after 0 seconds.")
     }
+
+    @Test func remainingReviewTimeoutDurationSubtractsElapsedBootstrapTime() throws {
+        let startedAt = Date(timeIntervalSinceReferenceDate: 100)
+        let duration = try remainingReviewTimeoutDuration(
+            timeoutSeconds: 30,
+            startedAt: startedAt,
+            now: Date(timeIntervalSinceReferenceDate: 110.25)
+        )
+
+        #expect(duration == .milliseconds(19_750))
+    }
 }
 
 private actor EventRecorder {

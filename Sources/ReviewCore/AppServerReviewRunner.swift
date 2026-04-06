@@ -169,22 +169,19 @@ private func runWithinRemainingReviewTimeout<Result: Sendable>(
     startedAt: Date,
     operation: @escaping @Sendable () async throws -> Result
 ) async throws -> Result {
-    guard let timeoutSeconds else {
+    guard let timeoutDuration = try remainingReviewTimeoutDuration(
+        timeoutSeconds: timeoutSeconds,
+        startedAt: startedAt
+    ) else {
         return try await operation()
     }
-
-    let remainingSeconds = Double(timeoutSeconds) - Date().timeIntervalSince(startedAt)
-    guard remainingSeconds > 0 else {
-        throw ReviewError.io("Review timed out after \(timeoutSeconds) seconds.")
-    }
-
-    let timeoutDuration = Duration.milliseconds(max(1, Int(ceil(remainingSeconds * 1000))))
     return try await withThrowingTaskGroup(of: Result.self) { group in
         group.addTask {
             try await operation()
         }
         group.addTask {
             try await Task.sleep(for: timeoutDuration)
+            let timeoutSeconds = timeoutSeconds ?? 0
             throw ReviewError.io("Review timed out after \(timeoutSeconds) seconds.")
         }
         defer { group.cancelAll() }
@@ -193,6 +190,23 @@ private func runWithinRemainingReviewTimeout<Result: Sendable>(
         }
         return result
     }
+}
+
+package func remainingReviewTimeoutDuration(
+    timeoutSeconds: Int?,
+    startedAt: Date,
+    now: Date = Date()
+) throws -> Duration? {
+    guard let timeoutSeconds else {
+        return nil
+    }
+
+    let remainingSeconds = Double(timeoutSeconds) - now.timeIntervalSince(startedAt)
+    guard remainingSeconds > 0 else {
+        throw ReviewError.io("Review timed out after \(timeoutSeconds) seconds.")
+    }
+
+    return .milliseconds(max(1, Int(ceil(remainingSeconds * 1000))))
 }
 
 package struct AppServerReviewRunner: Sendable {
@@ -220,6 +234,7 @@ package struct AppServerReviewRunner: Sendable {
         stateChangeSubscription: AsyncStreamSubscription<Void>,
         diagnosticsTail: @escaping @Sendable () async -> String = { "" },
         onStart: @escaping @Sendable (Date) async -> Void,
+        onReviewStarted: @escaping @Sendable () async -> Void = {},
         onEvent: @escaping @Sendable (ReviewProcessEvent) async -> Void,
         requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
         onUnrecoverableTransportFailure: @escaping @Sendable () async -> Void = {}
@@ -396,10 +411,23 @@ package struct AppServerReviewRunner: Sendable {
         if await requestedTerminationReason() != nil {
             await signalEmitter.yield(.stateChanged)
         }
-        if let timeoutSeconds {
+        let initialTimeoutDuration: Duration?
+        let expiredTimeoutMessage: String?
+        do {
+            initialTimeoutDuration = try remainingReviewTimeoutDuration(
+                timeoutSeconds: timeoutSeconds,
+                startedAt: startedAt
+            )
+            expiredTimeoutMessage = nil
+        } catch {
+            initialTimeoutDuration = nil
+            expiredTimeoutMessage = (error as? ReviewError)?.errorDescription ?? error.localizedDescription
+        }
+
+        if let initialTimeoutDuration {
             sourceTasks.append(
                 makeDelayedSignalTask(
-                    duration: .seconds(timeoutSeconds),
+                    duration: initialTimeoutDuration,
                     signal: .timeoutFired,
                     emitter: signalEmitter
                 )
@@ -665,6 +693,7 @@ package struct AppServerReviewRunner: Sendable {
             threadID: threadResponse.thread.id,
             turnID: turnID
         )
+        await onReviewStarted()
         await onEvent(.reviewStarted(
             reviewThreadID: reviewThreadID,
             threadID: threadResponse.thread.id,
@@ -672,6 +701,18 @@ package struct AppServerReviewRunner: Sendable {
             model: effectiveModel
         ))
         await onEvent(.progress(.threadStarted, "Review started: \(reviewThreadID)"))
+        if let expiredTimeoutMessage {
+            timeoutMessage = expiredTimeoutMessage
+            cancellationReasonValue = expiredTimeoutMessage
+            let snapshot = await state.snapshot()
+            if let outcome = await requestInterrupt(
+                using: snapshot,
+                cancellationReasonValue: expiredTimeoutMessage
+            ) {
+                await stopSignalSources()
+                return outcome
+            }
+        }
 
         func awaitOutcome() async throws -> ReviewProcessOutcome {
             for await signal in signalStream {
@@ -689,8 +730,11 @@ package struct AppServerReviewRunner: Sendable {
             case .stateChanged:
                 break
             case .timeoutFired:
-                if timeoutMessage == nil, let timeoutSeconds {
-                    timeoutMessage = "Review timed out after \(timeoutSeconds) seconds."
+                if timeoutMessage == nil {
+                    timeoutMessage = timeoutSeconds.map { "Review timed out after \($0) seconds." }
+                    guard let timeoutMessage else {
+                        break
+                    }
                     cancellationReasonValue = timeoutMessage
                 }
             case .threadUnavailableGraceExpired:
