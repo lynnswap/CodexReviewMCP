@@ -203,8 +203,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
         noteRenderForTesting()
     }
 
-#if DEBUG
     private func noteRenderForTesting() {
+#if DEBUG
         renderCountForTestingStorage += 1
         let readyCounts = renderWaitersForTesting.keys.filter { $0 <= renderCountForTestingStorage }
         for count in readyCounts {
@@ -213,8 +213,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
                 continuation.resume()
             }
         }
-    }
 #endif
+    }
 }
 
 #if DEBUG
