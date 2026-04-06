@@ -42,13 +42,28 @@ package protocol ReviewAuthSession: Sendable {
 
 package actor ReviewAuthManager {
     package struct Configuration: Sendable {
+        private struct ClosureBackedReviewClock: ReviewClock {
+            let sleepImpl: @Sendable (Duration) async throws -> Void
+
+            var now: ContinuousClock.Instant {
+                ContinuousClock().now
+            }
+
+            func sleep(until deadline: ContinuousClock.Instant, tolerance _: Duration?) async throws {
+                let remaining = now.duration(to: deadline)
+                if remaining > .zero {
+                    try await sleepImpl(remaining)
+                }
+            }
+        }
+
         package var codexCommand: String
         package var environment: [String: String]
         package var startupTimeout: Duration
         package var durableAuthMaxAttempts: Int?
         package var durableAuthRetryDelay: Duration
         package var commandProcessFactory: @Sendable () -> Process
-        package var sleep: @Sendable (Duration) async throws -> Void
+        package var clock: any ReviewClock
 
         package init(
             codexCommand: String = "codex",
@@ -57,9 +72,7 @@ package actor ReviewAuthManager {
             durableAuthMaxAttempts: Int? = nil,
             durableAuthRetryDelay: Duration = .milliseconds(250),
             commandProcessFactory: @escaping @Sendable () -> Process = { Process() },
-            sleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
-                try await Task.sleep(for: duration)
-            }
+            clock: any ReviewClock = ContinuousClock()
         ) {
             self.codexCommand = codexCommand
             self.environment = environment
@@ -67,7 +80,27 @@ package actor ReviewAuthManager {
             self.durableAuthMaxAttempts = durableAuthMaxAttempts
             self.durableAuthRetryDelay = durableAuthRetryDelay
             self.commandProcessFactory = commandProcessFactory
-            self.sleep = sleep
+            self.clock = clock
+        }
+
+        package init(
+            codexCommand: String = "codex",
+            environment: [String: String] = ProcessInfo.processInfo.environment,
+            startupTimeout: Duration = .seconds(30),
+            durableAuthMaxAttempts: Int? = nil,
+            durableAuthRetryDelay: Duration = .milliseconds(250),
+            commandProcessFactory: @escaping @Sendable () -> Process = { Process() },
+            sleep: @escaping @Sendable (Duration) async throws -> Void
+        ) {
+            self.init(
+                codexCommand: codexCommand,
+                environment: environment,
+                startupTimeout: startupTimeout,
+                durableAuthMaxAttempts: durableAuthMaxAttempts,
+                durableAuthRetryDelay: durableAuthRetryDelay,
+                commandProcessFactory: commandProcessFactory,
+                clock: ClosureBackedReviewClock(sleepImpl: sleep)
+            )
         }
     }
 
@@ -90,7 +123,7 @@ package actor ReviewAuthManager {
 
     package func loadState() async throws -> CodexReviewAuthModel.State {
         try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
-        let state = try await withTimeout(accountReadTimeout) {
+        let state = try await withTimeout(accountReadTimeout, clock: configuration.clock) {
             try await self.withSession { session in
                 let account = try await session.readAccount(refreshToken: false)
                 return Self.authState(from: account)
@@ -327,7 +360,7 @@ package actor ReviewAuthManager {
     ) async throws -> CodexReviewAuthModel.State {
         let refreshedState: CodexReviewAuthModel.State
         do {
-            let account = try await withTimeout(postLoginAccountReadTimeout) {
+            let account = try await withTimeout(postLoginAccountReadTimeout, clock: configuration.clock) {
                 try await session.readAccount(refreshToken: true)
             }
             refreshedState = Self.authState(from: account)
@@ -381,7 +414,7 @@ package actor ReviewAuthManager {
             }
             attempt += 1
             do {
-                let state = try await withTimeout(accountReadTimeout) {
+                let state = try await withTimeout(accountReadTimeout, clock: configuration.clock) {
                     try await self.withSession { session in
                         let account = try await session.readAccount(refreshToken: false)
                         return Self.authState(from: account)
@@ -408,7 +441,7 @@ package actor ReviewAuthManager {
             }
 
             do {
-                try await configuration.sleep(configuration.durableAuthRetryDelay)
+                try await configuration.clock.sleep(for: configuration.durableAuthRetryDelay)
             } catch is CancellationError {
                 throw ReviewAuthError.cancelled
             } catch {
@@ -1003,6 +1036,7 @@ package func makeCLIAccountReadResponse(
 
 private func withTimeout<T: Sendable>(
     _ timeout: Duration,
+    clock: any ReviewClock,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
     try await withThrowingTaskGroup(of: T.self) { group in
@@ -1010,7 +1044,7 @@ private func withTimeout<T: Sendable>(
             try await operation()
         }
         group.addTask {
-            try await Task.sleep(for: timeout)
+            try await clock.sleep(for: timeout)
             throw ReviewAuthError.loginFailed("Authentication request timed out.")
         }
         defer { group.cancelAll() }

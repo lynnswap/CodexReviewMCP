@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 import ReviewTestSupport
 @_spi(Testing) @testable import CodexReviewMCP
@@ -66,17 +67,20 @@ struct CodexReviewMCPTests {
             }
         )
 
+        let startCompletedSignal = AsyncSignal()
         let startTask = Task {
             await store.start()
+            await startCompletedSignal.signal()
         }
-        let completed = await taskCompletesWithin(startTask, timeout: .milliseconds(250))
 
-        #expect(completed)
+        await authSession.waitForReadAccountStart()
+        try await withTestTimeout {
+            await startCompletedSignal.wait()
+        }
         #expect(store.serverState == .running)
-        try await waitUntilAsync(timeout: .seconds(2)) {
-            await authSession.readAccountCallCount() == 1
-        }
+        await authSession.resumeReadAccount()
 
+        _ = await startTask.value
         await store.stop()
     }
 
@@ -100,12 +104,66 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
+        let authStateProbe = ObservableValueProbe { store.auth.state }
+        defer { authStateProbe.cancel() }
 
         await store.start()
 
-        try await waitUntilAsync(timeout: .seconds(2)) {
-            await store.auth.state == .signedIn(accountID: "review@example.com")
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .signedIn(accountID: "review@example.com")
         }
+
+        await store.stop()
+    }
+
+    @Test func diagnosticsSnapshotIncludesServerAndCompletedReviewState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let diagnosticsDirectoryURL = try makeTemporaryDirectory()
+        let diagnosticsURL = diagnosticsDirectoryURL.appendingPathComponent("diagnostics.json")
+        let reviewDirectoryURL = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: diagnosticsDirectoryURL)
+            try? FileManager.default.removeItem(at: reviewDirectoryURL)
+        }
+
+        let manager = MockAppServerManager { _ in
+            .commandOutputThenSuccessThenTransportDisconnect(
+                finalReview: "Looks solid overall.",
+                outputDelta: "README.md | 1 +"
+            )
+        }
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            diagnosticsURL: diagnosticsURL,
+            appServerManager: manager
+        )
+
+        await store.start()
+
+        let result = try await store.startReview(
+            sessionID: "session-diagnostics",
+            request: .init(
+                cwd: reviewDirectoryURL.path,
+                target: .uncommittedChanges
+            )
+        )
+
+        let snapshot = try readStoreDiagnosticsSnapshot(from: diagnosticsURL)
+        let job = try #require(snapshot.jobs.first)
+
+        #expect(result.status == .succeeded)
+        #expect(snapshot.serverState == "Running")
+        #expect(snapshot.failureMessage == nil)
+        #expect(snapshot.serverURL == store.serverURL?.absoluteString)
+        #expect(snapshot.childRuntimePath == nil)
+        #expect(job.status == "succeeded")
+        #expect(job.logText.contains("Looks solid overall."))
+        #expect(job.logText.contains("README.md | 1 +"))
+        #expect(job.rawLogText.isEmpty)
 
         await store.stop()
     }
@@ -202,9 +260,7 @@ struct CodexReviewMCPTests {
         let startTask = Task { await store.start() }
 
         await manager.waitForPrepareStart()
-        try await waitUntil(timeout: .seconds(2)) {
-            ReviewDiscovery.readPersisted(from: discoveryFileURL) != nil
-        }
+        try await waitForFileAppearance(at: discoveryFileURL)
         #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
 
         await store.stop()
@@ -463,10 +519,7 @@ struct CodexReviewMCPTests {
             await store.auth.beginAuthentication()
         }
 
-        try await waitUntilAsync(timeout: .seconds(2)) {
-            let params = await authSession.recordedLoginParams()
-            return params == [.chatGPT]
-        }
+        await authSession.waitForLoginStart()
 
         await store.auth.cancelAuthentication()
         _ = await beginTask.value
@@ -495,13 +548,11 @@ struct CodexReviewMCPTests {
         let beginTask = Task {
             await store.auth.beginAuthentication()
         }
+        let authStateProbe = ObservableValueProbe { store.auth.state }
+        defer { authStateProbe.cancel() }
 
-        try await waitUntilAsync(timeout: .seconds(2)) {
-            let params = await authSession.recordedLoginParams()
-            return params == [.chatGPT]
-        }
-        try await waitUntilAsync(timeout: .seconds(2)) {
-            let authState = await store.auth.state
+        await authSession.waitForLoginStart()
+        try await waitForObservedValue(authStateProbe) { authState in
             guard case .signingIn(let progress) = authState else {
                 return false
             }
@@ -1263,6 +1314,7 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
     private var loginParams: [AppServerLoginAccountParams] = []
     private var cancelledIDs: [String] = []
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private let loginStartedSignal = AsyncSignal()
 
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
@@ -1270,6 +1322,7 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
 
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
         loginParams.append(params)
+        await loginStartedSignal.signal()
         return .chatGPT(
             loginID: "login-browser",
             authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
@@ -1309,6 +1362,10 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
         cancelledIDs
     }
 
+    func waitForLoginStart() async {
+        await loginStartedSignal.wait()
+    }
+
     private func setContinuation(
         _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
     ) {
@@ -1318,10 +1375,14 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
 
 private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
     private var readAccountCallCountStorage = 0
+    private let readStartedSignal = AsyncSignal()
+    private let readResumeGate = OneShotGate()
 
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         readAccountCallCountStorage += 1
-        try await Task.sleep(for: .seconds(60))
+        await readStartedSignal.signal()
+        await readResumeGate.wait()
+        try Task.checkCancellation()
         return .init(account: nil, requiresOpenAIAuth: true)
     }
 
@@ -1345,6 +1406,14 @@ private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
 
     func readAccountCallCount() -> Int {
         readAccountCallCountStorage
+    }
+
+    func waitForReadAccountStart() async {
+        await readStartedSignal.wait()
+    }
+
+    func resumeReadAccount() async {
+        await readResumeGate.open()
     }
 }
 
@@ -1635,6 +1704,7 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
     private var requestCounts: [String: Int] = [:]
     private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var closedStorage = false
+    private let configReadGate = OneShotGate()
 
     func initializeResponse() async -> AppServerInitializeResponse {
         .init(
@@ -1653,7 +1723,8 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
         noteRequest(method)
         switch method {
         case "config/read":
-            try await Task.sleep(for: .seconds(60))
+            await configReadGate.wait()
+            try Task.checkCancellation()
             throw TestFailure("config/read should have been interrupted")
         default:
             throw TestFailure("unexpected bootstrap request: \(method)")
@@ -1821,51 +1892,75 @@ private func runWithRestartClock(
     throw TestFailure("timed out driving restart clock")
 }
 
-private func waitUntil(
-    timeout: Duration,
-    interval: Duration = .milliseconds(50),
-    condition: @escaping @Sendable () -> Bool
-) async throws {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if condition() {
+@MainActor
+private final class ObservableValueProbe<Value: Sendable>: @unchecked Sendable {
+    private let read: @MainActor () -> Value
+    private let queue = AsyncValueQueue<Value>()
+    private var isCancelled = false
+
+    init(read: @escaping @MainActor () -> Value) {
+        self.read = read
+        arm()
+    }
+
+    func next() async -> Value? {
+        await queue.next()
+    }
+
+    func cancel() {
+        isCancelled = true
+    }
+
+    private func arm() {
+        guard isCancelled == false else {
             return
         }
-        try await Task.sleep(for: interval)
+
+        let value = withObservationTracking({
+            read()
+        }, onChange: { [weak self] in
+            Task { @MainActor in
+                self?.arm()
+            }
+        })
+
+        Task {
+            await queue.push(value)
+        }
     }
-    throw TestFailure("timed out waiting for condition")
 }
 
-private func waitUntilAsync(
-    timeout: Duration,
-    interval: Duration = .milliseconds(50),
-    condition: @escaping @Sendable () async -> Bool
+private func waitForFileAppearance(
+    at fileURL: URL,
+    timeout: Duration = .seconds(2)
 ) async throws {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if await condition() {
-            return
-        }
-        try await Task.sleep(for: interval)
+    if FileManager.default.fileExists(atPath: fileURL.path) {
+        return
     }
-    throw TestFailure("timed out waiting for condition")
+
+    let monitor = try DirectoryChangeMonitor(directoryURL: fileURL.deletingLastPathComponent())
+    defer { monitor.cancel() }
+
+    try await withTestTimeout(timeout) {
+        var observedEventCount = await monitor.eventCount()
+        while FileManager.default.fileExists(atPath: fileURL.path) == false {
+            await monitor.waitForChange(after: observedEventCount)
+            observedEventCount = await monitor.eventCount()
+        }
+    }
 }
 
-private func taskCompletesWithin(
-    _ task: Task<Void, Never>,
-    timeout: Duration
-) async -> Bool {
-    await withTaskGroup(of: Bool.self) { group in
-        group.addTask {
-            await task.value
-            return true
+private func waitForObservedValue<Value: Sendable>(
+    _ probe: ObservableValueProbe<Value>,
+    predicate: @escaping @Sendable (Value) -> Bool
+) async throws {
+    try await withTestTimeout {
+        while let value = await probe.next() {
+            if predicate(value) {
+                return
+            }
         }
-        group.addTask {
-            try? await Task.sleep(for: timeout)
-            return false
-        }
-        defer { group.cancelAll() }
-        return await group.next() ?? false
+        throw TestFailure("observable probe ended before the expected value arrived")
     }
 }
 
@@ -2043,13 +2138,35 @@ private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [S
 @MainActor
 private func makeTestStore(
     configuration: ReviewServerConfiguration,
+    diagnosticsURL: URL? = nil,
     appServerManager: any AppServerManaging
 ) -> CodexReviewStore {
     CodexReviewStore(
         configuration: configuration,
+        diagnosticsURL: diagnosticsURL,
         appServerManager: appServerManager,
         authSessionFactory: makeStubReviewAuthSessionFactory()
     )
+}
+
+private struct StoreDiagnosticsSnapshot: Decodable {
+    struct Job: Decodable {
+        var status: String
+        var summary: String
+        var logText: String
+        var rawLogText: String
+    }
+
+    var serverState: String
+    var failureMessage: String?
+    var serverURL: String?
+    var childRuntimePath: String?
+    var jobs: [Job]
+}
+
+private func readStoreDiagnosticsSnapshot(from fileURL: URL) throws -> StoreDiagnosticsSnapshot {
+    let data = try Data(contentsOf: fileURL)
+    return try JSONDecoder().decode(StoreDiagnosticsSnapshot.self, from: data)
 }
 
 private func makeTemporaryDirectory() throws -> URL {

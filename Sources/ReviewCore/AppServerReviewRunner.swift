@@ -147,6 +147,7 @@ private func makeDelayedSignalTask(
     duration: Duration,
     signal: AppServerReviewRunnerSignal,
     emitter: AppServerReviewRunnerSignalEmitter,
+    clock: any ReviewClock,
     yieldFirst: Bool = false
 ) -> Task<Void, Never> {
     Task {
@@ -155,7 +156,7 @@ private func makeDelayedSignalTask(
                 await Task.yield()
             }
             try Task.checkCancellation()
-            try await Task.sleep(for: duration)
+            try await clock.sleep(for: duration)
             try Task.checkCancellation()
         } catch {
             return
@@ -166,12 +167,14 @@ private func makeDelayedSignalTask(
 
 private func runWithinRemainingReviewTimeout<Result: Sendable>(
     timeoutSeconds: Int?,
-    startedAt: Date,
+    startedAt: ContinuousClock.Instant,
+    clock: any ReviewClock,
     operation: @escaping @Sendable () async throws -> Result
 ) async throws -> Result {
     guard let timeoutDuration = try remainingReviewTimeoutDuration(
         timeoutSeconds: timeoutSeconds,
-        startedAt: startedAt
+        startedAt: startedAt,
+        now: clock.now
     ) else {
         return try await operation()
     }
@@ -180,7 +183,7 @@ private func runWithinRemainingReviewTimeout<Result: Sendable>(
             try await operation()
         }
         group.addTask {
-            try await Task.sleep(for: timeoutDuration)
+            try await clock.sleep(for: timeoutDuration)
             let timeoutSeconds = timeoutSeconds ?? 0
             throw ReviewError.io("Review timed out after \(timeoutSeconds) seconds.")
         }
@@ -194,24 +197,27 @@ private func runWithinRemainingReviewTimeout<Result: Sendable>(
 
 package func remainingReviewTimeoutDuration(
     timeoutSeconds: Int?,
-    startedAt: Date,
-    now: Date = Date()
+    startedAt: ContinuousClock.Instant,
+    now: ContinuousClock.Instant
 ) throws -> Duration? {
     guard let timeoutSeconds else {
         return nil
     }
 
-    let remainingSeconds = Double(timeoutSeconds) - now.timeIntervalSince(startedAt)
-    guard remainingSeconds > 0 else {
+    let elapsed = startedAt.duration(to: now)
+    let timeoutDuration = Duration.seconds(timeoutSeconds)
+    let remaining = timeoutDuration - elapsed
+    guard remaining > .zero else {
         throw ReviewError.io("Review timed out after \(timeoutSeconds) seconds.")
     }
 
-    return .milliseconds(max(1, Int(ceil(remainingSeconds * 1000))))
+    return remaining
 }
 
 package struct AppServerReviewRunner: Sendable {
     package var settingsBuilder: ReviewExecutionSettingsBuilder
     package var threadUnavailableGracePeriod: Duration = .seconds(1)
+    package var clock: any ReviewClock = ContinuousClock()
 
     package init(settingsBuilder: ReviewExecutionSettingsBuilder = .init()) {
         self.settingsBuilder = settingsBuilder
@@ -251,6 +257,7 @@ package struct AppServerReviewRunner: Sendable {
         }
 
         let startedAt = Date()
+        let startedAtInstant = clock.now
         await onStart(startedAt)
         await onEvent(.progress(.started, "Review started."))
         let timeoutSeconds = request.timeoutSeconds ?? defaultTimeoutSeconds
@@ -289,7 +296,8 @@ package struct AppServerReviewRunner: Sendable {
         do {
             let configResponse: AppServerConfigReadResponse = try await runWithinRemainingReviewTimeout(
                 timeoutSeconds: bootstrapTimeoutSeconds,
-                startedAt: startedAt
+                startedAt: startedAtInstant,
+                clock: clock
             ) {
                 try await session.request(
                     method: "config/read",
@@ -358,7 +366,8 @@ package struct AppServerReviewRunner: Sendable {
         do {
             threadResponse = try await runWithinRemainingReviewTimeout(
                 timeoutSeconds: bootstrapTimeoutSeconds,
-                startedAt: startedAt
+                startedAt: startedAtInstant,
+                clock: clock
             ) {
                 try await session.request(
                     method: "thread/start",
@@ -416,7 +425,8 @@ package struct AppServerReviewRunner: Sendable {
         do {
             initialTimeoutDuration = try remainingReviewTimeoutDuration(
                 timeoutSeconds: timeoutSeconds,
-                startedAt: startedAt
+                startedAt: startedAtInstant,
+                now: clock.now
             )
             expiredTimeoutMessage = nil
         } catch {
@@ -429,7 +439,8 @@ package struct AppServerReviewRunner: Sendable {
                 makeDelayedSignalTask(
                     duration: initialTimeoutDuration,
                     signal: .timeoutFired,
-                    emitter: signalEmitter
+                    emitter: signalEmitter,
+                    clock: clock
                 )
             )
         }
@@ -485,6 +496,7 @@ package struct AppServerReviewRunner: Sendable {
                 duration: threadUnavailableGracePeriod,
                 signal: .threadUnavailableGraceExpired,
                 emitter: signalEmitter,
+                clock: clock,
                 yieldFirst: true
             )
         }
@@ -505,7 +517,8 @@ package struct AppServerReviewRunner: Sendable {
             completionGraceTask = makeDelayedSignalTask(
                 duration: duration,
                 signal: .completedWithoutFinalReviewGraceExpired,
-                emitter: signalEmitter
+                emitter: signalEmitter,
+                clock: clock
             )
         }
 
@@ -518,6 +531,7 @@ package struct AppServerReviewRunner: Sendable {
                 duration: .zero,
                 signal: .completedTurnSettleExpired,
                 emitter: signalEmitter,
+                clock: clock,
                 yieldFirst: true
             )
         }
@@ -531,6 +545,7 @@ package struct AppServerReviewRunner: Sendable {
                 duration: threadUnavailableGracePeriod,
                 signal: .transportDisconnectGraceExpired,
                 emitter: signalEmitter,
+                clock: clock,
                 yieldFirst: true
             )
         }
@@ -666,7 +681,8 @@ package struct AppServerReviewRunner: Sendable {
         do {
             reviewResponse = try await runWithinRemainingReviewTimeout(
                 timeoutSeconds: bootstrapTimeoutSeconds,
-                startedAt: startedAt
+                startedAt: startedAtInstant,
+                clock: clock
             ) {
                 try await session.request(
                     method: "review/start",

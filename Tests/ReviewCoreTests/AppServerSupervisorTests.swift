@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ReviewTestSupport
 @testable import ReviewCore
 
 @Suite(.serialized)
@@ -91,6 +92,48 @@ struct AppServerSupervisorTests {
         try? FileManager.default.removeItem(at: commandURL)
     }
 
+    @Test func prepareResolvesCodexCommandFromPATH() async throws {
+        var environment = try makeSupervisorEnvironment()
+        let commandURL = try makeFakeSupervisorCommand(
+            respondsToInitialize: true,
+            configResponseCharacterCount: 4_096
+        )
+        let executableDirectoryURL = try makeExecutableDirectory(named: "codex", from: commandURL)
+        environment["PATH"] = "\(executableDirectoryURL.path):\(try #require(environment["PATH"]))"
+
+        let supervisor = AppServerSupervisor(
+            configuration: .init(
+                codexCommand: "codex",
+                environment: environment,
+                startupTimeout: .seconds(1)
+            )
+        )
+        do {
+            _ = try await supervisor.prepare()
+            let transport = try await supervisor.checkoutAuthTransport()
+            let response: AppServerConfigReadResponse = try await transport.request(
+                method: "config/read",
+                params: AppServerConfigReadParams(
+                    cwd: FileManager.default.currentDirectoryPath,
+                    includeLayers: false
+                ),
+                responseType: AppServerConfigReadResponse.self
+            )
+
+            #expect(response.config.model == "gpt-5.4-mini")
+            #expect(response.config.reviewModel == "gpt-5.4-mini")
+        } catch {
+            await supervisor.shutdown()
+            try? FileManager.default.removeItem(at: executableDirectoryURL)
+            try? FileManager.default.removeItem(at: commandURL)
+            throw error
+        }
+
+        await supervisor.shutdown()
+        try? FileManager.default.removeItem(at: executableDirectoryURL)
+        try? FileManager.default.removeItem(at: commandURL)
+    }
+
     @Test func sharedTransportInitializeCompletesOverMockedStdio() async throws {
         let box = ConnectionBox()
         let connection = AppServerSharedTransportConnection(
@@ -155,25 +198,15 @@ struct AppServerSupervisorTests {
 
         _ = try await supervisor.prepare()
         let transport = try await supervisor.checkoutTransport(sessionID: "session-a")
-        let response: AppServerConfigReadResponse = try await withThrowingTaskGroup(
-            of: AppServerConfigReadResponse.self
-        ) { group in
-            group.addTask {
-                try await transport.request(
-                    method: "config/read",
-                    params: AppServerConfigReadParams(
-                        cwd: FileManager.default.currentDirectoryPath,
-                        includeLayers: false
-                    ),
-                    responseType: AppServerConfigReadResponse.self
-                )
-            }
-            group.addTask {
-                try await Task.sleep(for: .seconds(2))
-                throw TimeoutError()
-            }
-            defer { group.cancelAll() }
-            return try await #require(group.next())
+        let response: AppServerConfigReadResponse = try await withTestTimeout {
+            try await transport.request(
+                method: "config/read",
+                params: AppServerConfigReadParams(
+                    cwd: FileManager.default.currentDirectoryPath,
+                    includeLayers: false
+                ),
+                responseType: AppServerConfigReadResponse.self
+            )
         }
 
         #expect(response.config.model == "gpt-5.4-mini")
@@ -217,63 +250,71 @@ struct AppServerSupervisorTests {
 
     @Test func prepareTimeoutStopsStartingProcess() async throws {
         let environment = try makeSupervisorEnvironment()
-        let pidFileURL = URL(fileURLWithPath: environment["HOME"]!)
-            .appendingPathComponent("fake-app-server.pid")
+        let processControl = try makeSupervisorProcessControlFiles(
+            environment: environment,
+            basename: "fake-app-server"
+        )
         let commandURL = try makeFakeSupervisorCommand(
             respondsToInitialize: false,
-            pidFileURL: pidFileURL,
-            autoExitSeconds: 30
+            pidFileURL: processControl.pidFileURL,
+            exitRequestFileURL: processControl.exitRequestFileURL,
+            exitLogURL: processControl.exitLogURL
         )
         defer { try? FileManager.default.removeItem(at: commandURL) }
+        let clock = ManualTestClock()
 
         let supervisor = AppServerSupervisor(
             configuration: .init(
                 codexCommand: commandURL.path,
                 environment: environment,
-                startupTimeout: .seconds(1)
+                startupTimeout: .seconds(1),
+                clock: clock
             )
         )
 
-        do {
-            _ = try await supervisor.prepare()
-            Issue.record("prepare() unexpectedly succeeded without an initialize response.")
-        } catch {
-            #expect(error.localizedDescription.contains("timed out waiting for app-server initialization"))
+        let completionSignal = AsyncSignal()
+        let prepareTask = Task<Result<AppServerRuntimeState, Error>, Never> {
+            let result: Result<AppServerRuntimeState, Error>
+            do {
+                result = .success(try await supervisor.prepare())
+            } catch {
+                result = .failure(error)
+            }
+            await completionSignal.signal()
+            return result
         }
+        let pid = try await waitForPID(at: processControl.pidFileURL)
+        let identity = try #require(processIdentity(pid: pid))
+        await clock.sleepUntilSuspendedBy(1)
+        clock.advance(by: .seconds(1))
+        try await driveClockUntilSignal(completionSignal, clock: clock)
 
-        let fileDeadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while ContinuousClock.now < fileDeadline,
-              FileManager.default.fileExists(atPath: pidFileURL.path) == false
-        {
-            try await Task.sleep(for: .milliseconds(50))
-        }
-        let pidText = try String(contentsOf: pidFileURL, encoding: .utf8)
-        let pid = try #require(Int32(pidText.trimmingCharacters(in: .whitespacesAndNewlines)))
-        guard let startTime = processStartTime(of: pid) else {
-            await supervisor.shutdown()
+        guard await completionSignal.count() == 1 else {
+            prepareTask.cancel()
+            try? requestSupervisorProcessExit(at: processControl.exitRequestFileURL)
+            Issue.record("prepare() did not complete after driving startup timeout and cleanup.")
             return
         }
-        let identity = ProcessIdentity(pid: pid, startTime: startTime)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while ContinuousClock.now < deadline {
-            if isMatchingProcessIdentity(identity) == false {
-                await supervisor.shutdown()
-                return
-            }
-            try await Task.sleep(for: .milliseconds(50))
+        switch await prepareTask.value {
+        case .success:
+            Issue.record("prepare() unexpectedly succeeded without an initialize response.")
+        case .failure(let error):
+            #expect(error.localizedDescription.contains("timed out waiting for app-server initialization"))
         }
-        await supervisor.shutdown()
-        Issue.record("starting app-server child was still alive after prepare timed out.")
+        try await waitForProcessExit(identity)
     }
 
     @Test func shutdownDuringStartupStopsStartingProcess() async throws {
         let environment = try makeSupervisorEnvironment()
-        let pidFileURL = URL(fileURLWithPath: environment["HOME"]!)
-            .appendingPathComponent("fake-app-server-starting.pid")
+        let processControl = try makeSupervisorProcessControlFiles(
+            environment: environment,
+            basename: "fake-app-server-starting"
+        )
         let commandURL = try makeFakeSupervisorCommand(
             respondsToInitialize: false,
-            pidFileURL: pidFileURL,
-            autoExitSeconds: 30
+            pidFileURL: processControl.pidFileURL,
+            exitRequestFileURL: processControl.exitRequestFileURL,
+            exitLogURL: processControl.exitLogURL
         )
         defer { try? FileManager.default.removeItem(at: commandURL) }
 
@@ -288,13 +329,15 @@ struct AppServerSupervisorTests {
         let prepareTask = Task {
             try await supervisor.prepare()
         }
-        let pid = try await waitForPID(at: pidFileURL)
+        let pid = try await waitForPID(at: processControl.pidFileURL)
         let identity = try #require(processIdentity(pid: pid))
 
         await supervisor.shutdown()
 
         do {
-            _ = try await prepareTask.value
+            _ = try await withTestTimeout {
+                try await prepareTask.value
+            }
             Issue.record("prepare() unexpectedly succeeded after shutdown during startup.")
         } catch {
             #expect(error.localizedDescription.contains("stopped during startup"))
@@ -329,12 +372,15 @@ struct AppServerSupervisorTests {
 
     @Test func shutdownStopsRunningProcess() async throws {
         let environment = try makeSupervisorEnvironment()
-        let pidFileURL = URL(fileURLWithPath: environment["HOME"]!)
-            .appendingPathComponent("fake-app-server-running.pid")
+        let processControl = try makeSupervisorProcessControlFiles(
+            environment: environment,
+            basename: "fake-app-server-running"
+        )
         let commandURL = try makeFakeSupervisorCommand(
             respondsToInitialize: true,
-            pidFileURL: pidFileURL,
-            autoExitSeconds: 30
+            pidFileURL: processControl.pidFileURL,
+            exitRequestFileURL: processControl.exitRequestFileURL,
+            exitLogURL: processControl.exitLogURL
         )
         defer { try? FileManager.default.removeItem(at: commandURL) }
 
@@ -358,9 +404,14 @@ struct AppServerSupervisorTests {
 
     @Test func prepareRelaunchesAfterProcessExit() async throws {
         let environment = try makeSupervisorEnvironment()
+        let processControl = try makeSupervisorProcessControlFiles(
+            environment: environment,
+            basename: "fake-app-server-relaunch"
+        )
         let commandURL = try makeFakeSupervisorCommand(
             respondsToInitialize: true,
-            autoExitSeconds: 0.3
+            exitRequestFileURL: processControl.exitRequestFileURL,
+            exitLogURL: processControl.exitLogURL
         )
         defer { try? FileManager.default.removeItem(at: commandURL) }
 
@@ -382,6 +433,7 @@ struct AppServerSupervisorTests {
             pid: pid_t(firstRuntimeState.pid),
             startTime: firstRuntimeState.startTime
         )
+        try requestSupervisorProcessExit(at: processControl.exitRequestFileURL)
         try await waitForProcessExit(firstIdentity)
 
         let secondRuntimeState = try await supervisor.prepare()
@@ -462,11 +514,15 @@ struct AppServerSupervisorTests {
 
     @Test func prepareFailsWhenProcessLeavesDedicatedGroupBeforeReady() async throws {
         let environment = try makeSupervisorEnvironment()
-        let pidFileURL = URL(fileURLWithPath: environment["HOME"]!)
-            .appendingPathComponent("fake-app-server-group-change.pid")
+        let processControl = try makeSupervisorProcessControlFiles(
+            environment: environment,
+            basename: "fake-app-server-group-change"
+        )
         let commandURL = try makeFakeSupervisorCommand(
             respondsToInitialize: true,
-            pidFileURL: pidFileURL,
+            pidFileURL: processControl.pidFileURL,
+            exitRequestFileURL: processControl.exitRequestFileURL,
+            exitLogURL: processControl.exitLogURL,
             joinParentProcessGroupBeforeInitialize: true
         )
         defer { try? FileManager.default.removeItem(at: commandURL) }
@@ -486,8 +542,9 @@ struct AppServerSupervisorTests {
             #expect(error.localizedDescription.contains("did not remain in its dedicated process group"))
         }
 
-        let pid = try await waitForPID(at: pidFileURL)
+        let pid = try await waitForPID(at: processControl.pidFileURL)
         if let identity = processIdentity(pid: pid) {
+            try? requestSupervisorProcessExit(at: processControl.exitRequestFileURL)
             try await waitForProcessExit(identity)
         }
         await supervisor.shutdown()
@@ -504,11 +561,35 @@ private func makeSupervisorEnvironment() throws -> [String: String] {
     ]
 }
 
+private struct SupervisorProcessControlFiles {
+    let pidFileURL: URL
+    let exitRequestFileURL: URL
+    let exitLogURL: URL
+}
+
+private func makeSupervisorProcessControlFiles(
+    environment: [String: String],
+    basename: String
+) throws -> SupervisorProcessControlFiles {
+    guard let homePath = environment["HOME"] else {
+        throw TimeoutError()
+    }
+    let homeURL = URL(fileURLWithPath: homePath)
+    let reviewHomeURL = homeURL.appendingPathComponent(".codex_review", isDirectory: true)
+    try FileManager.default.createDirectory(at: reviewHomeURL, withIntermediateDirectories: true)
+    return .init(
+        pidFileURL: reviewHomeURL.appendingPathComponent("\(basename).pid"),
+        exitRequestFileURL: reviewHomeURL.appendingPathComponent("\(basename).exit-request"),
+        exitLogURL: reviewHomeURL.appendingPathComponent("\(basename).exit-log")
+    )
+}
+
 private func makeFakeSupervisorCommand(
     respondsToInitialize: Bool,
     pidFileURL: URL? = nil,
+    exitRequestFileURL: URL? = nil,
+    exitLogURL: URL? = nil,
     codexHomeCaptureURL: URL? = nil,
-    autoExitSeconds: Double? = nil,
     configResponseCharacterCount: Int? = nil,
     responseChunkSize: Int? = nil,
     joinParentProcessGroupBeforeInitialize: Bool = false
@@ -516,27 +597,43 @@ private func makeFakeSupervisorCommand(
     let scriptURL = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: false)
     let pidFileLiteral = pythonLiteral(pidFileURL?.path)
+    let exitRequestLiteral = pythonLiteral(exitRequestFileURL?.path)
+    let exitLogLiteral = pythonLiteral(exitLogURL?.path)
     let codexHomeCaptureLiteral = pythonLiteral(codexHomeCaptureURL?.path)
     let respondsToInitializeLiteral = respondsToInitialize ? "True" : "False"
-    let autoExitSecondsLiteral = autoExitSeconds.map { String(describing: $0) } ?? "None"
     let configResponseCharacterCountLiteral = configResponseCharacterCount.map(String.init) ?? "None"
     let responseChunkSizeLiteral = responseChunkSize.map(String.init) ?? "None"
     let joinParentProcessGroupLiteral = joinParentProcessGroupBeforeInitialize ? "True" : "False"
     let script = """
     #!/usr/bin/env python3
+    import atexit
     import json
     import os
     import select
+    import signal
     import sys
-    import time
 
     pid_file = \(pidFileLiteral)
+    exit_request_file = \(exitRequestLiteral)
+    exit_log_file = \(exitLogLiteral)
     codex_home_capture_file = \(codexHomeCaptureLiteral)
     responds_to_initialize = \(respondsToInitializeLiteral)
-    auto_exit_seconds = \(autoExitSecondsLiteral)
     config_response_character_count = \(configResponseCharacterCountLiteral)
     response_chunk_size = \(responseChunkSizeLiteral)
     join_parent_process_group_before_initialize = \(joinParentProcessGroupLiteral)
+
+    def record_exit():
+        if exit_log_file is None:
+            return
+        with open(exit_log_file, "a", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()) + "\\n")
+
+    def handle_termination(_signum, _frame):
+        raise SystemExit(0)
+
+    atexit.register(record_exit)
+    signal.signal(signal.SIGTERM, handle_termination)
+    signal.signal(signal.SIGINT, handle_termination)
 
     if pid_file is not None:
         with open(pid_file, "w", encoding="utf-8") as handle:
@@ -555,8 +652,6 @@ private func makeFakeSupervisorCommand(
     if len(args) < 3 or args[0] != "app-server":
         sys.exit(2)
 
-    deadline = None if auto_exit_seconds is None else time.monotonic() + float(auto_exit_seconds)
-
     def write_json_line(message):
         payload = (json.dumps(message) + "\\n").encode("utf-8")
         if response_chunk_size is None:
@@ -570,8 +665,9 @@ private func makeFakeSupervisorCommand(
             sys.stdout.buffer.flush()
 
     while True:
-        if deadline is not None and time.monotonic() >= deadline:
-            os._exit(0)
+        if exit_request_file is not None and os.path.exists(exit_request_file):
+            os.unlink(exit_request_file)
+            raise SystemExit(0)
         readable, _, _ = select.select([sys.stdin.buffer], [], [], 0.05)
         if not readable:
             continue
@@ -613,17 +709,31 @@ private func waitForPID(
     at fileURL: URL,
     timeout: Duration = .seconds(2)
 ) async throws -> pid_t {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if FileManager.default.fileExists(atPath: fileURL.path),
-           let text = try? String(contentsOf: fileURL, encoding: .utf8),
-           let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
-        {
+    try await withTestTimeout(timeout) {
+        if let pid = try readPID(from: fileURL) {
             return pid
         }
-        try await Task.sleep(for: .milliseconds(50))
+
+        let monitor = try DirectoryChangeMonitor(directoryURL: fileURL.deletingLastPathComponent())
+        defer { monitor.cancel() }
+
+        var observedEventCount = await monitor.eventCount()
+        while true {
+            if let pid = try readPID(from: fileURL) {
+                return pid
+            }
+            await monitor.waitForChange(after: observedEventCount)
+            observedEventCount = await monitor.eventCount()
+        }
     }
-    throw TimeoutError()
+}
+
+private func readPID(from fileURL: URL) throws -> pid_t? {
+    guard FileManager.default.fileExists(atPath: fileURL.path) else {
+        return nil
+    }
+    let text = try String(contentsOf: fileURL, encoding: .utf8)
+    return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
 }
 
 private func processIdentity(pid: pid_t) -> ProcessIdentity? {
@@ -637,14 +747,34 @@ private func waitForProcessExit(
     _ identity: ProcessIdentity,
     timeout: Duration = .seconds(2)
 ) async throws {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if isMatchingProcessIdentity(identity) == false {
-            return
+    try await withTestTimeout(timeout) {
+        while isMatchingProcessIdentity(identity) {
+            await Task.yield()
         }
-        try await Task.sleep(for: .milliseconds(50))
     }
-    throw TimeoutError()
+}
+
+private func requestSupervisorProcessExit(at fileURL: URL) throws {
+    if FileManager.default.fileExists(atPath: fileURL.path) == false {
+        FileManager.default.createFile(atPath: fileURL.path, contents: Data())
+    }
+}
+
+private func withTestTimeout<T: Sendable>(
+    _ timeout: Duration = .seconds(2),
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        group.addTask {
+            try await Task.sleep(for: timeout)
+            throw TimeoutError()
+        }
+        defer { group.cancelAll() }
+        return try await #require(group.next())
+    }
 }
 
 private func pythonLiteral(_ value: String?) -> String {
@@ -658,6 +788,16 @@ private func pythonLiteral(_ value: String?) -> String {
     return "\"\(escaped)\""
 }
 
+private func makeExecutableDirectory(named name: String, from executableURL: URL) throws -> URL {
+    let directoryURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("AppServerSupervisorExec-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+    let linkedURL = directoryURL.appendingPathComponent(name)
+    try FileManager.default.copyItem(at: executableURL, to: linkedURL)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: linkedURL.path)
+    return directoryURL
+}
+
 private actor ConnectionBox {
     private var storedConnection: AppServerSharedTransportConnection?
 
@@ -667,6 +807,24 @@ private actor ConnectionBox {
 
     func connection() -> AppServerSharedTransportConnection? {
         storedConnection
+    }
+}
+
+private func driveClockUntilSignal(
+    _ signal: AsyncSignal,
+    clock: ManualTestClock,
+    step: Duration = .milliseconds(100),
+    timeout: Duration = .seconds(2)
+) async throws {
+    try await withTestTimeout(timeout) {
+        while await signal.count() == 0 {
+            if clock.hasSleepers {
+                await clock.sleepUntilSuspendedBy(1)
+                clock.advance(by: step)
+            } else {
+                await Task.yield()
+            }
+        }
     }
 }
 

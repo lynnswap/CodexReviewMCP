@@ -76,41 +76,78 @@ enum CodexReviewMonitorLaunchEnvironment {
         }
     }
 }
+
 @MainActor
-final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
+protocol CodexReviewMonitorLifecycleStore: AnyObject {
+    func start(forceRestartIfNeeded: Bool) async
+    func stop() async
+}
+
+extension CodexReviewStore: CodexReviewMonitorLifecycleStore {}
+
+@MainActor
+protocol CodexReviewMonitorTerminationReplying: AnyObject {
+    func replyToApplicationShouldTerminate(_ shouldTerminate: Bool)
+}
+
+extension NSApplication: CodexReviewMonitorTerminationReplying {
+    func replyToApplicationShouldTerminate(_ shouldTerminate: Bool) {
+        reply(toApplicationShouldTerminate: shouldTerminate)
+    }
+}
+
+@MainActor
+final class CodexReviewMonitorLifecycleController {
+    private let store: any CodexReviewMonitorLifecycleStore
     private var shouldManageEmbeddedServer = true
     private var terminationTask: Task<Void, Never>?
 
-    lazy var store = CodexReviewStore()
+    init(store: any CodexReviewMonitorLifecycleStore) {
+        self.store = store
+    }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        _ = notification
-        shouldManageEmbeddedServer = CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer()
+    func applicationDidFinishLaunching(launchMode: CodexReviewMonitorLaunchMode) {
+        shouldManageEmbeddedServer = launchMode == .application
         guard shouldManageEmbeddedServer else {
             return
         }
-        Task {
+        Task { @MainActor in
             await store.start(forceRestartIfNeeded: true)
         }
     }
 
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    func applicationShouldTerminate(
+        replyingTo application: any CodexReviewMonitorTerminationReplying
+    ) -> NSApplication.TerminateReply {
         guard shouldManageEmbeddedServer else {
             return .terminateNow
         }
         guard terminationTask == nil else {
             return .terminateLater
         }
-        terminationTask = Task { @MainActor [weak self] in
-            guard let self else {
-                sender.reply(toApplicationShouldTerminate: false)
-                return
-            }
-            await self.store.stop()
-            self.terminationTask = nil
-            sender.reply(toApplicationShouldTerminate: true)
+        terminationTask = Task { @MainActor in
+            await store.stop()
+            terminationTask = nil
+            application.replyToApplicationShouldTerminate(true)
         }
         return .terminateLater
+    }
+}
+
+@MainActor
+final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
+    lazy var store = CodexReviewStore()
+    lazy var lifecycle = CodexReviewMonitorLifecycleController(store: store)
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = notification
+        lifecycle.applicationDidFinishLaunching(
+            launchMode: CodexReviewMonitorLaunchEnvironment.launchMode()
+        )
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        lifecycle.applicationShouldTerminate(replyingTo: sender)
     }
 }
 

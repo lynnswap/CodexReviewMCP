@@ -50,6 +50,13 @@ public final class CodexReviewJob: Identifiable, Hashable {
         )
     }
 
+    public var reviewMonitorLogText: String {
+        Self.renderedText(
+            from: logEntries,
+            kinds: Self.reviewMonitorDisplayedLogKinds
+        )
+    }
+
     public var rawLogText: String {
         Self.rawText(
             from: logEntries,
@@ -264,4 +271,6 @@ public final class CodexReviewJob: Identifiable, Hashable {
         .progress,
         .event,
     ]
+
+    private static let reviewMonitorDisplayedLogKinds = displayedLogKinds.subtracting([.commandOutput])
 }

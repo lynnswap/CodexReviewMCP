@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import CodexReviewModel
+import ReviewTestSupport
 @testable import ReviewCore
 
 @Suite(.serialized)
@@ -13,8 +14,7 @@ struct ReviewAuthManagerTests {
             configuration: .init(
                 environment: ["HOME": makeTemporaryRoot().path],
                 durableAuthMaxAttempts: 3,
-                durableAuthRetryDelay: .zero,
-                sleep: { _ in }
+                durableAuthRetryDelay: .zero
             ),
             sessionFactory: { session }
         )
@@ -38,8 +38,7 @@ struct ReviewAuthManagerTests {
             configuration: .init(
                 environment: ["HOME": makeTemporaryRoot().path],
                 durableAuthMaxAttempts: 3,
-                durableAuthRetryDelay: .zero,
-                sleep: { _ in }
+                durableAuthRetryDelay: .zero
             ),
             sessionFactory: { session }
         )
@@ -51,10 +50,7 @@ struct ReviewAuthManagerTests {
             }
         }
 
-        try await waitUntil(timeout: .seconds(2)) {
-            let params = await session.recordedLoginParams()
-            return params == [.chatGPT] ? true : nil
-        }
+        await session.waitForLoginStart()
         await session.send(.accountUpdated(.init(authMode: .chatGPT, planType: "plus")))
         await session.send(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
 
@@ -89,8 +85,7 @@ struct ReviewAuthManagerTests {
             configuration: .init(
                 environment: ["HOME": makeTemporaryRoot().path],
                 durableAuthMaxAttempts: 3,
-                durableAuthRetryDelay: .zero,
-                sleep: { _ in }
+                durableAuthRetryDelay: .zero
             ),
             sessionFactory: { session }
         )
@@ -196,8 +191,7 @@ struct ReviewAuthManagerTests {
             configuration: .init(
                 environment: ["HOME": makeTemporaryRoot().path],
                 durableAuthMaxAttempts: 2,
-                durableAuthRetryDelay: .zero,
-                sleep: { _ in }
+                durableAuthRetryDelay: .zero
             ),
             sessionFactory: { session }
         )
@@ -218,8 +212,7 @@ struct ReviewAuthManagerTests {
             configuration: .init(
                 environment: ["HOME": makeTemporaryRoot().path],
                 durableAuthMaxAttempts: 2,
-                durableAuthRetryDelay: .zero,
-                sleep: { _ in }
+                durableAuthRetryDelay: .zero
             ),
             sessionFactory: { session }
         )
@@ -279,22 +272,16 @@ struct ReviewAuthManagerTests {
         }
 
         await factory.waitForRequest()
-        try await waitUntil(timeout: .seconds(2)) {
-            let updates = await recorder.values()
-            return updates.contains {
-                guard case .signingIn(let progress) = $0 else {
-                    return false
-                }
-                return progress.browserURL == nil
-                    && progress.detail == "Preparing browser sign-in."
-            } ? true : nil
+        await recorder.waitUntilContains { state in
+            guard case .signingIn(let progress) = state else {
+                return false
+            }
+            return progress.browserURL == nil
+                && progress.detail == "Preparing browser sign-in."
         }
 
         await factory.resume()
-        try await waitUntil(timeout: .seconds(2)) {
-            let params = await session.recordedLoginParams()
-            return params == [.chatGPT] ? true : nil
-        }
+        await session.waitForLoginStart()
 
         await manager.cancelAuthentication()
         await session.finishNotifications(with: CancellationError())
@@ -332,10 +319,7 @@ struct ReviewAuthManagerTests {
             try await manager.beginAuthentication { _ in }
         }
 
-        try await waitUntil(timeout: .seconds(2)) {
-            let params = await session.recordedLoginParams()
-            return params == [.chatGPT] ? true : nil
-        }
+        await session.waitForLoginStart()
 
         await manager.cancelAuthentication()
         await session.finishNotifications(with: CancellationError())
@@ -421,9 +405,7 @@ struct ReviewAuthManagerTests {
             try await session.startLogin(.chatGPT)
         }
 
-        try await waitUntil(timeout: .seconds(2)) {
-            FileManager.default.fileExists(atPath: marker.path) ? true : nil
-        }
+        try await waitForFileAppearance(at: marker)
 
         await session.close()
 
@@ -503,13 +485,32 @@ struct ReviewAuthManagerTests {
 
 private actor AuthUpdateRecorder {
     private var updates: [CodexReviewAuthModel.State] = []
+    private let updateSignal = AsyncSignal()
 
-    func append(_ state: CodexReviewAuthModel.State) {
+    func append(_ state: CodexReviewAuthModel.State) async {
         updates.append(state)
+        await updateSignal.signal()
     }
 
     func values() -> [CodexReviewAuthModel.State] {
         updates
+    }
+
+    func waitUntilContains(
+        _ predicate: @escaping @Sendable (CodexReviewAuthModel.State) -> Bool
+    ) async {
+        if updates.contains(where: predicate) {
+            return
+        }
+
+        var targetCount = await updateSignal.count() + 1
+        while true {
+            await updateSignal.wait(untilCount: targetCount)
+            if updates.contains(where: predicate) {
+                return
+            }
+            targetCount = await updateSignal.count() + 1
+        }
     }
 }
 
@@ -552,7 +553,7 @@ private actor BlockingReviewAuthSessionFactory {
         }
     }
 
-    func resume() {
+    func resume() async {
         resumed = true
         let waiters = resumeWaiters
         resumeWaiters.removeAll(keepingCapacity: false)
@@ -570,6 +571,8 @@ private actor FakeReviewAuthSession: ReviewAuthSession {
     private var cancelledIDs: [String] = []
     private var logoutCalls = 0
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var bufferedNotifications: [AppServerServerNotification] = []
+    private let loginStartedSignal = AsyncSignal()
 
     init(
         readResponses: [AppServerAccountReadResponse],
@@ -592,6 +595,7 @@ private actor FakeReviewAuthSession: ReviewAuthSession {
 
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
         loginParams.append(params)
+        await loginStartedSignal.signal()
         return loginResponse
     }
 
@@ -622,7 +626,11 @@ private actor FakeReviewAuthSession: ReviewAuthSession {
     }
 
     func send(_ notification: AppServerServerNotification) {
-        continuation?.yield(notification)
+        if let continuation {
+            continuation.yield(notification)
+        } else {
+            bufferedNotifications.append(notification)
+        }
     }
 
     func finishNotifications(with error: Error? = nil) {
@@ -650,10 +658,19 @@ private actor FakeReviewAuthSession: ReviewAuthSession {
         logoutCalls
     }
 
+    func waitForLoginStart() async {
+        await loginStartedSignal.wait()
+    }
+
     private func setContinuation(
         _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
     ) {
         self.continuation = continuation
+        let bufferedNotifications = self.bufferedNotifications
+        self.bufferedNotifications.removeAll(keepingCapacity: false)
+        for notification in bufferedNotifications {
+            continuation.yield(notification)
+        }
     }
 }
 
@@ -1012,19 +1029,24 @@ private func withTestTimeout<T: Sendable>(
     }
 }
 
-private func waitUntil(
-    timeout: Duration,
-    interval: Duration = .milliseconds(20),
-    condition: @escaping @Sendable () async throws -> Bool?
+private func waitForFileAppearance(
+    at fileURL: URL,
+    timeout: Duration = .seconds(2)
 ) async throws {
-    let deadline = ContinuousClock.now.advanced(by: timeout)
-    while ContinuousClock.now < deadline {
-        if let matched = try await condition(), matched {
-            return
-        }
-        try await Task.sleep(for: interval)
+    if FileManager.default.fileExists(atPath: fileURL.path) {
+        return
     }
-    throw TestFailure("timed out waiting for condition")
+
+    let monitor = try DirectoryChangeMonitor(directoryURL: fileURL.deletingLastPathComponent())
+    defer { monitor.cancel() }
+
+    try await withTestTimeout(timeout) {
+        var observedEventCount = await monitor.eventCount()
+        while FileManager.default.fileExists(atPath: fileURL.path) == false {
+            await monitor.waitForChange(after: observedEventCount)
+            observedEventCount = await monitor.eventCount()
+        }
+    }
 }
 
 private func makeTemporaryRoot() -> URL {

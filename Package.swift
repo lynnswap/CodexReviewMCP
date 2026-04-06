@@ -13,6 +13,10 @@ let package = Package(
             targets: ["CodexReviewModel"]
         ),
         .library(
+            name: "ReviewTestSupport",
+            targets: ["ReviewTestSupport"]
+        ),
+        .library(
             name: "CodexReviewUI",
             targets: ["CodexReviewUI"]
         ),
@@ -207,7 +211,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewStdioAdapterTests",
-            dependencies: ["ReviewStdioAdapter", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime"],
+            dependencies: ["ReviewStdioAdapter", "ReviewHTTPServer", "ReviewCore", "ReviewJobs", "ReviewRuntime", "ReviewTestSupport"],
             path: "Tests/ReviewStdioAdapterTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -223,7 +227,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CodexReviewUITests",
-            dependencies: ["CodexReviewUI", "CodexReviewModel", "ReviewJobs", "ReviewRuntime"],
+            dependencies: ["CodexReviewUI", "CodexReviewModel", "ReviewJobs", "ReviewRuntime", "ReviewTestSupport"],
             path: "Tests/CodexReviewUITests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

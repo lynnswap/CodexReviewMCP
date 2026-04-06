@@ -17,15 +17,31 @@ package actor AppServerSupervisor: AppServerManaging {
         package var codexCommand: String
         package var environment: [String: String]
         package var startupTimeout: Duration
+        package var clock: any ReviewClock
+
+        package init(
+            codexCommand: String = "codex",
+            environment: [String: String] = ProcessInfo.processInfo.environment,
+            startupTimeout: Duration = .seconds(30),
+            clock: any ReviewClock = ContinuousClock()
+        ) {
+            self.codexCommand = codexCommand
+            self.environment = environment
+            self.startupTimeout = startupTimeout
+            self.clock = clock
+        }
 
         package init(
             codexCommand: String = "codex",
             environment: [String: String] = ProcessInfo.processInfo.environment,
             startupTimeout: Duration = .seconds(30)
         ) {
-            self.codexCommand = codexCommand
-            self.environment = environment
-            self.startupTimeout = startupTimeout
+            self.init(
+                codexCommand: codexCommand,
+                environment: environment,
+                startupTimeout: startupTimeout,
+                clock: ContinuousClock()
+            )
         }
     }
 
@@ -380,7 +396,7 @@ package actor AppServerSupervisor: AppServerManaging {
         let pid = spawnedProcess.pid
 
         guard let startTime = processStartTime(of: pid) else {
-            await terminateSpawnedProcessWithoutIdentity(pid: pid)
+            await terminateSpawnedProcessWithoutIdentity(pid: pid, clock: configuration.clock)
             throw ReviewError.spawnFailed("app-server started without a readable process start time.")
         }
 
@@ -389,7 +405,8 @@ package actor AppServerSupervisor: AppServerManaging {
             await terminateFailedSpawnedProcess(
                 processIdentity: processIdentity,
                 processGroupLeaderPID: pid,
-                signalDedicatedProcessGroup: false
+                signalDedicatedProcessGroup: false,
+                clock: configuration.clock
             )
             throw ReviewError.spawnFailed("app-server did not enter its dedicated process group.")
         }
@@ -570,7 +587,7 @@ package actor AppServerSupervisor: AppServerManaging {
                     )
                 }
                 group.addTask {
-                    try await Task.sleep(for: self.configuration.startupTimeout)
+                    try await self.configuration.clock.sleep(for: self.configuration.startupTimeout)
                     throw ReviewError.spawnFailed("timed out waiting for app-server initialization.")
                 }
                 defer { group.cancelAll() }
@@ -635,7 +652,8 @@ package actor AppServerSupervisor: AppServerManaging {
             connection: startContext.connection,
             waitTask: startContext.waitTask,
             stdoutTask: startContext.stdoutTask,
-            stderrTask: startContext.stderrTask
+            stderrTask: startContext.stderrTask,
+            clock: configuration.clock
         )
     }
 
@@ -647,7 +665,8 @@ package actor AppServerSupervisor: AppServerManaging {
             connection: runtimeContext.connection,
             waitTask: runtimeContext.waitTask,
             stdoutTask: runtimeContext.stdoutTask,
-            stderrTask: runtimeContext.stderrTask
+            stderrTask: runtimeContext.stderrTask,
+            clock: configuration.clock
         )
     }
 }
@@ -806,7 +825,8 @@ private func terminateManagedRuntime(
     connection: AppServerSharedTransportConnection,
     waitTask: Task<Void, Never>,
     stdoutTask: Task<Void, Never>,
-    stderrTask: Task<Void, Never>
+    stderrTask: Task<Void, Never>,
+    clock: any ReviewClock
 ) async {
     await connection.shutdown()
     let excludedGroupLeaderPIDs = trackedGroupExclusionSet(
@@ -835,8 +855,8 @@ private func terminateManagedRuntime(
     signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
     signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
 
-    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-    while ContinuousClock.now < deadline {
+    let deadline = clock.now.advanced(by: .seconds(2))
+    while clock.now < deadline {
         trackedChildGroupIdentities = mergeProcessIdentities(
             trackedChildGroupIdentities,
             descendantProcessGroupIdentities(
@@ -864,7 +884,7 @@ private func terminateManagedRuntime(
         }
         signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
         signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
-        try? await Task.sleep(for: .milliseconds(100))
+        try? await clock.sleep(for: .milliseconds(100))
     }
 
     trackedChildGroupIdentities = mergeProcessIdentities(
@@ -909,7 +929,8 @@ private func terminateManagedRuntime(
 private func terminateFailedSpawnedProcess(
     processIdentity: ProcessIdentity,
     processGroupLeaderPID: pid_t,
-    signalDedicatedProcessGroup: Bool
+    signalDedicatedProcessGroup: Bool,
+    clock: any ReviewClock
 ) async {
     let excludedGroupLeaderPIDs: Set<pid_t> =
         signalDedicatedProcessGroup && processGroupLeaderPID > 0 ? [processGroupLeaderPID] : []
@@ -930,8 +951,8 @@ private func terminateFailedSpawnedProcess(
     signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
     signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
 
-    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-    while ContinuousClock.now < deadline {
+    let deadline = clock.now.advanced(by: .seconds(2))
+    while clock.now < deadline {
         trackedChildGroupIdentities = mergeProcessIdentities(
             trackedChildGroupIdentities,
             descendantProcessGroupIdentities(
@@ -957,7 +978,7 @@ private func terminateFailedSpawnedProcess(
         }
         signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
         signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
-        try? await Task.sleep(for: .milliseconds(100))
+        try? await clock.sleep(for: .milliseconds(100))
     }
 
     trackedChildGroupIdentities = mergeProcessIdentities(
@@ -1202,16 +1223,19 @@ private func reapSpawnedProcess(pid: pid_t) {
     }
 }
 
-private func terminateSpawnedProcessWithoutIdentity(pid: pid_t) async {
+private func terminateSpawnedProcessWithoutIdentity(
+    pid: pid_t,
+    clock: any ReviewClock
+) async {
     var status: Int32 = 0
     _ = kill(pid, SIGTERM)
-    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-    while ContinuousClock.now < deadline {
+    let deadline = clock.now.advanced(by: .seconds(2))
+    while clock.now < deadline {
         let result = waitpid(pid, &status, WNOHANG)
         if result == pid || (result == -1 && errno == ECHILD) {
             return
         }
-        try? await Task.sleep(for: .milliseconds(100))
+        try? await clock.sleep(for: .milliseconds(100))
     }
     _ = kill(pid, SIGKILL)
     reapSpawnedProcess(pid: pid)
