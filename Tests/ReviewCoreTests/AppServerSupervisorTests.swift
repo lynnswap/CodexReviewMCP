@@ -31,87 +31,11 @@ struct AppServerSupervisorTests {
         #expect(result.trailingFragment == "partial")
     }
 
-    @Test func isolatedCodexHomeConfigRemovesCodexReviewServerSection() {
-        let original = """
-        model = "gpt-5.4"
-
-        [mcp_servers.github]
-        url = "https://example.com/github"
-
-        [mcp_servers.codex_review]
-        url = "http://localhost:9417/mcp"
-        startup_timeout_sec = 2400.0
-        tool_timeout_sec = 2400.0
-
-        [notice]
-        hide_full_access_warning = true
-        """
-
-        let filtered = isolatedCodexHomeConfigText(from: original)
-
-        #expect(filtered.contains("[mcp_servers.github]"))
-        #expect(filtered.contains("https://example.com/github"))
-        #expect(filtered.contains("[notice]"))
-        #expect(filtered.contains("hide_full_access_warning = true"))
-        #expect(filtered.contains("[mcp_servers.codex_review]") == false)
-        #expect(filtered.contains("startup_timeout_sec = 2400.0") == false)
-        #expect(filtered.contains("tool_timeout_sec = 2400.0") == false)
-    }
-
-    @Test func isolatedCodexHomeConfigLeavesConfigUntouchedWhenCodexReviewSectionIsMissing() {
-        let original = """
-        model = "gpt-5.4"
-
-        [mcp_servers.github]
-        url = "https://example.com/github"
-        """
-
-        let filtered = isolatedCodexHomeConfigText(from: original)
-
-        #expect(filtered.contains("[mcp_servers.github]"))
-        #expect(filtered.contains("[mcp_servers.codex_review]") == false)
-        #expect(filtered.contains("enabled = false") == false)
-    }
-
-    @Test func isolatedCodexHomeConfigRemovesLiteralQuotedCodexReviewSection() {
-        let original = """
-        model = "gpt-5.4"
-
-        [mcp_servers.'codex_review']
-        url = "http://localhost:9417/mcp"
-
-        [mcp_servers.github]
-        url = "https://example.com/github"
-        """
-
-        let filtered = isolatedCodexHomeConfigText(from: original)
-
-        #expect(filtered.contains("[mcp_servers.'codex_review']") == false)
-        #expect(filtered.contains("http://localhost:9417/mcp") == false)
-        #expect(filtered.contains("[mcp_servers.github]"))
-    }
-
-    @Test func isolatedCodexHomeConfigRemovesCodexReviewSectionWithTrailingComment() {
-        let original = """
-        [mcp_servers.codex_review] # local review bridge
-        url = "http://localhost:9417/mcp"
-
-        [mcp_servers.github]
-        url = "https://example.com/github"
-        """
-
-        let filtered = isolatedCodexHomeConfigText(from: original)
-
-        #expect(filtered.contains("[mcp_servers.codex_review]") == false)
-        #expect(filtered.contains("http://localhost:9417/mcp") == false)
-        #expect(filtered.contains("[mcp_servers.github]"))
-    }
-
-    @Test func prepareIsolatedCodexHomeCopiesDedicatedHomeAndSkipsManagedFiles() throws {
-        let homeURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AppServerSupervisorSeed-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
+    @Test func prepareUsesReviewHomeDirectlyWithoutCreatingIsolatedCopy() async throws {
+        let environment = try makeSupervisorEnvironment()
+        let homeURL = URL(fileURLWithPath: try #require(environment["HOME"]))
         let reviewHomeURL = homeURL.appendingPathComponent(".codex_review", isDirectory: true)
+        let capturedCodexHomeURL = homeURL.appendingPathComponent("captured-codex-home.txt")
         try FileManager.default.createDirectory(at: reviewHomeURL, withIntermediateDirectories: true)
 
         try """
@@ -119,92 +43,52 @@ struct AppServerSupervisorTests {
 
         [mcp_servers.codex_review]
         url = "http://localhost:9417/mcp"
+        startup_timeout_sec = 2400.0
+        tool_timeout_sec = 2400.0
         """.write(
             to: reviewHomeURL.appendingPathComponent("config.toml"),
             atomically: true,
             encoding: .utf8
         )
-        try "review instructions".write(
-            to: reviewHomeURL.appendingPathComponent("AGENTS.md"),
-            atomically: true,
-            encoding: .utf8
-        )
-        try "auth".write(
-            to: reviewHomeURL.appendingPathComponent("auth.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-        try "cache".write(
-            to: reviewHomeURL.appendingPathComponent("models_cache.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-        try "managed".write(
-            to: reviewHomeURL.appendingPathComponent("review_mcp_endpoint.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-        try "legacy".write(
-            to: reviewHomeURL.appendingPathComponent("endpoint.json"),
-            atomically: true,
-            encoding: .utf8
-        )
-        try "legacy token".write(
-            to: reviewHomeURL.appendingPathComponent("app-server-ws-token-legacy"),
-            atomically: true,
-            encoding: .utf8
-        )
 
-        let isolatedURL = try prepareIsolatedCodexHome(
-            launchID: UUID(),
-            environment: ["HOME": homeURL.path]
+        let commandURL = try makeFakeSupervisorCommand(
+            respondsToInitialize: true,
+            codexHomeCaptureURL: capturedCodexHomeURL
         )
-        defer { try? FileManager.default.removeItem(at: homeURL) }
+        let supervisor = AppServerSupervisor(
+            configuration: .init(
+                codexCommand: commandURL.path,
+                environment: environment,
+                startupTimeout: .seconds(1)
+            )
+        )
+        do {
+            _ = try await supervisor.prepare()
 
-        #expect(FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("AGENTS.md").path))
-        #expect(FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("auth.json").path))
-        #expect(FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("models_cache.json").path))
-        #expect(
-            FileManager.default.fileExists(
-                atPath: isolatedURL.appendingPathComponent("review_mcp_endpoint.json").path
-            ) == false
-        )
-        #expect(
-            FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("endpoint.json").path)
-                == false
-        )
-        #expect(
-            FileManager.default.fileExists(
-                atPath: isolatedURL.appendingPathComponent("app-server-ws-token-legacy").path
-            ) == false
-        )
+            let capturedCodexHome = try String(contentsOf: capturedCodexHomeURL, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(capturedCodexHome == reviewHomeURL.path)
 
-        let configText = try String(
-            contentsOf: isolatedURL.appendingPathComponent("config.toml"),
-            encoding: .utf8
-        )
-        #expect(configText.contains("[mcp_servers.codex_review]") == false)
-        #expect(configText.contains("model = \"gpt-5.4\""))
-    }
+            let configText = try String(
+                contentsOf: reviewHomeURL.appendingPathComponent("config.toml"),
+                encoding: .utf8
+            )
+            #expect(configText.contains("[mcp_servers.codex_review]"))
+            #expect(configText.contains("startup_timeout_sec = 2400.0"))
+            #expect(configText.contains("tool_timeout_sec = 2400.0"))
 
-    @Test func prepareIsolatedCodexHomeLeavesAuthMissingWhenDedicatedHomeIsUnauthenticated() throws {
-        let homeURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AppServerSupervisorUnauth-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: homeURL, withIntermediateDirectories: true)
-        let reviewHomeURL = homeURL.appendingPathComponent(".codex_review", isDirectory: true)
-        try ReviewHomePaths.ensureReviewHomeScaffold(at: reviewHomeURL)
+            let reviewHomeContents = try FileManager.default.contentsOfDirectory(atPath: reviewHomeURL.path)
+            #expect(reviewHomeContents.contains("config.toml"))
+            #expect(reviewHomeContents.contains("AGENTS.md"))
+            #expect(reviewHomeContents.contains { $0.hasPrefix("review_mcp_app_server_codex_home-") } == false)
+        } catch {
+            await supervisor.shutdown()
+            try? FileManager.default.removeItem(at: commandURL)
+            throw error
+        }
 
-        let isolatedURL = try prepareIsolatedCodexHome(
-            launchID: UUID(),
-            environment: ["HOME": homeURL.path]
-        )
-        defer { try? FileManager.default.removeItem(at: homeURL) }
-
-        #expect(FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("config.toml").path))
-        #expect(
-            FileManager.default.fileExists(atPath: isolatedURL.appendingPathComponent("auth.json").path)
-                == false
-        )
+        await supervisor.shutdown()
+        try? FileManager.default.removeItem(at: commandURL)
     }
 
     @Test func sharedTransportInitializeCompletesOverMockedStdio() async throws {
@@ -623,6 +507,7 @@ private func makeSupervisorEnvironment() throws -> [String: String] {
 private func makeFakeSupervisorCommand(
     respondsToInitialize: Bool,
     pidFileURL: URL? = nil,
+    codexHomeCaptureURL: URL? = nil,
     autoExitSeconds: Double? = nil,
     configResponseCharacterCount: Int? = nil,
     responseChunkSize: Int? = nil,
@@ -631,6 +516,7 @@ private func makeFakeSupervisorCommand(
     let scriptURL = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: false)
     let pidFileLiteral = pythonLiteral(pidFileURL?.path)
+    let codexHomeCaptureLiteral = pythonLiteral(codexHomeCaptureURL?.path)
     let respondsToInitializeLiteral = respondsToInitialize ? "True" : "False"
     let autoExitSecondsLiteral = autoExitSeconds.map { String(describing: $0) } ?? "None"
     let configResponseCharacterCountLiteral = configResponseCharacterCount.map(String.init) ?? "None"
@@ -645,6 +531,7 @@ private func makeFakeSupervisorCommand(
     import time
 
     pid_file = \(pidFileLiteral)
+    codex_home_capture_file = \(codexHomeCaptureLiteral)
     responds_to_initialize = \(respondsToInitializeLiteral)
     auto_exit_seconds = \(autoExitSecondsLiteral)
     config_response_character_count = \(configResponseCharacterCountLiteral)
@@ -654,6 +541,10 @@ private func makeFakeSupervisorCommand(
     if pid_file is not None:
         with open(pid_file, "w", encoding="utf-8") as handle:
             handle.write(str(os.getpid()))
+
+    if codex_home_capture_file is not None:
+        with open(codex_home_capture_file, "w", encoding="utf-8") as handle:
+            handle.write(os.environ.get("CODEX_HOME", ""))
 
     args = sys.argv[1:]
     while len(args) >= 2 and args[0] == "-c":

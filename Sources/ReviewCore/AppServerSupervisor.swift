@@ -41,7 +41,6 @@ package actor AppServerSupervisor: AppServerManaging {
         let waitTask: Task<Void, Never>
         let stdoutTask: Task<Void, Never>
         let stderrTask: Task<Void, Never>
-        let isolatedCodexHomeURL: URL?
         let dedicatedProcessGroupEstablished: Bool
         var startupTask: Task<Void, Never>?
 
@@ -57,7 +56,6 @@ package actor AppServerSupervisor: AppServerManaging {
             waitTask: Task<Void, Never>,
             stdoutTask: Task<Void, Never>,
             stderrTask: Task<Void, Never>,
-            isolatedCodexHomeURL: URL?,
             dedicatedProcessGroupEstablished: Bool
         ) {
             self.launchID = launchID
@@ -71,7 +69,6 @@ package actor AppServerSupervisor: AppServerManaging {
             self.waitTask = waitTask
             self.stdoutTask = stdoutTask
             self.stderrTask = stderrTask
-            self.isolatedCodexHomeURL = isolatedCodexHomeURL
             self.dedicatedProcessGroupEstablished = dedicatedProcessGroupEstablished
         }
     }
@@ -94,7 +91,6 @@ package actor AppServerSupervisor: AppServerManaging {
         let waitTask: Task<Void, Never>
         let stdoutTask: Task<Void, Never>
         let stderrTask: Task<Void, Never>
-        let isolatedCodexHomeURL: URL?
         let dedicatedProcessGroupEstablished: Bool
         var exitMonitorTask: Task<Void, Never>?
 
@@ -107,7 +103,6 @@ package actor AppServerSupervisor: AppServerManaging {
             self.waitTask = startContext.waitTask
             self.stdoutTask = startContext.stdoutTask
             self.stderrTask = startContext.stderrTask
-            self.isolatedCodexHomeURL = startContext.isolatedCodexHomeURL
             self.dedicatedProcessGroupEstablished = startContext.dedicatedProcessGroupEstablished
         }
     }
@@ -366,87 +361,82 @@ package actor AppServerSupervisor: AppServerManaging {
             finishDiagnosticSubscribers()
         }
         await runtimeContext.connection.shutdown()
-        removeIsolatedCodexHome(runtimeContext.isolatedCodexHomeURL)
     }
 
     private func makeStartContext(launchID: UUID) async throws -> StartContext {
-        let isolatedCodexHomeURL = try prepareIsolatedCodexHome(
-            launchID: launchID,
+        try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
+        // Intentionally use ~/.codex_review directly for app-server.
+        // We no longer create a per-launch isolated CODEX_HOME or strip codex_review from config.
+        let codexHomeURL = ReviewHomePaths.codexHomeURL(
             environment: configuration.environment
         )
 
-        do {
-            let launchCommand = try makeAppServerLaunchCommand(
-                codexCommand: configuration.codexCommand,
-                environment: configuration.environment,
-                isolatedCodexHomeURL: isolatedCodexHomeURL
-            )
-            let spawnedProcess = try spawnAppServerProcess(launchCommand)
-            let pid = spawnedProcess.pid
+        let launchCommand = try makeAppServerLaunchCommand(
+            codexCommand: configuration.codexCommand,
+            environment: configuration.environment,
+            codexHomeURL: codexHomeURL
+        )
+        let spawnedProcess = try spawnAppServerProcess(launchCommand)
+        let pid = spawnedProcess.pid
 
-            guard let startTime = processStartTime(of: pid) else {
-                await terminateSpawnedProcessWithoutIdentity(pid: pid)
-                throw ReviewError.spawnFailed("app-server started without a readable process start time.")
-            }
-
-            let processIdentity = ProcessIdentity(pid: pid, startTime: startTime)
-            guard currentProcessGroupID(of: pid) == pid else {
-                await terminateFailedSpawnedProcess(
-                    processIdentity: processIdentity,
-                    processGroupLeaderPID: pid,
-                    signalDedicatedProcessGroup: false
-                )
-                throw ReviewError.spawnFailed("app-server did not enter its dedicated process group.")
-            }
-
-            let waitTask = Task.detached { @Sendable in
-                reapSpawnedProcess(pid: pid)
-            }
-            let runtimeState = AppServerRuntimeState(
-                pid: Int(pid),
-                startTime: startTime,
-                processGroupLeaderPID: Int(pid),
-                processGroupLeaderStartTime: startTime
-            )
-            let processGroupIdentity = ProcessIdentity(pid: pid, startTime: startTime)
-            let connection = AppServerSharedTransportConnection(
-                sendMessage: { message in
-                    guard let data = message.data(using: .utf8) else {
-                        throw ReviewError.io("failed to encode stdio payload as UTF-8.")
-                    }
-                    try spawnedProcess.stdinPipe.fileHandleForWriting.write(contentsOf: data)
-                },
-                closeInput: {
-                    try? spawnedProcess.stdinPipe.fileHandleForWriting.close()
-                }
-            )
-            let stdoutTask = startCapturingStandardOutput(
-                handle: spawnedProcess.stdoutPipe.fileHandleForReading,
-                connection: connection
-            )
-            let stderrTask = startCapturingStandardError(
-                handle: spawnedProcess.stderrPipe.fileHandleForReading
-            )
-
-            return StartContext(
-                launchID: launchID,
-                processIdentity: processIdentity,
-                processGroupIdentity: processGroupIdentity,
-                runtimeState: runtimeState,
-                stdinPipe: spawnedProcess.stdinPipe,
-                stdoutPipe: spawnedProcess.stdoutPipe,
-                stderrPipe: spawnedProcess.stderrPipe,
-                connection: connection,
-                waitTask: waitTask,
-                stdoutTask: stdoutTask,
-                stderrTask: stderrTask,
-                isolatedCodexHomeURL: isolatedCodexHomeURL,
-                dedicatedProcessGroupEstablished: true
-            )
-        } catch {
-            removeIsolatedCodexHome(isolatedCodexHomeURL)
-            throw error
+        guard let startTime = processStartTime(of: pid) else {
+            await terminateSpawnedProcessWithoutIdentity(pid: pid)
+            throw ReviewError.spawnFailed("app-server started without a readable process start time.")
         }
+
+        let processIdentity = ProcessIdentity(pid: pid, startTime: startTime)
+        guard currentProcessGroupID(of: pid) == pid else {
+            await terminateFailedSpawnedProcess(
+                processIdentity: processIdentity,
+                processGroupLeaderPID: pid,
+                signalDedicatedProcessGroup: false
+            )
+            throw ReviewError.spawnFailed("app-server did not enter its dedicated process group.")
+        }
+
+        let waitTask = Task.detached { @Sendable in
+            reapSpawnedProcess(pid: pid)
+        }
+        let runtimeState = AppServerRuntimeState(
+            pid: Int(pid),
+            startTime: startTime,
+            processGroupLeaderPID: Int(pid),
+            processGroupLeaderStartTime: startTime
+        )
+        let processGroupIdentity = ProcessIdentity(pid: pid, startTime: startTime)
+        let connection = AppServerSharedTransportConnection(
+            sendMessage: { message in
+                guard let data = message.data(using: .utf8) else {
+                    throw ReviewError.io("failed to encode stdio payload as UTF-8.")
+                }
+                try spawnedProcess.stdinPipe.fileHandleForWriting.write(contentsOf: data)
+            },
+            closeInput: {
+                try? spawnedProcess.stdinPipe.fileHandleForWriting.close()
+            }
+        )
+        let stdoutTask = startCapturingStandardOutput(
+            handle: spawnedProcess.stdoutPipe.fileHandleForReading,
+            connection: connection
+        )
+        let stderrTask = startCapturingStandardError(
+            handle: spawnedProcess.stderrPipe.fileHandleForReading
+        )
+
+        return StartContext(
+            launchID: launchID,
+            processIdentity: processIdentity,
+            processGroupIdentity: processGroupIdentity,
+            runtimeState: runtimeState,
+            stdinPipe: spawnedProcess.stdinPipe,
+            stdoutPipe: spawnedProcess.stdoutPipe,
+            stderrPipe: spawnedProcess.stderrPipe,
+            connection: connection,
+            waitTask: waitTask,
+            stdoutTask: stdoutTask,
+            stderrTask: stderrTask,
+            dedicatedProcessGroupEstablished: true
+        )
     }
 
     private func startCapturingStandardOutput(
@@ -637,13 +627,6 @@ package actor AppServerSupervisor: AppServerManaging {
         continuation.finish()
     }
 
-    private func removeIsolatedCodexHome(_ url: URL?) {
-        guard let url else {
-            return
-        }
-        try? FileManager.default.removeItem(at: url)
-    }
-
     private func terminateStartContext(_ startContext: StartContext) async {
         await terminateManagedRuntime(
             processIdentity: startContext.processIdentity,
@@ -652,8 +635,7 @@ package actor AppServerSupervisor: AppServerManaging {
             connection: startContext.connection,
             waitTask: startContext.waitTask,
             stdoutTask: startContext.stdoutTask,
-            stderrTask: startContext.stderrTask,
-            isolatedCodexHomeURL: startContext.isolatedCodexHomeURL
+            stderrTask: startContext.stderrTask
         )
     }
 
@@ -665,8 +647,7 @@ package actor AppServerSupervisor: AppServerManaging {
             connection: runtimeContext.connection,
             waitTask: runtimeContext.waitTask,
             stdoutTask: runtimeContext.stdoutTask,
-            stderrTask: runtimeContext.stderrTask,
-            isolatedCodexHomeURL: runtimeContext.isolatedCodexHomeURL
+            stderrTask: runtimeContext.stderrTask
         )
     }
 }
@@ -704,7 +685,7 @@ private struct SpawnedAppServerProcess {
 private func makeAppServerLaunchCommand(
     codexCommand: String,
     environment: [String: String],
-    isolatedCodexHomeURL: URL?
+    codexHomeURL: URL
 ) throws -> AppServerLaunchCommand {
     guard let resolvedExecutable = resolveCodexCommand(
         requestedCommand: codexCommand,
@@ -717,9 +698,7 @@ private func makeAppServerLaunchCommand(
     }
 
     var effectiveEnvironment = environment
-    if let isolatedCodexHomeURL {
-        effectiveEnvironment["CODEX_HOME"] = isolatedCodexHomeURL.path
-    }
+    effectiveEnvironment["CODEX_HOME"] = codexHomeURL.path
 
     return AppServerLaunchCommand(
         executable: resolvedExecutable,
@@ -827,8 +806,7 @@ private func terminateManagedRuntime(
     connection: AppServerSharedTransportConnection,
     waitTask: Task<Void, Never>,
     stdoutTask: Task<Void, Never>,
-    stderrTask: Task<Void, Never>,
-    isolatedCodexHomeURL: URL?
+    stderrTask: Task<Void, Never>
 ) async {
     await connection.shutdown()
     let excludedGroupLeaderPIDs = trackedGroupExclusionSet(
@@ -926,9 +904,6 @@ private func terminateManagedRuntime(
     _ = await waitTask.result
     _ = await stdoutTask.value
     _ = await stderrTask.value
-    if let isolatedCodexHomeURL {
-        try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
-    }
 }
 
 private func terminateFailedSpawnedProcess(
@@ -1262,83 +1237,4 @@ private func allocateCStringArray(
         }
         throw error
     }
-}
-
-package func prepareIsolatedCodexHome(
-    launchID: UUID,
-    environment: [String: String]
-) throws -> URL {
-    try ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
-    let isolatedCodexHomeURL = ReviewHomePaths.appServerCodexHomeURL(
-        launchID: launchID,
-        environment: environment
-    )
-    let sourceCodexHomeURL = ReviewHomePaths.codexHomeURL(environment: environment)
-    let fileManager = FileManager.default
-    if fileManager.fileExists(atPath: isolatedCodexHomeURL.path) {
-        try fileManager.removeItem(at: isolatedCodexHomeURL)
-    }
-    try fileManager.createDirectory(at: isolatedCodexHomeURL, withIntermediateDirectories: true)
-
-    let sourceConfigURL = ReviewHomePaths.codexConfigURL(
-        environment: environment,
-        codexHome: sourceCodexHomeURL
-    )
-    let isolatedConfigURL = isolatedCodexHomeURL.appendingPathComponent("config.toml")
-    let configText = try String(contentsOf: sourceConfigURL, encoding: .utf8)
-    let filteredConfigText = isolatedCodexHomeConfigText(from: configText)
-    try filteredConfigText.write(
-        to: isolatedConfigURL,
-        atomically: true,
-        encoding: .utf8
-    )
-    guard fileManager.fileExists(atPath: isolatedConfigURL.path) else {
-        throw ReviewError.io("failed to materialize config.toml in isolated Codex home.")
-    }
-
-    for sourceURL in try fileManager.contentsOfDirectory(
-        at: sourceCodexHomeURL,
-        includingPropertiesForKeys: nil,
-        options: []
-    ) {
-        let filename = sourceURL.lastPathComponent
-        guard ReviewHomePaths.shouldExcludeFromAppServerSeed(name: filename) == false else {
-            continue
-        }
-        let destinationURL = isolatedCodexHomeURL.appendingPathComponent(filename)
-        if filename == "config.toml" {
-            continue
-        }
-        try fileManager.copyItem(at: sourceURL, to: destinationURL)
-    }
-
-    return isolatedCodexHomeURL
-}
-
-package func isolatedCodexHomeConfigText(from configText: String) -> String {
-    let lines = configText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-    var keptLines: [String] = []
-    var inCodexReviewSection = false
-
-    for line in lines {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("["),
-           let closingBracketIndex = trimmed.firstIndex(of: "]")
-        {
-            let sectionName = String(trimmed[trimmed.index(after: trimmed.startIndex)..<closingBracketIndex])
-            inCodexReviewSection = sectionName == "mcp_servers.codex_review"
-                || sectionName == "mcp_servers.\"codex_review\""
-                || sectionName == "mcp_servers.'codex_review'"
-            if inCodexReviewSection {
-                continue
-            }
-        }
-
-        if inCodexReviewSection {
-            continue
-        }
-        keptLines.append(line)
-    }
-
-    return keptLines.joined(separator: "\n")
 }
