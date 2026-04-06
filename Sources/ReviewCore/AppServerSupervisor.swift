@@ -78,21 +78,16 @@ package actor AppServerSupervisor: AppServerManaging {
     }
 
     package func prepare() async throws -> AppServerRuntimeState {
-        appServerSupervisorDebug("prepare begin")
         return try await ensureRunning().runtimeState
     }
 
     package func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
-        appServerSupervisorDebug("checkoutTransport begin")
         let running = try await ensureRunning()
-        appServerSupervisorDebug("checkoutTransport ready pid=\(running.runtimeState.pid)")
         return await running.connection.checkoutTransport()
     }
 
     package func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
-        appServerSupervisorDebug("checkoutAuthTransport begin")
         let running = try await ensureRunning()
-        appServerSupervisorDebug("checkoutAuthTransport ready pid=\(running.runtimeState.pid)")
         return await running.connection.checkoutTransport()
     }
 
@@ -166,7 +161,6 @@ package actor AppServerSupervisor: AppServerManaging {
     private func ensureRunning() async throws -> RunningProcess {
         switch state {
         case .running(let running):
-            appServerSupervisorDebug("ensureRunning state=running pid=\(running.runtimeState.pid)")
             let identity = ProcessIdentity(
                 pid: pid_t(running.runtimeState.pid),
                 startTime: running.runtimeState.startTime
@@ -181,10 +175,8 @@ package actor AppServerSupervisor: AppServerManaging {
             await terminateRunningProcess(running)
             return try await ensureRunning()
         case .starting:
-            appServerSupervisorDebug("ensureRunning state=starting")
             return try await waitForRunning()
         case .stopped:
-            appServerSupervisorDebug("ensureRunning state=stopped launch")
             let launchID = UUID()
             state = .starting(launchID, [])
             lifetimeTask = Task.detached { [weak self] in
@@ -259,24 +251,8 @@ package actor AppServerSupervisor: AppServerManaging {
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
 
-            appServerSupervisorDebug("launchProcessBackground process.run begin executable=\(launchCommand.executable)")
-            let launchHome = launchCommand.environment["HOME"] ?? "nil"
-            let launchCodexHome = launchCommand.environment["CODEX_HOME"] ?? "nil"
-            let launchFixedHome = launchCommand.environment["CFFIXED_USER_HOME"] ?? "nil"
-            let launchXPCServiceName = launchCommand.environment["XPC_SERVICE_NAME"] ?? "nil"
-            let launchOSActivityDTMode = launchCommand.environment["OS_ACTIVITY_DT_MODE"] ?? "nil"
-            let launchTerm = launchCommand.environment["TERM"] ?? "nil"
-            appServerSupervisorDebug(
-                "launchProcessBackground env HOME=\(launchHome) " +
-                "CODEX_HOME=\(launchCodexHome) " +
-                "CFFIXED_USER_HOME=\(launchFixedHome) " +
-                "XPC_SERVICE_NAME=\(launchXPCServiceName) " +
-                "OS_ACTIVITY_DT_MODE=\(launchOSActivityDTMode) " +
-                "TERM=\(launchTerm)"
-            )
             try process.run()
             let pid = process.processIdentifier
-            appServerSupervisorDebug("launchProcessBackground process.run pid=\(pid)")
             guard let startTime = processStartTime(of: pid_t(pid)) else {
                 process.terminate()
                 throw ReviewError.spawnFailed("app-server started without a readable process start time.")
@@ -343,7 +319,6 @@ package actor AppServerSupervisor: AppServerManaging {
                     isolatedCodexHomeURL: isolatedCodexHomeURL
                 )
             } catch {
-                appServerSupervisorDebug("launchProcessBackground failed after spawn error=\(error.localizedDescription)")
                 await connection.shutdown()
                 await self.terminateStartingProcess(runtimeState: runtimeState)
                 _ = await stdoutTask.value
@@ -458,7 +433,6 @@ package actor AppServerSupervisor: AppServerManaging {
     private func appendStandardErrorLines(_ lines: [String]) {
         stderrLines.append(contentsOf: lines)
         for line in lines {
-            fputs("[codex-review-mcp.app-server.stderr] \(line)\n", stderr)
             for continuation in diagnosticSubscribers.values {
                 continuation.yield(line)
             }
@@ -475,9 +449,6 @@ package actor AppServerSupervisor: AppServerManaging {
         }.filter { $0.isEmpty == false }
         guard normalizedLines.isEmpty == false else {
             return
-        }
-        for line in normalizedLines {
-            fputs("[codex-review-mcp.app-server.stdout] \(line)\n", stderr)
         }
         appendDiagnosticTailLines(normalizedLines.map { "stdout: \($0)" })
     }
@@ -496,13 +467,11 @@ package actor AppServerSupervisor: AppServerManaging {
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
-                    appServerSupervisorDebug("waitUntilInitialized initialize begin pid=\(processIdentity.pid)")
                     _ = try await connection.initialize(
                         clientName: codexReviewMCPName,
                         clientTitle: "Codex Review MCP",
                         clientVersion: codexReviewMCPVersion
                     )
-                    appServerSupervisorDebug("waitUntilInitialized initialize completed pid=\(processIdentity.pid)")
                 }
                 group.addTask {
                     try await Task.sleep(for: self.configuration.startupTimeout)
@@ -790,15 +759,6 @@ private func isSupervisorProcessGroupAlive(_ identity: ProcessIdentity) -> Bool 
     return true
 }
 
-private func logAppServerStandardOutputLine(_ data: Data) {
-    let text = String(decoding: data, as: UTF8.self)
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    guard text.isEmpty == false else {
-        return
-    }
-    fputs("[codex-review-mcp.app-server.stdout] \(text)\n", stderr)
-}
-
 private func descendantProcessGroupIdentities(
     rootPID: pid_t,
     excludingGroupLeaderPID: pid_t
@@ -848,11 +808,6 @@ private func hasLiveSupervisorChildGroups(_ identities: [ProcessIdentity]) -> Bo
     Set(identities).contains { identity in
         isSupervisorProcessGroupAlive(identity)
     }
-}
-
-private func appServerSupervisorDebug(_ message: String) {
-    let timestamp = ISO8601DateFormatter().string(from: Date())
-    fputs("[codex-review-mcp.supervisor] \(timestamp) \(message)\n", stderr)
 }
 
 private extension NSLock {

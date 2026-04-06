@@ -226,7 +226,6 @@ package struct AppServerReviewRunner: Sendable {
         requestedTerminationReason: @escaping @Sendable () async -> ReviewTerminationReason?,
         onUnrecoverableTransportFailure: @escaping @Sendable () async -> Void = {}
     ) async throws -> ReviewProcessOutcome {
-        appServerReviewRunnerDebug("run started")
         let settings = try settingsBuilder.build(request: request)
         let request = settings.request
         var effectiveModel: String? = resolvedModelHint
@@ -375,7 +374,6 @@ package struct AppServerReviewRunner: Sendable {
         }
 
         if let cancellationReason = await cancellationReason(requestedTerminationReason: requestedTerminationReason) {
-            appServerReviewRunnerDebug("cleanupThread before review/start because cancellation was requested")
             await cleanupThread(session: session, threadID: threadResponse.thread.id)
             await onEvent(.progress(.completed, "Review cancelled."))
             return cancelledOutcome(
@@ -420,7 +418,6 @@ package struct AppServerReviewRunner: Sendable {
         var threadUnavailableGraceTask: Task<Void, Never>?
         var transportDisconnectGraceTask: Task<Void, Never>?
         var pendingTransportDisconnectReason: String?
-        var transportDisconnectObservedAt: Date?
 
         func stopSignalSources() async {
             threadUnavailableGraceTask?.cancel()
@@ -512,7 +509,6 @@ package struct AppServerReviewRunner: Sendable {
         func noteTransportDisconnect(reason: String) {
             if pendingTransportDisconnectReason == nil {
                 pendingTransportDisconnectReason = reason
-                transportDisconnectObservedAt = Date()
             }
             scheduleTransportDisconnectGraceTask()
         }
@@ -594,7 +590,6 @@ package struct AppServerReviewRunner: Sendable {
                 let endedAt = Date()
                 let interruptFailure = "Failed to interrupt review: \(error.localizedDescription)"
                 await onEvent(.failed(interruptFailure))
-                appServerReviewRunnerDebug("cleanupThread because turn/interrupt failed: \(error.localizedDescription)")
                 await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
                 await onUnrecoverableTransportFailure()
                 let finalSnapshot = await state.snapshot()
@@ -664,7 +659,6 @@ package struct AppServerReviewRunner: Sendable {
         }
         let reviewThreadID = reviewResponse.reviewThreadID
         let turnID = reviewResponse.turn.id
-        appServerReviewRunnerDebug("review/start succeeded: \(reviewThreadID)")
         await state.markReviewStarted(
             reviewThreadID: reviewThreadID,
             threadID: threadResponse.thread.id,
@@ -757,7 +751,6 @@ package struct AppServerReviewRunner: Sendable {
                    let cancellationReasonValue
                 {
                     let endedAt = Date()
-                    appServerReviewRunnerDebug("cleanupThread while awaiting interrupt resolution because turn stayed inProgress")
                     await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
                     await onUnrecoverableTransportFailure()
                     let finalSnapshot = await state.snapshot()
@@ -825,7 +818,6 @@ package struct AppServerReviewRunner: Sendable {
                     }
 
                     let endedAt = Date()
-                    appServerReviewRunnerDebug("cleanupThread after terminal turn status \(turnStatus.rawValue)")
                     await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
                     let finalSnapshot = await state.snapshot()
                     if pendingTransportDisconnectReason != nil {
@@ -872,7 +864,6 @@ package struct AppServerReviewRunner: Sendable {
                         }
                         guard let review = finalSnapshot.finalReview?.nilIfEmpty else {
                             if let transportDisconnectReason = pendingTransportDisconnectReason {
-                                appServerReviewRunnerDebug("cleanupThread after transport disconnect while waiting for final review: \(transportDisconnectReason)")
                                 await onEvent(.progress(.completed, "Review failed."))
                                 return ReviewProcessOutcome(
                                     state: .failed,
@@ -986,7 +977,6 @@ package struct AppServerReviewRunner: Sendable {
             if let transportDisconnectReason = pendingTransportDisconnectReason {
                 if let timeoutMessage {
                     let endedAt = Date()
-                    appServerReviewRunnerDebug("cleanupThread after transport disconnect timeout: \(transportDisconnectReason)")
                     await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
                     await onUnrecoverableTransportFailure()
                     let finalSnapshot = await state.snapshot()
@@ -1012,7 +1002,6 @@ package struct AppServerReviewRunner: Sendable {
                    snapshot.turnStatus == nil || snapshot.turnStatus == .inProgress
                 {
                     let endedAt = Date()
-                    appServerReviewRunnerDebug("cleanupThread after transport disconnect cancellation: \(transportDisconnectReason)")
                     await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
                     await onUnrecoverableTransportFailure()
                     let finalSnapshot = await state.snapshot()
@@ -1040,12 +1029,6 @@ package struct AppServerReviewRunner: Sendable {
                         continue
                     }
                     let endedAt = Date()
-                    let observedAtDescription = transportDisconnectObservedAt.map {
-                        ISO8601DateFormatter().string(from: $0)
-                    } ?? "unknown"
-                    appServerReviewRunnerDebug(
-                        "cleanupThread after transport disconnect grace expired: \(transportDisconnectReason) observedAt=\(observedAtDescription)"
-                    )
                     await cleanupThread(session: session, threadID: snapshot.threadID ?? threadResponse.thread.id)
                     await onUnrecoverableTransportFailure()
                     let finalSnapshot = await state.snapshot()
@@ -1174,25 +1157,6 @@ package struct AppServerReviewRunner: Sendable {
         }
     }
 }
-
-private func appServerReviewRunnerDebug(_ message: String) {
-    guard codexReviewMCPRunnerDebugEnabled else {
-        return
-    }
-    fputs("[codex-review-mcp.runner] \(message)\n", stderr)
-}
-
-private let codexReviewMCPRunnerDebugEnabled: Bool = {
-    let value = ProcessInfo.processInfo.environment["CODEX_REVIEW_MCP_DEBUG_RUNNER"]?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .lowercased()
-    switch value {
-    case "1", "true", "yes", "on":
-        return true
-    default:
-        return false
-    }
-}()
 
 private func bootstrapFailureMessage(prefix: String, diagnostics: String) -> String {
     guard diagnostics.isEmpty == false else {

@@ -65,7 +65,6 @@ package actor ReviewAuthManager {
     }
 
     package func loadState() async throws -> CodexReviewAuthModel.State {
-        reviewAuthDebug("loadState begin")
         try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
         let state = try await withTimeout(accountReadTimeout) {
             try await self.withSession { session in
@@ -73,7 +72,6 @@ package actor ReviewAuthManager {
                 return Self.authState(from: account)
             }
         }
-        reviewAuthDebug("loadState completed state=\(String(describing: state))")
         return state
     }
 
@@ -89,29 +87,22 @@ package actor ReviewAuthManager {
         activeAttemptID = attemptID
         activeLoginID = nil
         let loginParams = AppServerLoginAccountParams.chatGPT
-        reviewAuthDebug("beginAuthentication attempt=\(attemptID) initial progress")
         await onUpdate(Self.initialProgressState())
 
         do {
-            reviewAuthDebug("beginAuthentication attempt=\(attemptID) makeSession begin")
             let session = try await makeSession()
-            reviewAuthDebug("beginAuthentication attempt=\(attemptID) makeSession completed")
             try await ensureAttemptIsCurrent(attemptID, closing: session)
             activeSession = session
-            reviewAuthDebug("beginAuthentication attempt=\(attemptID) startLogin begin")
             let response = try await session.startLogin(loginParams)
-            reviewAuthDebug("beginAuthentication attempt=\(attemptID) startLogin completed response=\(response)")
             try await ensureAttemptIsCurrent(attemptID, closing: session)
             if let loginID = response.loginID {
                 activeLoginID = loginID
-                reviewAuthDebug("beginAuthentication attempt=\(attemptID) activeLoginID=\(loginID)")
             }
             await onUpdate(Self.progressState(for: response))
 
             let finalState: CodexReviewAuthModel.State
             switch response {
             case .chatGPT(let loginID, _):
-                reviewAuthDebug("beginAuthentication attempt=\(attemptID) waiting for completion loginID=\(loginID)")
                 finalState = try await waitForAuthenticationCompletion(
                     session: session,
                     attemptID: attemptID,
@@ -126,17 +117,14 @@ package actor ReviewAuthManager {
             guard await closeAttemptIfCurrent(attemptID) else {
                 throw ReviewAuthError.cancelled
             }
-            reviewAuthDebug("beginAuthentication attempt=\(attemptID) completed finalState=\(String(describing: finalState))")
             await onUpdate(finalState)
         } catch let error as ReviewAuthError {
-            reviewAuthDebug("beginAuthentication attempt=\(attemptID) failed reviewAuthError=\(error.errorDescription ?? String(describing: error))")
             let closedCurrentAttempt = await closeAttemptIfCurrent(attemptID)
             if error != .cancelled, closedCurrentAttempt {
                 await onUpdate(.failed(error.errorDescription ?? "Authentication failed."))
             }
             throw error
         } catch {
-            reviewAuthDebug("beginAuthentication attempt=\(attemptID) failed error=\(error.localizedDescription)")
             let closedCurrentAttempt = await closeAttemptIfCurrent(attemptID)
             let wrappedError = ReviewAuthError.loginFailed(error.localizedDescription)
             if closedCurrentAttempt {
@@ -147,7 +135,6 @@ package actor ReviewAuthManager {
     }
 
     package func cancelAuthentication() async {
-        reviewAuthDebug("cancelAuthentication begin activeLoginID=\(activeLoginID ?? "nil") activeAttemptID=\(activeAttemptID?.uuidString ?? "nil")")
         let session = activeSession
         let loginID = activeLoginID
         activeSession = nil
@@ -162,21 +149,17 @@ package actor ReviewAuthManager {
         } else if let session {
             await session.close()
         }
-        reviewAuthDebug("cancelAuthentication completed")
     }
 
     package func logout() async throws -> CodexReviewAuthModel.State {
         guard activeAttemptID == nil else {
             throw ReviewAuthError.loginInProgress
         }
-        reviewAuthDebug("logout begin")
         return try await withSession { session in
             do {
                 try await session.logout()
-                reviewAuthDebug("logout completed")
                 return .signedOut
             } catch {
-                reviewAuthDebug("logout failed error=\(error.localizedDescription)")
                 throw ReviewAuthError.logoutFailed(
                     error.localizedDescription.nilIfEmpty ?? "Failed to sign out."
                 )
@@ -222,7 +205,6 @@ package actor ReviewAuthManager {
                 guard isAttemptCurrent(attemptID, loginID: loginID) else {
                     throw ReviewAuthError.cancelled
                 }
-                reviewAuthDebug("waitForAuthenticationCompletion attempt=\(attemptID) notification=\(notification)")
                 switch notification {
                 case .accountUpdated:
                     sawAccountUpdate = true
@@ -281,7 +263,6 @@ package actor ReviewAuthManager {
         closing session: any ReviewAuthSession
     ) async throws {
         guard activeAttemptID == attemptID else {
-            reviewAuthDebug("ensureAttemptIsCurrent stale attempt=\(attemptID)")
             await session.close()
             throw ReviewAuthError.cancelled
         }
@@ -291,7 +272,6 @@ package actor ReviewAuthManager {
         guard activeAttemptID == attemptID else {
             return false
         }
-        reviewAuthDebug("closeAttemptIfCurrent attempt=\(attemptID)")
         let session = activeSession
         activeSession = nil
         activeLoginID = nil
@@ -322,14 +302,11 @@ package actor ReviewAuthManager {
         session: any ReviewAuthSession
     ) async throws -> CodexReviewAuthModel.State {
         do {
-            reviewAuthDebug("signedInStateAfterAuthentication account/read begin")
             let account = try await withTimeout(postLoginAccountReadTimeout) {
                 try await session.readAccount(refreshToken: true)
             }
-            reviewAuthDebug("signedInStateAfterAuthentication account/read completed account=\(String(describing: account.account))")
             return Self.authState(from: account)
         } catch {
-            reviewAuthDebug("signedInStateAfterAuthentication fallback loadStoredAuthState error=\(error.localizedDescription)")
             return Self.loadStoredAuthState(environment: configuration.environment)
         }
     }
@@ -388,51 +365,41 @@ package actor SharedAppServerReviewAuthSession: ReviewAuthSession {
     }
 
     package func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
-        reviewAuthDebug("SharedAppServerReviewAuthSession.readAccount begin refreshToken=\(refreshToken)")
         let response: AppServerAccountReadResponse = try await transport.request(
             method: "account/read",
             params: AppServerAccountReadParams(refreshToken: refreshToken),
             responseType: AppServerAccountReadResponse.self
         )
-        reviewAuthDebug("SharedAppServerReviewAuthSession.readAccount completed account=\(String(describing: response.account)) requiresOpenAIAuth=\(response.requiresOpenAIAuth)")
         return response
     }
 
     package func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
-        reviewAuthDebug("SharedAppServerReviewAuthSession.startLogin begin params=\(params)")
         let response: AppServerLoginAccountResponse = try await transport.request(
             method: "account/login/start",
             params: params,
             responseType: AppServerLoginAccountResponse.self
         )
-        reviewAuthDebug("SharedAppServerReviewAuthSession.startLogin completed response=\(response)")
         return response
     }
 
     package func cancelLogin(loginID: String) async throws {
-        reviewAuthDebug("SharedAppServerReviewAuthSession.cancelLogin begin loginID=\(loginID)")
         let response: AppServerCancelLoginAccountResponse = try await transport.request(
             method: "account/login/cancel",
             params: AppServerCancelLoginAccountParams(loginID: loginID),
             responseType: AppServerCancelLoginAccountResponse.self
         )
-        reviewAuthDebug(
-            "SharedAppServerReviewAuthSession.cancelLogin completed loginID=\(loginID) status=\(response.status.rawValue)"
-        )
+        _ = response
     }
 
     package func logout() async throws {
-        reviewAuthDebug("SharedAppServerReviewAuthSession.logout begin")
         let _: AppServerLogoutAccountResponse = try await transport.request(
             method: "account/logout",
             params: AppServerNullParams(),
             responseType: AppServerLogoutAccountResponse.self
         )
-        reviewAuthDebug("SharedAppServerReviewAuthSession.logout completed")
     }
 
     package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        reviewAuthDebug("SharedAppServerReviewAuthSession.notificationStream begin")
         return await transport.notificationStream()
     }
 
@@ -441,7 +408,6 @@ package actor SharedAppServerReviewAuthSession: ReviewAuthSession {
             return
         }
         isClosed = true
-        reviewAuthDebug("SharedAppServerReviewAuthSession.close")
         await transport.close()
     }
 }
@@ -485,12 +451,8 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
     }
 
     package func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
-        reviewAuthDebug("CLIReviewAuthSession.readAccount begin")
         let result = try await runCodexCommand(arguments: ["login", "status"])
         let combinedOutput = sanitizeCLIAuthOutput(result.stderr + "\n" + result.stdout)
-        reviewAuthDebug(
-            "CLIReviewAuthSession.readAccount completed exitCode=\(result.exitCode) output=\(combinedOutput)"
-        )
 
         if result.exitCode == 0, combinedOutput.localizedCaseInsensitiveContains("Logged in") {
             let storedAccount = loadStoredCLIAuthAccount(environment: configuration.environment)
@@ -509,7 +471,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
     }
 
     package func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
-        reviewAuthDebug("CLIReviewAuthSession.startLogin begin params=\(params)")
         guard activeLogin == nil else {
             throw ReviewAuthError.loginInProgress
         }
@@ -542,9 +503,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         process.standardError = stderrPipe
 
         let loginID = UUID().uuidString
-        reviewAuthDebug(
-            "CLIReviewAuthSession.startLogin launching executable=\(executable) arguments=\(arguments.joined(separator: " ")) loginID=\(loginID)"
-        )
         try process.run()
         try? stdinPipe.fileHandleForWriting.close()
 
@@ -593,21 +551,15 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
     }
 
     package func cancelLogin(loginID: String) async throws {
-        reviewAuthDebug("CLIReviewAuthSession.cancelLogin begin loginID=\(loginID)")
         guard activeLogin?.loginID == loginID else {
             return
         }
         await cancelActiveLoginProcess()
-        reviewAuthDebug("CLIReviewAuthSession.cancelLogin completed loginID=\(loginID)")
     }
 
     package func logout() async throws {
-        reviewAuthDebug("CLIReviewAuthSession.logout begin")
         let result = try await runCodexCommand(arguments: ["logout"])
         let combinedOutput = sanitizeCLIAuthOutput(result.stderr + "\n" + result.stdout)
-        reviewAuthDebug(
-            "CLIReviewAuthSession.logout completed exitCode=\(result.exitCode) output=\(combinedOutput)"
-        )
         guard result.exitCode == 0 else {
             throw ReviewAuthError.logoutFailed(combinedOutput.nilIfEmpty ?? "Failed to sign out.")
         }
@@ -642,7 +594,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
             return
         }
         isClosed = true
-        reviewAuthDebug("CLIReviewAuthSession.close")
         await cancelActiveLoginProcess()
         finishNotificationSubscribers()
     }
@@ -733,7 +684,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         guard cleaned.isEmpty == false else {
             return
         }
-        reviewAuthDebug("CLIReviewAuthSession.\(source) \(cleaned)")
         activeLogin.outputLines.append(cleaned)
         if activeLogin.outputLines.count > 50 {
             activeLogin.outputLines.removeFirst(activeLogin.outputLines.count - 50)
@@ -813,7 +763,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         guard let activeLogin else {
             return
         }
-        reviewAuthDebug("CLIReviewAuthSession.cancelActiveLoginProcess loginID=\(activeLogin.loginID)")
         if activeLogin.process.isRunning {
             activeLogin.process.terminate()
             try? await Task.sleep(for: .milliseconds(500))
@@ -909,11 +858,6 @@ private func withTimeout<T: Sendable>(
         }
         return result
     }
-}
-
-private func reviewAuthDebug(_ message: String) {
-    let timestamp = ISO8601DateFormatter().string(from: Date())
-    fputs("[codex-review-mcp.auth] \(timestamp) \(message)\n", stderr)
 }
 
 private func makeCLIReviewAuthEnvironment(from environment: [String: String]) -> [String: String] {
