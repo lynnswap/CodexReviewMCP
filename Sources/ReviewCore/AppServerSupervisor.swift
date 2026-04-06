@@ -29,38 +29,94 @@ package actor AppServerSupervisor: AppServerManaging {
         }
     }
 
-    private final class RunningProcess: @unchecked Sendable {
-        var launchID: UUID
-        var runtimeState: AppServerRuntimeState
-        var connection: AppServerSharedTransportConnection
-        var waitTask: Task<Void, Never>
-        var stdoutTask: Task<Void, Never>
-        var stderrTask: Task<Void, Never>
-        var isolatedCodexHomeURL: URL?
+    private final class StartContext: @unchecked Sendable {
+        let launchID: UUID
+        let processIdentity: ProcessIdentity
+        let processGroupIdentity: ProcessIdentity
+        let runtimeState: AppServerRuntimeState
+        let stdinPipe: Pipe
+        let stdoutPipe: Pipe
+        let stderrPipe: Pipe
+        let connection: AppServerSharedTransportConnection
+        let waitTask: Task<Void, Never>
+        let stdoutTask: Task<Void, Never>
+        let stderrTask: Task<Void, Never>
+        let isolatedCodexHomeURL: URL?
+        let dedicatedProcessGroupEstablished: Bool
+        var startupTask: Task<Void, Never>?
 
         init(
             launchID: UUID,
+            processIdentity: ProcessIdentity,
+            processGroupIdentity: ProcessIdentity,
             runtimeState: AppServerRuntimeState,
+            stdinPipe: Pipe,
+            stdoutPipe: Pipe,
+            stderrPipe: Pipe,
             connection: AppServerSharedTransportConnection,
             waitTask: Task<Void, Never>,
             stdoutTask: Task<Void, Never>,
             stderrTask: Task<Void, Never>,
-            isolatedCodexHomeURL: URL?
+            isolatedCodexHomeURL: URL?,
+            dedicatedProcessGroupEstablished: Bool
         ) {
             self.launchID = launchID
+            self.processIdentity = processIdentity
+            self.processGroupIdentity = processGroupIdentity
             self.runtimeState = runtimeState
+            self.stdinPipe = stdinPipe
+            self.stdoutPipe = stdoutPipe
+            self.stderrPipe = stderrPipe
             self.connection = connection
             self.waitTask = waitTask
             self.stdoutTask = stdoutTask
             self.stderrTask = stderrTask
             self.isolatedCodexHomeURL = isolatedCodexHomeURL
+            self.dedicatedProcessGroupEstablished = dedicatedProcessGroupEstablished
+        }
+    }
+
+    private final class LaunchContext: @unchecked Sendable {
+        let launchID: UUID
+        var launchTask: Task<Void, Never>?
+
+        init(launchID: UUID) {
+            self.launchID = launchID
+        }
+    }
+
+    private final class RuntimeContext: @unchecked Sendable {
+        let launchID: UUID
+        let processIdentity: ProcessIdentity
+        let processGroupIdentity: ProcessIdentity
+        let runtimeState: AppServerRuntimeState
+        let connection: AppServerSharedTransportConnection
+        let waitTask: Task<Void, Never>
+        let stdoutTask: Task<Void, Never>
+        let stderrTask: Task<Void, Never>
+        let isolatedCodexHomeURL: URL?
+        let dedicatedProcessGroupEstablished: Bool
+        var exitMonitorTask: Task<Void, Never>?
+
+        init(startContext: StartContext) {
+            self.launchID = startContext.launchID
+            self.processIdentity = startContext.processIdentity
+            self.processGroupIdentity = startContext.processGroupIdentity
+            self.runtimeState = startContext.runtimeState
+            self.connection = startContext.connection
+            self.waitTask = startContext.waitTask
+            self.stdoutTask = startContext.stdoutTask
+            self.stderrTask = startContext.stderrTask
+            self.isolatedCodexHomeURL = startContext.isolatedCodexHomeURL
+            self.dedicatedProcessGroupEstablished = startContext.dedicatedProcessGroupEstablished
         }
     }
 
     private enum State {
         case stopped
-        case starting(UUID, [CheckedContinuation<RunningProcess, Error>])
-        case running(RunningProcess)
+        case launching(LaunchContext, [CheckedContinuation<RuntimeContext, Error>])
+        case starting(StartContext, [CheckedContinuation<RuntimeContext, Error>])
+        case running(RuntimeContext)
     }
 
     private let configuration: Configuration
@@ -69,8 +125,6 @@ package actor AppServerSupervisor: AppServerManaging {
     private var diagnosticTailLines: [String] = []
     private var pendingStandardErrorBytes = Data()
     private var trailingStandardErrorFragment = ""
-    private var startingRuntimeState: AppServerRuntimeState?
-    private var lifetimeTask: Task<Void, Never>?
     private var diagnosticSubscribers: [UUID: AsyncStream<String>.Continuation] = [:]
 
     package init(configuration: Configuration = .init()) {
@@ -78,24 +132,24 @@ package actor AppServerSupervisor: AppServerManaging {
     }
 
     package func prepare() async throws -> AppServerRuntimeState {
-        return try await ensureRunning().runtimeState
+        try await ensureRunning().runtimeState
     }
 
     package func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
-        let running = try await ensureRunning()
-        return await running.connection.checkoutTransport()
+        let runtimeContext = try await ensureRunning()
+        return await runtimeContext.connection.checkoutTransport()
     }
 
     package func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
-        let running = try await ensureRunning()
-        return await running.connection.checkoutTransport()
+        let runtimeContext = try await ensureRunning()
+        return await runtimeContext.connection.checkoutTransport()
     }
 
     package func currentRuntimeState() async -> AppServerRuntimeState? {
         switch state {
-        case .running(let running):
-            return running.runtimeState
-        case .stopped, .starting:
+        case .running(let runtimeContext):
+            return runtimeContext.runtimeState
+        case .stopped, .launching, .starting:
             return nil
         }
     }
@@ -126,242 +180,272 @@ package actor AppServerSupervisor: AppServerManaging {
 
     package func shutdown() async {
         switch state {
-        case .running(let current):
+        case .running(let runtimeContext):
             state = .stopped
             finishDiagnosticSubscribers()
-            await terminateRunningProcess(current)
-            lifetimeTask = nil
-            if let isolatedCodexHomeURL = current.isolatedCodexHomeURL {
-                try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
-            }
-        case .starting(_, let waiters):
-            let task = lifetimeTask
-            let startingRuntimeState = self.startingRuntimeState
+            await terminateRuntimeContext(runtimeContext)
+            await runtimeContext.exitMonitorTask?.value
+        case .launching(let launchContext, let waiters):
             state = .stopped
             finishDiagnosticSubscribers()
-            task?.cancel()
-            if let startingRuntimeState {
-                await terminateStartingProcess(runtimeState: startingRuntimeState)
-            }
+            await launchContext.launchTask?.value
             let error = ReviewError.io("app-server supervisor stopped during startup.")
             for continuation in waiters {
                 continuation.resume(throwing: error)
             }
-            await task?.value
-            self.startingRuntimeState = nil
-            if lifetimeTask == task {
-                lifetimeTask = nil
+        case .starting(let startContext, let waiters):
+            state = .stopped
+            finishDiagnosticSubscribers()
+            startContext.startupTask?.cancel()
+            await startContext.connection.shutdown()
+            await terminateStartContext(startContext)
+            let error = ReviewError.io("app-server supervisor stopped during startup.")
+            for continuation in waiters {
+                continuation.resume(throwing: error)
             }
+            await startContext.startupTask?.value
         case .stopped:
             finishDiagnosticSubscribers()
-            return
         }
     }
 
-    private func ensureRunning() async throws -> RunningProcess {
+    private func ensureRunning() async throws -> RuntimeContext {
         switch state {
-        case .running(let running):
-            let identity = ProcessIdentity(
-                pid: pid_t(running.runtimeState.pid),
-                startTime: running.runtimeState.startTime
-            )
-            if isMatchingProcessIdentity(identity),
-               await running.connection.isClosed() == false
+        case .running(let runtimeContext):
+            if isMatchingProcessIdentity(runtimeContext.processIdentity),
+               await runtimeContext.connection.isClosed() == false
             {
-                return running
+                return runtimeContext
             }
             state = .stopped
             finishDiagnosticSubscribers()
-            await terminateRunningProcess(running)
+            await terminateRuntimeContext(runtimeContext)
+            await runtimeContext.exitMonitorTask?.value
             return try await ensureRunning()
-        case .starting:
+        case .launching, .starting:
             return try await waitForRunning()
         case .stopped:
-            let launchID = UUID()
-            state = .starting(launchID, [])
-            lifetimeTask = Task.detached { [weak self] in
-                await self?.launchProcessBackground(launchID: launchID)
+            resetDiagnostics()
+            let launchContext = LaunchContext(launchID: UUID())
+            state = .launching(launchContext, [])
+            launchContext.launchTask = Task.detached { [weak self] in
+                guard let self else {
+                    return
+                }
+                await self.beginLaunch(for: launchContext)
             }
             return try await waitForRunning()
         }
     }
 
-    private func waitForRunning() async throws -> RunningProcess {
+    private func waitForRunning() async throws -> RuntimeContext {
         try await withCheckedThrowingContinuation { continuation in
             switch state {
-            case .running(let running):
-                continuation.resume(returning: running)
-            case .starting(let launchID, var waiters):
+            case .running(let runtimeContext):
+                continuation.resume(returning: runtimeContext)
+            case .launching(let launchContext, var waiters):
                 waiters.append(continuation)
-                state = .starting(launchID, waiters)
+                state = .launching(launchContext, waiters)
+            case .starting(let startContext, var waiters):
+                waiters.append(continuation)
+                state = .starting(startContext, waiters)
             case .stopped:
                 continuation.resume(throwing: ReviewError.io("app-server supervisor is stopped."))
             }
         }
     }
 
-    private func finishStarting(
-        launchID: UUID,
-        _ result: Result<RunningProcess, Error>
-    ) {
-        guard case .starting(let currentLaunchID, let waiters) = state,
-              currentLaunchID == launchID
-        else {
-            return
-        }
-        startingRuntimeState = nil
-        switch result {
-        case .success(let running):
-            state = .running(running)
-        case .failure:
+    private func beginLaunch(for launchContext: LaunchContext) async {
+        do {
+            let startContext = try await makeStartContext(launchID: launchContext.launchID)
+            guard case .launching(let currentLaunchContext, let waiters) = state,
+                  currentLaunchContext.launchID == launchContext.launchID
+            else {
+                await startContext.connection.shutdown()
+                await terminateStartContext(startContext)
+                return
+            }
+
+            state = .starting(startContext, waiters)
+            let startupTask = Task.detached { [weak self] in
+                guard let self else {
+                    return
+                }
+                await self.completeStartup(for: startContext)
+            }
+            startContext.startupTask = startupTask
+        } catch {
+            guard case .launching(let currentLaunchContext, let waiters) = state,
+                  currentLaunchContext.launchID == launchContext.launchID
+            else {
+                return
+            }
+
             state = .stopped
-            lifetimeTask = nil
-        }
-        for continuation in waiters {
-            continuation.resume(with: result)
+            for continuation in waiters {
+                continuation.resume(throwing: error)
+            }
         }
     }
 
-    private func launchProcessBackground(launchID: UUID) async {
-        stderrLines.removeAll(keepingCapacity: false)
-        diagnosticTailLines.removeAll(keepingCapacity: false)
-        pendingStandardErrorBytes.removeAll(keepingCapacity: false)
-        trailingStandardErrorFragment = ""
+    private func completeStartup(for startContext: StartContext) async {
+        do {
+            try await waitUntilInitialized(
+                connection: startContext.connection,
+                processIdentity: startContext.processIdentity
+            )
+            try validateDedicatedProcessGroup(for: startContext)
+
+            let runtimeContext = RuntimeContext(startContext: startContext)
+            guard transitionToRunning(
+                startContext: startContext,
+                runtimeContext: runtimeContext
+            ) else {
+                await runtimeContext.connection.shutdown()
+                await terminateRuntimeContext(runtimeContext)
+                return
+            }
+
+            let exitMonitorTask = Task { [weak self] in
+                guard let self else {
+                    return
+                }
+                await self.monitorRuntimeExit(for: runtimeContext)
+            }
+            runtimeContext.exitMonitorTask = exitMonitorTask
+        } catch {
+            await failStartup(for: startContext, error: error)
+        }
+    }
+
+    private func transitionToRunning(
+        startContext: StartContext,
+        runtimeContext: RuntimeContext
+    ) -> Bool {
+        guard case .starting(let currentContext, let waiters) = state,
+              currentContext.launchID == startContext.launchID
+        else {
+            return false
+        }
+
+        state = .running(runtimeContext)
+        for continuation in waiters {
+            continuation.resume(returning: runtimeContext)
+        }
+        return true
+    }
+
+    private func failStartup(for startContext: StartContext, error: Error) async {
+        guard case .starting(let currentContext, let waiters) = state,
+              currentContext.launchID == startContext.launchID
+        else {
+            return
+        }
+
+        state = .stopped
+        finishDiagnosticSubscribers()
+        await startContext.connection.shutdown()
+        await terminateStartContext(startContext)
+        for continuation in waiters {
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func monitorRuntimeExit(for runtimeContext: RuntimeContext) async {
+        _ = await runtimeContext.waitTask.result
+        _ = await runtimeContext.stdoutTask.value
+        _ = await runtimeContext.stderrTask.value
+        await handleRuntimeExit(runtimeContext)
+    }
+
+    private func handleRuntimeExit(_ runtimeContext: RuntimeContext) async {
+        if case .running(let currentContext) = state,
+           currentContext.launchID == runtimeContext.launchID
+        {
+            state = .stopped
+            finishDiagnosticSubscribers()
+        }
+        await runtimeContext.connection.shutdown()
+        removeIsolatedCodexHome(runtimeContext.isolatedCodexHomeURL)
+    }
+
+    private func makeStartContext(launchID: UUID) async throws -> StartContext {
+        let isolatedCodexHomeURL = try prepareIsolatedCodexHome(
+            launchID: launchID,
+            environment: configuration.environment
+        )
 
         do {
-            let isolatedCodexHomeURL = try prepareIsolatedCodexHome(
-                launchID: launchID,
-                environment: self.configuration.environment
-            )
-
             let launchCommand = try makeAppServerLaunchCommand(
-                codexCommand: self.configuration.codexCommand,
-                environment: self.configuration.environment,
+                codexCommand: configuration.codexCommand,
+                environment: configuration.environment,
                 isolatedCodexHomeURL: isolatedCodexHomeURL
             )
             let spawnedProcess = try spawnAppServerProcess(launchCommand)
-            let stdinPipe = spawnedProcess.stdinPipe
-            let stdoutPipe = spawnedProcess.stdoutPipe
-            let stderrPipe = spawnedProcess.stderrPipe
             let pid = spawnedProcess.pid
-            guard let startTime = processStartTime(of: pid_t(pid)) else {
-                await terminateSpawnedProcessWithoutIdentity(pid: pid_t(pid))
+
+            guard let startTime = processStartTime(of: pid) else {
+                await terminateSpawnedProcessWithoutIdentity(pid: pid)
                 throw ReviewError.spawnFailed("app-server started without a readable process start time.")
             }
-            let processIdentity = ProcessIdentity(pid: pid_t(pid), startTime: startTime)
-            let startupDescendantIdentities = descendantProcessIdentities(rootIdentity: processIdentity)
-            let startupProcessGroupLeaderPID = currentProcessGroupID(of: pid_t(pid)) ?? pid_t(pid)
-            let startupChildGroupIdentities = descendantProcessGroupIdentities(
-                rootIdentity: processIdentity,
-                excludingGroupLeaderPID: startupProcessGroupLeaderPID
-            )
-            guard startupProcessGroupLeaderPID == pid_t(pid) else {
-                await terminateStartingProcess(
-                    runtimeState: .init(
-                        pid: Int(pid),
-                        startTime: startTime,
-                        processGroupLeaderPID: Int(pid),
-                        processGroupLeaderStartTime: startTime
-                    ),
-                    signalProcessGroup: false,
-                    seedDescendantIdentities: startupDescendantIdentities,
-                    seedChildGroupIdentities: startupChildGroupIdentities
+
+            let processIdentity = ProcessIdentity(pid: pid, startTime: startTime)
+            guard currentProcessGroupID(of: pid) == pid else {
+                await terminateFailedSpawnedProcess(
+                    processIdentity: processIdentity,
+                    processGroupLeaderPID: pid,
+                    signalDedicatedProcessGroup: false
                 )
-                await reapSpawnedProcessAsync(pid: pid_t(pid))
                 throw ReviewError.spawnFailed("app-server did not enter its dedicated process group.")
             }
-            let waitTask = Task.detached { @Sendable in
-                reapSpawnedProcess(pid: pid_t(pid))
-            }
 
+            let waitTask = Task.detached { @Sendable in
+                reapSpawnedProcess(pid: pid)
+            }
             let runtimeState = AppServerRuntimeState(
                 pid: Int(pid),
                 startTime: startTime,
                 processGroupLeaderPID: Int(pid),
                 processGroupLeaderStartTime: startTime
             )
-            self.noteStartingRuntimeState(runtimeState)
-
+            let processGroupIdentity = ProcessIdentity(pid: pid, startTime: startTime)
             let connection = AppServerSharedTransportConnection(
                 sendMessage: { message in
                     guard let data = message.data(using: .utf8) else {
                         throw ReviewError.io("failed to encode stdio payload as UTF-8.")
                     }
-                    try stdinPipe.fileHandleForWriting.write(contentsOf: data)
+                    try spawnedProcess.stdinPipe.fileHandleForWriting.write(contentsOf: data)
                 },
                 closeInput: {
-                    try? stdinPipe.fileHandleForWriting.close()
+                    try? spawnedProcess.stdinPipe.fileHandleForWriting.close()
                 }
             )
-            let stdoutTask = self.startCapturingStandardOutput(
-                handle: stdoutPipe.fileHandleForReading,
+            let stdoutTask = startCapturingStandardOutput(
+                handle: spawnedProcess.stdoutPipe.fileHandleForReading,
                 connection: connection
             )
-            let stderrTask = self.startCapturingStandardError(
-                handle: stderrPipe.fileHandleForReading
+            let stderrTask = startCapturingStandardError(
+                handle: spawnedProcess.stderrPipe.fileHandleForReading
             )
 
-            do {
-                try await self.waitUntilInitialized(
-                    connection: connection,
-                    processIdentity: .init(pid: pid_t(pid), startTime: startTime)
-                )
-
-                self.finishStarting(
-                    launchID: launchID,
-                    .success(
-                        RunningProcess(
-                            launchID: launchID,
-                            runtimeState: runtimeState,
-                            connection: connection,
-                            waitTask: waitTask,
-                            stdoutTask: stdoutTask,
-                            stderrTask: stderrTask,
-                            isolatedCodexHomeURL: isolatedCodexHomeURL
-                        )
-                    )
-                )
-
-                let identity = ProcessIdentity(pid: pid_t(pid), startTime: startTime)
-                while isMatchingProcessIdentity(identity) {
-                    try? await Task.sleep(for: .milliseconds(100))
-                }
-                _ = await waitTask.result
-                _ = await stdoutTask.value
-                _ = await stderrTask.value
-                startingRuntimeState = nil
-                handleProcessExit(
-                    launchID: launchID,
-                    processIdentity: identity,
-                    isolatedCodexHomeURL: isolatedCodexHomeURL
-                )
-            } catch {
-                await connection.shutdown()
-                await self.terminateStartingProcess(
-                    runtimeState: runtimeState,
-                    seedDescendantIdentities: startupDescendantIdentities,
-                    seedChildGroupIdentities: startupChildGroupIdentities
-                )
-                _ = await waitTask.result
-                _ = await stdoutTask.value
-                _ = await stderrTask.value
-                throw error
-            }
+            return StartContext(
+                launchID: launchID,
+                processIdentity: processIdentity,
+                processGroupIdentity: processGroupIdentity,
+                runtimeState: runtimeState,
+                stdinPipe: spawnedProcess.stdinPipe,
+                stdoutPipe: spawnedProcess.stdoutPipe,
+                stderrPipe: spawnedProcess.stderrPipe,
+                connection: connection,
+                waitTask: waitTask,
+                stdoutTask: stdoutTask,
+                stderrTask: stderrTask,
+                isolatedCodexHomeURL: isolatedCodexHomeURL,
+                dedicatedProcessGroupEstablished: true
+            )
         } catch {
-            let startingRuntimeState = self.startingRuntimeState
-            if let startingRuntimeState {
-                await terminateStartingProcess(runtimeState: startingRuntimeState)
-            }
-            finishStarting(launchID: launchID, .failure(error))
-            if currentLaunchID == launchID {
-                lifetimeTask = nil
-            }
-            try? FileManager.default.removeItem(
-                at: ReviewHomePaths.appServerCodexHomeURL(
-                    launchID: launchID,
-                    environment: configuration.environment
-                )
-            )
+            removeIsolatedCodexHome(isolatedCodexHomeURL)
+            throw error
         }
     }
 
@@ -519,34 +603,18 @@ package actor AppServerSupervisor: AppServerManaging {
         }
     }
 
-    private var currentLaunchID: UUID? {
-        switch state {
-        case .stopped:
-            nil
-        case .starting(let launchID, _):
-            launchID
-        case .running(let running):
-            running.launchID
-        }
+    private func resetDiagnostics() {
+        stderrLines.removeAll(keepingCapacity: false)
+        diagnosticTailLines.removeAll(keepingCapacity: false)
+        pendingStandardErrorBytes.removeAll(keepingCapacity: false)
+        trailingStandardErrorFragment = ""
     }
 
-    private func handleProcessExit(
-        launchID: UUID,
-        processIdentity: ProcessIdentity,
-        isolatedCodexHomeURL: URL?
-    ) {
-        startingRuntimeState = nil
-        if case .running(let running) = state,
-           running.launchID == launchID,
-           running.runtimeState.pid == Int(processIdentity.pid),
-           running.runtimeState.startTime == processIdentity.startTime
-        {
-            state = .stopped
-            lifetimeTask = nil
-        }
-        finishDiagnosticSubscribers()
-        if let isolatedCodexHomeURL {
-            try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
+    private func validateDedicatedProcessGroup(for startContext: StartContext) throws {
+        guard isMatchingProcessIdentity(startContext.processIdentity),
+              currentProcessGroupID(of: startContext.processIdentity.pid) == startContext.processGroupIdentity.pid
+        else {
+            throw ReviewError.spawnFailed("app-server did not remain in its dedicated process group.")
         }
     }
 
@@ -569,182 +637,37 @@ package actor AppServerSupervisor: AppServerManaging {
         continuation.finish()
     }
 
-    private func noteStartingRuntimeState(_ runtimeState: AppServerRuntimeState) {
-        guard case .starting = state else {
+    private func removeIsolatedCodexHome(_ url: URL?) {
+        guard let url else {
             return
         }
-        startingRuntimeState = runtimeState
+        try? FileManager.default.removeItem(at: url)
     }
 
-    private func terminateStartingProcess(
-        runtimeState: AppServerRuntimeState,
-        signalProcessGroup: Bool = true,
-        seedDescendantIdentities: [ProcessIdentity] = [],
-        seedChildGroupIdentities: [ProcessIdentity] = []
-    ) async {
-        let processIdentity = ProcessIdentity(
-            pid: pid_t(runtimeState.pid),
-            startTime: runtimeState.startTime
+    private func terminateStartContext(_ startContext: StartContext) async {
+        await terminateManagedRuntime(
+            processIdentity: startContext.processIdentity,
+            processGroupIdentity: startContext.processGroupIdentity,
+            signalDedicatedProcessGroup: startContext.dedicatedProcessGroupEstablished,
+            connection: startContext.connection,
+            waitTask: startContext.waitTask,
+            stdoutTask: startContext.stdoutTask,
+            stderrTask: startContext.stderrTask,
+            isolatedCodexHomeURL: startContext.isolatedCodexHomeURL
         )
-        let currentProcessGroupLeaderPID = currentProcessGroupID(of: processIdentity.pid) ?? processIdentity.pid
-        let processGroupIdentity = ProcessIdentity(
-            pid: pid_t(runtimeState.processGroupLeaderPID),
-            startTime: runtimeState.processGroupLeaderStartTime
-        )
-        let initialDescendantIdentities = mergeProcessIdentities(
-            seedDescendantIdentities,
-            descendantProcessIdentities(rootIdentity: processIdentity)
-        )
-        let initialChildGroupIdentities = signalProcessGroup
-            ? mergeProcessIdentities(
-                seedChildGroupIdentities,
-                descendantProcessGroupIdentities(
-                    rootIdentity: processIdentity,
-                    excludingGroupLeaderPID: processGroupIdentity.pid
-                )
-            )
-            : seedChildGroupIdentities.filter { $0.pid != currentProcessGroupLeaderPID }
-
-        let shouldSignalChildGroups = initialChildGroupIdentities.isEmpty == false
-
-        _ = kill(processIdentity.pid, SIGTERM)
-        if signalProcessGroup {
-            _ = killpg(processGroupIdentity.pid, SIGTERM)
-        }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while ContinuousClock.now < deadline {
-            let descendantIdentities = mergeProcessIdentities(
-                initialDescendantIdentities,
-                descendantProcessIdentities(rootIdentity: processIdentity)
-            )
-            let childGroupIdentities = mergeProcessIdentities(
-                initialChildGroupIdentities,
-                shouldSignalChildGroups
-                    ? descendantProcessGroupIdentities(
-                        rootIdentity: processIdentity,
-                        excludingGroupLeaderPID: signalProcessGroup ? processGroupIdentity.pid : currentProcessGroupLeaderPID
-                    )
-                    : []
-            )
-            signalProcesses(descendantIdentities, signal: SIGTERM)
-            if shouldSignalChildGroups {
-                signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
-            }
-            if isMatchingProcessIdentity(processIdentity) == false,
-               (signalProcessGroup == false || isSupervisorProcessGroupAlive(processGroupIdentity) == false),
-               hasLiveProcesses(descendantIdentities) == false,
-               (shouldSignalChildGroups == false || hasLiveSupervisorChildGroups(childGroupIdentities) == false)
-            {
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-
-        let descendantIdentities = mergeProcessIdentities(
-            initialDescendantIdentities,
-            descendantProcessIdentities(rootIdentity: processIdentity)
-        )
-        let childGroupIdentities = mergeProcessIdentities(
-            initialChildGroupIdentities,
-            shouldSignalChildGroups
-                ? descendantProcessGroupIdentities(
-                    rootIdentity: processIdentity,
-                    excludingGroupLeaderPID: signalProcessGroup ? processGroupIdentity.pid : currentProcessGroupLeaderPID
-                )
-                : []
-        )
-        if isMatchingProcessIdentity(processIdentity)
-            || (signalProcessGroup && isSupervisorProcessGroupAlive(processGroupIdentity))
-            || hasLiveProcesses(descendantIdentities)
-            || (shouldSignalChildGroups && hasLiveSupervisorChildGroups(childGroupIdentities))
-        {
-            _ = kill(processIdentity.pid, SIGKILL)
-            if signalProcessGroup {
-                _ = killpg(processGroupIdentity.pid, SIGKILL)
-            }
-            if shouldSignalChildGroups {
-                signalSupervisorChildGroups(childGroupIdentities, signal: SIGKILL)
-            }
-            signalProcesses(descendantIdentities, signal: SIGKILL)
-        }
     }
 
-    private func terminateRunningProcess(_ current: RunningProcess) async {
-        let processIdentity = ProcessIdentity(
-            pid: pid_t(current.runtimeState.pid),
-            startTime: current.runtimeState.startTime
+    private func terminateRuntimeContext(_ runtimeContext: RuntimeContext) async {
+        await terminateManagedRuntime(
+            processIdentity: runtimeContext.processIdentity,
+            processGroupIdentity: runtimeContext.processGroupIdentity,
+            signalDedicatedProcessGroup: runtimeContext.dedicatedProcessGroupEstablished,
+            connection: runtimeContext.connection,
+            waitTask: runtimeContext.waitTask,
+            stdoutTask: runtimeContext.stdoutTask,
+            stderrTask: runtimeContext.stderrTask,
+            isolatedCodexHomeURL: runtimeContext.isolatedCodexHomeURL
         )
-        let processGroupIdentity = ProcessIdentity(
-            pid: pid_t(current.runtimeState.processGroupLeaderPID),
-            startTime: current.runtimeState.processGroupLeaderStartTime
-        )
-        let preShutdownDescendantIdentities = descendantProcessIdentities(rootIdentity: processIdentity)
-        let preShutdownChildGroupIdentities = descendantProcessGroupIdentities(
-            rootIdentity: processIdentity,
-            excludingGroupLeaderPID: processGroupIdentity.pid
-        )
-        await current.connection.shutdown()
-        let trackedDescendantIdentities = mergeProcessIdentities(
-            preShutdownDescendantIdentities,
-            descendantProcessIdentities(rootIdentity: processIdentity)
-        )
-        let trackedChildGroupIdentities = mergeProcessIdentities(
-            preShutdownChildGroupIdentities,
-            descendantProcessGroupIdentities(
-                rootIdentity: processIdentity,
-                excludingGroupLeaderPID: processGroupIdentity.pid
-            )
-        )
-        _ = kill(processIdentity.pid, SIGTERM)
-        _ = killpg(processGroupIdentity.pid, SIGTERM)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while ContinuousClock.now < deadline {
-            let descendantIdentities = mergeProcessIdentities(
-                trackedDescendantIdentities,
-                descendantProcessIdentities(rootIdentity: processIdentity)
-            )
-            let childGroupIdentities = mergeProcessIdentities(
-                trackedChildGroupIdentities,
-                descendantProcessGroupIdentities(
-                    rootIdentity: processIdentity,
-                    excludingGroupLeaderPID: processGroupIdentity.pid
-                )
-            )
-            signalProcesses(descendantIdentities, signal: SIGTERM)
-            signalSupervisorChildGroups(childGroupIdentities, signal: SIGTERM)
-            if isMatchingProcessIdentity(processIdentity) == false,
-               isSupervisorProcessGroupAlive(processGroupIdentity) == false,
-               hasLiveProcesses(descendantIdentities) == false,
-               hasLiveSupervisorChildGroups(childGroupIdentities) == false
-            {
-                break
-            }
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-        let descendantIdentities = mergeProcessIdentities(
-            trackedDescendantIdentities,
-            descendantProcessIdentities(rootIdentity: processIdentity)
-        )
-        let childGroupIdentities = mergeProcessIdentities(
-            trackedChildGroupIdentities,
-            descendantProcessGroupIdentities(
-                rootIdentity: processIdentity,
-                excludingGroupLeaderPID: processGroupIdentity.pid
-            )
-        )
-        if isMatchingProcessIdentity(processIdentity)
-            || isSupervisorProcessGroupAlive(processGroupIdentity)
-            || hasLiveProcesses(descendantIdentities)
-            || hasLiveSupervisorChildGroups(childGroupIdentities)
-        {
-            _ = kill(processIdentity.pid, SIGKILL)
-            _ = killpg(processGroupIdentity.pid, SIGKILL)
-            signalProcesses(descendantIdentities, signal: SIGKILL)
-            signalSupervisorChildGroups(childGroupIdentities, signal: SIGKILL)
-        }
-        _ = await current.stdoutTask.result
-        _ = await current.stderrTask.result
-        await lifetimeTask?.value
     }
 }
 
@@ -828,37 +751,21 @@ private func spawnAppServerProcess(
     let stderrReadFD = stderrPipe.fileHandleForReading.fileDescriptor
     let stderrWriteFD = stderrPipe.fileHandleForWriting.fileDescriptor
 
-    let stdioMappings: [(source: Int32, destination: Int32)] = [
-        (stdinReadFD, STDIN_FILENO),
-        (stdoutWriteFD, STDOUT_FILENO),
-        (stderrWriteFD, STDERR_FILENO),
-    ]
-
-    for fileDescriptor in [
-        stdinWriteFD,
-        stdoutReadFD,
-        stderrReadFD,
-    ] {
-        let status = posix_spawn_file_actions_addclose(&fileActions, fileDescriptor)
-        guard status == 0 else {
+    for fileDescriptor in [stdinWriteFD, stdoutReadFD, stderrReadFD] {
+        guard posix_spawn_file_actions_addclose(&fileActions, fileDescriptor) == 0 else {
             throw ReviewError.spawnFailed("failed to configure app-server stdio cleanup.")
         }
     }
 
-    for mapping in stdioMappings where mapping.source != mapping.destination {
-        let status = posix_spawn_file_actions_adddup2(
-            &fileActions,
-            mapping.source,
-            mapping.destination
-        )
-        guard status == 0 else {
+    for (source, destination) in [
+        (stdinReadFD, STDIN_FILENO),
+        (stdoutWriteFD, STDOUT_FILENO),
+        (stderrWriteFD, STDERR_FILENO),
+    ] where source != destination {
+        guard posix_spawn_file_actions_adddup2(&fileActions, source, destination) == 0 else {
             throw ReviewError.spawnFailed("failed to configure app-server stdio redirection.")
         }
-    }
-
-    for mapping in stdioMappings where mapping.source != mapping.destination {
-        let status = posix_spawn_file_actions_addclose(&fileActions, mapping.source)
-        guard status == 0 else {
+        guard posix_spawn_file_actions_addclose(&fileActions, source) == 0 else {
             throw ReviewError.spawnFailed("failed to configure app-server stdio source cleanup.")
         }
     }
@@ -900,18 +807,410 @@ private func spawnAppServerProcess(
         let message = String(cString: strerror(spawnStatus))
         throw ReviewError.spawnFailed("failed to start app-server: \(message)")
     }
-    let spawnedPID = pid
 
     try? stdinPipe.fileHandleForReading.close()
     try? stdoutPipe.fileHandleForWriting.close()
     try? stderrPipe.fileHandleForWriting.close()
 
     return SpawnedAppServerProcess(
-        pid: spawnedPID,
+        pid: pid,
         stdinPipe: stdinPipe,
         stdoutPipe: stdoutPipe,
         stderrPipe: stderrPipe
     )
+}
+
+private func terminateManagedRuntime(
+    processIdentity: ProcessIdentity,
+    processGroupIdentity: ProcessIdentity,
+    signalDedicatedProcessGroup: Bool,
+    connection: AppServerSharedTransportConnection,
+    waitTask: Task<Void, Never>,
+    stdoutTask: Task<Void, Never>,
+    stderrTask: Task<Void, Never>,
+    isolatedCodexHomeURL: URL?
+) async {
+    await connection.shutdown()
+    let excludedGroupLeaderPIDs = trackedGroupExclusionSet(
+        processIdentity: processIdentity,
+        processGroupIdentity: processGroupIdentity,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup
+    )
+    let individuallyTrackedGroupLeaderPID = individuallyTrackedProcessGroupLeaderPID(
+        processIdentity: processIdentity,
+        processGroupIdentity: processGroupIdentity,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup
+    )
+    var trackedChildGroupIdentities = descendantProcessGroupIdentities(
+        rootIdentity: processIdentity,
+        excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+    )
+    var trackedExcludedGroupProcessIdentities = individuallyTrackedGroupLeaderPID.map {
+        descendantProcessIdentities(rootIdentity: processIdentity, inProcessGroup: $0)
+    } ?? []
+    signalManagedRuntime(
+        processIdentity: processIdentity,
+        processGroupLeaderPID: processGroupIdentity.pid,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup,
+        signal: SIGTERM
+    )
+    signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
+    signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
+
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while ContinuousClock.now < deadline {
+        trackedChildGroupIdentities = mergeProcessIdentities(
+            trackedChildGroupIdentities,
+            descendantProcessGroupIdentities(
+                rootIdentity: processIdentity,
+                excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+            )
+        )
+        if let individuallyTrackedGroupLeaderPID {
+            trackedExcludedGroupProcessIdentities = mergeProcessIdentities(
+                trackedExcludedGroupProcessIdentities,
+                descendantProcessIdentities(
+                    rootIdentity: processIdentity,
+                    inProcessGroup: individuallyTrackedGroupLeaderPID
+                )
+            )
+        }
+        if managedRuntimeStopped(
+            processIdentity: processIdentity,
+            processGroupLeaderPID: processGroupIdentity.pid,
+            signalDedicatedProcessGroup: signalDedicatedProcessGroup
+        ) && hasLiveTrackedProcessGroups(trackedChildGroupIdentities) == false
+            && hasLiveTrackedProcesses(trackedExcludedGroupProcessIdentities) == false
+        {
+            break
+        }
+        signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
+        signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+
+    trackedChildGroupIdentities = mergeProcessIdentities(
+        trackedChildGroupIdentities,
+        descendantProcessGroupIdentities(
+            rootIdentity: processIdentity,
+            excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+        )
+    )
+    if let individuallyTrackedGroupLeaderPID {
+        trackedExcludedGroupProcessIdentities = mergeProcessIdentities(
+            trackedExcludedGroupProcessIdentities,
+            descendantProcessIdentities(
+                rootIdentity: processIdentity,
+                inProcessGroup: individuallyTrackedGroupLeaderPID
+            )
+        )
+    }
+    if managedRuntimeStopped(
+        processIdentity: processIdentity,
+        processGroupLeaderPID: processGroupIdentity.pid,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup
+    ) == false
+        || hasLiveTrackedProcessGroups(trackedChildGroupIdentities)
+        || hasLiveTrackedProcesses(trackedExcludedGroupProcessIdentities)
+    {
+        signalManagedRuntime(
+            processIdentity: processIdentity,
+            processGroupLeaderPID: processGroupIdentity.pid,
+            signalDedicatedProcessGroup: signalDedicatedProcessGroup,
+            signal: SIGKILL
+        )
+        signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGKILL)
+        signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGKILL)
+    }
+
+    _ = await waitTask.result
+    _ = await stdoutTask.value
+    _ = await stderrTask.value
+    if let isolatedCodexHomeURL {
+        try? FileManager.default.removeItem(at: isolatedCodexHomeURL)
+    }
+}
+
+private func terminateFailedSpawnedProcess(
+    processIdentity: ProcessIdentity,
+    processGroupLeaderPID: pid_t,
+    signalDedicatedProcessGroup: Bool
+) async {
+    let excludedGroupLeaderPIDs: Set<pid_t> =
+        signalDedicatedProcessGroup && processGroupLeaderPID > 0 ? [processGroupLeaderPID] : []
+    let individuallyTrackedGroupLeaderPID = currentProcessGroupID(of: processIdentity.pid)
+    var trackedChildGroupIdentities = descendantProcessGroupIdentities(
+        rootIdentity: processIdentity,
+        excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+    )
+    var trackedExcludedGroupProcessIdentities = individuallyTrackedGroupLeaderPID.map {
+        descendantProcessIdentities(rootIdentity: processIdentity, inProcessGroup: $0)
+    } ?? []
+    signalManagedRuntime(
+        processIdentity: processIdentity,
+        processGroupLeaderPID: processGroupLeaderPID,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup,
+        signal: SIGTERM
+    )
+    signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
+    signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
+
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while ContinuousClock.now < deadline {
+        trackedChildGroupIdentities = mergeProcessIdentities(
+            trackedChildGroupIdentities,
+            descendantProcessGroupIdentities(
+                rootIdentity: processIdentity,
+                excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+            )
+        )
+        if let individuallyTrackedGroupLeaderPID {
+            trackedExcludedGroupProcessIdentities = mergeProcessIdentities(
+                trackedExcludedGroupProcessIdentities,
+                descendantProcessIdentities(
+                    rootIdentity: processIdentity,
+                    inProcessGroup: individuallyTrackedGroupLeaderPID
+                )
+            )
+        }
+        let result = waitpid(processIdentity.pid, nil, WNOHANG)
+        if (result == processIdentity.pid || (result == -1 && errno == ECHILD)),
+           hasLiveTrackedProcessGroups(trackedChildGroupIdentities) == false,
+           hasLiveTrackedProcesses(trackedExcludedGroupProcessIdentities) == false
+        {
+            return
+        }
+        signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGTERM)
+        signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGTERM)
+        try? await Task.sleep(for: .milliseconds(100))
+    }
+
+    trackedChildGroupIdentities = mergeProcessIdentities(
+        trackedChildGroupIdentities,
+        descendantProcessGroupIdentities(
+            rootIdentity: processIdentity,
+            excludingGroupLeaderPIDs: excludedGroupLeaderPIDs
+        )
+    )
+    if let individuallyTrackedGroupLeaderPID {
+        trackedExcludedGroupProcessIdentities = mergeProcessIdentities(
+            trackedExcludedGroupProcessIdentities,
+            descendantProcessIdentities(
+                rootIdentity: processIdentity,
+                inProcessGroup: individuallyTrackedGroupLeaderPID
+            )
+        )
+    }
+    signalManagedRuntime(
+        processIdentity: processIdentity,
+        processGroupLeaderPID: processGroupLeaderPID,
+        signalDedicatedProcessGroup: signalDedicatedProcessGroup,
+        signal: SIGKILL
+    )
+    signalTrackedProcessGroups(trackedChildGroupIdentities, signal: SIGKILL)
+    signalTrackedProcesses(trackedExcludedGroupProcessIdentities, signal: SIGKILL)
+    reapSpawnedProcess(pid: processIdentity.pid)
+}
+
+private func signalManagedRuntime(
+    processIdentity: ProcessIdentity,
+    processGroupLeaderPID: pid_t,
+    signalDedicatedProcessGroup: Bool,
+    signal: Int32
+) {
+    if isMatchingProcessIdentity(processIdentity) {
+        _ = kill(processIdentity.pid, signal)
+    }
+    if signalDedicatedProcessGroup, processGroupLeaderPID > 0 {
+        _ = killpg(processGroupLeaderPID, signal)
+    }
+}
+
+private func managedRuntimeStopped(
+    processIdentity: ProcessIdentity,
+    processGroupLeaderPID: pid_t,
+    signalDedicatedProcessGroup: Bool
+) -> Bool {
+    let processStopped = isMatchingProcessIdentity(processIdentity) == false
+    guard signalDedicatedProcessGroup else {
+        return processStopped
+    }
+    return processStopped && isProcessGroupGone(processGroupLeaderPID)
+}
+
+private func trackedGroupExclusionSet(
+    processIdentity: ProcessIdentity,
+    processGroupIdentity: ProcessIdentity,
+    signalDedicatedProcessGroup: Bool
+) -> Set<pid_t> {
+    var excluded: Set<pid_t> = []
+    if signalDedicatedProcessGroup {
+        excluded.insert(processGroupIdentity.pid)
+    }
+    if let currentProcessGroupID = currentProcessGroupID(of: processIdentity.pid) {
+        excluded.insert(currentProcessGroupID)
+    }
+    return excluded.filter { $0 > 0 }
+}
+
+private func individuallyTrackedProcessGroupLeaderPID(
+    processIdentity: ProcessIdentity,
+    processGroupIdentity: ProcessIdentity,
+    signalDedicatedProcessGroup: Bool
+) -> pid_t? {
+    guard let currentProcessGroupID = currentProcessGroupID(of: processIdentity.pid),
+          currentProcessGroupID > 0
+    else {
+        return nil
+    }
+    if signalDedicatedProcessGroup, currentProcessGroupID == processGroupIdentity.pid {
+        return nil
+    }
+    return currentProcessGroupID
+}
+
+private func descendantProcessGroupIdentities(
+    rootIdentity: ProcessIdentity,
+    excludingGroupLeaderPIDs: Set<pid_t>
+) -> [ProcessIdentity] {
+    guard canTraverseDescendants(of: rootIdentity) else {
+        return []
+    }
+
+    var pending = snapshotChildProcessIdentities(of: rootIdentity)
+    var visited: Set<ProcessIdentity> = []
+    var identities: Set<ProcessIdentity> = []
+
+    while let identity = pending.popLast() {
+        if visited.insert(identity).inserted == false {
+            continue
+        }
+        pending.append(contentsOf: snapshotChildProcessIdentities(of: identity))
+
+        let groupLeaderPID = currentProcessGroupID(of: identity.pid) ?? identity.pid
+        guard groupLeaderPID > 0,
+              excludingGroupLeaderPIDs.contains(groupLeaderPID) == false,
+              let groupLeaderStartTime = processStartTime(of: groupLeaderPID)
+        else {
+            continue
+        }
+
+        identities.insert(
+            ProcessIdentity(
+                pid: groupLeaderPID,
+                startTime: groupLeaderStartTime
+            )
+        )
+    }
+
+    return Array(identities)
+}
+
+private func descendantProcessIdentities(rootIdentity: ProcessIdentity) -> [ProcessIdentity] {
+    guard canTraverseDescendants(of: rootIdentity) else {
+        return []
+    }
+
+    var pending = snapshotChildProcessIdentities(of: rootIdentity)
+    var visited: Set<ProcessIdentity> = []
+    var identities: [ProcessIdentity] = []
+
+    while let identity = pending.popLast() {
+        if visited.insert(identity).inserted == false {
+            continue
+        }
+        identities.append(identity)
+        pending.append(contentsOf: snapshotChildProcessIdentities(of: identity))
+    }
+
+    return identities
+}
+
+private func descendantProcessIdentities(
+    rootIdentity: ProcessIdentity,
+    inProcessGroup processGroupLeaderPID: pid_t
+) -> [ProcessIdentity] {
+    guard processGroupLeaderPID > 0 else {
+        return []
+    }
+
+    return descendantProcessIdentities(rootIdentity: rootIdentity).filter { identity in
+        currentProcessGroupID(of: identity.pid) == processGroupLeaderPID
+    }
+}
+
+private func canTraverseDescendants(of identity: ProcessIdentity) -> Bool {
+    processStartTime(of: identity.pid) == identity.startTime
+}
+
+private func snapshotChildProcessIdentities(of parentIdentity: ProcessIdentity) -> [ProcessIdentity] {
+    guard canTraverseDescendants(of: parentIdentity) else {
+        return []
+    }
+
+    return childProcessIDs(of: parentIdentity.pid).compactMap { childPID in
+        guard let startTime = processStartTime(of: childPID) else {
+            return nil
+        }
+        return ProcessIdentity(pid: childPID, startTime: startTime)
+    }
+}
+
+private func mergeProcessIdentities(
+    _ lhs: [ProcessIdentity],
+    _ rhs: [ProcessIdentity]
+) -> [ProcessIdentity] {
+    Array(Set(lhs).union(rhs))
+}
+
+private func signalTrackedProcessGroups(
+    _ identities: [ProcessIdentity],
+    signal: Int32
+) {
+    for identity in Set(identities) where isTrackedProcessGroupAlive(identity) {
+        _ = killpg(identity.pid, signal)
+    }
+}
+
+private func hasLiveTrackedProcessGroups(_ identities: [ProcessIdentity]) -> Bool {
+    Set(identities).contains { identity in
+        isTrackedProcessGroupAlive(identity)
+    }
+}
+
+private func signalTrackedProcesses(
+    _ identities: [ProcessIdentity],
+    signal: Int32
+) {
+    for identity in Set(identities) where isMatchingProcessIdentity(identity) {
+        _ = kill(identity.pid, signal)
+    }
+}
+
+private func hasLiveTrackedProcesses(_ identities: [ProcessIdentity]) -> Bool {
+    Set(identities).contains { identity in
+        isMatchingProcessIdentity(identity)
+    }
+}
+
+private func isTrackedProcessGroupAlive(_ identity: ProcessIdentity) -> Bool {
+    let probe = killpg(identity.pid, 0)
+    guard probe == 0 || errno == EPERM else {
+        return false
+    }
+    if let currentStartTime = processStartTime(of: identity.pid) {
+        return currentStartTime == identity.startTime
+    }
+    return true
+}
+
+private func isProcessGroupGone(_ groupLeaderPID: pid_t) -> Bool {
+    guard groupLeaderPID > 0 else {
+        return true
+    }
+    errno = 0
+    let result = killpg(groupLeaderPID, 0)
+    return result == -1 && errno == ESRCH
 }
 
 private func reapSpawnedProcess(pid: pid_t) {
@@ -926,12 +1225,6 @@ private func reapSpawnedProcess(pid: pid_t) {
         }
         return
     }
-}
-
-private func reapSpawnedProcessAsync(pid: pid_t) async {
-    await Task.detached { @Sendable in
-        reapSpawnedProcess(pid: pid)
-    }.value
 }
 
 private func terminateSpawnedProcessWithoutIdentity(pid: pid_t) async {
@@ -1048,132 +1341,4 @@ package func isolatedCodexHomeConfigText(from configText: String) -> String {
     }
 
     return keptLines.joined(separator: "\n")
-}
-
-private func isSupervisorProcessGroupAlive(_ identity: ProcessIdentity) -> Bool {
-    let probe = killpg(identity.pid, 0)
-    guard probe == 0 || errno == EPERM else {
-        return false
-    }
-    if let currentStartTime = processStartTime(of: identity.pid) {
-        return currentStartTime == identity.startTime
-    }
-    return true
-}
-
-private func descendantProcessGroupIdentities(
-    rootIdentity: ProcessIdentity,
-    excludingGroupLeaderPID: pid_t
-) -> [ProcessIdentity] {
-    guard canTraverseDescendants(of: rootIdentity) else {
-        return []
-    }
-
-    var pending = snapshotChildProcessIdentities(of: rootIdentity)
-    var visited: Set<ProcessIdentity> = []
-    var identities: Set<ProcessIdentity> = []
-
-    while let identity = pending.popLast() {
-        if visited.insert(identity).inserted == false {
-            continue
-        }
-        pending.append(contentsOf: snapshotChildProcessIdentities(of: identity))
-
-        let groupLeaderPID = currentProcessGroupID(of: identity.pid) ?? identity.pid
-        guard groupLeaderPID > 0,
-              groupLeaderPID != excludingGroupLeaderPID,
-              let groupLeaderStartTime = processStartTime(of: groupLeaderPID)
-        else {
-            continue
-        }
-        identities.insert(
-            ProcessIdentity(
-                pid: groupLeaderPID,
-                startTime: groupLeaderStartTime
-            )
-        )
-    }
-
-    return Array(identities)
-}
-
-private func descendantProcessIdentities(rootIdentity: ProcessIdentity) -> [ProcessIdentity] {
-    guard canTraverseDescendants(of: rootIdentity) else {
-        return []
-    }
-
-    var pending = snapshotChildProcessIdentities(of: rootIdentity)
-    var visited: Set<ProcessIdentity> = []
-    var identities: [ProcessIdentity] = []
-
-    while let identity = pending.popLast() {
-        if visited.insert(identity).inserted == false {
-            continue
-        }
-        identities.append(identity)
-        pending.append(contentsOf: snapshotChildProcessIdentities(of: identity))
-    }
-
-    return identities
-}
-
-private func mergeProcessIdentities(
-    _ lhs: [ProcessIdentity],
-    _ rhs: [ProcessIdentity]
-) -> [ProcessIdentity] {
-    Array(Set(lhs).union(rhs))
-}
-
-private func canTraverseDescendants(of identity: ProcessIdentity) -> Bool {
-    processStartTime(of: identity.pid) == identity.startTime
-}
-
-private func snapshotChildProcessIdentities(of parentIdentity: ProcessIdentity) -> [ProcessIdentity] {
-    guard canTraverseDescendants(of: parentIdentity) else {
-        return []
-    }
-    return childProcessIDs(of: parentIdentity.pid).compactMap { childPID in
-        guard let startTime = processStartTime(of: childPID) else {
-            return nil
-        }
-        return .init(pid: childPID, startTime: startTime)
-    }
-}
-
-private func signalSupervisorChildGroups(
-    _ identities: [ProcessIdentity],
-    signal: Int32
-) {
-    for identity in Set(identities) where isSupervisorProcessGroupAlive(identity) {
-        _ = killpg(identity.pid, signal)
-    }
-}
-
-private func hasLiveSupervisorChildGroups(_ identities: [ProcessIdentity]) -> Bool {
-    Set(identities).contains { identity in
-        isSupervisorProcessGroupAlive(identity)
-    }
-}
-
-private func signalProcesses(
-    _ identities: [ProcessIdentity],
-    signal: Int32
-) {
-    for identity in Set(identities) where isMatchingProcessIdentity(identity) {
-        _ = kill(identity.pid, signal)
-    }
-}
-
-private func hasLiveProcesses(_ identities: [ProcessIdentity]) -> Bool {
-    Set(identities).contains { identity in
-        isMatchingProcessIdentity(identity)
-    }
-}
-
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return body()
-    }
 }
