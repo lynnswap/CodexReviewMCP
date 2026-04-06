@@ -221,6 +221,54 @@ struct AppServerSupervisorTests {
         #expect(response.platformOs == "Darwin")
     }
 
+    @Test func supervisorStreamsLargeConfigResponseOverChunkedStdout() async throws {
+        let environment = try makeSupervisorEnvironment()
+        let commandURL = try makeFakeSupervisorCommand(
+            respondsToInitialize: true,
+            configResponseCharacterCount: 64_000,
+            responseChunkSize: 113
+        )
+        let supervisor = AppServerSupervisor(
+            configuration: .init(
+                codexCommand: commandURL.path,
+                environment: environment,
+                startupTimeout: .seconds(1)
+            )
+        )
+        defer {
+            Task {
+                await supervisor.shutdown()
+            }
+            try? FileManager.default.removeItem(at: commandURL)
+        }
+
+        _ = try await supervisor.prepare()
+        let transport = try await supervisor.checkoutTransport(sessionID: "session-a")
+        let response: AppServerConfigReadResponse = try await withThrowingTaskGroup(
+            of: AppServerConfigReadResponse.self
+        ) { group in
+            group.addTask {
+                try await transport.request(
+                    method: "config/read",
+                    params: AppServerConfigReadParams(
+                        cwd: FileManager.default.currentDirectoryPath,
+                        includeLayers: false
+                    ),
+                    responseType: AppServerConfigReadResponse.self
+                )
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                throw TimeoutError()
+            }
+            defer { group.cancelAll() }
+            return try await #require(group.next())
+        }
+
+        #expect(response.config.model == "gpt-5.4-mini")
+        #expect(response.config.reviewModel == "gpt-5.4-mini")
+    }
+
     @Test func prepareTimeoutStopsStartingProcess() async throws {
         let environment = try makeSupervisorEnvironment()
         let pidFileURL = URL(fileURLWithPath: environment["HOME"]!)
@@ -275,13 +323,17 @@ private func makeSupervisorEnvironment() throws -> [String: String] {
 private func makeFakeSupervisorCommand(
     respondsToInitialize: Bool,
     pidFileURL: URL? = nil,
-    autoExitSeconds: Double? = nil
+    autoExitSeconds: Double? = nil,
+    configResponseCharacterCount: Int? = nil,
+    responseChunkSize: Int? = nil
 ) throws -> URL {
     let scriptURL = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: false)
     let pidFileLiteral = pythonLiteral(pidFileURL?.path)
     let respondsToInitializeLiteral = respondsToInitialize ? "True" : "False"
     let autoExitSecondsLiteral = autoExitSeconds.map { String(describing: $0) } ?? "None"
+    let configResponseCharacterCountLiteral = configResponseCharacterCount.map(String.init) ?? "None"
+    let responseChunkSizeLiteral = responseChunkSize.map(String.init) ?? "None"
     let script = """
     #!/usr/bin/env python3
     import json
@@ -292,6 +344,8 @@ private func makeFakeSupervisorCommand(
     pid_file = \(pidFileLiteral)
     responds_to_initialize = \(respondsToInitializeLiteral)
     auto_exit_seconds = \(autoExitSecondsLiteral)
+    config_response_character_count = \(configResponseCharacterCountLiteral)
+    response_chunk_size = \(responseChunkSizeLiteral)
 
     if pid_file is not None:
         with open(pid_file, "w", encoding="utf-8") as handle:
@@ -302,6 +356,18 @@ private func makeFakeSupervisorCommand(
         sys.exit(2)
 
     deadline = None if auto_exit_seconds is None else time.monotonic() + float(auto_exit_seconds)
+
+    def write_json_line(message):
+        payload = (json.dumps(message) + "\\n").encode("utf-8")
+        if response_chunk_size is None:
+            sys.stdout.buffer.write(payload)
+            sys.stdout.buffer.flush()
+            return
+
+        chunk_size = int(response_chunk_size)
+        for index in range(0, len(payload), chunk_size):
+            sys.stdout.buffer.write(payload[index:index + chunk_size])
+            sys.stdout.buffer.flush()
 
     while True:
         if deadline is not None and time.monotonic() >= deadline:
@@ -319,8 +385,19 @@ private func makeFakeSupervisorCommand(
                     "platformOs": "Darwin"
                 }
             }
-            sys.stdout.buffer.write((json.dumps(response) + "\\n").encode("utf-8"))
-            sys.stdout.buffer.flush()
+            write_json_line(response)
+        elif message.get("method") == "config/read" and config_response_character_count is not None:
+            response = {
+                "id": message.get("id"),
+                "result": {
+                    "config": {
+                        "model": "gpt-5.4-mini",
+                        "review_model": "gpt-5.4-mini",
+                        "padding": "x" * int(config_response_character_count)
+                    }
+                }
+            }
+            write_json_line(response)
     """
 
     try script.write(to: scriptURL, atomically: true, encoding: String.Encoding.utf8)
@@ -350,3 +427,5 @@ private actor ConnectionBox {
         storedConnection
     }
 }
+
+private struct TimeoutError: Error {}

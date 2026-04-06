@@ -295,7 +295,10 @@ package struct AppServerReviewRunner: Sendable {
         } catch {
             guard shouldFallbackFromConfigReadError(error) else {
                 throw ReviewBootstrapFailure(
-                    message: "Failed to read app-server config: \(error.localizedDescription)",
+                    message: bootstrapFailureMessage(
+                        prefix: "Failed to read app-server config: \(error.localizedDescription)",
+                        diagnostics: await diagnosticsTail()
+                    ),
                     model: effectiveModel
                 )
             }

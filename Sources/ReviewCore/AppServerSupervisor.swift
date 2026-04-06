@@ -66,6 +66,7 @@ package actor AppServerSupervisor: AppServerManaging {
     private let configuration: Configuration
     private var state: State = .stopped
     private var stderrLines: [String] = []
+    private var diagnosticTailLines: [String] = []
     private var pendingStandardErrorBytes = Data()
     private var trailingStandardErrorFragment = ""
     private var startingRuntimeState: AppServerRuntimeState?
@@ -125,7 +126,7 @@ package actor AppServerSupervisor: AppServerManaging {
     }
 
     package func diagnosticsTail() async -> String {
-        stderrLines.suffix(100).joined(separator: "\n")
+        diagnosticTailLines.suffix(100).joined(separator: "\n")
     }
 
     package func shutdown() async {
@@ -231,6 +232,7 @@ package actor AppServerSupervisor: AppServerManaging {
 
     private func launchProcessBackground(launchID: UUID) async {
         stderrLines.removeAll(keepingCapacity: false)
+        diagnosticTailLines.removeAll(keepingCapacity: false)
         pendingStandardErrorBytes.removeAll(keepingCapacity: false)
         trailingStandardErrorFragment = ""
 
@@ -370,41 +372,43 @@ package actor AppServerSupervisor: AppServerManaging {
         handle: FileHandle,
         connection: AppServerSharedTransportConnection
     ) -> Task<Void, Never> {
-        Task.detached {
-            var lineBuffer = Data()
-            do {
-                for try await byte in handle.bytes {
-                    lineBuffer.append(byte)
-                    if byte == UInt8(ascii: "\n") {
-                        logAppServerStandardOutputLine(lineBuffer)
-                        lineBuffer.removeAll(keepingCapacity: true)
-                    }
-                    await connection.receive(Data([byte]))
+        Task.detached { [weak self] in
+            var trailingFragment = ""
+            while true {
+                let data = handle.availableData
+                if data.isEmpty {
+                    break
                 }
-                if lineBuffer.isEmpty == false {
-                    logAppServerStandardOutputLine(lineBuffer)
+
+                let chunk = String(decoding: data, as: UTF8.self)
+                let split = splitStandardErrorChunk(
+                    existingFragment: trailingFragment,
+                    chunk: chunk
+                )
+                trailingFragment = split.trailingFragment
+                if split.completeLines.isEmpty == false {
+                    await self?.appendStandardOutputLines(split.completeLines)
                 }
-                await connection.finishReceiving(error: nil)
-            } catch {
-                if lineBuffer.isEmpty == false {
-                    logAppServerStandardOutputLine(lineBuffer)
-                }
-                await connection.finishReceiving(error: error)
+                await connection.receive(data)
             }
+
+            if trailingFragment.isEmpty == false {
+                await self?.appendStandardOutputLines([trailingFragment])
+            }
+            await connection.finishReceiving(error: nil)
         }
     }
 
     private func startCapturingStandardError(handle: FileHandle) -> Task<Void, Never> {
         Task.detached { [weak self] in
-            do {
-                for try await byte in handle.bytes {
-                    await self?.appendStandardErrorData(Data([byte]))
+            while true {
+                let data = handle.availableData
+                if data.isEmpty {
+                    break
                 }
-                await self?.flushStandardErrorFragment()
-            } catch {
-                await self?.flushStandardErrorFragment()
-                return
+                await self?.appendStandardErrorData(data)
             }
+            await self?.flushStandardErrorFragment()
         }
     }
 
@@ -459,8 +463,29 @@ package actor AppServerSupervisor: AppServerManaging {
                 continuation.yield(line)
             }
         }
+        appendDiagnosticTailLines(lines.map { "stderr: \($0)" })
         if stderrLines.count > 200 {
             stderrLines.removeFirst(stderrLines.count - 200)
+        }
+    }
+
+    private func appendStandardOutputLines(_ lines: [String]) {
+        let normalizedLines = lines.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { $0.isEmpty == false }
+        guard normalizedLines.isEmpty == false else {
+            return
+        }
+        for line in normalizedLines {
+            fputs("[codex-review-mcp.app-server.stdout] \(line)\n", stderr)
+        }
+        appendDiagnosticTailLines(normalizedLines.map { "stdout: \($0)" })
+    }
+
+    private func appendDiagnosticTailLines(_ lines: [String]) {
+        diagnosticTailLines.append(contentsOf: lines)
+        if diagnosticTailLines.count > 200 {
+            diagnosticTailLines.removeFirst(diagnosticTailLines.count - 200)
         }
     }
 

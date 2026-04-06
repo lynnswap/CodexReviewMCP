@@ -1094,6 +1094,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                     auth.updateState(state)
                 }
             }
+            await recycleSharedAppServerAfterAuthChange()
         } catch ReviewAuthError.cancelled {
             embeddedServerDebug("beginAuthentication cancelled")
             auth.updateState(.signedOut)
@@ -1119,6 +1120,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         do {
             let state = try await authManager.logout()
             auth.updateState(state)
+            await recycleSharedAppServerAfterAuthChange()
         } catch let error as ReviewAuthError {
             auth.updateState(.failed(error.errorDescription ?? "Failed to sign out."))
         } catch {
@@ -1369,6 +1371,30 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 return
             }
             await self.refreshAuthState(auth: auth)
+        }
+    }
+
+    private func recycleSharedAppServerAfterAuthChange() async {
+        guard let server else {
+            embeddedServerDebug("recycleSharedAppServerAfterAuthChange skipped no server")
+            return
+        }
+
+        embeddedServerDebug("recycleSharedAppServerAfterAuthChange begin")
+        await appServerManager.shutdown()
+        do {
+            let runtimeState = try await appServerManager.prepare()
+            writeRuntimeState(
+                endpointRecord: server.currentEndpointRecord(),
+                appServerRuntimeState: runtimeState
+            )
+            embeddedServerDebug(
+                "recycleSharedAppServerAfterAuthChange completed pid=\(runtimeState.pid)"
+            )
+        } catch {
+            embeddedServerDebug(
+                "recycleSharedAppServerAfterAuthChange failed error=\(error.localizedDescription)"
+            )
         }
     }
 

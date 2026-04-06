@@ -301,6 +301,7 @@ package actor AppServerSharedTransportConnection {
     private func processIncomingMessageData(_ data: Data) async {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             appServerTransportDebug("non-JSON stdio payload: \(String(decoding: data.prefix(400), as: UTF8.self))")
+            logAlwaysTransportEvent("incoming non-JSON payload bytes=\(data.count)")
             return
         }
 
@@ -321,13 +322,15 @@ package actor AppServerSharedTransportConnection {
                 appServerTransportDebug("response error for request id \(requestID): \(error.message)")
                 if let requestMethod {
                     logAlwaysTransportEvent(
-                        "incoming response error id=\(requestID) method=\(requestMethod) error=\(error.message)"
+                        "incoming response error id=\(requestID) method=\(requestMethod) bytes=\(data.count) error=\(error.message)"
                     )
                 }
                 continuation.resume(throwing: error)
             } else {
                 if let requestMethod {
-                    logAlwaysTransportEvent("incoming response success id=\(requestID) method=\(requestMethod)")
+                    logAlwaysTransportEvent(
+                        "incoming response success id=\(requestID) method=\(requestMethod) bytes=\(data.count)"
+                    )
                 }
                 continuation.resume(returning: data)
             }
@@ -343,7 +346,7 @@ package actor AppServerSharedTransportConnection {
             appServerTransportDebug("ignored stdio notification \(method)")
         } else {
             appServerTransportDebug("stdio notification \(method)")
-            logAlwaysTransportEvent("incoming notification method=\(method)")
+            logAlwaysTransportEvent("incoming notification method=\(method) bytes=\(data.count)")
             broadcastNotification(notification)
         }
     }
@@ -694,13 +697,10 @@ private func appServerTransportDebug(_ message: String) {
 }
 
 private func logAlwaysTransportPayload(_ prefix: String, text: String) {
-    guard let method = extractTransportMethod(from: text),
-          shouldAlwaysLogTransportMethod(method)
-    else {
+    guard let summary = transportPayloadSummary(from: text) else {
         return
     }
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    fputs("[codex-review-mcp.transport] \(prefix) \(trimmed)\n", stderr)
+    fputs("[codex-review-mcp.transport] \(prefix) \(summary) bytes=\(text.utf8.count)\n", stderr)
 }
 
 private func logAlwaysTransportEvent(_ message: String) {
@@ -720,6 +720,32 @@ private func shouldAlwaysLogTransportMethod(_ method: String) -> Bool {
     method == "initialize"
         || method == "initialized"
         || method.hasPrefix("account/")
+        || method == "config/read"
+}
+
+private func transportPayloadSummary(from text: String) -> String? {
+    guard let data = text.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        return nil
+    }
+
+    if let method = object["method"] as? String,
+       shouldAlwaysLogTransportMethod(method)
+    {
+        if let requestID = AppServerRequestID(jsonObject: object["id"] as Any) {
+            return "id=\(requestID) method=\(method)"
+        }
+        return "method=\(method)"
+    }
+
+    if let requestID = AppServerRequestID(jsonObject: object["id"] as Any),
+       object["result"] != nil || object["error"] != nil
+    {
+        return "response id=\(requestID)"
+    }
+
+    return nil
 }
 
 private let codexReviewMCPTransportDebugEnabled: Bool = {
