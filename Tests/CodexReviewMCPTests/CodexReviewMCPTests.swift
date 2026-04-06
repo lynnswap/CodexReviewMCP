@@ -1336,11 +1336,8 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
     func logout() async throws {}
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
-            Task {
-                self.setContinuation(continuation)
-            }
-        }
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
         return .init(
             stream: stream,
             cancel: { [self] in
@@ -1473,11 +1470,8 @@ private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
     func logout() async throws {}
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
-            Task {
-                self.setContinuation(continuation)
-            }
-        }
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
         return .init(stream: stream, cancel: {})
     }
 
@@ -1558,11 +1552,8 @@ private actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     func logout() async throws {}
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
-            Task {
-                self.setContinuation(continuation)
-            }
-        }
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
         return .init(stream: stream, cancel: {})
     }
 
@@ -1817,11 +1808,8 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
-            Task {
-                self.setContinuation(continuation)
-            }
-        }
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
         return .init(
             stream: stream,
             cancel: { [self] in

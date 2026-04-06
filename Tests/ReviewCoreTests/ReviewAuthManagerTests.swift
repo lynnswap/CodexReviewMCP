@@ -608,11 +608,8 @@ private actor FakeReviewAuthSession: ReviewAuthSession {
     }
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
-            Task {
-                self.setContinuation(continuation)
-            }
-        }
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
         return .init(
             stream: stream,
             cancel: { [self] in
@@ -729,11 +726,8 @@ private actor PostLoginDurableCheckReviewAuthSession: ReviewAuthSession {
     func logout() async throws {}
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
-            Task {
-                self.setContinuation(continuation)
-            }
-        }
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
         return .init(stream: stream, cancel: {})
     }
 
@@ -803,11 +797,8 @@ private actor EventuallyPersistentLoginReviewAuthSession: ReviewAuthSession {
     func logout() async throws {}
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
-            Task {
-                self.setContinuation(continuation)
-            }
-        }
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
         return .init(stream: stream, cancel: {})
     }
 
@@ -881,11 +872,8 @@ private actor SignedOutThenUnavailableReviewAuthSession: ReviewAuthSession {
     func logout() async throws {}
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        let stream = AsyncThrowingStream<AppServerServerNotification, Error> { continuation in
-            Task {
-                self.setContinuation(continuation)
-            }
-        }
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
         return .init(stream: stream, cancel: {})
     }
 
