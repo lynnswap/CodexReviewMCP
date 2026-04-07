@@ -827,6 +827,43 @@ struct CodexReviewUITests {
         #expect(transport.logReloadCountForTesting == reloadCount)
     }
 
+    @Test func coalescedLogRevisionFallsBackToFullReload() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-coalesced",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Uncommitted changes",
+            threadID: UUID().uuidString,
+            turnID: UUID().uuidString,
+            status: .running,
+            startedAt: Date(timeIntervalSince1970: 200),
+            summary: "Running review.",
+            logEntries: [
+                .init(kind: .agentMessage, groupID: "msg_1", text: "Initial")
+            ]
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        let updateRenderCount = transport.renderCountForTesting
+        let reloadCount = transport.logReloadCountForTesting
+        job.appendLogEntry(.init(kind: .agentMessage, groupID: "msg_1", text: " one"))
+        job.appendLogEntry(.init(kind: .agentMessage, groupID: "msg_1", text: " two"))
+
+        let snapshot = try await awaitTransportRender(transport, after: updateRenderCount)
+        #expect(snapshot.log == "Initial one two")
+        #expect(transport.logReloadCountForTesting >= reloadCount + 1)
+    }
+
     @Test func selectedJobGroupedReplacementUsesReloadPath() async throws {
         guard #available(macOS 26.0, *) else {
             return

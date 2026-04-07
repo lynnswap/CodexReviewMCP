@@ -26,6 +26,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private var selectedJobObservationGeneration: UInt64 = 0
     private var showingEmptyState = true
     private var displayedJobID: String?
+    private var displayedLogRevision: UInt64?
 #if DEBUG
     private var renderCountForTestingStorage = 0
     private var renderWaitersForTesting: [Int: [CheckedContinuation<Void, Never>]] = [:]
@@ -156,7 +157,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
             else {
                 return
             }
-            if self.renderLogUpdate(selectedJob.lastMonitorUpdate) {
+            let logChanged = self.renderObservedLogUpdate(selectedJob)
+            if logChanged {
                 self.noteRenderForTesting()
             }
         }
@@ -171,6 +173,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
             preserveScrollPosition: preserveScrollPosition
         )
         displayedJobID = job.id
+        displayedLogRevision = job.reviewMonitorRevision
         if metadataChanged || logChanged {
             noteRenderForTesting()
         }
@@ -247,6 +250,27 @@ final class ReviewMonitorTransportViewController: NSViewController {
     }
 
     @discardableResult
+    private func renderObservedLogUpdate(_ job: CodexReviewJob) -> Bool {
+        let preserveScrollPosition = displayedJobID == job.id && showingEmptyState == false
+        let currentRevision = job.reviewMonitorRevision
+        let revisionDelta = displayedLogRevision.map { currentRevision &- $0 }
+
+        let didChange: Bool
+        if revisionDelta == 1 {
+            didChange = renderLogUpdate(job.lastMonitorUpdate)
+        } else {
+            didChange = renderSelectedJobLog(
+                job.reviewMonitorLogText,
+                preserveScrollPosition: preserveScrollPosition
+            )
+        }
+
+        displayedLogRevision = currentRevision
+        displayedJobID = job.id
+        return didChange
+    }
+
+    @discardableResult
     private func showJobContentIfNeeded() -> Bool {
         guard showingEmptyState else {
             return false
@@ -273,6 +297,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
         turnLabel.stringValue = ""
         summaryLabel.stringValue = ""
         displayedJobID = nil
+        displayedLogRevision = nil
 
         titleLabel.isHidden = true
         metadataStack.isHidden = true
