@@ -24,7 +24,6 @@ private struct StatusView: View {
     let store: CodexReviewStore
 
     var body: some View {
-        Divider()
         Menu{
             authStatusSection
             if store.serverState.isRestartAvailable{
@@ -39,11 +38,12 @@ private struct StatusView: View {
             authMenuSection
         }label:{
             Label("Settings",systemImage:"gear")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 8)
+                .contentShape(.rect)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.bottom, 8)
         .sheet(isPresented: Binding(
             get: { store.auth.isAuthenticating },
             set: { isPresented in

@@ -36,6 +36,9 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         self.store = store
         self.uiState = uiState
         super.init(nibName: nil, bundle: nil)
+        
+        view.window?.isOpaque = false
+        view.window?.backgroundColor = .clear
     }
 
     @available(*, unavailable)
@@ -49,6 +52,9 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         let sidebarViewController = ReviewMonitorSidebarViewController(uiState: uiState)
         let transportViewController = ReviewMonitorTransportViewController(uiState: uiState)
         let statusAccessoryViewController = ReviewMonitorServerStatusAccessoryViewController(store: store)
+        if #available(macOS 26.1, *){
+            statusAccessoryViewController.preferredScrollEdgeEffectStyle = .soft
+        }
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
         sidebarItem.allowsFullHeightLayout = true
         sidebarItem.titlebarSeparatorStyle = .none
@@ -104,13 +110,6 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         guard let window = view.window else {
             return
         }
-
-        window.styleMask.insert(.fullSizeContentView)
-        window.titlebarAppearsTransparent = true
-        window.titlebarSeparatorStyle = .none
-        window.toolbarStyle = .unified
-        window.titleVisibility = .visible
-
         if toolbar == nil {
             let toolbar = NSToolbar(identifier: "CodexReviewMCP.ReviewMonitor.Toolbar")
             toolbar.delegate = self
@@ -121,9 +120,16 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         }
 
         if window.toolbar !== toolbar {
+            window.styleMask.insert(.fullSizeContentView)
+            window.toolbarStyle = .unified
+            window.titleVisibility = .visible
+            
             window.toolbar = toolbar
+            Task {
+                window.titlebarAppearsTransparent = true
+                window.titlebarSeparatorStyle = .line
+            }
         }
-
     }
 
     private func triggerStoreStartIfNeeded() {

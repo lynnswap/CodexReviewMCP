@@ -7,5 +7,6 @@ struct ContentView: View {
 
     var body: some View {
         ReviewMonitorContentView(store: store)
+            .background(.ultraThickMaterial)
     }
 }

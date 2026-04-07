@@ -55,7 +55,7 @@ struct CodexReviewUITests {
         #expect(viewController.toolbarIdentifiersForTesting.contains(.sidebarTrackingSeparator))
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .visible)
-        #expect(window.title == "")
+        #expect(window.title == "Untitled")
         #expect(window.subtitle == "")
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
