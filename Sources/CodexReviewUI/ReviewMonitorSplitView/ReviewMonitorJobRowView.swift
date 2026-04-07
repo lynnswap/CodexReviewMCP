@@ -34,7 +34,7 @@ struct ReviewMonitorJobRowView: View {
         } icon: {
             ZStack {
                 Image(systemName: "circle.fill")
-                    .foregroundStyle(job.status.color)
+                    .foregroundStyle(.clear)
                 if job.status == .running {
                     ProgressView()
                         .controlSize(.mini)
