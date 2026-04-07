@@ -13,10 +13,9 @@ final class ReviewMonitorTransportViewController: NSViewController {
     )
     private var uiStateObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationHandles: Set<ObservationHandle> = []
-    private var selectedJobObservationGeneration: UInt64 = 0
+    private var boundJob: CodexReviewJob?
     private var showingEmptyState = true
-    private var displayedJobID: String?
-    private var displayedLogRevision: UInt64?
+    private var logScrollTargetsByJobID: [String: ReviewMonitorLogScrollView.ScrollRestorationTarget] = [:]
 #if DEBUG
     private var renderCountForTestingStorage = 0
     private var renderWaitersForTesting: [Int: [CheckedContinuation<Void, Never>]] = [:]
@@ -40,11 +39,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         configureHierarchy()
-        if let selectedJob = uiState.selectedJobEntry {
-            bindSelectedJob(selectedJob)
-        } else {
-            renderEmptyState()
-        }
+        bindSelectedJob(uiState.selectedJobEntry)
     }
 
     private func configureHierarchy() {
@@ -69,31 +64,35 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private func bindObservation() {
         uiStateObservationHandles.removeAll()
         uiState.observe(\.selectedJobEntry) { [weak self] selectedJob in
-            self?.bindSelectedJob(selectedJob)
+            guard let self, self.isViewLoaded else {
+                return
+            }
+            self.bindSelectedJob(selectedJob)
         }
         .store(in: &uiStateObservationHandles)
     }
 
     private func bindSelectedJob(_ selectedJob: CodexReviewJob?) {
-        selectedJobObservationGeneration &+= 1
+        cacheBoundJobScrollTarget()
         selectedJobObservationHandles.removeAll()
+        boundJob = selectedJob
 
         guard let selectedJob else {
             renderEmptyState()
             return
         }
 
-        let generation = selectedJobObservationGeneration
-        renderSelectedJob(selectedJob)
+        renderSelectedJob(
+            selectedJob,
+            restorationTarget: restorationTarget(selectedJob),
+            allowIncrementalUpdate: false
+        )
 
-        selectedJob.observe(\.reviewMonitorRevision) { [weak self, weak selectedJob] _ in
-            guard let self,
-                  let selectedJob,
-                  self.selectedJobObservationGeneration == generation
-            else {
+        selectedJob.observe(\.reviewMonitorLogText) { [weak self] text in
+            guard let self else {
                 return
             }
-            let logChanged = self.renderObservedLogUpdate(selectedJob)
+            let logChanged = self.renderBoundJobLog(text)
             if logChanged {
                 self.noteRenderForTesting()
             }
@@ -101,55 +100,49 @@ final class ReviewMonitorTransportViewController: NSViewController {
         .store(in: &selectedJobObservationHandles)
     }
 
-    private func renderSelectedJob(_ job: CodexReviewJob) {
-        let preserveScrollPosition = displayedJobID == job.id && showingEmptyState == false
+    private func renderSelectedJob(
+        _ job: CodexReviewJob,
+        restorationTarget: ReviewMonitorLogScrollView.ScrollRestorationTarget,
+        allowIncrementalUpdate: Bool
+    ) {
         let logChanged = renderSelectedJobLog(
             job.reviewMonitorLogText,
-            preserveScrollPosition: preserveScrollPosition
+            restorationTarget: restorationTarget,
+            allowIncrementalUpdate: allowIncrementalUpdate
         )
-        displayedJobID = job.id
-        displayedLogRevision = job.reviewMonitorRevision
         if logChanged {
             noteRenderForTesting()
         }
     }
 
     @discardableResult
-    private func renderLogUpdate(_ update: ReviewMonitorLogUpdate) -> Bool {
-        let visibilityChanged = showJobContentIfNeeded()
-        let logChanged = logScrollView.apply(update: update)
-        return visibilityChanged || logChanged
-    }
-
-    @discardableResult
     private func renderSelectedJobLog(
         _ text: String,
-        preserveScrollPosition: Bool
+        restorationTarget: ReviewMonitorLogScrollView.ScrollRestorationTarget,
+        allowIncrementalUpdate: Bool
     ) -> Bool {
         let visibilityChanged = showJobContentIfNeeded()
-        let logChanged = logScrollView.replaceText(text, preserveScrollPosition: preserveScrollPosition)
+        if visibilityChanged {
+            view.layoutSubtreeIfNeeded()
+        }
+        let logChanged = logScrollView.replaceText(
+            text,
+            restoring: restorationTarget,
+            allowIncrementalUpdate: allowIncrementalUpdate
+        )
         return visibilityChanged || logChanged
     }
 
     @discardableResult
-    private func renderObservedLogUpdate(_ job: CodexReviewJob) -> Bool {
-        let preserveScrollPosition = displayedJobID == job.id && showingEmptyState == false
-        let currentRevision = job.reviewMonitorRevision
-        let revisionDelta = displayedLogRevision.map { currentRevision &- $0 }
-
-        let didChange: Bool
-        if revisionDelta == 1 {
-            didChange = renderLogUpdate(job.lastMonitorUpdate)
-        } else {
-            didChange = renderSelectedJobLog(
-                job.reviewMonitorLogText,
-                preserveScrollPosition: preserveScrollPosition
-            )
+    private func renderBoundJobLog(_ text: String) -> Bool {
+        guard boundJob != nil else {
+            return false
         }
-
-        displayedLogRevision = currentRevision
-        displayedJobID = job.id
-        return didChange
+        return renderSelectedJobLog(
+            text,
+            restorationTarget: logScrollView.currentScrollRestorationTarget,
+            allowIncrementalUpdate: true
+        )
     }
 
     @discardableResult
@@ -168,9 +161,6 @@ final class ReviewMonitorTransportViewController: NSViewController {
         let clearedLog = logScrollView.clear()
         let wasEmpty = showingEmptyState
 
-        displayedJobID = nil
-        displayedLogRevision = nil
-
         logScrollView.isHidden = true
         emptyStateView.isHidden = false
         showingEmptyState = true
@@ -178,6 +168,19 @@ final class ReviewMonitorTransportViewController: NSViewController {
         if wasEmpty == false || clearedLog {
             noteRenderForTesting()
         }
+    }
+
+    private func cacheBoundJobScrollTarget() {
+        guard let boundJob, showingEmptyState == false else {
+            return
+        }
+        logScrollTargetsByJobID[boundJob.id] = logScrollView.currentScrollRestorationTarget
+    }
+
+    private func restorationTarget(
+        _ job: CodexReviewJob
+    ) -> ReviewMonitorLogScrollView.ScrollRestorationTarget {
+        return logScrollTargetsByJobID[job.id] ?? .bottom
     }
 
     private func noteRenderForTesting() {

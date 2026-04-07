@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import Testing
 @_spi(Testing) @testable import CodexReviewModel
-@testable import CodexReviewUI
+@_spi(PreviewSupport) @testable import CodexReviewUI
 import ReviewTestSupport
 import ReviewJobs
 import ReviewRuntime
@@ -131,6 +131,28 @@ struct CodexReviewUITests {
 
         #expect(viewController.didTriggerStoreStartForTesting == false)
         #expect(backend.startCallCount() == 0)
+    }
+
+    @Test func previewRunningJobsAppendPseudoStreamOverTime() async throws {
+        let store = ReviewMonitorPreviewContent.makeStore(
+            streamInterval: Duration.milliseconds(10)
+        )
+        let runningJob = try #require(
+            store.workspaces
+                .flatMap { $0.jobs }
+                .first(where: { $0.status == .running })
+        )
+        let initialRevision = runningJob.reviewMonitorRevision
+        let initialLog = runningJob.reviewMonitorLogText
+
+        try await withTestTimeout(.seconds(1)) {
+            while await MainActor.run(body: { runningJob.reviewMonitorRevision }) == initialRevision {
+                await Task.yield()
+            }
+        }
+
+        #expect(runningJob.reviewMonitorLogText != initialLog)
+        #expect(runningJob.reviewMonitorLogText.contains("stream.tick"))
     }
 
     @Test func splitViewSectionsByWorkspace() {
@@ -423,7 +445,36 @@ struct CodexReviewUITests {
         #expect(window.subtitle == recentJob.cwd)
     }
 
-    @Test func switchingSelectedJobResetsLogScrollPosition() async throws {
+    @Test func firstSelectionFromEmptyStatePinsUnvisitedJobToBottom() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let job = makeJob(
+            id: "job-first-bottom",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        transport.view.layoutSubtreeIfNeeded()
+
+        #expect(transport.isLogPinnedToBottomForTesting)
+    }
+
+    @Test func switchingSelectedJobStartsUnvisitedJobAtBottomAndRestoresPreviousOffset() async throws {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -461,18 +512,25 @@ struct CodexReviewUITests {
         _ = try await awaitTransportRender(transport, after: firstRenderCount)
 
         transport.scrollLogToOffsetForTesting(120)
-        #expect(transport.logVerticalScrollOffsetForTesting > 0)
+        let activeOffset = transport.logVerticalScrollOffsetForTesting
+        #expect(activeOffset > 0)
         #expect(transport.isLogPinnedToBottomForTesting == false)
 
         let secondRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
         _ = try await awaitTransportRender(transport, after: secondRenderCount)
 
-        #expect(transport.logVerticalScrollOffsetForTesting == 0)
+        #expect(transport.isLogPinnedToBottomForTesting)
+
+        let thirdRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
+        _ = try await awaitTransportRender(transport, after: thirdRenderCount)
+
+        #expect(transport.logVerticalScrollOffsetForTesting == activeOffset)
         #expect(transport.isLogPinnedToBottomForTesting == false)
     }
 
-    @Test func switchingSelectedJobFromPinnedBottomAlsoResetsToTop() async throws {
+    @Test func switchingSelectedJobRestoresPinnedBottomPosition() async throws {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -516,8 +574,16 @@ struct CodexReviewUITests {
         viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
         _ = try await awaitTransportRender(transport, after: secondRenderCount)
 
-        #expect(transport.logVerticalScrollOffsetForTesting == 0)
-        #expect(transport.isLogPinnedToBottomForTesting == false)
+        #expect(transport.isLogPinnedToBottomForTesting)
+
+        activeJob.appendLogEntry(.init(kind: .progress, text: "Newest active line"))
+
+        let thirdRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
+        let snapshot = try await awaitTransportRender(transport, after: thirdRenderCount)
+
+        #expect(snapshot.log.contains("Newest active line"))
+        #expect(transport.isLogPinnedToBottomForTesting)
     }
 
     @Test func rehydratingSameSelectedJobPreservesLogScrollPosition() async throws {
@@ -566,7 +632,7 @@ struct CodexReviewUITests {
         #expect(transport.logVerticalScrollOffsetForTesting == preservedOffset)
     }
 
-    @Test func switchingJobWithIdenticalLogTextStillResetsToTop() async throws {
+    @Test func switchingJobWithIdenticalLogTextStartsUnvisitedJobAtBottom() async throws {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -606,7 +672,99 @@ struct CodexReviewUITests {
         viewController.sidebarViewControllerForTesting.selectJobForTesting(secondJob)
         _ = try await awaitTransportRender(transport, after: secondRenderCount)
 
+        #expect(transport.isLogPinnedToBottomForTesting)
+    }
+
+    @Test func shortLogSelectionCacheRestoresTopAfterLaterGrowth() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let shortLog = (0..<3).map { "short line \($0)" }.joined(separator: "\n")
+        let longLog = (0..<400).map { "long line \($0)" }.joined(separator: "\n")
+        let shortJob = makeJob(
+            id: "job-short-cache",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Short preview.",
+            logText: shortLog
+        )
+        let recentJob = makeJob(
+            id: "job-short-cache-recent",
+            status: .succeeded,
+            targetSummary: "Commit: abc123",
+            summary: "Recent review completed.",
+            logText: longLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [shortJob, recentJob]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let firstRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(shortJob)
+        _ = try await awaitTransportRender(transport, after: firstRenderCount)
+
+        let secondRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
+        _ = try await awaitTransportRender(transport, after: secondRenderCount)
+
+        shortJob.replaceLogEntries([.init(kind: .agentMessage, text: longLog)])
+
+        let thirdRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(shortJob)
+        _ = try await awaitTransportRender(transport, after: thirdRenderCount)
+
         #expect(transport.logVerticalScrollOffsetForTesting == 0)
+        #expect(transport.isLogPinnedToBottomForTesting == false)
+    }
+
+    @Test func previouslySelectedJobUpdatesDoNotRepaintCurrentDetailPane() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let activeJob = makeJob(
+            id: "job-old-selection",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Active review.",
+            logText: "Active log\n"
+        )
+        let recentJob = makeJob(
+            id: "job-current-selection",
+            status: .succeeded,
+            targetSummary: "Commit: abc123",
+            summary: "Recent review.",
+            logText: "Recent log\n"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [activeJob, recentJob]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let firstRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
+        _ = try await awaitTransportRender(transport, after: firstRenderCount)
+
+        let secondRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
+        let snapshot = try await awaitTransportRender(transport, after: secondRenderCount)
+
+        let stableRenderCount = transport.renderCountForTesting
+        activeJob.appendLogEntry(.init(kind: .progress, text: "stale update"))
+        await transport.flushMainQueueForTesting()
+
+        #expect(transport.renderCountForTesting == stableRenderCount)
+        #expect(transport.renderSnapshotForTesting == snapshot)
     }
 
     @Test func clickingSidebarBlankAreaKeepsSelectionAndDetailPane() async throws {
@@ -888,7 +1046,7 @@ struct CodexReviewUITests {
         #expect(transport.logReloadCountForTesting == reloadCount)
     }
 
-    @Test func coalescedLogRevisionFallsBackToFullReload() async throws {
+    @Test func coalescedLogTextUpdateUsesAppendPathWhenSuffixCanBeDerived() async throws {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -916,13 +1074,15 @@ struct CodexReviewUITests {
         _ = try await awaitTransportRender(transport, after: initialRenderCount)
 
         let updateRenderCount = transport.renderCountForTesting
+        let appendCount = transport.logAppendCountForTesting
         let reloadCount = transport.logReloadCountForTesting
         job.appendLogEntry(.init(kind: .agentMessage, groupID: "msg_1", text: " one"))
         job.appendLogEntry(.init(kind: .agentMessage, groupID: "msg_1", text: " two"))
 
         let snapshot = try await awaitTransportRender(transport, after: updateRenderCount)
         #expect(snapshot.log == "Initial one two")
-        #expect(transport.logReloadCountForTesting >= reloadCount + 1)
+        #expect(transport.logAppendCountForTesting == appendCount + 1)
+        #expect(transport.logReloadCountForTesting == reloadCount)
     }
 
     @Test func selectedJobGroupedReplacementUsesReloadPath() async throws {
@@ -1022,16 +1182,9 @@ struct CodexReviewUITests {
         let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
         _ = try await awaitTransportRender(transport, after: initialRenderCount)
-        #expect(transport.isLogPinnedToBottomForTesting == false)
-
-        transport.scrollLogToBottomForTesting()
         #expect(transport.isLogPinnedToBottomForTesting)
 
-        let pinnedRenderCount = transport.renderCountForTesting
-        let pinnedAutoFollow = transport.logAutoFollowCountForTesting
-        job.appendLogEntry(.init(kind: .progress, text: "Pinned update"))
-        _ = try await awaitTransportRender(transport, after: pinnedRenderCount)
-        #expect(transport.logAutoFollowCountForTesting == pinnedAutoFollow + 1)
+        transport.scrollLogToBottomForTesting()
         #expect(transport.isLogPinnedToBottomForTesting)
 
         transport.scrollLogToTopForTesting()
@@ -1043,6 +1196,16 @@ struct CodexReviewUITests {
         _ = try await awaitTransportRender(transport, after: unpinnedRenderCount)
         #expect(transport.logAutoFollowCountForTesting == unpinnedAutoFollow)
         #expect(transport.isLogPinnedToBottomForTesting == false)
+
+        transport.scrollLogToBottomForTesting()
+        #expect(transport.isLogPinnedToBottomForTesting)
+
+        let pinnedRenderCount = transport.renderCountForTesting
+        let pinnedAutoFollow = transport.logAutoFollowCountForTesting
+        job.appendLogEntry(.init(kind: .progress, text: "Pinned update"))
+        _ = try await awaitTransportRender(transport, after: pinnedRenderCount)
+        #expect(transport.logAutoFollowCountForTesting == pinnedAutoFollow + 1)
+        #expect(transport.isLogPinnedToBottomForTesting)
     }
 
     @Test func logViewUsesTextKit1AndDisablesEditingFeatures() async throws {

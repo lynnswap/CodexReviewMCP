@@ -549,12 +549,10 @@ extension ReviewMonitorSidebarViewController {
             return
         }
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        uiState.selectedJobEntry = job
     }
 
     func clearSelectionForTesting() {
         outlineView.deselectAll(nil)
-        uiState.selectedJobEntry = nil
     }
 
     var allWorkspaceRowsExpandedForTesting: Bool {
