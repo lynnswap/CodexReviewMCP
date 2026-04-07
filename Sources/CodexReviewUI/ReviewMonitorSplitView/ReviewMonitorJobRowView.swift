@@ -13,7 +13,7 @@ struct ReviewMonitorJobRowView: View {
                     Text(job.displayTitle)
                         .truncationMode(.tail)
                     Spacer(minLength: 0)
-                    elapsedTimeTextLabel
+                    TimerLabelView(job:job)
                         .foregroundStyle(.secondary)
                         .layoutPriority(1)
                 }
@@ -52,24 +52,6 @@ struct ReviewMonitorJobRowView: View {
             .disabled(job.isTerminal || job.cancellationRequested)
         }
     }
-    @ViewBuilder
-    private var elapsedTimeTextLabel:some View{
-        if let startedAt = job.startedAt {
-            if let endedAt = job.endedAt {
-                elapsedTimeText(
-                    startedAt: startedAt,
-                    referenceDate: endedAt
-                )
-            } else {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    elapsedTimeText(
-                        startedAt: startedAt,
-                        referenceDate: context.date
-                    )
-                }
-            }
-        }
-    }
 
     private var subtitleText: String? {
         if job.hasFinalReview,
@@ -96,6 +78,21 @@ struct ReviewMonitorJobRowView: View {
         return lastAgentMessage
     }
 
+    
+}
+struct TimerLabelView:View{
+    var job: CodexReviewJob
+    var body:some View{
+        if let startedAt = job.startedAt {
+            Text(
+                timerInterval: startedAt...(job.endedAt ?? .distantFuture),
+                pauseTime: job.endedAt,
+                countsDown: false,
+                showsHours: true
+            )
+            .monospacedDigit()
+        }
+    }
     private func elapsedTimeText(startedAt: Date, referenceDate: Date) -> some View {
         let elapsedSeconds = max(0, referenceDate.timeIntervalSince(startedAt).rounded(.down))
         return Text(

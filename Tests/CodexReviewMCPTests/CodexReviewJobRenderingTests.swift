@@ -140,4 +140,54 @@ struct CodexReviewJobRenderingTests {
         Turn started
         """)
     }
+
+    @Test func tailGroupedAppendEmitsIncrementalMonitorUpdate() {
+        let job = CodexReviewJob.makeForTesting(
+            targetSummary: "Uncommitted changes",
+            status: .running,
+            summary: "Running.",
+            logEntries: [
+                .init(kind: .agentMessage, groupID: "msg_1", text: "Hello")
+            ]
+        )
+
+        job.appendLogEntry(.init(kind: .agentMessage, groupID: "msg_1", text: " world"))
+
+        #expect(job.reviewMonitorLogText == "Hello world")
+        #expect(job.reviewMonitorRevision == 1)
+        #expect(job.lastMonitorUpdate == .append(" world"))
+    }
+
+    @Test func groupedReplacementFallsBackToReloadMonitorUpdate() {
+        let job = CodexReviewJob.makeForTesting(
+            targetSummary: "Uncommitted changes",
+            status: .running,
+            summary: "Running.",
+            logEntries: [
+                .init(kind: .plan, groupID: "plan_1", text: "- step")
+            ]
+        )
+
+        job.appendLogEntry(.init(kind: .plan, groupID: "plan_1", replacesGroup: true, text: "- corrected"))
+
+        #expect(job.reviewMonitorLogText == "- corrected")
+        #expect(job.reviewMonitorRevision == 1)
+        #expect(job.lastMonitorUpdate == .reload("- corrected"))
+    }
+
+    @Test func commandOutputUpdatesDoNotAdvanceReviewMonitorRevision() {
+        let job = CodexReviewJob.makeForTesting(
+            targetSummary: "Uncommitted changes",
+            status: .running,
+            summary: "Running.",
+            logEntries: [
+                .init(kind: .command, text: "$ git status")
+            ]
+        )
+
+        job.appendLogEntry(.init(kind: .commandOutput, groupID: "cmd_1", text: "M file.swift"))
+
+        #expect(job.reviewMonitorLogText == "$ git status")
+        #expect(job.reviewMonitorRevision == 0)
+    }
 }
