@@ -305,6 +305,14 @@ extension ReviewMonitorTransportViewController {
         logScrollView.verticalScrollOffsetForTesting
     }
 
+    var logTextViewFrameForTesting: NSRect {
+        logScrollView.textViewFrameForTesting
+    }
+
+    var logDocumentViewFrameForTesting: NSRect {
+        logScrollView.documentViewFrameForTesting
+    }
+
     func scrollLogToBottomForTesting() {
         logScrollView.scrollToBottomForTesting()
     }

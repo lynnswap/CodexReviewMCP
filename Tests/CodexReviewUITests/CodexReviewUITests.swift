@@ -95,6 +95,39 @@ struct CodexReviewUITests {
         #expect(abs(logFrame.maxY - safeAreaFrame.maxY) < 0.5)
     }
 
+    @Test func shortDetailLogKeepsTextViewWithinDocumentBounds() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-short-log-layout",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            logText: "Short log\n"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.viewDidAppear()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        transport.view.layoutSubtreeIfNeeded()
+
+        let textViewFrame = transport.logTextViewFrameForTesting
+        let documentViewFrame = transport.logDocumentViewFrameForTesting
+
+        #expect(abs(textViewFrame.minY) < 0.5)
+        #expect(textViewFrame.maxY <= documentViewFrame.maxY + 0.5)
+        #expect(textViewFrame.height <= documentViewFrame.height + 0.5)
+    }
+
     @Test func splitViewStartsStoreOnceOnFirstAppearance() async throws {
         guard #available(macOS 26.0, *) else {
             return

@@ -20,7 +20,6 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     private let storage: NSTextStorage
     private let layoutManager: NSLayoutManager
     private let textContainer: NSTextContainer
-    private let textViewHeightConstraint: NSLayoutConstraint
     private var displayedText = ""
     private let baseFont = NSFont.monospacedSystemFont(
         ofSize: NSFont.preferredFont(forTextStyle: .footnote).pointSize,
@@ -57,15 +56,12 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.translatesAutoresizingMaskIntoConstraints = false
-        let textViewHeightConstraint = textView.heightAnchor.constraint(equalToConstant: 0)
 
         self.storage = storage
         self.layoutManager = layoutManager
         self.textContainer = textContainer
         self.textView = textView
-        self.textViewHeightConstraint = textViewHeightConstraint
         super.init(frame: .zero)
-        
         translatesAutoresizingMaskIntoConstraints = false
         drawsBackground = false
         borderType = .noBorder
@@ -79,7 +75,6 @@ final class ReviewMonitorLogScrollView: NSScrollView {
             textView.leadingAnchor.constraint(equalTo: documentContainerView.leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: documentContainerView.trailingAnchor),
             textView.bottomAnchor.constraint(equalTo: documentContainerView.bottomAnchor),
-            textViewHeightConstraint,
         ])
         documentView = documentContainerView
         textView.textContainerInset = NSSize(width: 4, height: 6)
@@ -230,23 +225,11 @@ final class ReviewMonitorLogScrollView: NSScrollView {
             documentContainerView.frame = NSRect(origin: .zero, size: targetSize)
         }
 
-        if textViewHeightConstraint.constant != textHeight {
-            textViewHeightConstraint.constant = textHeight
-        }
-
         documentContainerView.layoutSubtreeIfNeeded()
     }
 
     private func scrollToBottom(countAsAutoFollow: Bool) {
-        guard let documentView else {
-            return
-        }
-        let maxY = max(0, documentView.frame.height - contentView.bounds.height)
-        let targetOrigin = contentView.constrainBoundsRect(
-            NSRect(origin: NSPoint(x: 0, y: maxY), size: contentView.bounds.size)
-        ).origin
-        contentView.scroll(to: targetOrigin)
-        reflectScrolledClipView(contentView)
+        restoreScrollOrigin(NSPoint(x: 0, y: maximumVerticalScrollOffset()))
 #if DEBUG
         if countAsAutoFollow {
             autoFollowCount += 1
@@ -352,6 +335,14 @@ extension ReviewMonitorLogScrollView {
 
     var verticalScrollOffsetForTesting: CGFloat {
         contentView.bounds.origin.y
+    }
+
+    var textViewFrameForTesting: NSRect {
+        textView.frame
+    }
+
+    var documentViewFrameForTesting: NSRect {
+        documentContainerView.frame
     }
 
     func scrollToBottomForTesting() {
