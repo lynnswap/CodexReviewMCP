@@ -326,6 +326,22 @@ extension ReviewMonitorTransportViewController {
         logScrollView.autoFollowCount
     }
 
+    var logUsesTextKit1ForTesting: Bool {
+        logScrollView.usesTextKit1ForTesting
+    }
+
+    var logIsEditableForTesting: Bool {
+        logScrollView.isEditableForTesting
+    }
+
+    var logIsSelectableForTesting: Bool {
+        logScrollView.isSelectableForTesting
+    }
+
+    var logWritingToolsDisabledForTesting: Bool {
+        logScrollView.writingToolsDisabledForTesting
+    }
+
     var renderSnapshotForTesting: RenderSnapshotForTesting {
         .init(
             title: displayedTitleForTesting,

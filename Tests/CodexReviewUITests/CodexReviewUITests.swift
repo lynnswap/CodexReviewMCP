@@ -757,6 +757,33 @@ struct CodexReviewUITests {
         #expect(transport.isLogPinnedToBottomForTesting == false)
     }
 
+    @Test func logViewUsesTextKit1AndDisablesEditingFeatures() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-log-config",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: "Initial log\n"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        #expect(transport.logUsesTextKit1ForTesting)
+        #expect(transport.logIsEditableForTesting == false)
+        #expect(transport.logIsSelectableForTesting)
+        #expect(transport.logWritingToolsDisabledForTesting)
+    }
+
     @Test func authFailedJobShowsNormalFailureDetails() async throws {
         guard #available(macOS 26.0, *) else {
             return

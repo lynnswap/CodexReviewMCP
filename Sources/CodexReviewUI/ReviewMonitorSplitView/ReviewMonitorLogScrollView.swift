@@ -4,6 +4,9 @@ import ReviewRuntime
 @MainActor
 final class ReviewMonitorLogScrollView: NSScrollView {
     let textView: NSTextView
+    private let storage: NSTextStorage
+    private let layoutManager: NSLayoutManager
+    private let textContainer: NSTextContainer
     private var displayedText = ""
     private let baseFont = NSFont.monospacedSystemFont(
         ofSize: NSFont.preferredFont(forTextStyle: .footnote).pointSize,
@@ -23,10 +26,27 @@ final class ReviewMonitorLogScrollView: NSScrollView {
 #endif
 
     init() {
-        let scrollableTextView = NSTextView.scrollablePlainDocumentContentTextView()
-        guard let textView = scrollableTextView.documentView as? NSTextView else {
-            fatalError("Expected NSTextView.scrollablePlainDocumentContentTextView() document view to be NSTextView")
-        }
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(
+            size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        )
+        textContainer.widthTracksTextView = true
+        textContainer.heightTracksTextView = false
+        storage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(textContainer)
+        layoutManager.allowsNonContiguousLayout = true
+
+        let textView = NSTextView(frame: NSRect.zero, textContainer: textContainer)
+        textView.minSize = NSSize.zero
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = NSView.AutoresizingMask(arrayLiteral: .width)
+
+        self.storage = storage
+        self.layoutManager = layoutManager
+        self.textContainer = textContainer
         self.textView = textView
         super.init(frame: .zero)
 
@@ -49,16 +69,29 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isAutomaticTextCompletionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
+        textView.usesRuler = false
+        textView.usesInspectorBar = false
         textView.drawsBackground = false
-        textView.textColor = .textColor
+        textView.textColor = NSColor.textColor
         textView.typingAttributes = baseAttributes
+        textView.writingToolsBehavior = NSWritingToolsBehavior.none
         textView.setAccessibilityIdentifier("review-monitor.activity-log")
         textView.font = baseFont
+        updateDocumentGeometry()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         nil
+    }
+
+    override func layout() {
+        let shouldPreserveBottom = displayedText.isEmpty == false && isPinnedToBottom()
+        super.layout()
+        updateDocumentGeometry()
+        if shouldPreserveBottom {
+            scrollToBottom(countAsAutoFollow: false)
+        }
     }
 
     @discardableResult
@@ -85,11 +118,13 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         let shouldAutoFollow = isPinnedToBottom()
         appendToTextStorage(suffix)
         displayedText += suffix
+        updateDocumentGeometry()
+        layoutSubtreeIfNeeded()
 #if DEBUG
         appendCount += 1
 #endif
         if shouldAutoFollow {
-            scrollTailRangeToVisible()
+            scrollToBottom(countAsAutoFollow: true)
         }
         return true
     }
@@ -104,11 +139,13 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         let preservedOrigin = contentView.bounds.origin
         replaceAllText(with: text)
         displayedText = text
+        updateDocumentGeometry()
+        layoutSubtreeIfNeeded()
 #if DEBUG
         reloadCount += 1
 #endif
         if shouldAutoFollow {
-            scrollTailRangeToVisible()
+            scrollToBottom(countAsAutoFollow: true)
         } else {
             restoreScrollOrigin(preservedOrigin)
         }
@@ -116,38 +153,50 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     }
 
     private func appendToTextStorage(_ suffix: String) {
-        guard let textStorage = textView.textStorage else {
-            textView.string += suffix
-            return
-        }
-
-        textStorage.beginEditing()
-        textStorage.replaceCharacters(
-            in: NSRange(location: textStorage.length, length: 0),
+        storage.beginEditing()
+        storage.replaceCharacters(
+            in: NSRange(location: storage.length, length: 0),
             with: NSAttributedString(string: suffix, attributes: baseAttributes)
         )
-        textStorage.endEditing()
+        storage.endEditing()
     }
 
     private func replaceAllText(with text: String) {
-        guard let textStorage = textView.textStorage else {
-            textView.string = text
-            return
-        }
-
-        textStorage.beginEditing()
-        textStorage.replaceCharacters(
-            in: NSRange(location: 0, length: textStorage.length),
+        storage.beginEditing()
+        storage.replaceCharacters(
+            in: NSRange(location: 0, length: storage.length),
             with: NSAttributedString(string: text, attributes: baseAttributes)
         )
-        textStorage.endEditing()
+        storage.endEditing()
     }
 
-    private func scrollTailRangeToVisible() {
-        let location = textView.string.utf16.count
-        textView.scrollRangeToVisible(NSRange(location: location, length: 0))
+    private func updateDocumentGeometry() {
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        let targetSize = NSSize(
+            width: max(0, contentSize.width),
+            height: max(contentSize.height, ceil(usedRect.height + textView.textContainerInset.height * 2))
+        )
+
+        if textView.frame.size != targetSize {
+            textView.frame = NSRect(origin: .zero, size: targetSize)
+        }
+    }
+
+    private func scrollToBottom(countAsAutoFollow: Bool) {
+        guard let documentView else {
+            return
+        }
+        let maxY = max(0, documentView.frame.height - contentView.bounds.height)
+        let targetOrigin = contentView.constrainBoundsRect(
+            NSRect(origin: NSPoint(x: 0, y: maxY), size: contentView.bounds.size)
+        ).origin
+        contentView.scroll(to: targetOrigin)
+        reflectScrolledClipView(contentView)
 #if DEBUG
-        autoFollowCount += 1
+        if countAsAutoFollow {
+            autoFollowCount += 1
+        }
 #endif
     }
 
@@ -181,6 +230,22 @@ extension ReviewMonitorLogScrollView {
         displayedText
     }
 
+    var usesTextKit1ForTesting: Bool {
+        textView.textLayoutManager == nil
+    }
+
+    var isEditableForTesting: Bool {
+        textView.isEditable
+    }
+
+    var isSelectableForTesting: Bool {
+        textView.isSelectable
+    }
+
+    var writingToolsDisabledForTesting: Bool {
+        textView.writingToolsBehavior == .none
+    }
+
     var isPinnedToBottomForTesting: Bool {
         isPinnedToBottom()
     }
@@ -190,7 +255,7 @@ extension ReviewMonitorLogScrollView {
     }
 
     func scrollToBottomForTesting() {
-        scrollTailRangeToVisible()
+        scrollToBottom(countAsAutoFollow: false)
     }
 }
 #endif
