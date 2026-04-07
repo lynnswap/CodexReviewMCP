@@ -634,15 +634,15 @@ extension ReviewMonitorSidebarViewController {
         outlineView.mouseDown(with: mouseEventForTesting(at: point))
     }
 
+    func workspaceIsExpandedForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
+        workspace.isExpanded
+    }
+
     func toggleWorkspaceDisclosureForTesting(_ workspace: CodexReviewWorkspace) {
         guard row(for: workspace) != nil else {
             preconditionFailure("Workspace row is not visible.")
         }
         workspace.isExpanded.toggle()
-    }
-
-    func workspaceIsExpandedForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
-        workspace.isExpanded
     }
 
     func workspaceRowIsFloatingForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
@@ -848,7 +848,9 @@ private final class ReviewMonitorJobCellView: NSTableCellView {
 
 @MainActor
 private final class ReviewMonitorWorkspaceCellView: NSTableCellView {
+    private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
+    private let contentStack = NSStackView()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -862,6 +864,7 @@ private final class ReviewMonitorWorkspaceCellView: NSTableCellView {
 
     func configure(_ workspace: CodexReviewWorkspace) {
         objectValue = workspace
+        iconView.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
         titleLabel.stringValue = workspace.displayTitle
         toolTip = workspace.cwd
     }
@@ -869,16 +872,31 @@ private final class ReviewMonitorWorkspaceCellView: NSTableCellView {
     private func configureHierarchy() {
         translatesAutoresizingMaskIntoConstraints = false
 
-        titleLabel.font = .preferredFont(forTextStyle: .headline)
-        titleLabel.textColor = .secondaryLabelColor
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.symbolConfiguration = .init(pointSize: 14, weight: .regular)
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
 
-        addSubview(titleLabel)
+        titleLabel.font = .preferredFont(forTextStyle: .footnote)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        imageView = iconView
+        textField = titleLabel
+
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.orientation = .horizontal
+        contentStack.alignment = .centerY
+        contentStack.spacing = 4
+        contentStack.detachesHiddenViews = true
+        contentStack.addArrangedSubview(iconView)
+        contentStack.addArrangedSubview(titleLabel)
+
+        addSubview(contentStack)
         NSLayoutConstraint.activate([
-            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            titleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            contentStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            contentStack.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
     }
 }
