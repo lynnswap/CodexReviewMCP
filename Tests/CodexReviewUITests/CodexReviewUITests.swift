@@ -55,7 +55,7 @@ struct CodexReviewUITests {
         #expect(viewController.toolbarIdentifiersForTesting.contains(.sidebarTrackingSeparator))
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .visible)
-        #expect(window.title == "Review Details")
+        #expect(window.title == "")
         #expect(window.subtitle == "")
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
@@ -781,6 +781,7 @@ struct CodexReviewUITests {
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         viewController.loadViewIfNeeded()
+        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
@@ -799,7 +800,7 @@ struct CodexReviewUITests {
         #expect(emptySnapshot.title == nil)
         #expect(emptySnapshot.summary == nil)
         #expect(emptySnapshot.log.isEmpty)
-        #expect(window.title == "Review Details")
+        #expect(window.title == "")
         #expect(window.subtitle == "")
 
         let stableRenderCount = transport.renderCountForTesting
