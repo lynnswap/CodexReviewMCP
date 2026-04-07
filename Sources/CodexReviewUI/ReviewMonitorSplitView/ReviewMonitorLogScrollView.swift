@@ -100,13 +100,18 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         case .append(let suffix):
             applyAppend(suffix)
         case .reload(let text):
-            applyReload(text)
+            applyReload(text, preserveScrollPosition: true)
         }
     }
 
     @discardableResult
     func clear() -> Bool {
-        apply(update: .reload(""))
+        applyReload("", preserveScrollPosition: false)
+    }
+
+    @discardableResult
+    func replaceText(_ text: String, preserveScrollPosition: Bool) -> Bool {
+        applyReload(text, preserveScrollPosition: preserveScrollPosition)
     }
 
     @discardableResult
@@ -130,12 +135,18 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     }
 
     @discardableResult
-    private func applyReload(_ text: String) -> Bool {
-        guard displayedText != text else {
-            return false
+    private func applyReload(_ text: String, preserveScrollPosition: Bool) -> Bool {
+        if displayedText == text {
+            if preserveScrollPosition {
+                return false
+            }
+
+            let previousOrigin = contentView.bounds.origin
+            restoreScrollOrigin(.zero)
+            return contentView.bounds.origin != previousOrigin
         }
 
-        let shouldAutoFollow = isPinnedToBottom()
+        let shouldAutoFollow = preserveScrollPosition && isPinnedToBottom()
         let preservedOrigin = contentView.bounds.origin
         replaceAllText(with: text)
         displayedText = text
@@ -146,8 +157,10 @@ final class ReviewMonitorLogScrollView: NSScrollView {
 #endif
         if shouldAutoFollow {
             scrollToBottom(countAsAutoFollow: true)
-        } else {
+        } else if preserveScrollPosition {
             restoreScrollOrigin(preservedOrigin)
+        } else {
+            restoreScrollOrigin(.zero)
         }
         return true
     }
@@ -252,6 +265,14 @@ extension ReviewMonitorLogScrollView {
 
     func scrollToTopForTesting() {
         restoreScrollOrigin(.zero)
+    }
+
+    func scrollToOffsetForTesting(_ y: CGFloat) {
+        restoreScrollOrigin(NSPoint(x: 0, y: y))
+    }
+
+    var verticalScrollOffsetForTesting: CGFloat {
+        contentView.bounds.origin.y
     }
 
     func scrollToBottomForTesting() {

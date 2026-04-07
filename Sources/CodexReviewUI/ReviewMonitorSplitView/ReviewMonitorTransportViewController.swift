@@ -25,6 +25,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private var selectedJobObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationGeneration: UInt64 = 0
     private var showingEmptyState = true
+    private var displayedJobID: String?
 #if DEBUG
     private var renderCountForTestingStorage = 0
     private var renderWaitersForTesting: [Int: [CheckedContinuation<Void, Never>]] = [:]
@@ -164,7 +165,12 @@ final class ReviewMonitorTransportViewController: NSViewController {
 
     private func renderSelectedJob(_ job: CodexReviewJob) {
         let metadataChanged = renderMetadata(job)
-        let logChanged = renderLogUpdate(.reload(job.reviewMonitorLogText))
+        let preserveScrollPosition = displayedJobID == job.id && showingEmptyState == false
+        let logChanged = renderSelectedJobLog(
+            job.reviewMonitorLogText,
+            preserveScrollPosition: preserveScrollPosition
+        )
+        displayedJobID = job.id
         if metadataChanged || logChanged {
             noteRenderForTesting()
         }
@@ -231,6 +237,16 @@ final class ReviewMonitorTransportViewController: NSViewController {
     }
 
     @discardableResult
+    private func renderSelectedJobLog(
+        _ text: String,
+        preserveScrollPosition: Bool
+    ) -> Bool {
+        let visibilityChanged = showJobContentIfNeeded()
+        let logChanged = logScrollView.replaceText(text, preserveScrollPosition: preserveScrollPosition)
+        return visibilityChanged || logChanged
+    }
+
+    @discardableResult
     private func showJobContentIfNeeded() -> Bool {
         guard showingEmptyState else {
             return false
@@ -256,6 +272,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
         threadLabel.stringValue = ""
         turnLabel.stringValue = ""
         summaryLabel.stringValue = ""
+        displayedJobID = nil
 
         titleLabel.isHidden = true
         metadataStack.isHidden = true
@@ -374,6 +391,14 @@ extension ReviewMonitorTransportViewController {
 
     func scrollLogToTopForTesting() {
         logScrollView.scrollToTopForTesting()
+    }
+
+    func scrollLogToOffsetForTesting(_ y: CGFloat) {
+        logScrollView.scrollToOffsetForTesting(y)
+    }
+
+    var logVerticalScrollOffsetForTesting: CGFloat {
+        logScrollView.verticalScrollOffsetForTesting
     }
 
     func scrollLogToBottomForTesting() {
