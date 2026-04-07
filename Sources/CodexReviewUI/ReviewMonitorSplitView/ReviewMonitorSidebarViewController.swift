@@ -12,25 +12,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         static let workspaceCell = NSUserInterfaceItemIdentifier("ReviewMonitorJobs.WorkspaceCell")
     }
 
-    private enum SidebarItem: Hashable {
-        case workspace(CodexReviewWorkspace)
-        case job(CodexReviewJob)
-
-        var workspace: CodexReviewWorkspace? {
-            guard case let .workspace(workspace) = self else {
-                return nil
-            }
-            return workspace
-        }
-
-        var job: CodexReviewJob? {
-            guard case let .job(job) = self else {
-                return nil
-            }
-            return job
-        }
-    }
-
     private weak var store: CodexReviewStore?
     private let uiState: ReviewMonitorUIState
     private let scrollView = NSScrollView()
@@ -42,8 +23,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
     private var storeObservationHandles: Set<ObservationHandle> = []
     private var workspaceObservationHandles: Set<ObservationHandle> = []
-    private var rootItems: [SidebarItem] = []
-    private var childItemsByWorkspace: [String: [SidebarItem]] = [:]
     private var isReconcilingSelection = false
 
     init(uiState: ReviewMonitorUIState) {
@@ -113,7 +92,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         outlineView.indentationMarkerFollowsCell = false
         outlineView.rowSizeStyle = .default
         outlineView.style = .sourceList
-        outlineView.floatsGroupRows = false
+        outlineView.floatsGroupRows = true
         outlineView.backgroundColor = .clear
         outlineView.usesAlternatingRowBackgroundColors = false
         outlineView.intercellSpacing = NSSize(width: 0, height: 0)
@@ -124,6 +103,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         outlineView.delegate = self
         outlineView.inertRowEvaluator = { [weak self] row in
             self?.isWorkspaceRow(row) ?? false
+        }
+        outlineView.contextMenuProvider = { [weak self] point in
+            self?.makeContextMenu(at: point)
         }
 
         scrollView.documentView = outlineView
@@ -146,11 +128,15 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         workspaceObservationHandles.removeAll()
 
         for workspace in workspaces {
-            workspace.observe(\.jobs) { [weak self, weak store] _ in
+            workspace.observe([\.jobs, \.isExpanded]) { [weak self, weak store, weak workspace] in
                 guard let self, let store else {
                     return
                 }
-                self.reloadJobs(for: workspace, allWorkspaces: store.workspaces)
+                guard let workspace else {
+                    self.reloadOutline(workspaces: store.workspaces)
+                    return
+                }
+                self.reloadWorkspace(workspace, allWorkspaces: store.workspaces)
             }
             .store(in: &workspaceObservationHandles)
         }
@@ -158,47 +144,40 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
     private func reloadOutline(workspaces: [CodexReviewWorkspace]) {
         clearSelectionIfNeeded(for: workspaces)
-        rebuildItems(from: workspaces)
 
         isReconcilingSelection = true
         outlineView.reloadData()
-        expandAllWorkspaceItems()
+        applyWorkspaceExpansionState(for: workspaces)
         reconcileSelectionAfterReload()
         isReconcilingSelection = false
         updateOutlineViewFrame()
         updateEmptyState(itemCount: totalJobCount(in: workspaces))
     }
 
-    private func rebuildItems(from workspaces: [CodexReviewWorkspace]) {
-        rootItems = workspaces.map(SidebarItem.workspace)
-        childItemsByWorkspace = workspaces.reduce(into: [:]) { partialResult, workspace in
-            partialResult[workspace.cwd] = workspace.jobs.map(SidebarItem.job)
+    private func applyWorkspaceExpansionState(for workspaces: [CodexReviewWorkspace]) {
+        for workspace in workspaces {
+            if workspace.isExpanded {
+                outlineView.expandItem(workspace)
+            } else {
+                outlineView.collapseItem(workspace)
+            }
         }
     }
 
-    private func expandAllWorkspaceItems() {
-        for item in rootItems {
-            outlineView.expandItem(item)
-        }
-    }
-
-    private func reloadJobs(
-        for workspace: CodexReviewWorkspace,
+    private func reloadWorkspace(
+        _ workspace: CodexReviewWorkspace,
         allWorkspaces: [CodexReviewWorkspace]
     ) {
         clearSelectionIfNeeded(for: allWorkspaces)
-        guard allWorkspaces.contains(workspace),
-              let workspaceItem = workspaceItem(for: workspace)
+        guard let workspace = allWorkspaces.first(where: { $0 === workspace })
         else {
             reloadOutline(workspaces: allWorkspaces)
             return
         }
 
-        childItemsByWorkspace[workspace.cwd] = workspace.jobs.map(SidebarItem.job)
-
         isReconcilingSelection = true
-        outlineView.reloadItem(workspaceItem, reloadChildren: true)
-        outlineView.expandItem(workspaceItem)
+        outlineView.reloadItem(workspace, reloadChildren: true)
+        applyWorkspaceExpansionState(for: [workspace])
         reconcileSelectionAfterReload()
         isReconcilingSelection = false
         updateOutlineViewFrame()
@@ -213,18 +192,18 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             return
         }
 
-        guard containsJob(id: selectedJob.id) else {
+        guard let currentJob = job(withID: selectedJob.id) else {
             uiState.selectedJobEntry = nil
             outlineView.deselectAll(nil)
             return
         }
 
-        guard let row = row(forJobID: selectedJob.id) else {
-            return
+        if currentJob !== selectedJob {
+            uiState.selectedJobEntry = currentJob
         }
 
-        if let currentJob = job(atRow: row), currentJob !== selectedJob {
-            uiState.selectedJobEntry = currentJob
+        guard let row = row(forJobID: currentJob.id) else {
+            return
         }
 
         guard outlineView.selectedRow != row else {
@@ -238,6 +217,11 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             return
         }
         guard outlineView.selectedRow != -1 else {
+            if let selectedJob = uiState.selectedJobEntry,
+               containsJob(id: selectedJob.id)
+            {
+                return
+            }
             uiState.selectedJobEntry = nil
             return
         }
@@ -251,6 +235,37 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             }
             await performCancellation(for: job)
         }
+    }
+
+    private func makeContextMenu(at point: NSPoint) -> NSMenu? {
+        let row = outlineView.row(at: point)
+        guard row != -1,
+              let job = job(atRow: row)
+        else {
+            return nil
+        }
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let cancelItem = NSMenuItem(
+            title: "Cancel",
+            action: #selector(handleCancelMenuItem(_:)),
+            keyEquivalent: ""
+        )
+        cancelItem.target = self
+        cancelItem.representedObject = job
+        cancelItem.isEnabled = job.isTerminal == false && job.cancellationRequested == false
+        menu.addItem(cancelItem)
+        return menu
+    }
+
+    @objc
+    private func handleCancelMenuItem(_ sender: NSMenuItem) {
+        guard let job = sender.representedObject as? CodexReviewJob else {
+            return
+        }
+        triggerCancellation(for: job)
     }
 
     private func requestCancellation(for job: CodexReviewJob) async throws {
@@ -357,20 +372,20 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         return outlineView.rect(ofRow: outlineView.numberOfRows - 1).maxY
     }
 
-    private func sidebarItem(from item: Any?) -> SidebarItem? {
-        item as? SidebarItem
+    private func workspace(from item: Any?) -> CodexReviewWorkspace? {
+        item as? CodexReviewWorkspace
     }
 
-    private func childItems(for workspace: CodexReviewWorkspace) -> [SidebarItem] {
-        childItemsByWorkspace[workspace.cwd] ?? []
+    private func job(from item: Any?) -> CodexReviewJob? {
+        item as? CodexReviewJob
     }
 
-    private func workspaceItem(for workspace: CodexReviewWorkspace) -> SidebarItem? {
-        rootItems.first { $0.workspace == workspace }
+    private func shouldAllowSelection(of item: Any?) -> Bool {
+        job(from: item) != nil
     }
 
-    private func shouldAllowSelection(of item: SidebarItem) -> Bool {
-        item.job != nil
+    private func workspaces() -> [CodexReviewWorkspace] {
+        store?.workspaces ?? []
     }
 
     private func job(atRow row: Int) -> CodexReviewJob? {
@@ -379,7 +394,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         else {
             return nil
         }
-        return sidebarItem(from: item)?.job
+        return job(from: item)
     }
 
     private func isWorkspaceRow(_ row: Int) -> Bool {
@@ -388,91 +403,74 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         else {
             return false
         }
-        return sidebarItem(from: item)?.workspace != nil
+        return workspace(from: item) != nil
     }
 
     private func row(for workspace: CodexReviewWorkspace) -> Int? {
-        guard outlineView.numberOfRows > 0 else {
-            return nil
-        }
-        for row in 0..<outlineView.numberOfRows {
-            guard let item = outlineView.item(atRow: row),
-                  sidebarItem(from: item)?.workspace == workspace
-            else {
-                continue
-            }
-            return row
-        }
-        return nil
+        let row = outlineView.row(forItem: workspace)
+        return row == -1 ? nil : row
     }
 
     private func row(forJobID jobID: String) -> Int? {
-        guard outlineView.numberOfRows > 0 else {
+        guard let job = job(withID: jobID) else {
             return nil
         }
-        for row in 0..<outlineView.numberOfRows {
-            if job(atRow: row)?.id == jobID {
-                return row
+        let row = outlineView.row(forItem: job)
+        return row == -1 ? nil : row
+    }
+
+    private func containsJob(id: String) -> Bool {
+        job(withID: id) != nil
+    }
+
+    private func containsJob(id: String, in workspaces: [CodexReviewWorkspace]) -> Bool {
+        job(withID: id, in: workspaces) != nil
+    }
+
+    private func job(withID id: String) -> CodexReviewJob? {
+        job(withID: id, in: workspaces())
+    }
+
+    private func job(withID id: String, in workspaces: [CodexReviewWorkspace]) -> CodexReviewJob? {
+        for workspace in workspaces {
+            if let job = workspace.jobs.first(where: { $0.id == id }) {
+                return job
             }
         }
         return nil
     }
 
-    private func containsJob(id: String) -> Bool {
-        guard let store else {
-            return false
-        }
-        return containsJob(id: id, in: store.workspaces)
-    }
-
-    private func containsJob(id: String, in workspaces: [CodexReviewWorkspace]) -> Bool {
-        for workspace in workspaces {
-            if workspace.jobs.contains(where: { $0.id == id }) {
-                return true
-            }
-        }
-        return false
-    }
-
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        guard let item = sidebarItem(from: item) else {
-            return rootItems.count
+        guard let workspace = workspace(from: item) else {
+            return workspaces().count
         }
-        guard let workspace = item.workspace else {
-            return 0
-        }
-        return childItems(for: workspace).count
+        return workspace.jobs.count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        guard let item = sidebarItem(from: item) else {
-            return rootItems[index]
+        guard let workspace = workspace(from: item) else {
+            return workspaces()[index]
         }
-        guard let workspace = item.workspace else {
-            preconditionFailure("Jobs do not have child items.")
-        }
-        return childItems(for: workspace)[index]
+        return workspace.jobs[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        guard let item = sidebarItem(from: item),
-              let workspace = item.workspace
-        else {
+        guard let workspace = workspace(from: item) else {
             return false
         }
-        return childItems(for: workspace).isEmpty == false
+        return workspace.jobs.isEmpty == false
     }
 
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
-        sidebarItem(from: item)?.workspace != nil
+        workspace(from: item) != nil
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldShowOutlineCellForItem item: Any) -> Bool {
-        false
+        self.outlineView(outlineView, isItemExpandable: item)
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {
-        false
+        true
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
@@ -480,10 +478,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
-        guard let item = sidebarItem(from: item) else {
-            return false
-        }
-        return shouldAllowSelection(of: item)
+        shouldAllowSelection(of: item)
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -491,11 +486,46 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         updateSelectedJobFromOutlineView()
     }
 
-    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-        guard let item = sidebarItem(from: item) else {
-            return 0
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        guard let workspace = workspace(from: notification.userInfo?["NSObject"]) else {
+            return
         }
-        return item.workspace != nil ? 28 : 46
+        workspace.isExpanded = true
+
+        guard let selectedJob = uiState.selectedJobEntry,
+              selectedJob.cwd == workspace.cwd,
+              let row = row(forJobID: selectedJob.id)
+        else {
+            return
+        }
+        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard let workspace = workspace(from: notification.userInfo?["NSObject"]) else {
+            return
+        }
+        workspace.isExpanded = false
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        if workspace(from: item) != nil {
+            return ReviewMonitorWorkspaceRowView()
+        }
+        if job(from: item) != nil {
+            return ReviewMonitorJobTableRowView()
+        }
+        return nil
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
+        if workspace(from: item) != nil {
+            return 28
+        }
+        if job(from: item) != nil {
+            return 46
+        }
+        return 0
     }
 
     func outlineView(
@@ -504,27 +534,22 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         item: Any
     ) -> NSView? {
         _ = tableColumn
-        guard let item = sidebarItem(from: item) else {
-            return nil
-        }
-
-        switch item {
-        case let .workspace(workspace):
+        if let workspace = workspace(from: item) {
             let view = (outlineView.makeView(withIdentifier: Identifier.workspaceCell, owner: self) as? ReviewMonitorWorkspaceCellView)
                 ?? ReviewMonitorWorkspaceCellView()
             view.identifier = Identifier.workspaceCell
-            view.configure(title: workspace.displayTitle, toolTip: workspace.cwd)
+            view.configure(workspace)
             return view
+        }
 
-        case let .job(job):
+        if let job = job(from: item) {
             let view = (outlineView.makeView(withIdentifier: Identifier.jobCell, owner: self) as? ReviewMonitorJobCellView)
                 ?? ReviewMonitorJobCellView()
             view.identifier = Identifier.jobCell
-            view.configure(with: job) { [weak self] in
-                self?.triggerCancellation(for: job)
-            }
+            view.configure(with: job) 
             return view
         }
+        return nil
     }
 
 }
@@ -533,11 +558,11 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 @MainActor
 extension ReviewMonitorSidebarViewController {
     var displayedSectionTitlesForTesting: [String] {
-        rootItems.compactMap(\.workspace?.displayTitle)
+        workspaces().map(\.displayTitle)
     }
 
     var selectedJobForTesting: CodexReviewJob? {
-        job(atRow: outlineView.selectedRow)
+        uiState.selectedJobEntry
     }
 
     var isShowingEmptyStateForTesting: Bool {
@@ -552,15 +577,20 @@ extension ReviewMonitorSidebarViewController {
     }
 
     func clearSelectionForTesting() {
+        uiState.selectedJobEntry = nil
         outlineView.deselectAll(nil)
     }
 
     var allWorkspaceRowsExpandedForTesting: Bool {
-        rootItems.allSatisfy { outlineView.isItemExpanded($0) }
+        workspaces().allSatisfy { $0.isExpanded && outlineView.isItemExpanded($0) }
     }
 
     func workspaceIsSelectableForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
-        shouldAllowSelection(of: .workspace(workspace))
+        shouldAllowSelection(of: workspace)
+    }
+
+    var floatsGroupRowsEnabledForTesting: Bool {
+        outlineView.floatsGroupRows
     }
 
     func jobRowUsesReviewMonitorJobRowViewForTesting(_ job: CodexReviewJob) -> Bool {
@@ -604,6 +634,33 @@ extension ReviewMonitorSidebarViewController {
         outlineView.mouseDown(with: mouseEventForTesting(at: point))
     }
 
+    func toggleWorkspaceDisclosureForTesting(_ workspace: CodexReviewWorkspace) {
+        guard row(for: workspace) != nil else {
+            preconditionFailure("Workspace row is not visible.")
+        }
+        workspace.isExpanded.toggle()
+    }
+
+    func workspaceIsExpandedForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
+        workspace.isExpanded
+    }
+
+    func workspaceRowIsFloatingForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
+        guard let row = row(for: workspace),
+              let rowView = outlineView.rowView(atRow: row, makeIfNecessary: true)
+        else {
+            return false
+        }
+        return rowView.isFloating
+    }
+
+    func scrollSidebarToOffsetForTesting(_ yOffset: CGFloat) {
+        let clampedOffset = max(0, yOffset)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: clampedOffset))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        view.layoutSubtreeIfNeeded()
+    }
+
     private func blankPointForTesting() -> NSPoint {
         let blankY: CGFloat
         if outlineView.numberOfRows > 0 {
@@ -642,6 +699,12 @@ extension ReviewMonitorSidebarViewController {
 @MainActor
 private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
     var inertRowEvaluator: ((Int) -> Bool)?
+    var contextMenuProvider: ((NSPoint) -> NSMenu?)?
+    private var isPresentingContextMenu = false
+
+    override var acceptsFirstResponder: Bool {
+        isPresentingContextMenu ? false : super.acceptsFirstResponder
+    }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -649,6 +712,31 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
             return
         }
         super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let contextMenu = contextMenuProvider?(point) else {
+            super.rightMouseDown(with: event)
+            return
+        }
+
+        let previousFirstResponder = window?.firstResponder
+        let shouldRestoreFirstResponder = previousFirstResponder.map(isSidebarFirstResponder(_:)) ?? false
+        if shouldRestoreFirstResponder {
+            isPresentingContextMenu = true
+            _ = window?.makeFirstResponder(nil)
+        }
+        let previousMenu = menu
+        menu = contextMenu
+        defer {
+            menu = previousMenu
+            if shouldRestoreFirstResponder {
+                restoreFirstResponder(previousFirstResponder)
+            }
+            isPresentingContextMenu = false
+        }
+        super.rightMouseDown(with: event)
     }
 
     private func shouldSuppressSelectionClearing(at point: NSPoint) -> Bool {
@@ -662,11 +750,49 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
         return inertRowEvaluator?(clickedRow) ?? false
     }
 
+    private func isSidebarFirstResponder(_ responder: NSResponder) -> Bool {
+        if responder === self {
+            return true
+        }
+        guard let view = responder as? NSView else {
+            return false
+        }
+        return view === self || view.isDescendant(of: self)
+    }
+
+    private func restoreFirstResponder(_ responder: NSResponder?) {
+        guard let window else {
+            return
+        }
+        if let view = responder as? NSView, view.window === window {
+            _ = window.makeFirstResponder(view)
+            return
+        }
+        _ = window.makeFirstResponder(self)
+    }
+
 #if DEBUG
     func suppressesSelectionClearingForTesting(at point: NSPoint) -> Bool {
         shouldSuppressSelectionClearing(at: point)
     }
+
 #endif
+}
+
+@MainActor
+private final class ReviewMonitorWorkspaceRowView: NSTableRowView {
+    override var isEmphasized: Bool {
+        get { false }
+        set { }
+    }
+}
+
+@MainActor
+private final class ReviewMonitorJobTableRowView: NSTableRowView {
+    override var isEmphasized: Bool {
+        get { false }
+        set { }
+    }
 }
 
 @MainActor
@@ -683,19 +809,17 @@ private final class ReviewMonitorJobCellView: NSTableCellView {
         nil
     }
 
-    func configure(with job: CodexReviewJob, onCancel: @escaping () -> Void) {
+    func configure(with job: CodexReviewJob) {
         objectValue = job
         toolTip = job.cwd
         if let hostingView {
             hostingView.rootView = ReviewMonitorJobRowView(
-                job: job,
-                onCancel: onCancel
+                job: job
             )
         } else {
             let hostingView = NSHostingView(
                 rootView: ReviewMonitorJobRowView(
-                    job: job,
-                    onCancel: onCancel
+                    job: job
                 )
             )
             hostingView.translatesAutoresizingMaskIntoConstraints = false
@@ -736,12 +860,15 @@ private final class ReviewMonitorWorkspaceCellView: NSTableCellView {
         nil
     }
 
-    func configure(title: String, toolTip: String) {
-        titleLabel.stringValue = title
-        self.toolTip = toolTip
+    func configure(_ workspace: CodexReviewWorkspace) {
+        objectValue = workspace
+        titleLabel.stringValue = workspace.displayTitle
+        toolTip = workspace.cwd
     }
 
     private func configureHierarchy() {
+        translatesAutoresizingMaskIntoConstraints = false
+
         titleLabel.font = .preferredFont(forTextStyle: .headline)
         titleLabel.textColor = .secondaryLabelColor
         titleLabel.translatesAutoresizingMaskIntoConstraints = false

@@ -4,7 +4,6 @@ import ReviewRuntime
 
 struct ReviewMonitorJobRowView: View {
     var job: CodexReviewJob
-    var onCancel: () -> Void = {}
 
     var body: some View {
         Label {
@@ -44,13 +43,6 @@ struct ReviewMonitorJobRowView: View {
         }
         .transaction(value: job.id) { transaction in
             transaction.disablesAnimations = true
-        }
-        .contentShape(.rect)
-        .contextMenu{
-            Button(role: .cancel, action: onCancel) {
-                Text("Cancel")
-            }
-            .disabled(job.isTerminal || job.cancellationRequested)
         }
     }
 

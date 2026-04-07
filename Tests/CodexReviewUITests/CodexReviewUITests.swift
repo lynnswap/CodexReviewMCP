@@ -248,7 +248,134 @@ struct CodexReviewUITests {
         let sidebar = viewController.sidebarViewControllerForTesting
         #expect(sidebar.allWorkspaceRowsExpandedForTesting)
         #expect(sidebar.workspaceIsSelectableForTesting(workspace) == false)
+        #expect(sidebar.floatsGroupRowsEnabledForTesting)
         #expect(sidebar.jobRowUsesReviewMonitorJobRowViewForTesting(job))
+    }
+
+    @Test func scrollingSidebarMakesWorkspaceHeaderFloat() throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let primaryJobs = (0..<8).map { index in
+            makeJob(
+                id: "job-\(index)",
+                cwd: "/tmp/workspace-alpha",
+                status: .running,
+                targetSummary: "Review \(index)"
+            )
+        }
+        let secondaryJob = makeJob(
+            id: "job-secondary",
+            cwd: "/tmp/workspace-beta",
+            status: .queued,
+            targetSummary: "Queued review"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [secondaryJob] + primaryJobs)
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 360, height: 220))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+
+        let workspace = try #require(store.workspaces.first(where: { $0.cwd == "/tmp/workspace-alpha" }))
+        let sidebar = viewController.sidebarViewControllerForTesting
+        sidebar.scrollSidebarToOffsetForTesting(80)
+
+        #expect(sidebar.workspaceRowIsFloatingForTesting(workspace))
+    }
+
+    @Test func togglingWorkspaceDisclosureKeepsDetailAndRestoresSelectionAfterReexpand() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-selected",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Review is still running.",
+            logText: "Selected log\n"
+        )
+        let workspace = CodexReviewWorkspace(
+            cwd: job.cwd,
+            sortOrder: 1,
+            jobs: [job]
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [workspace]
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+        let sidebar = viewController.sidebarViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        sidebar.selectJobForTesting(job)
+        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        let stableRenderCount = transport.renderCountForTesting
+        sidebar.toggleWorkspaceDisclosureForTesting(workspace)
+        await transport.flushMainQueueForTesting()
+
+        #expect(sidebar.workspaceIsExpandedForTesting(workspace) == false)
+        #expect(sidebar.selectedJobForTesting?.id == job.id)
+        #expect(transport.renderCountForTesting == stableRenderCount)
+        #expect(transport.renderSnapshotForTesting == selectedSnapshot)
+
+        sidebar.toggleWorkspaceDisclosureForTesting(workspace)
+        await transport.flushMainQueueForTesting()
+
+        #expect(sidebar.workspaceIsExpandedForTesting(workspace))
+        #expect(sidebar.selectedJobForTesting?.id == job.id)
+    }
+
+    @Test func collapsedWorkspaceStaysCollapsedAcrossStoreReload() throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-1",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let workspace = try #require(store.workspaces.first(where: { $0.cwd == job.cwd }))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        sidebar.toggleWorkspaceDisclosureForTesting(workspace)
+        #expect(sidebar.workspaceIsExpandedForTesting(workspace) == false)
+
+        let replacement = makeJob(
+            id: "job-2",
+            cwd: job.cwd,
+            status: .succeeded,
+            targetSummary: "Commit: abc123"
+        )
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [replacement])
+        )
+
+        let reloadedWorkspace = try #require(store.workspaces.first(where: { $0.cwd == job.cwd }))
+        #expect(sidebar.workspaceIsExpandedForTesting(reloadedWorkspace) == false)
     }
 
     @Test func cancellingRunningJobFromSidebarMarksJobCancelled() async throws {
