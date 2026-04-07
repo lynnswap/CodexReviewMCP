@@ -271,7 +271,7 @@ struct CodexReviewUITests {
 
         let stableRenderCount = transport.renderCountForTesting
         activeJob.summary = "Old selection should not render."
-        activeJob.logEntries = [.init(kind: .agentMessage, text: "Old selection log")]
+        activeJob.replaceLogEntries([.init(kind: .agentMessage, text: "Old selection log")])
         await transport.flushMainQueueForTesting()
 
         #expect(transport.renderCountForTesting == stableRenderCount)
@@ -367,6 +367,192 @@ struct CodexReviewUITests {
                 isShowingEmptyState: false
             )
         )
+    }
+
+    @Test func switchingSelectedJobResetsLogScrollPosition() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let longActiveLog = (0..<400).map { "active line \($0)" }.joined(separator: "\n")
+        let longRecentLog = (0..<400).map { "recent line \($0)" }.joined(separator: "\n")
+        let activeJob = makeJob(
+            id: "job-active-scroll",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Active review in progress.",
+            logText: longActiveLog
+        )
+        let recentJob = makeJob(
+            id: "job-recent-scroll",
+            status: .succeeded,
+            targetSummary: "Commit: abc123",
+            summary: "Recent review completed.",
+            logText: longRecentLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let firstRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
+        _ = try await awaitTransportRender(transport, after: firstRenderCount)
+
+        transport.scrollLogToOffsetForTesting(120)
+        #expect(transport.logVerticalScrollOffsetForTesting > 0)
+        #expect(transport.isLogPinnedToBottomForTesting == false)
+
+        let secondRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
+        _ = try await awaitTransportRender(transport, after: secondRenderCount)
+
+        #expect(transport.logVerticalScrollOffsetForTesting == 0)
+        #expect(transport.isLogPinnedToBottomForTesting == false)
+    }
+
+    @Test func switchingSelectedJobFromPinnedBottomAlsoResetsToTop() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let longActiveLog = (0..<400).map { "active line \($0)" }.joined(separator: "\n")
+        let longRecentLog = (0..<400).map { "recent line \($0)" }.joined(separator: "\n")
+        let activeJob = makeJob(
+            id: "job-active-bottom",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Active review in progress.",
+            logText: longActiveLog
+        )
+        let recentJob = makeJob(
+            id: "job-recent-bottom",
+            status: .succeeded,
+            targetSummary: "Commit: abc123",
+            summary: "Recent review completed.",
+            logText: longRecentLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let firstRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
+        _ = try await awaitTransportRender(transport, after: firstRenderCount)
+
+        transport.scrollLogToBottomForTesting()
+        #expect(transport.isLogPinnedToBottomForTesting)
+
+        let secondRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
+        _ = try await awaitTransportRender(transport, after: secondRenderCount)
+
+        #expect(transport.logVerticalScrollOffsetForTesting == 0)
+        #expect(transport.isLogPinnedToBottomForTesting == false)
+    }
+
+    @Test func rehydratingSameSelectedJobPreservesLogScrollPosition() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let job = makeJob(
+            id: "job-rehydrated",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        transport.scrollLogToOffsetForTesting(120)
+        let preservedOffset = transport.logVerticalScrollOffsetForTesting
+        #expect(preservedOffset > 0)
+
+        let replacement = makeJob(
+            id: "job-rehydrated",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+
+        let refreshRenderCount = transport.renderCountForTesting
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [replacement]))
+        await transport.flushMainQueueForTesting()
+
+        #expect(transport.renderCountForTesting == refreshRenderCount)
+        #expect(transport.logVerticalScrollOffsetForTesting == preservedOffset)
+    }
+
+    @Test func switchingJobWithIdenticalLogTextStillResetsToTop() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let sharedLog = (0..<400).map { "shared line \($0)" }.joined(separator: "\n")
+        let firstJob = makeJob(
+            id: "job-identical-1",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: sharedLog
+        )
+        let secondJob = makeJob(
+            id: "job-identical-2",
+            status: .succeeded,
+            targetSummary: "Commit: abc123",
+            summary: "Review completed.",
+            logText: sharedLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [firstJob, secondJob]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let firstRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(firstJob)
+        _ = try await awaitTransportRender(transport, after: firstRenderCount)
+
+        transport.scrollLogToOffsetForTesting(120)
+        #expect(transport.logVerticalScrollOffsetForTesting > 0)
+
+        let secondRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(secondJob)
+        _ = try await awaitTransportRender(transport, after: secondRenderCount)
+
+        #expect(transport.logVerticalScrollOffsetForTesting == 0)
     }
 
     @Test func clickingSidebarBlankAreaKeepsSelectionAndDetailPane() async throws {
@@ -559,7 +745,7 @@ struct CodexReviewUITests {
 
         let stableRenderCount = transport.renderCountForTesting
         job.summary = "Deselected summary"
-        job.logEntries = [.init(kind: .agentMessage, text: "Deselected log")]
+        job.replaceLogEntries([.init(kind: .agentMessage, text: "Deselected log")])
         await transport.flushMainQueueForTesting()
 
         #expect(transport.renderCountForTesting == stableRenderCount)
@@ -592,20 +778,236 @@ struct CodexReviewUITests {
         let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
         #expect(selectedSnapshot.title == job.displayTitle)
 
+        let updateRenderCount = transport.renderCountForTesting
         job.status = .succeeded
         job.summary = "Review completed successfully."
-        job.logEntries = [.init(kind: .agentMessage, text: "Updated log")]
-
-        let updateRenderCount = transport.renderCountForTesting
-        store.loadForTesting(
-            serverState: .running,
-            workspaces: makeWorkspaces(from: [job])
-        )
+        job.replaceLogEntries([.init(kind: .agentMessage, text: "Updated log")])
 
         let updatedSnapshot = try await awaitTransportRender(transport, after: updateRenderCount)
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting?.id == "job-1")
         #expect(updatedSnapshot.summary == "Review completed successfully.")
         #expect(updatedSnapshot.log == "Updated log")
+    }
+
+    @Test func selectedJobLogAppendUsesAppendPath() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-append",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Uncommitted changes",
+            threadID: UUID().uuidString,
+            turnID: UUID().uuidString,
+            status: .running,
+            startedAt: Date(timeIntervalSince1970: 200),
+            summary: "Running review.",
+            logEntries: [
+                .init(kind: .agentMessage, groupID: "msg_1", text: "Initial")
+            ]
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        let appendRenderCount = transport.renderCountForTesting
+        let appendCount = transport.logAppendCountForTesting
+        let reloadCount = transport.logReloadCountForTesting
+        job.appendLogEntry(.init(kind: .agentMessage, groupID: "msg_1", text: " log"))
+
+        let snapshot = try await awaitTransportRender(transport, after: appendRenderCount)
+        #expect(snapshot.log == "Initial log")
+        #expect(transport.logAppendCountForTesting == appendCount + 1)
+        #expect(transport.logReloadCountForTesting == reloadCount)
+    }
+
+    @Test func coalescedLogRevisionFallsBackToFullReload() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-coalesced",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Uncommitted changes",
+            threadID: UUID().uuidString,
+            turnID: UUID().uuidString,
+            status: .running,
+            startedAt: Date(timeIntervalSince1970: 200),
+            summary: "Running review.",
+            logEntries: [
+                .init(kind: .agentMessage, groupID: "msg_1", text: "Initial")
+            ]
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        let updateRenderCount = transport.renderCountForTesting
+        let reloadCount = transport.logReloadCountForTesting
+        job.appendLogEntry(.init(kind: .agentMessage, groupID: "msg_1", text: " one"))
+        job.appendLogEntry(.init(kind: .agentMessage, groupID: "msg_1", text: " two"))
+
+        let snapshot = try await awaitTransportRender(transport, after: updateRenderCount)
+        #expect(snapshot.log == "Initial one two")
+        #expect(transport.logReloadCountForTesting >= reloadCount + 1)
+    }
+
+    @Test func selectedJobGroupedReplacementUsesReloadPath() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-reload",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Uncommitted changes",
+            threadID: UUID().uuidString,
+            turnID: UUID().uuidString,
+            status: .running,
+            startedAt: Date(timeIntervalSince1970: 200),
+            summary: "Running review.",
+            logEntries: [
+                .init(kind: .plan, groupID: "plan_1", text: "- original")
+            ]
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        let reloadRenderCount = transport.renderCountForTesting
+        let appendCount = transport.logAppendCountForTesting
+        let reloadCount = transport.logReloadCountForTesting
+        job.appendLogEntry(.init(kind: .plan, groupID: "plan_1", replacesGroup: true, text: "- updated"))
+
+        let snapshot = try await awaitTransportRender(transport, after: reloadRenderCount)
+        #expect(snapshot.log == "- updated")
+        #expect(transport.logAppendCountForTesting == appendCount)
+        #expect(transport.logReloadCountForTesting == reloadCount + 1)
+    }
+
+    @Test func metadataOnlyUpdatesDoNotTouchLogView() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-metadata",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: "Initial log\n"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        let metadataRenderCount = transport.renderCountForTesting
+        let appendCount = transport.logAppendCountForTesting
+        let reloadCount = transport.logReloadCountForTesting
+        job.summary = "Updated summary."
+
+        let snapshot = try await awaitTransportRender(transport, after: metadataRenderCount)
+        #expect(snapshot.summary == "Updated summary.")
+        #expect(snapshot.log == "Initial log")
+        #expect(transport.logAppendCountForTesting == appendCount)
+        #expect(transport.logReloadCountForTesting == reloadCount)
+    }
+
+    @Test func logAutoFollowRunsOnlyWhenPinnedToBottom() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let job = makeJob(
+            id: "job-autofollow",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(transport.isLogPinnedToBottomForTesting == false)
+
+        transport.scrollLogToBottomForTesting()
+        #expect(transport.isLogPinnedToBottomForTesting)
+
+        let pinnedRenderCount = transport.renderCountForTesting
+        let pinnedAutoFollow = transport.logAutoFollowCountForTesting
+        job.appendLogEntry(.init(kind: .progress, text: "Pinned update"))
+        _ = try await awaitTransportRender(transport, after: pinnedRenderCount)
+        #expect(transport.logAutoFollowCountForTesting == pinnedAutoFollow + 1)
+        #expect(transport.isLogPinnedToBottomForTesting)
+
+        transport.scrollLogToTopForTesting()
+        #expect(transport.isLogPinnedToBottomForTesting == false)
+
+        let unpinnedRenderCount = transport.renderCountForTesting
+        let unpinnedAutoFollow = transport.logAutoFollowCountForTesting
+        job.appendLogEntry(.init(kind: .progress, text: "Unpinned update"))
+        _ = try await awaitTransportRender(transport, after: unpinnedRenderCount)
+        #expect(transport.logAutoFollowCountForTesting == unpinnedAutoFollow)
+        #expect(transport.isLogPinnedToBottomForTesting == false)
+    }
+
+    @Test func logViewUsesTextKit1AndDisablesEditingFeatures() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-log-config",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: "Initial log\n"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        #expect(transport.logUsesTextKit1ForTesting)
+        #expect(transport.logIsEditableForTesting == false)
+        #expect(transport.logIsSelectableForTesting)
+        #expect(transport.logWritingToolsDisabledForTesting)
     }
 
     @Test func authFailedJobShowsNormalFailureDetails() async throws {

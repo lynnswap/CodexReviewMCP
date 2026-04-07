@@ -4,26 +4,6 @@ import CodexReviewModel
 import ReviewRuntime
 
 @MainActor
-func reviewMonitorMetadataText(for job: CodexReviewJob) -> String {
-    var parts: [String] = [
-        "Status: \(job.status.displayText)",
-        "Session: \(job.sessionID)",
-        "CWD: \(job.cwd)"
-    ]
-    if let model = job.model {
-        parts.append("Model: \(model)")
-    }
-    parts.append("Job: \(job.id)")
-    if let threadID = job.threadID {
-        parts.append("Thread: \(threadID)")
-    }
-    if let turnID = job.turnID {
-        parts.append("Turn: \(turnID)")
-    }
-    return parts.joined(separator: "\n")
-}
-
-@MainActor
 final class ReviewMonitorTransportViewController: NSViewController {
     private let headerStack = NSStackView()
     private let titleLabel = NSTextField(labelWithString: "Select a job")
@@ -44,6 +24,9 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private var uiStateObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationGeneration: UInt64 = 0
+    private var showingEmptyState = true
+    private var displayedJobID: String?
+    private var displayedLogRevision: UInt64?
 #if DEBUG
     private var renderCountForTestingStorage = 0
     private var renderWaitersForTesting: [Int: [CheckedContinuation<Void, Never>]] = [:]
@@ -144,6 +127,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
 
         let generation = selectedJobObservationGeneration
         renderSelectedJob(selectedJob)
+
         selectedJob.observe(
             [
                 \.targetSummary,
@@ -152,39 +136,159 @@ final class ReviewMonitorTransportViewController: NSViewController {
                 \.summary,
                 \.threadID,
                 \.turnID,
-                \.logEntries,
             ]
         ) { [weak self, weak selectedJob] in
-            guard let self, let selectedJob,
+            guard let self,
+                  let selectedJob,
                   self.selectedJobObservationGeneration == generation
             else {
                 return
             }
-            self.renderSelectedJob(selectedJob)
+            if self.renderMetadata(selectedJob) {
+                self.noteRenderForTesting()
+            }
+        }
+        .store(in: &selectedJobObservationHandles)
+
+        selectedJob.observe(\.reviewMonitorRevision) { [weak self, weak selectedJob] _ in
+            guard let self,
+                  let selectedJob,
+                  self.selectedJobObservationGeneration == generation
+            else {
+                return
+            }
+            let logChanged = self.renderObservedLogUpdate(selectedJob)
+            if logChanged {
+                self.noteRenderForTesting()
+            }
         }
         .store(in: &selectedJobObservationHandles)
     }
 
     private func renderSelectedJob(_ job: CodexReviewJob) {
-        titleLabel.stringValue = job.displayTitle
-        statusLabel.stringValue = "Status: \(job.status.displayText)"
-        cwdLabel.stringValue = "CWD: \(job.cwd)"
-        modelLabel.stringValue = job.model.map { "Model: \($0)" } ?? ""
-        threadLabel.stringValue = job.threadID.map { "Thread: \($0)" } ?? ""
-        turnLabel.stringValue = job.turnID.map { "Turn: \($0)" } ?? ""
-        summaryLabel.stringValue = job.summary
-        summaryLabel.isHidden = job.summary.isEmpty
-        logScrollView.setText(job.reviewMonitorLogText)
+        let metadataChanged = renderMetadata(job)
+        let preserveScrollPosition = displayedJobID == job.id && showingEmptyState == false
+        let logChanged = renderSelectedJobLog(
+            job.reviewMonitorLogText,
+            preserveScrollPosition: preserveScrollPosition
+        )
+        displayedJobID = job.id
+        displayedLogRevision = job.reviewMonitorRevision
+        if metadataChanged || logChanged {
+            noteRenderForTesting()
+        }
+    }
+
+    @discardableResult
+    private func renderMetadata(_ job: CodexReviewJob) -> Bool {
+        var didChange = showJobContentIfNeeded()
+
+        let title = job.displayTitle
+        if titleLabel.stringValue != title {
+            titleLabel.stringValue = title
+            didChange = true
+        }
+
+        let status = "Status: \(job.status.displayText)"
+        if statusLabel.stringValue != status {
+            statusLabel.stringValue = status
+            didChange = true
+        }
+
+        let cwd = "CWD: \(job.cwd)"
+        if cwdLabel.stringValue != cwd {
+            cwdLabel.stringValue = cwd
+            didChange = true
+        }
+
+        let model = job.model.map { "Model: \($0)" } ?? ""
+        if modelLabel.stringValue != model {
+            modelLabel.stringValue = model
+            didChange = true
+        }
+
+        let thread = job.threadID.map { "Thread: \($0)" } ?? ""
+        if threadLabel.stringValue != thread {
+            threadLabel.stringValue = thread
+            didChange = true
+        }
+
+        let turn = job.turnID.map { "Turn: \($0)" } ?? ""
+        if turnLabel.stringValue != turn {
+            turnLabel.stringValue = turn
+            didChange = true
+        }
+
+        if summaryLabel.stringValue != job.summary {
+            summaryLabel.stringValue = job.summary
+            didChange = true
+        }
+        let summaryHidden = job.summary.isEmpty
+        if summaryLabel.isHidden != summaryHidden {
+            summaryLabel.isHidden = summaryHidden
+            didChange = true
+        }
+
+        return didChange
+    }
+
+    @discardableResult
+    private func renderLogUpdate(_ update: ReviewMonitorLogUpdate) -> Bool {
+        let visibilityChanged = showJobContentIfNeeded()
+        let logChanged = logScrollView.apply(update: update)
+        return visibilityChanged || logChanged
+    }
+
+    @discardableResult
+    private func renderSelectedJobLog(
+        _ text: String,
+        preserveScrollPosition: Bool
+    ) -> Bool {
+        let visibilityChanged = showJobContentIfNeeded()
+        let logChanged = logScrollView.replaceText(text, preserveScrollPosition: preserveScrollPosition)
+        return visibilityChanged || logChanged
+    }
+
+    @discardableResult
+    private func renderObservedLogUpdate(_ job: CodexReviewJob) -> Bool {
+        let preserveScrollPosition = displayedJobID == job.id && showingEmptyState == false
+        let currentRevision = job.reviewMonitorRevision
+        let revisionDelta = displayedLogRevision.map { currentRevision &- $0 }
+
+        let didChange: Bool
+        if revisionDelta == 1 {
+            didChange = renderLogUpdate(job.lastMonitorUpdate)
+        } else {
+            didChange = renderSelectedJobLog(
+                job.reviewMonitorLogText,
+                preserveScrollPosition: preserveScrollPosition
+            )
+        }
+
+        displayedLogRevision = currentRevision
+        displayedJobID = job.id
+        return didChange
+    }
+
+    @discardableResult
+    private func showJobContentIfNeeded() -> Bool {
+        guard showingEmptyState else {
+            return false
+        }
 
         titleLabel.isHidden = false
         metadataStack.isHidden = false
         sectionTitleLabel.isHidden = false
         logScrollView.isHidden = false
         emptyStateView.isHidden = true
-        noteRenderForTesting()
+        showingEmptyState = false
+        return true
     }
 
     private func renderEmptyState() {
+        let clearedLog = logScrollView.clear()
+        let wasEmpty = showingEmptyState
+
         titleLabel.stringValue = ""
         statusLabel.stringValue = ""
         cwdLabel.stringValue = ""
@@ -192,7 +296,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
         threadLabel.stringValue = ""
         turnLabel.stringValue = ""
         summaryLabel.stringValue = ""
-        logScrollView.clear()
+        displayedJobID = nil
+        displayedLogRevision = nil
 
         titleLabel.isHidden = true
         metadataStack.isHidden = true
@@ -200,7 +305,11 @@ final class ReviewMonitorTransportViewController: NSViewController {
         sectionTitleLabel.isHidden = true
         logScrollView.isHidden = true
         emptyStateView.isHidden = false
-        noteRenderForTesting()
+        showingEmptyState = true
+
+        if wasEmpty == false || clearedLog {
+            noteRenderForTesting()
+        }
     }
 
     private func noteRenderForTesting() {
@@ -247,6 +356,34 @@ extension ReviewMonitorTransportViewController {
         renderCountForTestingStorage
     }
 
+    var logAppendCountForTesting: Int {
+        logScrollView.appendCount
+    }
+
+    var logReloadCountForTesting: Int {
+        logScrollView.reloadCount
+    }
+
+    var logAutoFollowCountForTesting: Int {
+        logScrollView.autoFollowCount
+    }
+
+    var logUsesTextKit1ForTesting: Bool {
+        logScrollView.usesTextKit1ForTesting
+    }
+
+    var logIsEditableForTesting: Bool {
+        logScrollView.isEditableForTesting
+    }
+
+    var logIsSelectableForTesting: Bool {
+        logScrollView.isSelectableForTesting
+    }
+
+    var logWritingToolsDisabledForTesting: Bool {
+        logScrollView.writingToolsDisabledForTesting
+    }
+
     var renderSnapshotForTesting: RenderSnapshotForTesting {
         .init(
             title: displayedTitleForTesting,
@@ -275,6 +412,26 @@ extension ReviewMonitorTransportViewController {
                 continuation.resume()
             }
         }
+    }
+
+    func scrollLogToTopForTesting() {
+        logScrollView.scrollToTopForTesting()
+    }
+
+    func scrollLogToOffsetForTesting(_ y: CGFloat) {
+        logScrollView.scrollToOffsetForTesting(y)
+    }
+
+    var logVerticalScrollOffsetForTesting: CGFloat {
+        logScrollView.verticalScrollOffsetForTesting
+    }
+
+    func scrollLogToBottomForTesting() {
+        logScrollView.scrollToBottomForTesting()
+    }
+
+    var isLogPinnedToBottomForTesting: Bool {
+        logScrollView.isPinnedToBottomForTesting
     }
 }
 #endif
