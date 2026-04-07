@@ -54,9 +54,45 @@ struct CodexReviewUITests {
         #expect(viewController.toolbarIdentifiersForTesting.contains(.toggleSidebar))
         #expect(viewController.toolbarIdentifiersForTesting.contains(.sidebarTrackingSeparator))
         #expect(window.styleMask.contains(.fullSizeContentView))
-        #expect(window.titleVisibility == .hidden)
+        #expect(window.titleVisibility == .visible)
         #expect(window.title == "Review Details")
+        #expect(window.subtitle == "")
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
+        #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
+    }
+
+    @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-safe-area",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            logText: "Safe area log\n"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.viewDidAppear()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        transport.view.layoutSubtreeIfNeeded()
+
+        let logFrame = transport.logFrameForTesting
+        let safeAreaFrame = transport.safeAreaFrameForTesting
+
+        #expect(abs(logFrame.minX - safeAreaFrame.minX) < 0.5)
+        #expect(abs(logFrame.maxX - safeAreaFrame.maxX) < 0.5)
+        #expect(abs(logFrame.minY - safeAreaFrame.minY) < 0.5)
+        #expect(abs(logFrame.maxY - safeAreaFrame.maxY) < 0.5)
     }
 
     @Test func splitViewStartsStoreOnceOnFirstAppearance() async throws {
@@ -253,7 +289,10 @@ struct CodexReviewUITests {
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
         viewController.loadViewIfNeeded()
+        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
@@ -262,12 +301,14 @@ struct CodexReviewUITests {
         let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
         #expect(
             selectedSnapshot == .init(
-                title: recentJob.displayTitle,
-                summary: recentJob.summary,
+                title: nil,
+                summary: nil,
                 log: recentJob.logText,
                 isShowingEmptyState: false
             )
         )
+        #expect(window.title == recentJob.targetSummary)
+        #expect(window.subtitle == recentJob.cwd)
 
         let stableRenderCount = transport.renderCountForTesting
         activeJob.summary = "Old selection should not render."
@@ -306,15 +347,20 @@ struct CodexReviewUITests {
             workspaces: makeWorkspaces(from: [job])
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
         viewController.loadViewIfNeeded()
+        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
         let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
-        #expect(selectedSnapshot.title == job.displayTitle)
-        #expect(selectedSnapshot.summary == job.summary)
+        #expect(selectedSnapshot.title == nil)
+        #expect(selectedSnapshot.summary == nil)
+        #expect(window.title == job.targetSummary)
+        #expect(window.subtitle == job.cwd)
 
         let displayedLog = transport.displayedLogForTesting
         #expect(displayedLog.contains("$ git diff --stat"))
@@ -346,14 +392,20 @@ struct CodexReviewUITests {
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
         viewController.loadViewIfNeeded()
+        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let firstRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
 
         let activeSnapshot = try await awaitTransportRender(transport, after: firstRenderCount)
-        #expect(activeSnapshot.title == activeJob.displayTitle)
+        #expect(activeSnapshot.title == nil)
+        #expect(activeSnapshot.summary == nil)
+        #expect(window.title == activeJob.targetSummary)
+        #expect(window.subtitle == activeJob.cwd)
 
         let secondRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(recentJob)
@@ -361,12 +413,14 @@ struct CodexReviewUITests {
         let recentSnapshot = try await awaitTransportRender(transport, after: secondRenderCount)
         #expect(
             recentSnapshot == .init(
-                title: recentJob.displayTitle,
-                summary: recentJob.summary,
+                title: nil,
+                summary: nil,
                 log: recentJob.logText,
                 isShowingEmptyState: false
             )
         )
+        #expect(window.title == recentJob.targetSummary)
+        #expect(window.subtitle == recentJob.cwd)
     }
 
     @Test func switchingSelectedJobResetsLogScrollPosition() async throws {
@@ -691,7 +745,8 @@ struct CodexReviewUITests {
         viewController.sidebarViewControllerForTesting.selectJobForTesting(activeJob)
 
         let activeSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
-        #expect(activeSnapshot.title == activeJob.displayTitle)
+        #expect(activeSnapshot.title == nil)
+        #expect(activeSnapshot.summary == nil)
 
         let removalRenderCount = transport.renderCountForTesting
         store.loadForTesting(
@@ -732,7 +787,9 @@ struct CodexReviewUITests {
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
         let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
-        #expect(selectedSnapshot.title == job.displayTitle)
+        #expect(selectedSnapshot.title == nil)
+        #expect(window.title == job.targetSummary)
+        #expect(window.subtitle == job.cwd)
 
         let clearRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.clearSelectionForTesting()
@@ -742,6 +799,8 @@ struct CodexReviewUITests {
         #expect(emptySnapshot.title == nil)
         #expect(emptySnapshot.summary == nil)
         #expect(emptySnapshot.log.isEmpty)
+        #expect(window.title == "Review Details")
+        #expect(window.subtitle == "")
 
         let stableRenderCount = transport.renderCountForTesting
         job.summary = "Deselected summary"
@@ -776,7 +835,8 @@ struct CodexReviewUITests {
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
         let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
-        #expect(selectedSnapshot.title == job.displayTitle)
+        #expect(selectedSnapshot.title == nil)
+        #expect(selectedSnapshot.summary == nil)
 
         let updateRenderCount = transport.renderCountForTesting
         job.status = .succeeded
@@ -785,7 +845,7 @@ struct CodexReviewUITests {
 
         let updatedSnapshot = try await awaitTransportRender(transport, after: updateRenderCount)
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting?.id == "job-1")
-        #expect(updatedSnapshot.summary == "Review completed successfully.")
+        #expect(updatedSnapshot.summary == nil)
         #expect(updatedSnapshot.log == "Updated log")
     }
 
@@ -928,9 +988,10 @@ struct CodexReviewUITests {
         let reloadCount = transport.logReloadCountForTesting
         job.summary = "Updated summary."
 
-        let snapshot = try await awaitTransportRender(transport, after: metadataRenderCount)
-        #expect(snapshot.summary == "Updated summary.")
-        #expect(snapshot.log == "Initial log")
+        await transport.flushMainQueueForTesting()
+
+        #expect(transport.renderCountForTesting == metadataRenderCount)
+        #expect(transport.displayedLogForTesting == "Initial log")
         #expect(transport.logAppendCountForTesting == appendCount)
         #expect(transport.logReloadCountForTesting == reloadCount)
     }
@@ -1035,7 +1096,7 @@ struct CodexReviewUITests {
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
         let snapshot = try await awaitTransportRender(transport, after: initialRenderCount)
-        #expect(snapshot.summary == "Failed to start review.")
+        #expect(snapshot.summary == nil)
         #expect(snapshot.log == "Authentication required. Sign in to ReviewMCP and retry.")
     }
 
@@ -1064,7 +1125,7 @@ struct CodexReviewUITests {
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
         let snapshot = try await awaitTransportRender(transport, after: initialRenderCount)
-        #expect(snapshot.summary == "Failed to start review.")
+        #expect(snapshot.summary == nil)
         #expect(snapshot.log == "Authentication required. Sign in to ReviewMCP and retry.")
     }
 

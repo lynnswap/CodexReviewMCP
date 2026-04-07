@@ -1,6 +1,6 @@
 import SwiftUI
 import CodexReviewMCP
-import CodexReviewUI
+@_spi(PreviewSupport) import CodexReviewUI
 
 struct ContentView: View {
     let store: CodexReviewStore
@@ -8,4 +8,8 @@ struct ContentView: View {
     var body: some View {
         ReviewMonitorContentView(store: store)
     }
+}
+
+#Preview("Review Monitor") {
+    ContentView(store: ReviewMonitorPreviewContent.makeStore())
 }

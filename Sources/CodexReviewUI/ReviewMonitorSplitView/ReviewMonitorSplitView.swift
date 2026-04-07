@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import CodexReviewModel
 import ObservationBridge
+import ReviewRuntime
 
 @available(macOS 26.0, *)
 @MainActor
@@ -20,6 +21,7 @@ struct ReviewMonitorSplitViewRepresentable: NSViewControllerRepresentable {
 @MainActor
 final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDelegate {
     private static let autosaveName = NSSplitView.AutosaveName("CodexReviewMCP.ReviewMonitorSplitView")
+    private static let defaultWindowTitle = "Review Details"
 
     private let store: CodexReviewStore
     private let uiState: ReviewMonitorUIState
@@ -30,6 +32,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var contentItem: NSSplitViewItem?
     private var toolbar: NSToolbar?
     private var observationHandles: Set<ObservationHandle> = []
+    private var selectedJobWindowObservationHandles: Set<ObservationHandle> = []
     private var didTriggerStoreStart = false
 
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState = ReviewMonitorUIState()) {
@@ -56,7 +59,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
 
         let contentItem = NSSplitViewItem(viewController: transportViewController)
         contentItem.minimumThickness = 300
-       
+        contentItem.automaticallyAdjustsSafeAreaInsets = true
 
         self.sidebarViewController = sidebarViewController
         self.transportViewController = transportViewController
@@ -83,12 +86,34 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private func bindWindowTitle() {
         observationHandles.removeAll()
         uiState.observe(\.selectedJobEntry) { [weak self] selectedJob in
-            guard let self else {
-                return
-            }
-            self.view.window?.title = selectedJob?.displayTitle ?? "Review Details"
+            self?.bindSelectedJobWindowChrome(selectedJob)
         }
         .store(in: &observationHandles)
+    }
+
+    private func bindSelectedJobWindowChrome(_ selectedJob: CodexReviewJob?) {
+        selectedJobWindowObservationHandles.removeAll()
+        updateWindowChrome(selectedJob)
+
+        guard let selectedJob else {
+            return
+        }
+
+        selectedJob.observe(\.targetSummary) { [weak self, weak selectedJob] _ in
+            guard let self, let selectedJob else {
+                return
+            }
+            self.updateWindowChrome(selectedJob)
+        }
+        .store(in: &selectedJobWindowObservationHandles)
+    }
+
+    private func updateWindowChrome(_ selectedJob: CodexReviewJob?) {
+        guard let window = view.window else {
+            return
+        }
+        window.title = selectedJob?.targetSummary ?? Self.defaultWindowTitle
+        window.subtitle = selectedJob?.cwd ?? ""
     }
 
     private func installToolbarIfNeeded() {
@@ -100,8 +125,8 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.toolbarStyle = .unified
-        window.titleVisibility = .hidden
-        window.title = uiState.selectedJobEntry?.displayTitle ?? "Review Details"
+        window.titleVisibility = .visible
+        updateWindowChrome(uiState.selectedJobEntry)
 
         if toolbar == nil {
             let toolbar = NSToolbar(identifier: "CodexReviewMCP.ReviewMonitor.Toolbar")
@@ -208,6 +233,10 @@ extension ReviewMonitorSplitViewController {
 
     var sidebarAllowsFullHeightLayoutForTesting: Bool {
         sidebarItem?.allowsFullHeightLayout ?? false
+    }
+
+    var contentAutomaticallyAdjustsSafeAreaInsetsForTesting: Bool {
+        contentItem?.automaticallyAdjustsSafeAreaInsets ?? false
     }
 
     var didTriggerStoreStartForTesting: Bool {

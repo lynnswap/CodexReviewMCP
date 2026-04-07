@@ -3,8 +3,9 @@ import Foundation
 import ReviewJobs
 import ReviewRuntime
 
+@_spi(PreviewSupport)
 @MainActor
-enum ReviewMonitorPreviewContent {
+public enum ReviewMonitorPreviewContent {
     private struct PreviewJobDefinition {
         let status: CodexReviewJobStatus
         let targetSummary: String
@@ -16,7 +17,8 @@ enum ReviewMonitorPreviewContent {
         let hasFinalReview: Bool
     }
 
-    static func makeStore() -> CodexReviewStore {
+    @_spi(PreviewSupport)
+    public static func makeStore() -> CodexReviewStore {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.loadForTesting(
             serverState: .running,

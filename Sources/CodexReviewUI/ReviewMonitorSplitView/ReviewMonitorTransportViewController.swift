@@ -5,16 +5,6 @@ import ReviewRuntime
 
 @MainActor
 final class ReviewMonitorTransportViewController: NSViewController {
-    private let headerStack = NSStackView()
-    private let titleLabel = NSTextField(labelWithString: "Select a job")
-    private let metadataStack = NSStackView()
-    private let statusLabel = NSTextField(labelWithString: "")
-    private let cwdLabel = NSTextField(labelWithString: "")
-    private let modelLabel = NSTextField(labelWithString: "")
-    private let threadLabel = NSTextField(labelWithString: "")
-    private let turnLabel = NSTextField(labelWithString: "")
-    private let summaryLabel = NSTextField(wrappingLabelWithString: "")
-    private let sectionTitleLabel = NSTextField(labelWithString: "Review Log")
     private let logScrollView = ReviewMonitorLogScrollView()
     private let uiState: ReviewMonitorUIState
     private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
@@ -58,53 +48,21 @@ final class ReviewMonitorTransportViewController: NSViewController {
     }
 
     private func configureHierarchy() {
-        headerStack.translatesAutoresizingMaskIntoConstraints = false
-        headerStack.orientation = .vertical
-        headerStack.alignment = .leading
-        headerStack.spacing = 6
+        let safeArea = view.safeAreaLayoutGuide
 
-        titleLabel.font = .preferredFont(forTextStyle: .title3)
-        metadataStack.orientation = .vertical
-        metadataStack.alignment = .leading
-        metadataStack.spacing = 2
-        summaryLabel.font = .preferredFont(forTextStyle: .body)
-        summaryLabel.textColor = .secondaryLabelColor
-        sectionTitleLabel.font = .preferredFont(forTextStyle: .headline)
-        sectionTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        for label in [statusLabel, cwdLabel, modelLabel, threadLabel, turnLabel] {
-            label.font = .preferredFont(forTextStyle: .subheadline)
-            label.textColor = .secondaryLabelColor
-            metadataStack.addArrangedSubview(label)
-        }
-
-        view.addSubview(headerStack)
-        view.addSubview(sectionTitleLabel)
         view.addSubview(logScrollView)
         view.addSubview(emptyStateView)
 
-        headerStack.addArrangedSubview(titleLabel)
-        headerStack.addArrangedSubview(metadataStack)
-        headerStack.addArrangedSubview(summaryLabel)
-
         NSLayoutConstraint.activate([
-            headerStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            headerStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            headerStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            logScrollView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+            logScrollView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
+            logScrollView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
+            logScrollView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
 
-            sectionTitleLabel.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 12),
-            sectionTitleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            sectionTitleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            logScrollView.topAnchor.constraint(equalTo: sectionTitleLabel.bottomAnchor, constant: 8),
-            logScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            logScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            logScrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16),
-
-            emptyStateView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            emptyStateView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
-            emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24)
+            emptyStateView.centerXAnchor.constraint(equalTo: safeArea.centerXAnchor),
+            emptyStateView.centerYAnchor.constraint(equalTo: safeArea.centerYAnchor),
+            emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: safeArea.leadingAnchor, constant: 24),
+            emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: safeArea.trailingAnchor, constant: -24)
         ])
     }
 
@@ -128,28 +86,6 @@ final class ReviewMonitorTransportViewController: NSViewController {
         let generation = selectedJobObservationGeneration
         renderSelectedJob(selectedJob)
 
-        selectedJob.observe(
-            [
-                \.targetSummary,
-                \.status,
-                \.model,
-                \.summary,
-                \.threadID,
-                \.turnID,
-            ]
-        ) { [weak self, weak selectedJob] in
-            guard let self,
-                  let selectedJob,
-                  self.selectedJobObservationGeneration == generation
-            else {
-                return
-            }
-            if self.renderMetadata(selectedJob) {
-                self.noteRenderForTesting()
-            }
-        }
-        .store(in: &selectedJobObservationHandles)
-
         selectedJob.observe(\.reviewMonitorRevision) { [weak self, weak selectedJob] _ in
             guard let self,
                   let selectedJob,
@@ -166,7 +102,6 @@ final class ReviewMonitorTransportViewController: NSViewController {
     }
 
     private func renderSelectedJob(_ job: CodexReviewJob) {
-        let metadataChanged = renderMetadata(job)
         let preserveScrollPosition = displayedJobID == job.id && showingEmptyState == false
         let logChanged = renderSelectedJobLog(
             job.reviewMonitorLogText,
@@ -174,62 +109,9 @@ final class ReviewMonitorTransportViewController: NSViewController {
         )
         displayedJobID = job.id
         displayedLogRevision = job.reviewMonitorRevision
-        if metadataChanged || logChanged {
+        if logChanged {
             noteRenderForTesting()
         }
-    }
-
-    @discardableResult
-    private func renderMetadata(_ job: CodexReviewJob) -> Bool {
-        var didChange = showJobContentIfNeeded()
-
-        let title = job.displayTitle
-        if titleLabel.stringValue != title {
-            titleLabel.stringValue = title
-            didChange = true
-        }
-
-        let status = "Status: \(job.status.displayText)"
-        if statusLabel.stringValue != status {
-            statusLabel.stringValue = status
-            didChange = true
-        }
-
-        let cwd = "CWD: \(job.cwd)"
-        if cwdLabel.stringValue != cwd {
-            cwdLabel.stringValue = cwd
-            didChange = true
-        }
-
-        let model = job.model.map { "Model: \($0)" } ?? ""
-        if modelLabel.stringValue != model {
-            modelLabel.stringValue = model
-            didChange = true
-        }
-
-        let thread = job.threadID.map { "Thread: \($0)" } ?? ""
-        if threadLabel.stringValue != thread {
-            threadLabel.stringValue = thread
-            didChange = true
-        }
-
-        let turn = job.turnID.map { "Turn: \($0)" } ?? ""
-        if turnLabel.stringValue != turn {
-            turnLabel.stringValue = turn
-            didChange = true
-        }
-
-        if summaryLabel.stringValue != job.summary {
-            summaryLabel.stringValue = job.summary
-            didChange = true
-        }
-        let summaryHidden = job.summary.isEmpty
-        if summaryLabel.isHidden != summaryHidden {
-            summaryLabel.isHidden = summaryHidden
-            didChange = true
-        }
-
-        return didChange
     }
 
     @discardableResult
@@ -276,9 +158,6 @@ final class ReviewMonitorTransportViewController: NSViewController {
             return false
         }
 
-        titleLabel.isHidden = false
-        metadataStack.isHidden = false
-        sectionTitleLabel.isHidden = false
         logScrollView.isHidden = false
         emptyStateView.isHidden = true
         showingEmptyState = false
@@ -289,20 +168,9 @@ final class ReviewMonitorTransportViewController: NSViewController {
         let clearedLog = logScrollView.clear()
         let wasEmpty = showingEmptyState
 
-        titleLabel.stringValue = ""
-        statusLabel.stringValue = ""
-        cwdLabel.stringValue = ""
-        modelLabel.stringValue = ""
-        threadLabel.stringValue = ""
-        turnLabel.stringValue = ""
-        summaryLabel.stringValue = ""
         displayedJobID = nil
         displayedLogRevision = nil
 
-        titleLabel.isHidden = true
-        metadataStack.isHidden = true
-        summaryLabel.isHidden = true
-        sectionTitleLabel.isHidden = true
         logScrollView.isHidden = true
         emptyStateView.isHidden = false
         showingEmptyState = true
@@ -337,7 +205,7 @@ extension ReviewMonitorTransportViewController {
     }
 
     var displayedTitleForTesting: String? {
-        titleLabel.isHidden ? nil : titleLabel.stringValue
+        nil
     }
 
     var displayedLogForTesting: String {
@@ -345,7 +213,7 @@ extension ReviewMonitorTransportViewController {
     }
 
     var displayedSummaryForTesting: String? {
-        summaryLabel.isHidden ? nil : summaryLabel.stringValue
+        nil
     }
 
     var isShowingEmptyStateForTesting: Bool {
@@ -382,6 +250,14 @@ extension ReviewMonitorTransportViewController {
 
     var logWritingToolsDisabledForTesting: Bool {
         logScrollView.writingToolsDisabledForTesting
+    }
+
+    var logFrameForTesting: NSRect {
+        logScrollView.frame
+    }
+
+    var safeAreaFrameForTesting: NSRect {
+        view.safeAreaRect
     }
 
     var renderSnapshotForTesting: RenderSnapshotForTesting {
