@@ -442,7 +442,6 @@ public final class CodexReviewJob: Identifiable, Hashable {
     private var logState: LogState
 
     public nonisolated let id: String
-    public var sortOrder: Int
     public let sessionID: String
     public let cwd: String
     public var reviewThreadID: String?
@@ -502,7 +501,6 @@ public final class CodexReviewJob: Identifiable, Hashable {
 
     package init(
         id: String,
-        sortOrder: Int,
         sessionID: String,
         cwd: String,
         reviewThreadID: String?,
@@ -523,7 +521,6 @@ public final class CodexReviewJob: Identifiable, Hashable {
     ) {
         let initialState = Self.trimmedLogState(entries: logEntries)
         self.id = id
-        self.sortOrder = sortOrder
         self.sessionID = sessionID
         self.cwd = cwd
         self.reviewThreadID = reviewThreadID

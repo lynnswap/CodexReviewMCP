@@ -223,6 +223,258 @@ struct CodexReviewUITests {
         #expect(viewController.contentAccessoryCountForTesting == 0)
     }
 
+    @Test func workspaceDropReordersDisplayedSectionsImmediately() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let workspaceAlphaJob = makeJob(
+            id: "job-workspace-alpha",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let workspaceBetaJob = makeJob(
+            id: "job-workspace-beta",
+            cwd: "/tmp/workspace-beta",
+            status: .failed,
+            targetSummary: "Base branch: main"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        guard let workspaceAlpha = store.workspaces.first(where: { $0.cwd == "/tmp/workspace-alpha" }) else {
+            Issue.record("workspace-alpha was not loaded.")
+            return
+        }
+        #expect(sidebar.performWorkspaceDropForTesting(workspaceAlpha, toIndex: store.workspaces.count))
+
+        #expect(sidebar.displayedSectionTitlesForTesting == [
+            "workspace-beta",
+            "workspace-alpha",
+        ])
+    }
+
+    @Test func workspaceDropOnWorkspaceRowReordersDisplayedSections() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let workspaceAlphaJob = makeJob(
+            id: "job-workspace-alpha-on-row",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let workspaceBetaJob = makeJob(
+            id: "job-workspace-beta-on-row",
+            cwd: "/tmp/workspace-beta",
+            status: .failed,
+            targetSummary: "Base branch: main"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        guard let workspaceAlpha = store.workspaces.first(where: { $0.cwd == "/tmp/workspace-alpha" }),
+              let workspaceBeta = store.workspaces.first(where: { $0.cwd == "/tmp/workspace-beta" })
+        else {
+            Issue.record("workspaces were not loaded.")
+            return
+        }
+
+        #expect(sidebar.performWorkspaceDropForTesting(workspaceBeta, proposedWorkspace: workspaceAlpha))
+        #expect(sidebar.displayedSectionTitlesForTesting == [
+            "workspace-beta",
+            "workspace-alpha",
+        ])
+    }
+
+    @Test func workspaceBlankAreaKeepsLastAcceptedInsertionIndex() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let workspaceAlphaJob = makeJob(
+            id: "job-workspace-alpha-blank",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let workspaceBetaJob = makeJob(
+            id: "job-workspace-beta-blank",
+            cwd: "/tmp/workspace-beta",
+            status: .failed,
+            targetSummary: "Base branch: main"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        #expect(sidebar.rememberedWorkspaceInsertionIndexForBlankAreaForTesting(0) == 0)
+    }
+
+    @Test func workspaceDropOnJobRowIsRejected() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let workspaceAlphaJob = makeJob(
+            id: "job-workspace-alpha-reject",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let workspaceBetaJob = makeJob(
+            id: "job-workspace-beta-reject",
+            cwd: "/tmp/workspace-beta",
+            status: .failed,
+            targetSummary: "Base branch: main"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        guard let workspaceBeta = store.workspaces.first(where: { $0.cwd == "/tmp/workspace-beta" }),
+              let workspaceAlpha = store.workspaces.first(where: { $0.cwd == "/tmp/workspace-alpha" }),
+              let alphaJob = workspaceAlpha.jobs.first
+        else {
+            Issue.record("workspace/job state was not loaded.")
+            return
+        }
+
+        #expect(sidebar.workspaceDropIsRejectedForTesting(workspaceBeta, proposedJob: alphaJob))
+    }
+
+    @Test func jobDropReordersWithinWorkspaceAndPreservesSelection() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let firstJob = makeJob(
+            id: "job-1",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let secondJob = makeJob(
+            id: "job-2",
+            cwd: "/tmp/workspace-alpha",
+            status: .succeeded,
+            targetSummary: "Commit: abc123"
+        )
+        let workspace = CodexReviewWorkspace(
+            cwd: "/tmp/workspace-alpha",
+            jobs: [firstJob, secondJob]
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [workspace]
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        sidebar.selectJobForTesting(firstJob)
+        #expect(sidebar.performJobDropForTesting(firstJob, proposedWorkspace: workspace, childIndex: workspace.jobs.count))
+        #expect(sidebar.displayedJobIDsForTesting(in: workspace) == ["job-2", "job-1"])
+        #expect(sidebar.selectedJobForTesting?.id == "job-1")
+    }
+
+    @Test func workspaceDropPreservesExpansionState() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let alphaJob = makeJob(
+            id: "job-alpha",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let betaJob = makeJob(
+            id: "job-beta",
+            cwd: "/tmp/workspace-beta",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let alphaWorkspace = CodexReviewWorkspace(
+            cwd: alphaJob.cwd,
+            jobs: [alphaJob]
+        )
+        let betaWorkspace = CodexReviewWorkspace(
+            cwd: betaJob.cwd,
+            jobs: [betaJob]
+        )
+        betaWorkspace.isExpanded = false
+
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [alphaWorkspace, betaWorkspace]
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        #expect(sidebar.performWorkspaceDropForTesting(betaWorkspace, toIndex: 0))
+        #expect(sidebar.workspaceIsExpandedForTesting(betaWorkspace) == false)
+    }
+
+    @Test func crossWorkspaceJobDropIsRejected() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let alphaJob = makeJob(
+            id: "job-alpha",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let betaJob = makeJob(
+            id: "job-beta",
+            cwd: "/tmp/workspace-beta",
+            status: .running,
+            targetSummary: "Base branch: main"
+        )
+        let alphaWorkspace = CodexReviewWorkspace(
+            cwd: alphaJob.cwd,
+            jobs: [alphaJob]
+        )
+        let betaWorkspace = CodexReviewWorkspace(
+            cwd: betaJob.cwd,
+            jobs: [betaJob]
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [alphaWorkspace, betaWorkspace]
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        #expect(sidebar.performJobDropForTesting(alphaJob, proposedWorkspace: betaWorkspace, childIndex: 0) == false)
+        #expect(alphaWorkspace.jobs.map(\.id) == ["job-alpha"])
+        #expect(betaWorkspace.jobs.map(\.id) == ["job-beta"])
+    }
+
     @Test func sidebarWorkspaceRowsStayExpandedAndUseExpectedCellViews() {
         guard #available(macOS 26.0, *) else {
             return
@@ -234,7 +486,6 @@ struct CodexReviewUITests {
         )
         let workspace = CodexReviewWorkspace(
             cwd: job.cwd,
-            sortOrder: 1,
             jobs: [job]
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
@@ -303,7 +554,6 @@ struct CodexReviewUITests {
         )
         let workspace = CodexReviewWorkspace(
             cwd: job.cwd,
-            sortOrder: 1,
             jobs: [job]
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
@@ -979,7 +1229,6 @@ struct CodexReviewUITests {
         )
         let workspace = CodexReviewWorkspace(
             cwd: job.cwd,
-            sortOrder: 1,
             jobs: [job]
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
@@ -1538,10 +1787,9 @@ private func makeWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspac
         }
         buckets[job.cwd, default: []].insert(job, at: 0)
     }
-    return order.enumerated().map { index, cwd in
+    return order.map { cwd in
         CodexReviewWorkspace(
             cwd: cwd,
-            sortOrder: index + 1,
             jobs: buckets[cwd] ?? []
         )
     }

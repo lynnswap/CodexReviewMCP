@@ -6,7 +6,6 @@ import ReviewRuntime
 @Observable
 public final class CodexReviewWorkspace: Hashable {
     public nonisolated let cwd: String
-    public var sortOrder: Int
     package var isExpanded: Bool
     public package(set) var jobs: [CodexReviewJob]
 
@@ -15,9 +14,8 @@ public final class CodexReviewWorkspace: Hashable {
         return title.isEmpty ? cwd : title
     }
 
-    public init(cwd: String, sortOrder: Int, jobs: [CodexReviewJob]) {
+    public init(cwd: String, jobs: [CodexReviewJob]) {
         self.cwd = cwd
-        self.sortOrder = sortOrder
         self.isExpanded = true
         self.jobs = jobs
     }

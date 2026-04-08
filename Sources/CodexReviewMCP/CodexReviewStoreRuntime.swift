@@ -528,7 +528,6 @@ extension CodexReviewStore {
     private func appendQueuedJob(_ queued: ReviewQueuedJob) {
         let job = CodexReviewJob(
             id: queued.jobID,
-            sortOrder: nextJobSortOrder(),
             sessionID: queued.sessionID,
             cwd: queued.request.cwd,
             reviewThreadID: nil,
@@ -554,7 +553,6 @@ extension CodexReviewStore {
         } else {
             let workspace = CodexReviewWorkspace(
                 cwd: queued.request.cwd,
-                sortOrder: nextWorkspaceSortOrder(),
                 jobs: [job]
             )
             workspaces = [workspace] + workspaces
@@ -617,14 +615,6 @@ extension CodexReviewStore {
             return (workspaceIndex, jobIndex)
         }
         return nil
-    }
-
-    private func nextWorkspaceSortOrder() -> Int {
-        (workspaces.map(\.sortOrder).max() ?? 0) + 1
-    }
-
-    private func nextJobSortOrder() -> Int {
-        (workspaces.flatMap(\.jobs).map(\.sortOrder).max() ?? 0) + 1
     }
 
     private func authorizedJob(reviewThreadID: String, sessionID: String) throws -> CodexReviewJob {
@@ -1196,9 +1186,6 @@ private func compareRuntimeJobs(_ left: CodexReviewJob, _ right: CodexReviewJob)
         }
     }
 
-    if left.sortOrder != right.sortOrder {
-        return left.sortOrder > right.sortOrder
-    }
     return left.id > right.id
 }
 

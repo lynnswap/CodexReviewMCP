@@ -112,7 +112,6 @@ public enum ReviewMonitorPreviewContent {
                 makeJob(
                     id: "preview-\(workspaceIndex)-\(jobIndex)",
                     cwd: cwd,
-                    sortOrder: jobIndex,
                     model: definition.model,
                     status: definition.status,
                     targetSummary: definition.targetSummary,
@@ -127,7 +126,6 @@ public enum ReviewMonitorPreviewContent {
 
             return CodexReviewWorkspace(
                 cwd: cwd,
-                sortOrder: workspaceIndex + 1,
                 jobs: jobs
             )
         }
@@ -136,7 +134,6 @@ public enum ReviewMonitorPreviewContent {
     private static func makeJob(
         id: String,
         cwd: String,
-        sortOrder: Int,
         model: String,
         status: CodexReviewJobStatus,
         targetSummary: String,
@@ -149,7 +146,6 @@ public enum ReviewMonitorPreviewContent {
     ) -> CodexReviewJob {
         CodexReviewJob.makeForTesting(
             id: id,
-            sortOrder: sortOrder,
             cwd: cwd,
             targetSummary: targetSummary,
             model: model,

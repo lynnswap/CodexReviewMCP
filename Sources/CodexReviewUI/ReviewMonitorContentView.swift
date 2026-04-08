@@ -19,6 +19,7 @@ public struct ReviewMonitorContentView: View {
 #Preview {
     if #available(macOS 26.0, *) {
         ReviewMonitorContentView(store: ReviewMonitorPreviewContent.makeStore())
+            .frame(height:1000)
     }
 }
 #endif
