@@ -2,7 +2,7 @@ import Foundation
 import MCP
 
 package struct ReviewReadResult: Sendable, Hashable {
-    package var reviewThreadID: String?
+    package var jobID: String
     package var threadID: String?
     package var turnID: String?
     package var model: String?
@@ -14,7 +14,7 @@ package struct ReviewReadResult: Sendable, Hashable {
     package var error: String?
 
     package init(
-        reviewThreadID: String?,
+        jobID: String,
         threadID: String? = nil,
         turnID: String? = nil,
         model: String? = nil,
@@ -25,7 +25,7 @@ package struct ReviewReadResult: Sendable, Hashable {
         rawLogText: String,
         error: String? = nil
     ) {
-        self.reviewThreadID = reviewThreadID
+        self.jobID = jobID
         self.threadID = threadID
         self.turnID = turnID
         self.model = model
@@ -47,10 +47,10 @@ package struct ReviewReadResult: Sendable, Hashable {
 
     private func structuredContent(includeDetails: Bool) -> Value {
         var object: [String: Value] = [
+            "jobId": .string(jobID),
             "status": .string(status.rawValue),
             "review": .string(review),
         ]
-        object["reviewThreadId"] = reviewThreadID.map(Value.string) ?? .null
         if let threadID {
             object["threadId"] = .string(threadID)
         }
@@ -71,7 +71,7 @@ package struct ReviewReadResult: Sendable, Hashable {
 }
 
 package struct ReviewJobListItem: Sendable, Hashable {
-    package var reviewThreadID: String?
+    package var jobID: String
     package var cwd: String
     package var targetSummary: String
     package var model: String?
@@ -85,7 +85,7 @@ package struct ReviewJobListItem: Sendable, Hashable {
     package var cancellable: Bool
 
     package init(
-        reviewThreadID: String?,
+        jobID: String,
         cwd: String,
         targetSummary: String,
         model: String?,
@@ -98,7 +98,7 @@ package struct ReviewJobListItem: Sendable, Hashable {
         lastAgentMessage: String,
         cancellable: Bool
     ) {
-        self.reviewThreadID = reviewThreadID
+        self.jobID = jobID
         self.cwd = cwd
         self.targetSummary = targetSummary
         self.model = model
@@ -114,13 +114,13 @@ package struct ReviewJobListItem: Sendable, Hashable {
 
     package func structuredContent() -> Value {
         var object: [String: Value] = [
+            "jobId": .string(jobID),
             "cwd": .string(cwd),
             "targetSummary": .string(targetSummary),
             "status": .string(status.rawValue),
             "summary": .string(summary),
             "cancellable": .bool(cancellable),
         ]
-        object["reviewThreadId"] = reviewThreadID.map(Value.string) ?? .null
         object["model"] = model.map(Value.string) ?? .null
         if let startedAt {
             object["startedAt"] = .string(startedAt.ISO8601Format())
@@ -156,21 +156,18 @@ package struct ReviewListResult: Sendable, Hashable {
 }
 
 package struct ReviewJobSelector: Sendable, Hashable {
-    package var reviewThreadID: String?
+    package var jobID: String?
     package var cwd: String?
     package var statuses: [ReviewJobState]?
-    package var latest: Bool
 
     package init(
-        reviewThreadID: String? = nil,
+        jobID: String? = nil,
         cwd: String? = nil,
-        statuses: [ReviewJobState]? = nil,
-        latest: Bool = false
+        statuses: [ReviewJobState]? = nil
     ) {
-        self.reviewThreadID = reviewThreadID
+        self.jobID = jobID
         self.cwd = cwd?.nilIfEmpty
         self.statuses = statuses
-        self.latest = latest
     }
 }
 
@@ -180,18 +177,18 @@ package enum ReviewJobSelectionError: Error, Sendable {
 }
 
 package struct ReviewCancelOutcome: Sendable, Hashable {
-    package var reviewThreadID: String?
+    package var jobID: String
     package var threadID: String?
     package var cancelled: Bool
     package var status: ReviewJobState
 
     package init(
-        reviewThreadID: String?,
+        jobID: String,
         threadID: String? = nil,
         cancelled: Bool,
         status: ReviewJobState
     ) {
-        self.reviewThreadID = reviewThreadID
+        self.jobID = jobID
         self.threadID = threadID
         self.cancelled = cancelled
         self.status = status
@@ -199,11 +196,11 @@ package struct ReviewCancelOutcome: Sendable, Hashable {
 
     package func structuredContent() -> Value {
         var object: [String: Value] = [
+            "jobId": .string(jobID),
             "cancelled": .bool(cancelled),
             "status": .string(status.rawValue),
             "turnId": .null,
         ]
-        object["reviewThreadId"] = reviewThreadID.map(Value.string) ?? .null
         if let threadID {
             object["threadId"] = .string(threadID)
         }

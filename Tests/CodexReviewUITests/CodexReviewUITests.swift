@@ -299,7 +299,7 @@ struct CodexReviewUITests {
         ])
     }
 
-    @Test func workspaceBlankAreaKeepsLastAcceptedInsertionIndex() {
+    @Test func workspaceInsertionIndexFollowsCurrentHoverPosition() {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -324,7 +324,41 @@ struct CodexReviewUITests {
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
-        #expect(sidebar.rememberedWorkspaceInsertionIndexForBlankAreaForTesting(0) == 0)
+        guard let workspaceAlpha = store.workspaces.first(where: { $0.cwd == "/tmp/workspace-alpha" }) else {
+            Issue.record("workspace-alpha was not loaded.")
+            return
+        }
+        #expect(sidebar.workspaceInsertionIndexForTesting(workspaceAlpha, hoveringBelowMidpoint: false) == 0)
+        #expect(sidebar.workspaceInsertionIndexForTesting(workspaceAlpha, hoveringBelowMidpoint: true) == 1)
+    }
+
+    @Test func workspaceBlankAreaInsertionUsesPointerPosition() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let workspaceAlphaJob = makeJob(
+            id: "job-workspace-alpha-blank-area",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let workspaceBetaJob = makeJob(
+            id: "job-workspace-beta-blank-area",
+            cwd: "/tmp/workspace-beta",
+            status: .failed,
+            targetSummary: "Base branch: main"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        #expect(sidebar.blankAreaWorkspaceInsertionIndexForTesting(atEnd: false) == 0)
+        #expect(sidebar.blankAreaWorkspaceInsertionIndexForTesting(atEnd: true) == store.workspaces.count)
     }
 
     @Test func workspaceDropOnJobRowIsRejected() {

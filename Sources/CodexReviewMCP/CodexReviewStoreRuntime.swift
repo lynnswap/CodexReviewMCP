@@ -51,31 +51,12 @@ extension CodexReviewStore {
     }
 
     package func readReview(
-        reviewThreadID: String,
-        sessionID: String
-    ) throws -> ReviewReadResult {
-        let job = try authorizedJob(reviewThreadID: reviewThreadID, sessionID: sessionID)
-        return ReviewReadResult(
-            reviewThreadID: publicReviewIdentifier(for: job),
-            threadID: job.threadID,
-            turnID: job.turnID,
-            model: job.model,
-            status: job.status.state,
-            review: job.isTerminal ? job.reviewText : (job.reviewText.nilIfEmpty ?? job.lastAgentMessage ?? ""),
-            lastAgentMessage: job.lastAgentMessage ?? "",
-            logs: job.logEntries,
-            rawLogText: job.rawLogText,
-            error: job.errorMessage
-        )
-    }
-
-    package func readReview(
         jobID: String,
         sessionID: String
     ) throws -> ReviewReadResult {
         let job = try authorizedJob(jobID: jobID, sessionID: sessionID)
         return ReviewReadResult(
-            reviewThreadID: publicReviewIdentifier(for: job),
+            jobID: job.id,
             threadID: job.threadID,
             turnID: job.turnID,
             model: job.model,
@@ -100,12 +81,12 @@ extension CodexReviewStore {
     }
 
     package func cancelReview(
-        reviewThreadID: String,
+        selectedJobID jobID: String,
         sessionID: String,
         reason: String = "Cancellation requested."
     ) async throws -> ReviewCancelOutcome {
         try await liveBackend().executionCoordinator.cancelReview(
-            reviewThreadID: reviewThreadID,
+            jobID: jobID,
             sessionID: sessionID,
             reason: reason,
             store: self
@@ -433,8 +414,8 @@ extension CodexReviewStore {
         sessionID: String,
         selector: ReviewJobSelector
     ) throws -> CodexReviewJob {
-        if let reviewThreadID = selector.reviewThreadID?.nilIfEmpty {
-            return try authorizedJob(reviewThreadID: reviewThreadID, sessionID: sessionID)
+        if let jobID = selector.jobID?.nilIfEmpty {
+            return try authorizedJob(jobID: jobID, sessionID: sessionID)
         }
 
         let effectiveStatuses = selector.statuses ?? [.queued, .running]
@@ -445,9 +426,6 @@ extension CodexReviewStore {
         )
         guard candidates.isEmpty == false else {
             throw ReviewJobSelectionError.notFound("No matching review jobs were found.")
-        }
-        if selector.latest {
-            return candidates[0]
         }
         guard candidates.count == 1 else {
             throw ReviewJobSelectionError.ambiguous(candidates.map(makeListItem))
@@ -604,7 +582,7 @@ extension CodexReviewStore {
                 matches.append(job)
             }
         }
-        return matches.sorted(by: compareRuntimeJobs)
+        return matches
     }
 
     private func jobLocation(id: String) -> (workspaceIndex: Int, jobIndex: Int)? {
@@ -615,17 +593,6 @@ extension CodexReviewStore {
             return (workspaceIndex, jobIndex)
         }
         return nil
-    }
-
-    private func authorizedJob(reviewThreadID: String, sessionID: String) throws -> CodexReviewJob {
-        guard let location = jobLocation(reviewThreadID: reviewThreadID) else {
-            throw ReviewError.jobNotFound("Review thread \(reviewThreadID) was not found.")
-        }
-        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard job.sessionID == sessionID else {
-            throw ReviewError.accessDenied("Review thread \(reviewThreadID) belongs to another MCP session.")
-        }
-        return job
     }
 
     private func authorizedJob(jobID: String, sessionID: String) throws -> CodexReviewJob {
@@ -641,7 +608,7 @@ extension CodexReviewStore {
 
     private func makeListItem(_ job: CodexReviewJob) -> ReviewJobListItem {
         ReviewJobListItem(
-            reviewThreadID: publicReviewIdentifier(for: job),
+            jobID: job.id,
             cwd: job.cwd,
             targetSummary: job.targetSummary,
             model: job.model,
@@ -664,21 +631,6 @@ extension CodexReviewStore {
         return Int(endedAt.timeIntervalSince(startedAt))
     }
 
-    private func jobLocation(reviewThreadID: String) -> (workspaceIndex: Int, jobIndex: Int)? {
-        for (workspaceIndex, workspace) in workspaces.enumerated() {
-            guard let jobIndex = workspace.jobs.firstIndex(where: {
-                $0.reviewThreadID == reviewThreadID || $0.id == reviewThreadID
-            }) else {
-                continue
-            }
-            return (workspaceIndex, jobIndex)
-        }
-        return nil
-    }
-
-    private func publicReviewIdentifier(for job: CodexReviewJob) -> String {
-        job.reviewThreadID ?? job.id
-    }
 }
 
 @MainActor
@@ -821,7 +773,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     ) async throws {
         let job = try store.resolveJob(jobID: jobID, sessionID: sessionID)
         _ = try await store.cancelReview(
-            reviewThreadID: job.reviewThreadID ?? job.id,
+            selectedJobID: job.id,
             sessionID: sessionID,
             reason: reason
         )
@@ -888,11 +840,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 }
                 return try await store.startReview(sessionID: sessionID, request: request)
             },
-            readReview: { [weak store] sessionID, reviewThreadID in
+            readReview: { [weak store] sessionID, jobID in
                 guard let store else {
                     throw ReviewError.io("Review store is unavailable.")
                 }
-                return try store.readReview(reviewThreadID: reviewThreadID, sessionID: sessionID)
+                return try store.readReview(jobID: jobID, sessionID: sessionID)
             },
             listReviews: { [weak store] sessionID, cwd, statuses, limit in
                 guard let store else {
@@ -905,25 +857,24 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                     limit: limit
                 )
             },
-            cancelReviewByID: { [weak store] sessionID, reviewThreadID in
+            cancelReviewByID: { [weak store] sessionID, jobID in
                 guard let store else {
                     throw ReviewError.io("Review store is unavailable.")
                 }
                 return try await store.cancelReview(
-                    reviewThreadID: reviewThreadID,
+                    selectedJobID: jobID,
                     sessionID: sessionID
                 )
             },
-            cancelReviewBySelector: { [weak store] sessionID, cwd, statuses, latest in
+            cancelReviewBySelector: { [weak store] sessionID, cwd, statuses in
                 guard let store else {
                     throw ReviewError.io("Review store is unavailable.")
                 }
                 return try await store.cancelReview(
                     selector: .init(
-                        reviewThreadID: nil,
+                        jobID: nil,
                         cwd: cwd,
-                        statuses: statuses,
-                        latest: latest
+                        statuses: statuses
                     ),
                     sessionID: sessionID
                 )
@@ -1162,31 +1113,6 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             at: runtimeStateFileURL
         )
     }
-}
-
-@MainActor
-private func compareRuntimeJobs(_ left: CodexReviewJob, _ right: CodexReviewJob) -> Bool {
-    switch (left.isTerminal, right.isTerminal) {
-    case (false, true):
-        return true
-    case (true, false):
-        return false
-    default:
-        switch (left.startedAt, right.startedAt) {
-        case let (lhs?, rhs?):
-            if lhs != rhs {
-                return lhs > rhs
-            }
-        case (.some, .none):
-            return true
-        case (.none, .some):
-            return false
-        case (.none, .none):
-            break
-        }
-    }
-
-    return left.id > right.id
 }
 
 private struct ReviewQueuedJob {

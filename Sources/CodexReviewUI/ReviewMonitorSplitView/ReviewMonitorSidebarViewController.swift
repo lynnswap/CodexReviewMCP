@@ -45,7 +45,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     private var storeObservationHandles: Set<ObservationHandle> = []
     private var workspaceObservationHandles: Set<ObservationHandle> = []
     private var isReconcilingSelection = false
-    private var activeWorkspaceDropChildIndex: Int?
 
     init(uiState: ReviewMonitorUIState) {
         self.uiState = uiState
@@ -564,17 +563,25 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         proposedItem: Any?,
         proposedChildIndex index: Int
     ) -> Int? {
+        resolvedWorkspaceInsertionIndex(
+            draggingLocation: draggingInfo.map { outlineView.convert($0.draggingLocation, from: nil) },
+            proposedItem: proposedItem,
+            proposedChildIndex: index
+        )
+    }
+
+    private func resolvedWorkspaceInsertionIndex(
+        draggingLocation: NSPoint?,
+        proposedItem: Any?,
+        proposedChildIndex index: Int
+    ) -> Int? {
         if proposedItem == nil,
            index != NSOutlineViewDropOnItemIndex
         {
             return max(0, min(index, workspaces().count))
         }
 
-        if let activeWorkspaceDropChildIndex {
-            return activeWorkspaceDropChildIndex
-        }
-
-        if let blankAreaInsertionIndex = blankAreaWorkspaceInsertionIndex(draggingInfo: draggingInfo) {
+        if let blankAreaInsertionIndex = blankAreaWorkspaceInsertionIndex(draggingLocation: draggingLocation) {
             return blankAreaInsertionIndex
         }
 
@@ -587,27 +594,26 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         return workspaceInsertionIndex(
             aroundWorkspace: targetWorkspace,
             defaultIndex: workspaceIndex,
-            draggingInfo: draggingInfo
+            draggingLocation: draggingLocation
         )
     }
 
     private func blankAreaWorkspaceInsertionIndex(
-        draggingInfo: (any NSDraggingInfo)?
+        draggingLocation: NSPoint?
     ) -> Int? {
-        guard let draggingInfo,
+        guard let draggingLocation,
               outlineView.numberOfRows > 0
         else {
             return nil
         }
 
-        let point = outlineView.convert(draggingInfo.draggingLocation, from: nil)
         let firstRowRect = outlineView.rect(ofRow: 0)
-        if point.y < firstRowRect.minY {
+        if draggingLocation.y < firstRowRect.minY {
             return 0
         }
 
         let lastRowRect = outlineView.rect(ofRow: outlineView.numberOfRows - 1)
-        if point.y > lastRowRect.maxY {
+        if draggingLocation.y > lastRowRect.maxY {
             return workspaces().count
         }
 
@@ -617,16 +623,15 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     private func workspaceInsertionIndex(
         aroundWorkspace workspace: CodexReviewWorkspace,
         defaultIndex: Int,
-        draggingInfo: (any NSDraggingInfo)?
+        draggingLocation: NSPoint?
     ) -> Int {
-        guard let draggingInfo,
+        guard let draggingLocation,
               let sectionRect = workspaceSectionRect(for: workspace)
         else {
             return max(0, min(defaultIndex, workspaces().count))
         }
 
-        let point = outlineView.convert(draggingInfo.draggingLocation, from: nil)
-        let insertionIndex = point.y < sectionRect.midY
+        let insertionIndex = draggingLocation.y < sectionRect.midY
             ? (workspaceIndex(cwd: workspace.cwd) ?? defaultIndex)
             : workspaceIndex(cwd: workspace.cwd).map { $0 + 1 } ?? defaultIndex
         return max(0, min(insertionIndex, workspaces().count))
@@ -788,9 +793,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             return []
         }
 
-        if case .reorderWorkspace = resolvedDrop.operation {
-            activeWorkspaceDropChildIndex = resolvedDrop.dropChildIndex
-        }
         outlineView.setDropItem(resolvedDrop.dropItem, dropChildIndex: resolvedDrop.dropChildIndex)
         return .move
     }
@@ -811,34 +813,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         else {
             return false
         }
-        activeWorkspaceDropChildIndex = nil
         return applyResolvedDrop(resolvedDrop)
-    }
-
-    func outlineView(
-        _ outlineView: NSOutlineView,
-        draggingSession session: NSDraggingSession,
-        willBeginAt screenPoint: NSPoint,
-        forItems draggedItems: [Any]
-    ) {
-        _ = outlineView
-        _ = session
-        _ = screenPoint
-        _ = draggedItems
-        activeWorkspaceDropChildIndex = nil
-    }
-
-    func outlineView(
-        _ outlineView: NSOutlineView,
-        draggingSession session: NSDraggingSession,
-        endedAt screenPoint: NSPoint,
-        operation: NSDragOperation
-    ) {
-        _ = outlineView
-        _ = session
-        _ = screenPoint
-        _ = operation
-        activeWorkspaceDropChildIndex = nil
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
@@ -1078,11 +1053,35 @@ extension ReviewMonitorSidebarViewController {
         ) == nil
     }
 
-    func rememberedWorkspaceInsertionIndexForBlankAreaForTesting(_ index: Int) -> Int? {
-        activeWorkspaceDropChildIndex = index
-        defer { activeWorkspaceDropChildIndex = nil }
+    func workspaceInsertionIndexForTesting(
+        _ workspace: CodexReviewWorkspace,
+        hoveringBelowMidpoint: Bool
+    ) -> Int? {
+        guard let sectionRect = workspaceSectionRect(for: workspace) else {
+            return nil
+        }
+        let point = NSPoint(
+            x: sectionRect.midX,
+            y: hoveringBelowMidpoint ? sectionRect.midY + 1 : sectionRect.midY - 1
+        )
         return resolvedWorkspaceInsertionIndex(
-            draggingInfo: nil,
+            draggingLocation: point,
+            proposedItem: workspace,
+            proposedChildIndex: NSOutlineViewDropOnItemIndex
+        )
+    }
+
+    func blankAreaWorkspaceInsertionIndexForTesting(atEnd: Bool) -> Int? {
+        guard outlineView.numberOfRows > 0 else {
+            return nil
+        }
+        let rowRect = outlineView.rect(ofRow: atEnd ? outlineView.numberOfRows - 1 : 0)
+        let point = NSPoint(
+            x: rowRect.midX,
+            y: atEnd ? rowRect.maxY + 1 : rowRect.minY - 1
+        )
+        return resolvedWorkspaceInsertionIndex(
+            draggingLocation: point,
             proposedItem: nil,
             proposedChildIndex: NSOutlineViewDropOnItemIndex
         )

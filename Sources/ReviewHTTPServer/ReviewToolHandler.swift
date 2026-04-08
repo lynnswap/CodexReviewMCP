@@ -9,7 +9,7 @@ struct ReviewToolHandler {
     let readReview: @MainActor @Sendable (String) async throws -> ReviewReadResult
     let listReviews: @MainActor @Sendable (String?, [ReviewJobState]?, Int?) async -> ReviewListResult
     let cancelReviewByID: @MainActor @Sendable (String) async throws -> ReviewCancelOutcome
-    let cancelReviewBySelector: @MainActor @Sendable (String?, [ReviewJobState]?, Bool) async throws -> ReviewCancelOutcome
+    let cancelReviewBySelector: @MainActor @Sendable (String?, [ReviewJobState]?) async throws -> ReviewCancelOutcome
 
     func handle(params: CallTool.Parameters) async -> CallTool.Result {
         switch params.name {
@@ -60,7 +60,7 @@ struct ReviewToolHandler {
     private func handleReviewRead(params: CallTool.Parameters) async -> CallTool.Result {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewReadArguments.self)
-            let result = try await readReview(arguments.reviewThreadID)
+            let result = try await readReview(arguments.jobID)
             return try CallTool.Result(
                 content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContentForRead(),
@@ -89,16 +89,15 @@ struct ReviewToolHandler {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewCancelArguments.self)
             let result: ReviewCancelOutcome
-            if let rawReviewThreadID = arguments.reviewThreadID {
-                guard let reviewThreadID = rawReviewThreadID.nilIfEmpty else {
-                    return toolError("`reviewThreadId` cannot be empty.")
+            if let rawJobID = arguments.jobID {
+                guard let jobID = rawJobID.nilIfEmpty else {
+                    return toolError("`jobId` cannot be empty.")
                 }
-                result = try await cancelReviewByID(reviewThreadID)
+                result = try await cancelReviewByID(jobID)
             } else {
                 result = try await cancelReviewBySelector(
                     arguments.cwd,
-                    arguments.statuses,
-                    arguments.latest ?? false
+                    arguments.statuses
                 )
             }
             return try CallTool.Result(
@@ -112,7 +111,7 @@ struct ReviewToolHandler {
                 return toolError(message)
             case .ambiguous(let candidates):
                 return toolError(
-                    "Multiple matching review jobs were found. Narrow the selector or set latest=true.",
+                    "Multiple matching review jobs were found. Narrow the selector or pass jobId.",
                     structuredContent: .object([
                         "candidates": .array(candidates.map { $0.structuredContent() })
                     ])
@@ -153,24 +152,22 @@ private struct ReviewStartArguments: Codable {
 }
 
 private struct ReviewReadArguments: Codable {
-    var reviewThreadID: String
+    var jobID: String
 
     private enum CodingKeys: String, CodingKey {
-        case reviewThreadID = "reviewThreadId"
+        case jobID = "jobId"
     }
 }
 
 private struct ReviewCancelArguments: Codable {
-    var reviewThreadID: String?
+    var jobID: String?
     var cwd: String?
     var statuses: [ReviewJobState]?
-    var latest: Bool?
 
     private enum CodingKeys: String, CodingKey {
-        case reviewThreadID = "reviewThreadId"
+        case jobID = "jobId"
         case cwd
         case statuses
-        case latest
     }
 }
 

@@ -134,7 +134,7 @@ struct ReviewJobStoreTests {
         let transport = await manager.waitForTransport(sessionID: "session-cancel")
         await transport.waitForRequest("review/start")
         let outcome = try await store.cancelReview(
-            selector: .init(reviewThreadID: nil, cwd: nil, statuses: [.running], latest: true),
+            selector: .init(cwd: nil, statuses: [.running]),
             sessionID: "session-cancel"
         )
         let result = try await reviewTask.value
