@@ -61,6 +61,29 @@ struct CodexReviewUITests {
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
     }
 
+    @Test func windowControllerUsesSeededAuthenticatedStateOnFirstPresentation() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = AuthActionBackend(
+            initialAuthState: .signedIn(accountID: "review@example.com")
+        )
+        let store = CodexReviewStore(backend: backend)
+        let windowController = ReviewMonitorWindowController(
+            store: store,
+            browserURLOpener: { _ in },
+            performInitialAuthRefresh: false
+        )
+        guard let window = windowController.window else {
+            Issue.record("ReviewMonitorWindowController did not create a window.")
+            return
+        }
+        defer { window.close() }
+
+        #expect(windowController.displayedContentKindForTesting == .splitView)
+        #expect(window.toolbar != nil)
+    }
+
     @Test func windowControllerShowsSignInViewWhenSignedOut() {
         guard #available(macOS 26.0, *) else {
             return
@@ -2086,6 +2109,7 @@ private struct TestFailure: Error {
 private final class FailingCancellationBackend: CodexReviewStoreBackend {
     var isActive: Bool = false
     let shouldAutoStartEmbeddedServer = false
+    let initialAuthState: CodexReviewAuthModel.State = .signedOut
 
     func start(
         store: CodexReviewStore,
@@ -2134,11 +2158,16 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
 @MainActor
 private final class CountingStartBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer: Bool
+    let initialAuthState: CodexReviewAuthModel.State
     private let startSignal = AsyncSignal()
     private var startCalls = 0
 
-    init(shouldAutoStartEmbeddedServer: Bool = true) {
+    init(
+        shouldAutoStartEmbeddedServer: Bool = true,
+        initialAuthState: CodexReviewAuthModel.State = .signedOut
+    ) {
         self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
+        self.initialAuthState = initialAuthState
     }
 
     var isActive: Bool {
@@ -2205,11 +2234,16 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
 private final class AuthActionBackend: CodexReviewStoreBackend {
     var isActive: Bool = false
     let shouldAutoStartEmbeddedServer = false
+    let initialAuthState: CodexReviewAuthModel.State
 
     private let refreshSignal = AsyncSignal()
     private let beginSignal = AsyncSignal()
     private var refreshCalls = 0
     private var beginCalls = 0
+
+    init(initialAuthState: CodexReviewAuthModel.State = .signedOut) {
+        self.initialAuthState = initialAuthState
+    }
 
     func start(
         store: CodexReviewStore,

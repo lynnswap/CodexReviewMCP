@@ -1145,6 +1145,15 @@ private func loadStoredCLIAuthAccount(
     return nil
 }
 
+package func loadStoredReviewAuthState(
+    environment: [String: String]
+) -> CodexReviewAuthModel.State? {
+    guard let account = loadStoredCLIAuthAccount(environment: environment) else {
+        return nil
+    }
+    return .signedIn(accountID: account.email?.nilIfEmpty ?? "ChatGPT")
+}
+
 private func decodeReviewAuthJWTClaims(_ token: String) -> [String: Any]? {
     let segments = token.split(separator: ".", omittingEmptySubsequences: false)
     guard segments.count >= 2 else {

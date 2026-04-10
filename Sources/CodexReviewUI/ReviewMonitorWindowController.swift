@@ -1,7 +1,5 @@
 import AppKit
 import CodexReviewModel
-import ObservationBridge
-import SwiftUI
 
 @available(macOS 26.0, *)
 @MainActor
@@ -12,13 +10,9 @@ public final class ReviewMonitorWindowController: NSWindowController {
     }
 
     private static let frameAutosaveName = NSWindow.FrameAutosaveName("CodexReviewMonitor.MainWindow")
-    private let store: CodexReviewStore
     private let splitViewController: ReviewMonitorSplitViewController
-    private let signInViewController: NSHostingController<SignInView>
+    private let signInViewController: ReviewMonitorSignInViewController
     private let rootContentViewController: ReviewMonitorWindowContentViewController
-    private let browserURLOpener: @MainActor (URL) -> Void
-    private var observationHandles: Set<ObservationHandle> = []
-    private var openedBrowserURL: String?
     private var displayedContentKind: DisplayedContentKind?
     private var authRefreshTask: Task<Void, Never>?
 
@@ -39,18 +33,18 @@ public final class ReviewMonitorWindowController: NSWindowController {
     ) {
         let splitViewController = ReviewMonitorSplitViewController(store: store)
         splitViewController.loadViewIfNeeded()
-        let signInViewController = NSHostingController(rootView: SignInView(store: store))
-        signInViewController.sizingOptions = []
+        let signInViewController = ReviewMonitorSignInViewController(
+            store: store,
+            browserURLOpener: browserURLOpener
+        )
         let contentViewController = ReviewMonitorWindowContentViewController()
 
         let window = NSWindow(contentViewController: contentViewController)
         window.setContentSize(NSSize(width: 900, height: 600))
 
-        self.store = store
         self.splitViewController = splitViewController
         self.signInViewController = signInViewController
         self.rootContentViewController = contentViewController
-        self.browserURLOpener = browserURLOpener
         super.init(window: window)
 
         window.isReleasedWhenClosed = false
@@ -60,9 +54,10 @@ public final class ReviewMonitorWindowController: NSWindowController {
         window.toolbarStyle = .unified
         window.setFrameAutosaveName(Self.frameAutosaveName)
 
-        bindAuthPresentation()
-        updatePresentedContent(isAuthenticated: store.auth.state.isAuthenticated)
-        handleBrowserURL(store.auth.state.progress?.browserURL)
+        signInViewController.onAuthenticationStateChanged = { [weak self] isAuthenticated in
+            self?.updatePresentedContent(isAuthenticated: isAuthenticated)
+        }
+        signInViewController.startObservingAuth()
 
         if performInitialAuthRefresh {
             authRefreshTask = Task { [store] in
@@ -78,17 +73,6 @@ public final class ReviewMonitorWindowController: NSWindowController {
 
     deinit {
         authRefreshTask?.cancel()
-    }
-
-    private func bindAuthPresentation() {
-        store.auth.observe(\.state) { [weak self] state in
-            guard let self else {
-                return
-            }
-            self.updatePresentedContent(isAuthenticated: state.isAuthenticated)
-            self.handleBrowserURL(state.progress?.browserURL)
-        }
-        .store(in: &observationHandles)
     }
 
     private func updatePresentedContent(isAuthenticated: Bool) {
@@ -127,24 +111,6 @@ public final class ReviewMonitorWindowController: NSWindowController {
         window.titlebarSeparatorStyle = .none
         rootContentViewController.setContentViewController(signInViewController)
         displayedContentKind = .signInView
-    }
-
-    private func handleBrowserURL(_ browserURL: String?) {
-        guard let browserURL = browserURL?.trimmingCharacters(in: .whitespacesAndNewlines),
-              browserURL.isEmpty == false
-        else {
-            openedBrowserURL = nil
-            return
-        }
-
-        guard openedBrowserURL != browserURL,
-              let url = URL(string: browserURL)
-        else {
-            return
-        }
-
-        openedBrowserURL = browserURL
-        browserURLOpener(url)
     }
 }
 

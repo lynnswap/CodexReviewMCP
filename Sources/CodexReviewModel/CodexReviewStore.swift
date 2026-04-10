@@ -23,6 +23,7 @@ public final class CodexReviewStore {
         self.backend = backend
         self.diagnosticsURL = diagnosticsURL
         self.auth = CodexReviewAuthModel(backend: backend)
+        self.auth.updateState(backend.initialAuthState)
     }
 
     public func start(forceRestartIfNeeded: Bool = false) async {

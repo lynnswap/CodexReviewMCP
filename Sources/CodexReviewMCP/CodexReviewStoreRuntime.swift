@@ -639,6 +639,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let appServerManager: any AppServerManaging
     let authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)?
     let shouldAutoStartEmbeddedServer: Bool
+    let initialAuthState: CodexReviewAuthModel.State
     lazy var liveAuthSessionFactory: @Sendable () async throws -> any ReviewAuthSession = { [configuration] in
         CLIReviewAuthSession(
             configuration: .init(
@@ -706,6 +707,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         )
         self.authSessionFactory = authSessionFactory
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
+        self.initialAuthState = loadStoredReviewAuthState(environment: configuration.environment) ?? .signedOut
     }
 
     func start(
