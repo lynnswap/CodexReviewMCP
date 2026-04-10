@@ -2338,10 +2338,37 @@ struct CodexReviewUITests {
 
         #expect(view.canRetryAuthentication)
 
-        view.performRetryAuthentication()
+        view.performAuthenticationAction()
         await backend.waitForBeginAuthenticationCallCount(1)
 
         #expect(backend.beginAuthenticationCallCount() == 1)
+    }
+
+    @Test func statusViewCancelsAuthenticationWhileRetryAuthenticating() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = AuthActionBackend()
+        let store = CodexReviewStore(backend: backend)
+        store.auth.updateState(
+            .init(
+                isAuthenticated: true,
+                accountID: "review@example.com",
+                progress: .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            )
+        )
+        let view = StatusView(store: store)
+
+        #expect(view.showsAuthenticationAction)
+        #expect(view.authenticationActionTitle == "Cancel")
+
+        view.performAuthenticationAction()
+        await backend.waitForCancelAuthenticationCallCount(1)
+
+        #expect(backend.cancelAuthenticationCallCount() == 1)
     }
 
     @Test func signInViewDescriptionTextReflectsAuthState() {
@@ -2459,6 +2486,37 @@ struct CodexReviewUITests {
 
         #expect(backend.startCallCount() == 1)
         #expect(store.serverState == .starting)
+    }
+
+    @Test func mcpServerUnavailableViewRestartCancelsAuthenticationBeforeRestart() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(
+            shouldAutoStartEmbeddedServer: false,
+            initialAuthState: .signedOut
+        )
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authState: .init(
+                isAuthenticated: true,
+                accountID: "review@example.com",
+                progress: .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            workspaces: []
+        )
+        let view = MCPServerUnavailableView(store: store)
+
+        view.restartServer()
+        await backend.waitForCancelAuthenticationCallCount(1)
+        await backend.waitForStartCallCount(1)
+
+        #expect(backend.cancelAuthenticationCallCount() == 1)
+        #expect(backend.startCallCount() == 1)
     }
 
 }

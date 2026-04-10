@@ -1086,10 +1086,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
            let synthesizedPlanType {
             handleNotification(
                 .accountUpdated(
-                    .init(
-                        authMode: .chatGPT,
-                        planType: synthesizedPlanType
-                    )
+                    try makeSyntheticAccountUpdatedNotification(planType: synthesizedPlanType)
                 )
             )
         }
@@ -1100,11 +1097,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
 
         handleNotification(
             .accountLoginCompleted(
-                .init(
-                    error: nil,
-                    loginID: loginID,
-                    success: true
-                )
+                try makeSyntheticAccountLoginCompletedNotification(loginID: loginID)
             )
         )
     }
@@ -1128,6 +1121,30 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             }
             return completedLoginID == loginID
         }
+    }
+
+    private func makeSyntheticAccountUpdatedNotification(
+        planType: String?
+    ) throws -> AppServerAccountUpdatedNotification {
+        var payload: [String: Any] = [
+            "authMode": "chatgpt",
+        ]
+        payload["planType"] = planType
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        return try JSONDecoder().decode(AppServerAccountUpdatedNotification.self, from: data)
+    }
+
+    private func makeSyntheticAccountLoginCompletedNotification(
+        loginID: String
+    ) throws -> AppServerAccountLoginCompletedNotification {
+        let data = try JSONSerialization.data(
+            withJSONObject: [
+                "error": NSNull(),
+                "loginId": loginID,
+                "success": true,
+            ]
+        )
+        return try JSONDecoder().decode(AppServerAccountLoginCompletedNotification.self, from: data)
     }
 
     private func handleAuthenticationCancellation(for loginID: String) async {
@@ -1399,7 +1416,13 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 await MainActor.run {
                     if let progress = state.progress,
                        priorState.isAuthenticated {
-                        auth.updateState(.signingIn(progress, preserving: priorState))
+                        auth.updateState(
+                            .init(
+                                isAuthenticated: true,
+                                accountID: priorState.accountID,
+                                progress: progress
+                            )
+                        )
                     } else {
                         auth.updateState(state)
                     }

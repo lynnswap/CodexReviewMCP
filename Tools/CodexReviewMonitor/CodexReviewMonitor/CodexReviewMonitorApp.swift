@@ -195,13 +195,15 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = notification
-        guard launchMode == .application else {
+        guard launchMode != .preview else {
             lifecycle.applicationDidFinishLaunching(launchMode: launchMode)
             return
         }
         NSApp.setActivationPolicy(.regular)
         showMainWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if launchMode == .application {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         lifecycle.applicationDidFinishLaunching(
             launchMode: launchMode
         )

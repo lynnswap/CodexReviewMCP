@@ -26,9 +26,9 @@ struct StatusView: View {
     var body: some View {
         Menu {
             Label(accountDisplayName, systemImage: "person.circle.fill")
-            if canRetryAuthentication {
-                Button("Sign in with ChatGPT", systemImage: "person.badge.key") {
-                    performRetryAuthentication()
+            if showsAuthenticationAction {
+                Button(authenticationActionTitle, systemImage: authenticationActionSystemImage) {
+                    performAuthenticationAction()
                 }
             }
             Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
@@ -61,9 +61,25 @@ struct StatusView: View {
         store.auth.errorMessage != nil && store.auth.isAuthenticating == false
     }
 
-    func performRetryAuthentication() {
+    var showsAuthenticationAction: Bool {
+        canRetryAuthentication || store.auth.isAuthenticating
+    }
+
+    var authenticationActionTitle: String {
+        store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT"
+    }
+
+    var authenticationActionSystemImage: String {
+        store.auth.isAuthenticating ? "xmark.circle" : "person.badge.key"
+    }
+
+    func performAuthenticationAction() {
         Task {
-            await store.auth.beginAuthentication()
+            if store.auth.isAuthenticating {
+                await store.auth.cancelAuthentication()
+            } else {
+                await store.auth.beginAuthentication()
+            }
         }
     }
 

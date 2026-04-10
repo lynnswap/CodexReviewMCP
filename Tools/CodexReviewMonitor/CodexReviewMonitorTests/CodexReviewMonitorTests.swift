@@ -173,6 +173,24 @@ struct CodexReviewMonitorTests {
         #expect(windowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 1)
     }
 
+    @Test func appDelegateCreatesWindowControllerOnXCTestLaunch() {
+        let recorder = WindowControllerFactoryRecorder()
+        let delegate = CodexReviewMonitorAppDelegate(
+            launchModeProvider: { .xctest },
+            windowControllerFactory: { _ in
+                recorder.makeWindowController()
+            }
+        )
+
+        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
+
+        let windowController = recorder.lastWindowController
+        #expect(recorder.makeCallCount == 1)
+        #expect(delegate.windowController === windowController)
+        #expect(windowController?.showWindowCallCount == 1)
+        #expect(windowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 1)
+    }
+
     @Test func appDelegateSkipsWindowControllerCreationOnPreviewLaunch() {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(

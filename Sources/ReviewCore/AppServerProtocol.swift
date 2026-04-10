@@ -931,12 +931,12 @@ package struct AppServerErrorNotification: Decodable, Sendable {
     }
 }
 
-package struct AppServerAccountLoginCompletedNotification: Decodable, Sendable, Equatable {
+public struct AppServerAccountLoginCompletedNotification: Decodable, Sendable, Equatable {
     package var error: String?
     package var loginID: String?
     package var success: Bool
 
-    package init(
+    public init(
         error: String?,
         loginID: String?,
         success: Bool
@@ -953,12 +953,12 @@ package struct AppServerAccountLoginCompletedNotification: Decodable, Sendable, 
     }
 }
 
-package enum AppServerAccountAuthMode: Decodable, Sendable, Equatable {
+public enum AppServerAccountAuthMode: Decodable, Sendable, Equatable {
     case chatGPT
     case chatGPTAuthTokens
     case unsupported
 
-    package init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         switch try container.decode(String.self) {
         case "chatgpt":
@@ -971,11 +971,11 @@ package enum AppServerAccountAuthMode: Decodable, Sendable, Equatable {
     }
 }
 
-package struct AppServerAccountUpdatedNotification: Decodable, Sendable, Equatable {
+public struct AppServerAccountUpdatedNotification: Decodable, Sendable, Equatable {
     package var authMode: AppServerAccountAuthMode?
     package var planType: String?
 
-    package init(
+    public init(
         authMode: AppServerAccountAuthMode?,
         planType: String?
     ) {
