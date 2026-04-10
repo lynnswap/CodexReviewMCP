@@ -211,23 +211,33 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
         let outgoingContentViewController = currentContentViewController
         addChild(contentViewController)
         if animated {
-            let outgoingContentViewControllerID = ObjectIdentifier(outgoingContentViewController)
+            let incomingContentView = contentViewController.view
+            incomingContentView.frame = view.bounds
+            incomingContentView.autoresizingMask = [.width, .height]
+            incomingContentView.alphaValue = 0
             displayedContentViewController = contentViewController
-            displayedContentConstraints = embed(contentViewController)
-            embeddedConstraintsByControllerID[ObjectIdentifier(contentViewController)] = displayedContentConstraints
-            transition(
-                from: outgoingContentViewController,
-                to: contentViewController,
-                options: [.crossfade]
-            ) { [weak self] in
+            view.addSubview(incomingContentView, positioned: .above, relativeTo: outgoingContentViewController.view)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                outgoingContentViewController.view.animator().alphaValue = 0
+                incomingContentView.animator().alphaValue = 1
+            } completionHandler: { [weak self] in
                 Task { @MainActor [weak self] in
-                    self?.removeEmbeddedContent(for: outgoingContentViewControllerID)
+                    guard let self else {
+                        return
+                    }
+                    outgoingContentViewController.view.alphaValue = 1
+                    incomingContentView.alphaValue = 1
+                    let embeddedConstraints = self.pin(contentViewController)
+                    self.displayedContentConstraints = embeddedConstraints
+                    self.embeddedConstraintsByControllerID[ObjectIdentifier(contentViewController)] = embeddedConstraints
+                    self.removeEmbeddedContent(for: outgoingContentViewController)
                 }
             }
             return
         }
 
-        removeEmbeddedContent(for: ObjectIdentifier(outgoingContentViewController))
+        removeEmbeddedContent(for: outgoingContentViewController)
         self.displayedContentViewController = contentViewController
         displayedContentConstraints = embed(contentViewController)
         embeddedConstraintsByControllerID[ObjectIdentifier(contentViewController)] = displayedContentConstraints
@@ -236,8 +246,14 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
     @discardableResult
     private func embed(_ contentViewController: NSViewController) -> [NSLayoutConstraint] {
         let contentView = contentViewController.view
-        contentView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentView)
+        return pin(contentViewController)
+    }
+
+    @discardableResult
+    private func pin(_ contentViewController: NSViewController) -> [NSLayoutConstraint] {
+        let contentView = contentViewController.view
+        contentView.translatesAutoresizingMaskIntoConstraints = false
 
         let constraints = [
             contentView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -249,16 +265,15 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
         return constraints
     }
 
-    private func removeEmbeddedContent(for controllerID: ObjectIdentifier) {
+    private func removeEmbeddedContent(for viewController: NSViewController) {
+        let controllerID = ObjectIdentifier(viewController)
         if let constraints = embeddedConstraintsByControllerID.removeValue(forKey: controllerID) {
             NSLayoutConstraint.deactivate(constraints)
         }
-
-        guard let viewController = children.first(where: { ObjectIdentifier($0) == controllerID }) else {
-            return
-        }
         viewController.view.removeFromSuperview()
-        viewController.removeFromParent()
+        if viewController.parent != nil {
+            viewController.removeFromParent()
+        }
     }
 }
 
@@ -326,6 +341,10 @@ extension ReviewMonitorWindowController {
             fatalError("ReviewMonitorWindowController did not select content yet.")
         }
         return displayedContentKind
+    }
+
+    var embeddedContentSubviewCountForTesting: Int {
+        rootContentViewController.view.subviews.count
     }
 }
 #endif

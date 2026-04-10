@@ -243,7 +243,9 @@ struct CodexReviewUITests {
 
         store.auth.updateState(.signedOut)
         try await waitForDisplayedContentKind(harness.windowController, .signInView)
+        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
 
+        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
         #expect(window.toolbar == nil)
         #expect(window.title == "")
         #expect(window.subtitle == "")
@@ -264,7 +266,9 @@ struct CodexReviewUITests {
 
         store.auth.updateState(.signedIn(accountID: "review@example.com"))
         try await waitForDisplayedContentKind(harness.windowController, .splitView)
+        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
 
+        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
         #expect(window.toolbar != nil)
         #expect(window.isMovableByWindowBackground == false)
     }
@@ -284,7 +288,9 @@ struct CodexReviewUITests {
         store.auth.updateState(.signedOut)
         store.auth.updateState(.signedIn(accountID: "review@example.com"))
         try await waitForDisplayedContentKind(harness.windowController, .splitView)
+        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
 
+        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
         #expect(harness.windowController.isSplitViewEmbeddedForTesting)
         #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
         #expect(window.toolbar != nil)
@@ -2454,6 +2460,23 @@ private func waitForSidebarPresentation(
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
             viewControllerBox.value.sidebarPresentationForTesting != expected
+        }) {
+            await Task.yield()
+        }
+    }
+}
+
+@available(macOS 26.0, *)
+@MainActor
+private func waitForEmbeddedContentSubviewCount(
+    _ windowController: ReviewMonitorWindowController,
+    _ expected: Int,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let windowControllerBox = UncheckedSendableBox(windowController)
+    try await withTestTimeout(timeout) {
+        while await MainActor.run(body: {
+            windowControllerBox.value.embeddedContentSubviewCountForTesting != expected
         }) {
             await Task.yield()
         }
