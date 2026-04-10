@@ -553,7 +553,7 @@ struct CodexReviewMCPTests {
 
         await authSession.waitForLoginStart()
         try await waitForObservedValue(authStateProbe) { authState in
-            guard case .signingIn(let progress) = authState else {
+            guard let progress = authState.progress else {
                 return false
             }
             return progress.browserURL?.contains("/oauth/authorize") == true

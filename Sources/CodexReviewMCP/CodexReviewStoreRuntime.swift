@@ -825,9 +825,21 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             auth.updateState(state)
             await recycleSharedAppServerAfterAuthChange()
         } catch let error as ReviewAuthError {
-            auth.updateState(.failed(error.errorDescription ?? "Failed to sign out."))
+            auth.updateState(
+                .failed(
+                    error.errorDescription ?? "Failed to sign out.",
+                    isAuthenticated: auth.isAuthenticated,
+                    accountID: auth.accountID
+                )
+            )
         } catch {
-            auth.updateState(.failed(error.localizedDescription))
+            auth.updateState(
+                .failed(
+                    error.localizedDescription,
+                    isAuthenticated: auth.isAuthenticated,
+                    accountID: auth.accountID
+                )
+            )
         }
     }
 

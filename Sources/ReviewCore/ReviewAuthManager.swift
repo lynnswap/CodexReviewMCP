@@ -167,7 +167,7 @@ package actor ReviewAuthManager {
                     onUpdate: onUpdate
                 )
             }
-            if finalState == .signedOut {
+            if finalState.isAuthenticated == false {
                 throw ReviewAuthError.loginFailed("Authentication failed. Sign in again.")
             }
 
@@ -386,7 +386,7 @@ package actor ReviewAuthManager {
         case .signedOut:
             throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
         case .unavailable:
-            guard refreshedState != .signedOut else {
+            guard refreshedState.isAuthenticated else {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
             return refreshedState
@@ -420,7 +420,7 @@ package actor ReviewAuthManager {
                         return Self.authState(from: account)
                     }
                 }
-                if state == .signedOut {
+                if state.isAuthenticated == false {
                     sawSignedOut = true
                 } else {
                     return .signedIn(state)
@@ -463,20 +463,33 @@ package actor ReviewAuthManager {
         refreshedState: CodexReviewAuthModel.State,
         durableState: CodexReviewAuthModel.State
     ) -> CodexReviewAuthModel.State {
-        switch (refreshedState, durableState) {
-        case (.signedIn(let refreshedAccountID), .signedIn(let durableAccountID))
-            where refreshedAccountID == "ChatGPT" && durableAccountID != "ChatGPT":
+        let refreshedAccountID = refreshedState.accountID
+        let durableAccountID = durableState.accountID
+
+        if refreshedState.isAuthenticated,
+           durableState.isAuthenticated,
+           refreshedAccountID == "ChatGPT",
+           durableAccountID != "ChatGPT"
+        {
             return .signedIn(accountID: durableAccountID)
-        case (.signedIn(let refreshedAccountID), .signedIn)
-            where refreshedAccountID != "ChatGPT":
+        }
+        if refreshedState.isAuthenticated,
+           durableState.isAuthenticated,
+           refreshedAccountID != "ChatGPT"
+        {
             return .signedIn(accountID: refreshedAccountID)
-        case (.signedOut, .signedIn):
-            return durableState
-        case (.signedIn, .signedIn):
-            return refreshedState
-        default:
+        }
+        if refreshedState.isAuthenticated == false,
+           durableState.isAuthenticated
+        {
             return durableState
         }
+        if refreshedState.isAuthenticated,
+           durableState.isAuthenticated
+        {
+            return refreshedState
+        }
+        return durableState
     }
 
     private static func initialProgressState() -> CodexReviewAuthModel.State {

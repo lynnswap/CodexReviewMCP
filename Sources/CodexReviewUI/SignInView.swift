@@ -30,8 +30,8 @@ struct SignInView: View {
                     }
                 } label: {
                     Text("Sign in with ChatGPT")
-                        .padding(.vertical, 4)
                 }
+                .padding(.vertical, 4)
             }
             .disabled(canStartAuthentication == false)
             .buttonSizing(.flexible)
@@ -42,6 +42,7 @@ struct SignInView: View {
                 Text(descriptionText)
             }
         }
+        .animation(.default, value: store.auth.isAuthenticating)
         .scenePadding()
     }
 
@@ -50,12 +51,7 @@ struct SignInView: View {
     }
 
     var descriptionText: String? {
-        switch store.auth.state {
-        case .failed(let message):
-            message
-        case .signedOut, .signingIn, .signedIn:
-            nil
-        }
+        store.auth.errorMessage
     }
 
     func startAuthentication() {

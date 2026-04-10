@@ -76,6 +76,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         bindJobEntry(to: window)
     }
 
+    func detachFromWindow() {
+        observationHandles.removeAll()
+        attachedWindow = nil
+    }
+
     private func bindJobEntry(to window: NSWindow) {
         observationHandles.removeAll()
 

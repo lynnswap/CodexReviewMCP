@@ -50,6 +50,7 @@ struct CodexReviewUITests {
         defer { window.close() }
 
         #expect(window.toolbar != nil)
+        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
         #expect(viewController.toolbarIdentifiersForTesting.contains(.toggleSidebar))
         #expect(viewController.toolbarIdentifiersForTesting.contains(.sidebarTrackingSeparator))
         #expect(window.styleMask.contains(.fullSizeContentView))
@@ -58,6 +59,143 @@ struct CodexReviewUITests {
         #expect(window.subtitle == "")
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
+    }
+
+    @Test func windowControllerShowsSignInViewWhenSignedOut() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedOut
+        )
+        let window = harness.window
+        defer { window.close() }
+
+        #expect(harness.windowController.displayedContentKindForTesting == .signInView)
+        #expect(window.toolbar == nil)
+        #expect(window.titleVisibility == .hidden)
+        #expect(window.title == "")
+        #expect(window.subtitle == "")
+    }
+
+    @Test func windowControllerRefreshesAuthStateOnInitialLoad() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = AuthActionBackend()
+        let store = CodexReviewStore(backend: backend)
+        let windowController = ReviewMonitorWindowController(store: store)
+        defer { windowController.window?.close() }
+
+        await backend.waitForRefreshAuthStateCallCount(1)
+
+        #expect(backend.refreshAuthStateCallCount() == 1)
+    }
+
+    @Test func windowControllerSwitchesToSignInViewAfterLogout() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedIn(accountID: "review@example.com")
+        )
+        let window = harness.window
+        defer { window.close() }
+
+        store.auth.updateState(.signedOut)
+        try await waitForDisplayedContentKind(harness.windowController, .signInView)
+
+        #expect(window.toolbar == nil)
+        #expect(window.title == "")
+        #expect(window.subtitle == "")
+    }
+
+    @Test func windowControllerPreservesWindowSizeWhenSwitchingToSignInView() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedIn(accountID: "review@example.com")
+        )
+        let window = harness.window
+        defer { window.close() }
+
+        window.setContentSize(NSSize(width: 1080, height: 720))
+        window.layoutIfNeeded()
+        let beforeSize = window.frame.size
+
+        store.auth.updateState(.signedOut)
+        try await waitForDisplayedContentKind(harness.windowController, .signInView)
+        window.layoutIfNeeded()
+        let afterSize = window.frame.size
+
+        #expect(abs(beforeSize.width - afterSize.width) < 0.5)
+        #expect(abs(beforeSize.height - afterSize.height) < 0.5)
+    }
+
+    @Test func windowControllerSwitchesToSignInViewAfterAuthFailure() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedIn(accountID: "review@example.com")
+        )
+        let window = harness.window
+        defer { window.close() }
+
+        store.auth.updateState(.failed("Authentication failed."))
+        try await waitForDisplayedContentKind(harness.windowController, .signInView)
+
+        #expect(window.toolbar == nil)
+        #expect(SignInView(store: store).descriptionText == "Authentication failed.")
+    }
+
+    @Test func windowControllerOpensBrowserOncePerAuthURL() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let recorder = BrowserOpenRecorder()
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedOut,
+            browserURLOpener: { url in
+                recorder.record(url)
+            }
+        )
+        defer { harness.window.close() }
+
+        let authURL = "https://auth.openai.com/oauth/authorize?foo=bar"
+        store.auth.updateState(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue.",
+                    browserURL: authURL
+                )
+            )
+        )
+        try await waitForOpenedURLCount(recorder, 1)
+        #expect(recorder.urls == [URL(string: authURL)!])
+
+        store.auth.updateState(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue.",
+                    browserURL: authURL
+                )
+            )
+        )
+        #expect(recorder.urls.count == 1)
     }
 
     @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {
@@ -1779,9 +1917,17 @@ private struct ReviewMonitorWindowHarness {
 @MainActor
 private func makeWindowHarness(
     store: CodexReviewStore,
-    contentSize: NSSize? = nil
+    authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
+    contentSize: NSSize? = nil,
+    performInitialAuthRefresh: Bool = false,
+    browserURLOpener: @escaping @MainActor (URL) -> Void = { _ in }
 ) -> ReviewMonitorWindowHarness {
-    let windowController = ReviewMonitorWindowController(store: store)
+    store.auth.updateState(authState)
+    let windowController = ReviewMonitorWindowController(
+        store: store,
+        browserURLOpener: browserURLOpener,
+        performInitialAuthRefresh: performInitialAuthRefresh
+    )
     guard let window = windowController.window else {
         fatalError("ReviewMonitorWindowController did not create a window.")
     }
@@ -1793,6 +1939,48 @@ private func makeWindowHarness(
         viewController: windowController.splitViewControllerForTesting,
         window: window
     )
+}
+
+@available(macOS 26.0, *)
+@MainActor
+private func waitForDisplayedContentKind(
+    _ windowController: ReviewMonitorWindowController,
+    _ expected: ReviewMonitorWindowController.DisplayedContentKind,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let windowControllerBox = UncheckedSendableBox(windowController)
+    try await withTestTimeout(timeout) {
+        while await MainActor.run(body: {
+            windowControllerBox.value.displayedContentKindForTesting != expected
+        }) {
+            await Task.yield()
+        }
+    }
+}
+
+@MainActor
+private final class BrowserOpenRecorder {
+    private(set) var urls: [URL] = []
+
+    func record(_ url: URL) {
+        urls.append(url)
+    }
+}
+
+@MainActor
+private func waitForOpenedURLCount(
+    _ recorder: BrowserOpenRecorder,
+    _ count: Int,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let recorderBox = UncheckedSendableBox(recorder)
+    try await withTestTimeout(timeout) {
+        while await MainActor.run(body: {
+            recorderBox.value.urls.count < count
+        }) {
+            await Task.yield()
+        }
+    }
 }
 
 @MainActor
@@ -2018,7 +2206,9 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
     var isActive: Bool = false
     let shouldAutoStartEmbeddedServer = false
 
+    private let refreshSignal = AsyncSignal()
     private let beginSignal = AsyncSignal()
+    private var refreshCalls = 0
     private var beginCalls = 0
 
     func start(
@@ -2049,6 +2239,8 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
 
     func refreshAuthState(auth: CodexReviewAuthModel) async {
         _ = auth
+        refreshCalls += 1
+        await refreshSignal.signal()
     }
 
     func beginAuthentication(auth: CodexReviewAuthModel) async {
@@ -2067,6 +2259,17 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
 
     func beginAuthenticationCallCount() -> Int {
         beginCalls
+    }
+
+    func refreshAuthStateCallCount() -> Int {
+        refreshCalls
+    }
+
+    func waitForRefreshAuthStateCallCount(_ count: Int) async {
+        if refreshCalls >= count {
+            return
+        }
+        await refreshSignal.wait(untilCount: count)
     }
 
     func waitForBeginAuthenticationCallCount(_ count: Int) async {

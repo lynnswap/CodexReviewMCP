@@ -59,7 +59,7 @@ struct ReviewAuthManagerTests {
         let updates = await recorder.values()
         #expect(
             updates.contains {
-                guard case .signingIn(let progress) = $0 else {
+                guard let progress = $0.progress else {
                     return false
                 }
                 return progress.browserURL?.contains("/oauth/authorize") == true
@@ -320,7 +320,7 @@ struct ReviewAuthManagerTests {
 
         await factory.waitForRequest()
         await recorder.waitUntilContains { state in
-            guard case .signingIn(let progress) = state else {
+            guard let progress = state.progress else {
                 return false
             }
             return progress.browserURL == nil
