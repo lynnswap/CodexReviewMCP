@@ -96,6 +96,7 @@ struct CodexReviewUITests {
         #expect(abs(displayedViewFrame.maxX - safeAreaFrame.maxX) < 0.5)
         #expect(abs(displayedViewFrame.minY - safeAreaFrame.minY) < 0.5)
         #expect(abs(displayedViewFrame.maxY - safeAreaFrame.maxY) < 0.5)
+        #expect(contentPane.activeDisplayedViewConstraintCountForTesting == 4)
     }
 
     @Test func splitViewSwitchesSidebarWhenServerAvailabilityChanges() async throws {
@@ -242,6 +243,27 @@ struct CodexReviewUITests {
         store.auth.updateState(.signedIn(accountID: "review@example.com"))
         try await waitForDisplayedContentKind(harness.windowController, .splitView)
 
+        #expect(window.toolbar != nil)
+    }
+
+    @Test func windowControllerRapidAuthFlipsKeepLatestContentEmbedded() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedIn(accountID: "review@example.com")
+        )
+        let window = harness.window
+        defer { window.close() }
+
+        store.auth.updateState(.signedOut)
+        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        try await waitForDisplayedContentKind(harness.windowController, .splitView)
+
+        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
+        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
         #expect(window.toolbar != nil)
     }
 
@@ -2007,10 +2029,33 @@ struct CodexReviewUITests {
         let store = CodexReviewStore(backend: backend)
         let view = SignInView(store: store)
 
-        view.startAuthentication()
+        view.performAuthenticationAction()
         await backend.waitForBeginAuthenticationCallCount(1)
 
         #expect(backend.beginAuthenticationCallCount() == 1)
+    }
+
+    @Test func signInViewCancelsAuthenticationFromButtonAction() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = AuthActionBackend()
+        let store = CodexReviewStore(backend: backend)
+        store.auth.updateState(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            )
+        )
+        let view = SignInView(store: store)
+
+        view.performAuthenticationAction()
+        await backend.waitForCancelAuthenticationCallCount(1)
+
+        #expect(backend.cancelAuthenticationCallCount() == 1)
+        #expect(backend.beginAuthenticationCallCount() == 0)
     }
 
     @Test func signInViewDescriptionTextReflectsAuthState() {
@@ -2406,8 +2451,10 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
 
     private let refreshSignal = AsyncSignal()
     private let beginSignal = AsyncSignal()
+    private let cancelSignal = AsyncSignal()
     private var refreshCalls = 0
     private var beginCalls = 0
+    private var cancelCalls = 0
 
     init(initialAuthState: CodexReviewAuthModel.State = .signedOut) {
         self.initialAuthState = initialAuthState
@@ -2453,6 +2500,8 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
         _ = auth
+        cancelCalls += 1
+        await cancelSignal.signal()
     }
 
     func logout(auth: CodexReviewAuthModel) async {
@@ -2479,5 +2528,16 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
             return
         }
         await beginSignal.wait(untilCount: count)
+    }
+
+    func cancelAuthenticationCallCount() -> Int {
+        cancelCalls
+    }
+
+    func waitForCancelAuthenticationCallCount(_ count: Int) async {
+        if cancelCalls >= count {
+            return
+        }
+        await cancelSignal.wait(untilCount: count)
     }
 }

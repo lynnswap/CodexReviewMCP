@@ -21,8 +21,8 @@ struct SignInView: View {
                 .fontWeight(.semibold)
                 .scenePadding(.bottom)
             
-            Button(role:store.auth.isAuthenticating ? .cancel :.confirm) {
-                startAuthentication()
+            Button(role: store.auth.isAuthenticating ? .cancel : .confirm) {
+                performAuthenticationAction()
             } label: {
                 LabeledContent {
                     if store.auth.isAuthenticating {
@@ -56,12 +56,13 @@ struct SignInView: View {
         store.auth.errorMessage
     }
 
-    func startAuthentication() {
-        guard canStartAuthentication else {
-            return
-        }
+    func performAuthenticationAction() {
         Task {
-            await store.auth.beginAuthentication()
+            if store.auth.isAuthenticating {
+                await store.auth.cancelAuthentication()
+            } else if canStartAuthentication {
+                await store.auth.beginAuthentication()
+            }
         }
     }
 }

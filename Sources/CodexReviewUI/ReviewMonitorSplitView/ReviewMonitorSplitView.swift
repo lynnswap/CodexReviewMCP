@@ -180,6 +180,7 @@ final class ReviewMonitorSidebarPaneViewController: NSViewController {
     private let sidebarViewController: ReviewMonitorSidebarViewController
     private let unavailableViewController: MCPServerUnavailableViewController
     private var observationHandles: Set<ObservationHandle> = []
+    private var displayedViewConstraints: [NSLayoutConstraint] = []
     private(set) weak var displayedViewController: NSViewController?
 
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
@@ -235,27 +236,32 @@ final class ReviewMonitorSidebarPaneViewController: NSViewController {
         }
 
         if let displayedViewController {
+            NSLayoutConstraint.deactivate(displayedViewConstraints)
+            displayedViewConstraints.removeAll()
             displayedViewController.view.removeFromSuperview()
             displayedViewController.removeFromParent()
         }
 
         addChild(viewController)
         displayedViewController = viewController
-        embed(viewController)
+        displayedViewConstraints = embed(viewController)
     }
 
-    private func embed(_ viewController: NSViewController) {
+    @discardableResult
+    private func embed(_ viewController: NSViewController) -> [NSLayoutConstraint] {
         let contentView = viewController.view
         let safeArea = view.safeAreaLayoutGuide
         contentView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentView)
 
-        NSLayoutConstraint.activate([
+        let constraints = [
             contentView.topAnchor.constraint(equalTo: safeArea.topAnchor),
             contentView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
             contentView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
             contentView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
-        ])
+        ]
+        NSLayoutConstraint.activate(constraints)
+        return constraints
     }
 }
 
@@ -271,6 +277,7 @@ final class ReviewMonitorContentPaneViewController: NSViewController {
     private let transportViewController = ReviewMonitorTransportViewController()
     private let emptyStateViewController = ReviewMonitorDetailEmptyStateViewController()
     private var observationHandles: Set<ObservationHandle> = []
+    private var displayedViewConstraints: [NSLayoutConstraint] = []
     private(set) weak var displayedViewController: NSViewController?
 #if DEBUG
     private var renderCountForTestingStorage = 0
@@ -329,28 +336,33 @@ final class ReviewMonitorContentPaneViewController: NSViewController {
         }
 
         if let displayedViewController {
+            NSLayoutConstraint.deactivate(displayedViewConstraints)
+            displayedViewConstraints.removeAll()
             displayedViewController.view.removeFromSuperview()
             displayedViewController.removeFromParent()
         }
 
         addChild(viewController)
         displayedViewController = viewController
-        embed(viewController)
+        displayedViewConstraints = embed(viewController)
         noteRenderForTesting()
     }
 
-    private func embed(_ viewController: NSViewController) {
+    @discardableResult
+    private func embed(_ viewController: NSViewController) -> [NSLayoutConstraint] {
         let contentView = viewController.view
         let safeArea = view.safeAreaLayoutGuide
         contentView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentView)
 
-        NSLayoutConstraint.activate([
+        let constraints = [
             contentView.topAnchor.constraint(equalTo: safeArea.topAnchor),
             contentView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
             contentView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
             contentView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
-        ])
+        ]
+        NSLayoutConstraint.activate(constraints)
+        return constraints
     }
 
     private func noteRenderForTesting() {
@@ -532,6 +544,10 @@ extension ReviewMonitorContentPaneViewController {
 
     var displayedViewFrameForTesting: NSRect {
         displayedViewController?.view.frame ?? .zero
+    }
+
+    var activeDisplayedViewConstraintCountForTesting: Int {
+        displayedViewConstraints.filter(\.isActive).count
     }
 
     var displayedSummaryForTesting: String? {

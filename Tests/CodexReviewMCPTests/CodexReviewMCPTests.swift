@@ -647,6 +647,33 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func logoutFailurePublishesSignedOutAuthError() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = FailingLogoutReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        await store.auth.logout()
+
+        #expect(store.auth.state == .failed("Failed to sign out."))
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 0)
+
+        await store.stop()
+    }
+
     @Test func forceRestartStopsServerAndRecordedAppServerGroup() async throws {
         let endpointRecord = LiveEndpointRecord(
             url: "http://localhost:9417/mcp",
@@ -1516,6 +1543,32 @@ private actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
     func cancelLogin(loginID _: String) async throws {}
 
     func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+}
+
+private actor FailingLogoutReviewAuthSession: ReviewAuthSession {
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {
+        throw ReviewAuthError.logoutFailed("Failed to sign out.")
+    }
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
         .init(stream: .init { $0.finish() }, cancel: {})

@@ -124,6 +124,8 @@ public final class ReviewMonitorWindowController: NSWindowController {
 @MainActor
 private final class ReviewMonitorWindowContentViewController: NSViewController {
     private weak var displayedContentViewController: NSViewController?
+    private var displayedContentConstraints: [NSLayoutConstraint] = []
+    private var embeddedConstraintsByControllerID: [ObjectIdentifier: [NSLayoutConstraint]] = [:]
 
     init() {
         super.init(nibName: nil, bundle: nil)
@@ -151,49 +153,65 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
             return
         }
 
-        guard let displayedContentViewController else {
+        guard let currentContentViewController = displayedContentViewController else {
             displayedContentViewController = contentViewController
             addChild(contentViewController)
-            embed(contentViewController)
+            displayedContentConstraints = embed(contentViewController)
+            embeddedConstraintsByControllerID[ObjectIdentifier(contentViewController)] = displayedContentConstraints
             return
         }
 
+        let outgoingContentViewController = currentContentViewController
         addChild(contentViewController)
         if animated {
-            embed(contentViewController)
+            let outgoingContentViewControllerID = ObjectIdentifier(outgoingContentViewController)
+            displayedContentViewController = contentViewController
+            displayedContentConstraints = embed(contentViewController)
+            embeddedConstraintsByControllerID[ObjectIdentifier(contentViewController)] = displayedContentConstraints
             transition(
-                from: displayedContentViewController,
+                from: outgoingContentViewController,
                 to: contentViewController,
                 options: [.crossfade]
             ) { [weak self] in
                 Task { @MainActor [weak self] in
-                    guard let self else {
-                        return
-                    }
-                    displayedContentViewController.removeFromParent()
-                    self.displayedContentViewController = contentViewController
+                    self?.removeEmbeddedContent(for: outgoingContentViewControllerID)
                 }
             }
             return
         }
 
-        displayedContentViewController.view.removeFromSuperview()
-        displayedContentViewController.removeFromParent()
+        removeEmbeddedContent(for: ObjectIdentifier(outgoingContentViewController))
         self.displayedContentViewController = contentViewController
-        embed(contentViewController)
+        displayedContentConstraints = embed(contentViewController)
+        embeddedConstraintsByControllerID[ObjectIdentifier(contentViewController)] = displayedContentConstraints
     }
 
-    private func embed(_ contentViewController: NSViewController) {
+    @discardableResult
+    private func embed(_ contentViewController: NSViewController) -> [NSLayoutConstraint] {
         let contentView = contentViewController.view
         contentView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentView)
 
-        NSLayoutConstraint.activate([
+        let constraints = [
             contentView.topAnchor.constraint(equalTo: view.topAnchor),
             contentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             contentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             contentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
+        ]
+        NSLayoutConstraint.activate(constraints)
+        return constraints
+    }
+
+    private func removeEmbeddedContent(for controllerID: ObjectIdentifier) {
+        if let constraints = embeddedConstraintsByControllerID.removeValue(forKey: controllerID) {
+            NSLayoutConstraint.deactivate(constraints)
+        }
+
+        guard let viewController = children.first(where: { ObjectIdentifier($0) == controllerID }) else {
+            return
+        }
+        viewController.view.removeFromSuperview()
+        viewController.removeFromParent()
     }
 }
 
@@ -236,6 +254,16 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
 extension ReviewMonitorWindowController {
     var splitViewControllerForTesting: ReviewMonitorSplitViewController {
         splitViewController
+    }
+
+    var isSplitViewEmbeddedForTesting: Bool {
+        splitViewController.parent === rootContentViewController &&
+        splitViewController.view.superview === rootContentViewController.view
+    }
+
+    var isSignInViewEmbeddedForTesting: Bool {
+        signInViewController.parent === rootContentViewController &&
+        signInViewController.view.superview === rootContentViewController.view
     }
 
     var displayedContentKindForTesting: DisplayedContentKind {

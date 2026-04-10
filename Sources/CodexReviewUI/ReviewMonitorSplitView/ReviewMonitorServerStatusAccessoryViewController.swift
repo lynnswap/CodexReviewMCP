@@ -42,7 +42,7 @@ struct StatusView: View {
         .buttonStyle(.plain)
     }
 
-    private var accountDisplayName: String {
+    var accountDisplayName: String {
         if let accountID = store.auth.accountID,
            accountID.isEmpty == false {
             return accountID
@@ -50,7 +50,7 @@ struct StatusView: View {
         return "Unknown"
     }
 
-    private var isSignedIn: Bool {
+    var isSignedIn: Bool {
         store.auth.isAuthenticated
     }
 }
@@ -72,6 +72,7 @@ struct StatusView: View {
     return StatusView(store: store)
         .padding()
 }
+
 @MainActor
 func makeStatusPreviewStore(
     authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
