@@ -222,9 +222,9 @@ final class ReviewMonitorSidebarPaneViewController: NSViewController {
     private func updatePresentation() {
         let desiredViewController: NSViewController
         switch store.serverState {
-        case .failed, .stopped:
+        case .failed:
             desiredViewController = unavailableViewController
-        case .running, .starting:
+        case .running, .starting, .stopped:
             desiredViewController = sidebarViewController
         }
         setDisplayedViewController(desiredViewController)

@@ -80,12 +80,10 @@ struct SignInView: View {
     }
 
     var showsServerRestartAction: Bool {
-        switch store.serverState {
-        case .failed, .stopped:
-            true
-        case .running, .starting:
-            false
+        if case .failed = store.serverState {
+            return true
         }
+        return false
     }
 
     func performAuthenticationAction() {
