@@ -365,6 +365,42 @@ struct CodexReviewUITests {
         #expect(harness.windowController.displayedContentKindForTesting == .signInView)
     }
 
+    @Test func windowControllerKeepsSplitViewPresentedWhileAuthenticatedRetryAuthenticates() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedIn(accountID: "review@example.com")
+        )
+        defer { harness.window.close() }
+
+        store.auth.updateState(
+            .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+        await Task.yield()
+
+        store.auth.updateState(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue.",
+                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+                )
+            )
+        )
+        await Task.yield()
+
+        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
+        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
+        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
+    }
+
     @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {
         guard #available(macOS 26.0, *) else {
             return

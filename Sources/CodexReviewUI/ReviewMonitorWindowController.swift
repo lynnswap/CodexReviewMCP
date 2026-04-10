@@ -118,6 +118,9 @@ public final class ReviewMonitorWindowController: NSWindowController {
             return .splitView
         }
         if authState.progress != nil {
+            if displayedContentKind == .splitView {
+                return .splitView
+            }
             return .signInView
         }
         if authState.errorMessage != nil,
