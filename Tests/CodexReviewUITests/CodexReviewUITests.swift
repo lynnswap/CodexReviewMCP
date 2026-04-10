@@ -137,6 +137,24 @@ struct CodexReviewUITests {
         #expect(window.subtitle == "")
     }
 
+    @Test func windowControllerCrossfadesBackToSplitViewAfterAuthentication() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedOut
+        )
+        let window = harness.window
+        defer { window.close() }
+
+        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        try await waitForDisplayedContentKind(harness.windowController, .splitView)
+
+        #expect(window.toolbar != nil)
+    }
+
     @Test func windowControllerPreservesWindowSizeWhenSwitchingToSignInView() async throws {
         guard #available(macOS 26.0, *) else {
             return

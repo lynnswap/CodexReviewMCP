@@ -97,8 +97,11 @@ public final class ReviewMonitorWindowController: NSWindowController {
     private func showSplitView(in window: NSWindow) {
         window.title = "Untitled"
         window.subtitle = ""
-        rootContentViewController.setContentViewController(splitViewController)
         splitViewController.attach(to: window)
+        rootContentViewController.setContentViewController(
+            splitViewController,
+            animated: displayedContentKind != nil
+        )
         displayedContentKind = .splitView
     }
 
@@ -109,7 +112,10 @@ public final class ReviewMonitorWindowController: NSWindowController {
         window.subtitle = ""
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
-        rootContentViewController.setContentViewController(signInViewController)
+        rootContentViewController.setContentViewController(
+            signInViewController,
+            animated: displayedContentKind != nil
+        )
         displayedContentKind = .signInView
     }
 }
@@ -136,19 +142,48 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
         view = backgroundView
     }
 
-    func setContentViewController(_ contentViewController: NSViewController) {
+    func setContentViewController(
+        _ contentViewController: NSViewController,
+        animated: Bool
+    ) {
         loadViewIfNeeded()
         guard displayedContentViewController !== contentViewController else {
             return
         }
 
-        if let displayedContentViewController {
-            displayedContentViewController.view.removeFromSuperview()
-            displayedContentViewController.removeFromParent()
+        guard let displayedContentViewController else {
+            displayedContentViewController = contentViewController
+            addChild(contentViewController)
+            embed(contentViewController)
+            return
         }
 
-        displayedContentViewController = contentViewController
         addChild(contentViewController)
+        if animated {
+            embed(contentViewController)
+            transition(
+                from: displayedContentViewController,
+                to: contentViewController,
+                options: [.crossfade]
+            ) { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self else {
+                        return
+                    }
+                    displayedContentViewController.removeFromParent()
+                    self.displayedContentViewController = contentViewController
+                }
+            }
+            return
+        }
+
+        displayedContentViewController.view.removeFromSuperview()
+        displayedContentViewController.removeFromParent()
+        self.displayedContentViewController = contentViewController
+        embed(contentViewController)
+    }
+
+    private func embed(_ contentViewController: NSViewController) {
         let contentView = contentViewController.view
         contentView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentView)
