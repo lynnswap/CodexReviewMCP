@@ -11,6 +11,7 @@ import CodexReviewModel
 @available(macOS 26.0, *)
 struct SignInView: View {
     let store: CodexReviewStore
+    @State private var isRestarting = false
 
     var body: some View {
         ContentUnavailableView {
@@ -38,6 +39,20 @@ struct SignInView: View {
             .buttonBorderShape(.capsule)
             .buttonStyle(.glassProminent)
             .tint(store.auth.isAuthenticating ? .clear : .none)
+
+            if showsServerRestartAction {
+                Button {
+                    restartServer()
+                } label: {
+                    Label("Reset Server", systemImage: "arrow.clockwise")
+                        .padding(.vertical, 8)
+                }
+                .labelStyle(.titleAndIcon)
+                .buttonSizing(.flexible)
+                .buttonBorderShape(.capsule)
+                .buttonStyle(.bordered)
+                .disabled(isRestarting)
+            }
             
         } description: {
             if let descriptionText {
@@ -53,7 +68,24 @@ struct SignInView: View {
     }
 
     var descriptionText: String? {
-        store.auth.errorMessage
+        store.auth.errorMessage ?? serverFailureMessage
+    }
+
+    var serverFailureMessage: String? {
+        guard case .failed(let message) = store.serverState else {
+            return nil
+        }
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedMessage.isEmpty ? nil : trimmedMessage
+    }
+
+    var showsServerRestartAction: Bool {
+        switch store.serverState {
+        case .failed, .stopped:
+            true
+        case .running, .starting:
+            false
+        }
     }
 
     func performAuthenticationAction() {
@@ -63,6 +95,19 @@ struct SignInView: View {
             } else if canStartAuthentication {
                 await store.auth.beginAuthentication()
             }
+        }
+    }
+
+    func restartServer() {
+        guard isRestarting == false else {
+            return
+        }
+        isRestarting = true
+        Task { @MainActor in
+            defer {
+                isRestarting = false
+            }
+            await store.restart()
         }
     }
 }

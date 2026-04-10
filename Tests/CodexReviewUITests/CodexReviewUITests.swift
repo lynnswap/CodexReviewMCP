@@ -56,6 +56,23 @@ struct CodexReviewUITests {
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
     }
 
+    @Test func splitViewShowsUnavailableSidebarWhenServerStoppedOnLoad() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .stopped,
+            workspaces: []
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.splitViewItems.count == 2)
+        #expect(viewController.sidebarPresentationForTesting == .unavailable)
+        #expect(viewController.sidebarAccessoryCountForTesting == 1)
+    }
+
     @Test func splitViewShowsJobSidebarWhenServerRunningOnLoad() {
         guard #available(macOS 26.0, *) else {
             return
@@ -120,6 +137,12 @@ struct CodexReviewUITests {
         )
         try await waitForSidebarPresentation(viewController, .unavailable)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
+
+        store.loadForTesting(
+            serverState: .stopped,
+            workspaces: []
+        )
+        try await waitForSidebarPresentation(viewController, .unavailable)
 
         store.loadForTesting(
             serverState: .running,
@@ -2211,6 +2234,39 @@ struct CodexReviewUITests {
 
         store.auth.updateState(.signedIn(accountID: "review@example.com"))
         #expect(SignInView(store: store).descriptionText == nil)
+
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authState: .signedOut,
+            workspaces: []
+        )
+        #expect(SignInView(store: store).descriptionText == "The embedded server stopped responding.")
+        #expect(SignInView(store: store).showsServerRestartAction)
+    }
+
+    @Test func signInViewRestartServerUsesStoreRestartFlow() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(
+            shouldAutoStartEmbeddedServer: false,
+            initialAuthState: .signedOut
+        )
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authState: .signedOut,
+            workspaces: []
+        )
+        let view = SignInView(store: store)
+
+        #expect(view.showsServerRestartAction)
+
+        view.restartServer()
+        await backend.waitForStartCallCount(1)
+
+        #expect(backend.startCallCount() == 1)
+        #expect(store.serverState == .starting)
     }
 
     @Test func mcpServerUnavailableViewRestartServerUsesStoreRestartFlow() async {
