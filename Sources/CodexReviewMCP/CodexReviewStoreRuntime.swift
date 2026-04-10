@@ -1064,31 +1064,40 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
     }
 
     private func ensureAuthenticationCompletionDelivered(loginID: String) async throws {
-        if bufferedNotifications.contains(where: { notification in
-            switch notification {
-            case .accountUpdated:
-                true
-            case .accountLoginCompleted(let completed):
-                completed.loginID?.nilIfEmpty == loginID && completed.success
-            default:
-                false
-            }
-        }) {
+        if hasBufferedAuthenticationCompletion(loginID: loginID) {
             return
         }
 
-        let account = try await sharedSession.readAccount(refreshToken: true)
-        guard case .chatGPT(_, let planType) = account.account else {
-            throw ReviewAuthError.loginFailed("Authentication failed. Sign in again.")
+        let shouldSynthesizeAccountUpdate = hasBufferedAuthenticationUpdate == false
+        let synthesizedPlanType: String?
+        if shouldSynthesizeAccountUpdate,
+           let account = try? await sharedSession.readAccount(refreshToken: true),
+           case .chatGPT(_, let planType) = account.account {
+            synthesizedPlanType = planType
+        } else {
+            synthesizedPlanType = nil
         }
-        handleNotification(
-            .accountUpdated(
-                .init(
-                    authMode: .chatGPT,
-                    planType: planType
+
+        if hasBufferedAuthenticationCompletion(loginID: loginID) {
+            return
+        }
+
+        if hasBufferedAuthenticationUpdate == false,
+           let synthesizedPlanType {
+            handleNotification(
+                .accountUpdated(
+                    .init(
+                        authMode: .chatGPT,
+                        planType: synthesizedPlanType
+                    )
                 )
             )
-        )
+        }
+
+        if hasBufferedAuthenticationCompletion(loginID: loginID) {
+            return
+        }
+
         handleNotification(
             .accountLoginCompleted(
                 .init(
@@ -1098,6 +1107,27 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
                 )
             )
         )
+    }
+
+    private var hasBufferedAuthenticationUpdate: Bool {
+        bufferedNotifications.contains { notification in
+            if case .accountUpdated = notification {
+                return true
+            }
+            return false
+        }
+    }
+
+    private func hasBufferedAuthenticationCompletion(loginID: String) -> Bool {
+        bufferedNotifications.contains { notification in
+            guard case .accountLoginCompleted(let completed) = notification else {
+                return false
+            }
+            guard let completedLoginID = completed.loginID?.nilIfEmpty else {
+                return true
+            }
+            return completedLoginID == loginID
+        }
     }
 
     private func handleAuthenticationCancellation(for loginID: String) async {

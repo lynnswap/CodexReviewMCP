@@ -1021,6 +1021,72 @@ struct CodexReviewMCPTests {
         #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
     }
 
+    @Test func reviewMonitorStoreCompletesNativeAuthenticationWhenServerOnlyPublishesAccountUpdated() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransport: AuthCapableAppServerSessionTransport(
+                completeLoginBehavior: .succeedWithAccountUpdatedOnly
+            )
+        )
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+
+        await store.auth.beginAuthentication()
+
+        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+    }
+
+    @Test func reviewMonitorStoreWaitsOutDelayedPersistenceAfterNativeAuthenticationCompletion() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransport: AuthCapableAppServerSessionTransport(
+                completeLoginBehavior: .succeedWithoutNotifications,
+                postCompleteAccountReadResponses: [
+                    [
+                        "account": NSNull(),
+                        "requiresOpenaiAuth": true,
+                    ],
+                ]
+            )
+        )
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+
+        await store.auth.beginAuthentication()
+
+        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+    }
+
     @Test func nativeAuthSessionFinishesLateSubscribersAfterCancellation() async throws {
         let transport = AuthCapableAppServerSessionTransport()
         let session = NativeWebAuthenticationReviewSession(
@@ -2302,6 +2368,7 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
 
     enum CompleteLoginBehavior {
         case succeed
+        case succeedWithAccountUpdatedOnly
         case succeedWithoutNotifications
         case unsupported
     }
@@ -2313,15 +2380,19 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         "account": NSNull(),
         "requiresOpenaiAuth": true,
     ]
+    private var postCompleteAccountReadResponseQueue: [[String: Any]]
+    private var didCompleteLogin = false
     private let startLoginBehavior: StartLoginBehavior
     private let completeLoginBehavior: CompleteLoginBehavior
 
     init(
         startLoginBehavior: StartLoginBehavior = .nativeCallback,
-        completeLoginBehavior: CompleteLoginBehavior = .succeed
+        completeLoginBehavior: CompleteLoginBehavior = .succeed,
+        postCompleteAccountReadResponses: [[String: Any]] = []
     ) {
         self.startLoginBehavior = startLoginBehavior
         self.completeLoginBehavior = completeLoginBehavior
+        postCompleteAccountReadResponseQueue = postCompleteAccountReadResponses
     }
 
     func initializeResponse() async -> AppServerInitializeResponse {
@@ -2341,6 +2412,11 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         _ = params
         switch method {
         case "account/read":
+            if didCompleteLogin,
+               postCompleteAccountReadResponseQueue.isEmpty == false {
+                let response = postCompleteAccountReadResponseQueue.removeFirst()
+                return try decode(response, as: responseType)
+            }
             return try decode(accountReadResponseObject, as: responseType)
         case "account/login/start":
             switch startLoginBehavior {
@@ -2382,12 +2458,15 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
             switch completeLoginBehavior {
             case .succeed:
                 break
+            case .succeedWithAccountUpdatedOnly:
+                break
             case .succeedWithoutNotifications:
                 break
             case .unsupported:
                 throw AppServerResponseError(code: -32601, message: "method not found")
             }
             recordedCompleteParams = params as? AppServerCompleteLoginAccountParams
+            didCompleteLogin = true
             accountReadResponseObject = [
                 "account": [
                     "type": "chatgpt",
@@ -2396,8 +2475,10 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
                 ],
                 "requiresOpenaiAuth": false,
             ]
-            if completeLoginBehavior != .succeedWithoutNotifications {
+            if completeLoginBehavior == .succeed || completeLoginBehavior == .succeedWithAccountUpdatedOnly {
                 continuation?.yield(.accountUpdated(.init(authMode: .chatGPT, planType: "plus")))
+            }
+            if completeLoginBehavior == .succeed {
                 continuation?.yield(
                     .accountLoginCompleted(
                         .init(
