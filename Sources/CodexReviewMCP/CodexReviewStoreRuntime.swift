@@ -894,6 +894,15 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
                 "Native authentication is unavailable. Update the app-server and try again."
             )
         }
+        guard callbackScheme == nativeAuthenticationConfiguration.callbackScheme else {
+            do {
+                try await sharedSession.cancelLogin(loginID: loginID)
+            } catch {
+            }
+            throw ReviewAuthError.loginFailed(
+                "Native authentication callback is misconfigured. Update the app-server and try again."
+            )
+        }
 
         activeLoginID = loginID
         let webAuthenticationPerformer = self.webAuthenticationPerformer
@@ -1361,27 +1370,17 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func logout(auth: CodexReviewAuthModel) async {
         authRefreshTask?.cancel()
         authRefreshTask = nil
-        let wasAuthenticated = auth.isAuthenticated
-        let accountID = auth.accountID
         do {
             let state = try await authManager.logout()
             auth.updateState(state)
             await recycleSharedAppServerAfterAuthChange()
         } catch let error as ReviewAuthError {
             auth.updateState(
-                .failed(
-                    error.errorDescription ?? "Failed to sign out.",
-                    isAuthenticated: wasAuthenticated,
-                    accountID: accountID
-                )
+                .failed(error.errorDescription ?? "Failed to sign out.")
             )
         } catch {
             auth.updateState(
-                .failed(
-                    error.localizedDescription,
-                    isAuthenticated: wasAuthenticated,
-                    accountID: accountID
-                )
+                .failed(error.localizedDescription)
             )
         }
     }

@@ -669,13 +669,7 @@ struct CodexReviewMCPTests {
         store.auth.updateState(.signedIn(accountID: "review@example.com"))
         await store.auth.logout()
 
-        #expect(
-            store.auth.state == .failed(
-                "Failed to sign out.",
-                isAuthenticated: true,
-                accountID: "review@example.com"
-            )
-        )
+        #expect(store.auth.state == .failed("Failed to sign out."))
         #expect(await manager.prepareCount() == 1)
         #expect(await manager.shutdownCount() == 0)
 
@@ -811,6 +805,41 @@ struct CodexReviewMCPTests {
         #expect(
             store.auth.state == .failed(
                 "Native authentication is unavailable. Update the app-server and try again."
+            )
+        )
+    }
+
+    @Test func reviewMonitorStoreFailsNativeAuthenticationWhenCallbackSchemeDoesNotMatch() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransport: AuthCapableAppServerSessionTransport(
+                startLoginBehavior: .customNativeCallback("other.app.callback")
+            )
+        )
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+
+        await store.auth.beginAuthentication()
+
+        #expect(performer.lastAuthenticateRequest == nil)
+        #expect(
+            store.auth.state == .failed(
+                "Native authentication callback is misconfigured. Update the app-server and try again."
             )
         )
     }
@@ -2058,6 +2087,7 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     enum StartLoginBehavior {
         case nativeCallback
         case legacyBrowser
+        case customNativeCallback(String)
     }
 
     enum CompleteLoginBehavior {
@@ -2122,6 +2152,18 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
                         "type": "chatgpt",
                         "loginId": "login-browser",
                         "authUrl": "https://auth.openai.com/oauth/authorize?foo=bar",
+                    ],
+                    as: responseType
+                )
+            case .customNativeCallback(let callbackURLScheme):
+                return try decode(
+                    [
+                        "type": "chatgpt",
+                        "loginId": "login-browser",
+                        "authUrl": "https://auth.openai.com/oauth/authorize?foo=bar",
+                        "nativeWebAuthentication": [
+                            "callbackUrlScheme": callbackURLScheme,
+                        ],
                     ],
                     as: responseType
                 )
