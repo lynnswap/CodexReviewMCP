@@ -31,7 +31,6 @@ public final class ReviewMonitorWindowController: NSWindowController {
     private let signInViewController: ReviewMonitorSignInViewController
     private let rootContentViewController: ReviewMonitorWindowContentViewController
     private var displayedContentKind: DisplayedContentKind?
-    private var authRefreshTask: Task<Void, Never>?
     private var presentedContentUpdateTask: Task<Void, Never>?
 
     public convenience init(store: CodexReviewStore) {
@@ -62,23 +61,18 @@ public final class ReviewMonitorWindowController: NSWindowController {
         configureReviewMonitorWindowBase(window)
         window.setFrameAutosaveName(Self.frameAutosaveName)
 
-        signInViewController.onAuthenticationStateChanged = { [weak self] isAuthenticated in
+        signInViewController.onAuthenticationStateChanged = { [weak self] state in
             guard let self else {
                 return
             }
             if self.displayedContentKind == nil {
-                self.updatePresentedContent(isAuthenticated: isAuthenticated)
+                self.updatePresentedContent(authState: state)
             } else {
-                self.schedulePresentedContentUpdate(isAuthenticated: isAuthenticated)
+                self.schedulePresentedContentUpdate(authState: state)
             }
         }
         signInViewController.startObservingAuth()
-
-        if performInitialAuthRefresh {
-            authRefreshTask = Task { [store] in
-                await store.auth.refresh()
-            }
-        }
+        _ = performInitialAuthRefresh
     }
 
     @available(*, unavailable)
@@ -87,35 +81,50 @@ public final class ReviewMonitorWindowController: NSWindowController {
     }
 
     deinit {
-        authRefreshTask?.cancel()
         presentedContentUpdateTask?.cancel()
     }
 
-    private func schedulePresentedContentUpdate(isAuthenticated: Bool) {
+    private func schedulePresentedContentUpdate(authState: CodexReviewAuthModel.State) {
         presentedContentUpdateTask?.cancel()
         presentedContentUpdateTask = Task { @MainActor [weak self] in
             await Task.yield()
-            self?.updatePresentedContent(isAuthenticated: isAuthenticated)
+            self?.updatePresentedContent(authState: authState)
         }
     }
 
-    private func updatePresentedContent(isAuthenticated: Bool) {
+    private func updatePresentedContent(authState: CodexReviewAuthModel.State) {
         guard let window else {
             return
         }
 
-        switch isAuthenticated {
-        case true:
+        switch desiredContentKind(for: authState) {
+        case .splitView:
             guard displayedContentKind != .splitView else {
                 return
             }
             showSplitView(in: window)
-        case false:
+        case .signInView:
             guard displayedContentKind != .signInView else {
                 return
             }
             showSignInView(in: window)
         }
+    }
+
+    private func desiredContentKind(
+        for authState: CodexReviewAuthModel.State
+    ) -> DisplayedContentKind {
+        if authState.isAuthenticated {
+            return .splitView
+        }
+        if authState.progress != nil {
+            return .signInView
+        }
+        if authState.errorMessage != nil,
+           displayedContentKind == .splitView {
+            return .splitView
+        }
+        return .signInView
     }
 
     private func showSplitView(in window: NSWindow) {

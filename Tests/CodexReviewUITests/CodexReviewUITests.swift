@@ -216,7 +216,7 @@ struct CodexReviewUITests {
         #expect(window.isMovableByWindowBackground)
     }
 
-    @Test func windowControllerRefreshesAuthStateOnInitialLoad() async {
+    @Test func windowControllerDoesNotRefreshAuthStateBeforeStoreStart() async {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -224,10 +224,9 @@ struct CodexReviewUITests {
         let store = CodexReviewStore(backend: backend)
         let windowController = ReviewMonitorWindowController(store: store)
         defer { windowController.window?.close() }
+        await Task.yield()
 
-        await backend.waitForRefreshAuthStateCallCount(1)
-
-        #expect(backend.refreshAuthStateCallCount() == 1)
+        #expect(backend.refreshAuthStateCallCount() == 0)
     }
 
     @Test func windowControllerSwitchesToSignInViewAfterLogout() async throws {
@@ -316,7 +315,7 @@ struct CodexReviewUITests {
         #expect(abs(beforeSize.height - afterSize.height) < 0.5)
     }
 
-    @Test func windowControllerSwitchesToSignInViewAfterAuthFailure() async throws {
+    @Test func windowControllerKeepsSplitViewAfterAuthFailure() async throws {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -329,10 +328,10 @@ struct CodexReviewUITests {
         defer { window.close() }
 
         store.auth.updateState(.failed("Authentication failed."))
-        try await waitForDisplayedContentKind(harness.windowController, .signInView)
+        await Task.yield()
 
-        #expect(window.toolbar == nil)
-        #expect(SignInView(store: store).descriptionText == "Authentication failed.")
+        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
+        #expect(window.toolbar != nil)
     }
 
     @Test func windowControllerKeepsSignInViewPresentedWhileAuthenticating() async throws {

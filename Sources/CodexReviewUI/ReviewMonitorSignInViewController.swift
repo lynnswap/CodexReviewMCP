@@ -6,7 +6,7 @@ import SwiftUI
 @available(macOS 26.0, *)
 @MainActor
 final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
-    var onAuthenticationStateChanged: (@MainActor (Bool) -> Void)?
+    var onAuthenticationStateChanged: (@MainActor (CodexReviewAuthModel.State) -> Void)?
 
     private let auth: CodexReviewAuthModel
     private var observationHandles: Set<ObservationHandle> = []
@@ -32,7 +32,7 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
             guard let self else {
                 return
             }
-            self.onAuthenticationStateChanged?(state.isAuthenticated)
+            self.onAuthenticationStateChanged?(state)
         }
         .store(in: &observationHandles)
 
@@ -40,6 +40,6 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
     }
 
     private func emitCurrentState() {
-        onAuthenticationStateChanged?(auth.state.isAuthenticated)
+        onAuthenticationStateChanged?(auth.state)
     }
 }
