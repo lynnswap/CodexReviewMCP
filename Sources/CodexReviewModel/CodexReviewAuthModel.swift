@@ -51,6 +51,17 @@ public final class CodexReviewAuthModel {
             State(progress: progress)
         }
 
+        public static func signingIn(
+            _ progress: Progress,
+            preserving previous: State
+        ) -> State {
+            State(
+                isAuthenticated: previous.isAuthenticated,
+                accountID: previous.accountID,
+                progress: progress
+            )
+        }
+
         public static func failed(
             _ message: String,
             isAuthenticated: Bool = false,

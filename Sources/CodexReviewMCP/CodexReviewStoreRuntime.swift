@@ -1397,7 +1397,12 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         do {
             try await authManager.beginAuthentication { state in
                 await MainActor.run {
-                    auth.updateState(state)
+                    if let progress = state.progress,
+                       priorState.isAuthenticated {
+                        auth.updateState(.signingIn(progress, preserving: priorState))
+                    } else {
+                        auth.updateState(state)
+                    }
                 }
             }
             await recycleSharedAppServerAfterAuthChange()

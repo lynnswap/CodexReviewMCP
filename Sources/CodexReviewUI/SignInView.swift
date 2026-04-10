@@ -105,6 +105,9 @@ struct SignInView: View {
             defer {
                 isRestarting = false
             }
+            if store.auth.isAuthenticating {
+                await store.auth.cancelAuthentication()
+            }
             await store.restart()
         }
     }

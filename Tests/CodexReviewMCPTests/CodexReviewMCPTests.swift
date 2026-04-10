@@ -887,6 +887,43 @@ struct CodexReviewMCPTests {
         )
     }
 
+    @Test func reviewMonitorStorePreservesAccountMetadataWhileAuthenticatedRetryIsInProgress() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = BlockingLoginReviewAuthSession()
+        let authFactory = CountingReviewAuthSessionFactory(session: authSession)
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                try await authFactory.makeSession()
+            }
+        )
+        store.auth.updateState(
+            .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        await authSession.waitForLoginStart()
+
+        #expect(store.auth.isAuthenticating)
+        #expect(store.auth.isAuthenticated)
+        #expect(store.auth.accountID == "review@example.com")
+
+        await store.auth.cancelAuthentication()
+        _ = await beginTask.value
+    }
+
     @Test func reviewMonitorStorePreservesAuthenticatedStateWhenRetryAuthenticationFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager(

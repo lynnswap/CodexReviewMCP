@@ -2407,6 +2407,35 @@ struct CodexReviewUITests {
         #expect(store.serverState == .starting)
     }
 
+    @Test func signInViewRestartServerCancelsAuthenticationBeforeRestart() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(
+            shouldAutoStartEmbeddedServer: false,
+            initialAuthState: .signedOut
+        )
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authState: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            workspaces: []
+        )
+        let view = SignInView(store: store)
+
+        view.restartServer()
+        await backend.waitForCancelAuthenticationCallCount(1)
+        await backend.waitForStartCallCount(1)
+
+        #expect(backend.cancelAuthenticationCallCount() == 1)
+        #expect(backend.startCallCount() == 1)
+    }
+
     @Test func mcpServerUnavailableViewRestartServerUsesStoreRestartFlow() async {
         guard #available(macOS 26.0, *) else {
             return
@@ -2689,7 +2718,9 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer: Bool
     let initialAuthState: CodexReviewAuthModel.State
     private let startSignal = AsyncSignal()
+    private let cancelSignal = AsyncSignal()
     private var startCalls = 0
+    private var cancelCalls = 0
 
     init(
         shouldAutoStartEmbeddedServer: Bool = true,
@@ -2741,6 +2772,8 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
         _ = auth
+        cancelCalls += 1
+        await cancelSignal.signal()
     }
 
     func logout(auth: CodexReviewAuthModel) async {
@@ -2756,6 +2789,17 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
             return
         }
         await startSignal.wait(untilCount: count)
+    }
+
+    func cancelAuthenticationCallCount() -> Int {
+        cancelCalls
+    }
+
+    func waitForCancelAuthenticationCallCount(_ count: Int) async {
+        if cancelCalls >= count {
+            return
+        }
+        await cancelSignal.wait(untilCount: count)
     }
 }
 
