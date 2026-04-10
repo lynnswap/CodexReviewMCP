@@ -3,6 +3,23 @@ import CodexReviewModel
 
 @available(macOS 26.0, *)
 @MainActor
+private func configureReviewMonitorWindowBase(_ window: NSWindow) {
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.styleMask.insert(.fullSizeContentView)
+    window.toolbarStyle = .unified
+}
+
+@available(macOS 26.0, *)
+@MainActor
+private func configureReviewMonitorWindowForSplitPresentation(_ window: NSWindow) {
+    window.isMovableByWindowBackground = false
+    window.title = "Untitled"
+    window.subtitle = ""
+}
+
+@available(macOS 26.0, *)
+@MainActor
 public final class ReviewMonitorWindowController: NSWindowController {
     enum DisplayedContentKind: Equatable, Sendable {
         case splitView
@@ -42,10 +59,7 @@ public final class ReviewMonitorWindowController: NSWindowController {
         super.init(window: window)
 
         window.isReleasedWhenClosed = false
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.styleMask.insert(.fullSizeContentView)
-        window.toolbarStyle = .unified
+        configureReviewMonitorWindowBase(window)
         window.setFrameAutosaveName(Self.frameAutosaveName)
 
         signInViewController.onAuthenticationStateChanged = { [weak self] isAuthenticated in
@@ -105,9 +119,7 @@ public final class ReviewMonitorWindowController: NSWindowController {
     }
 
     private func showSplitView(in window: NSWindow) {
-        window.isMovableByWindowBackground = false
-        window.title = "Untitled"
-        window.subtitle = ""
+        configureReviewMonitorWindowForSplitPresentation(window)
         splitViewController.attach(to: window)
         rootContentViewController.setContentViewController(
             splitViewController,
@@ -134,12 +146,25 @@ public final class ReviewMonitorWindowController: NSWindowController {
 
 @available(macOS 26.0, *)
 @MainActor
+private final class ReviewMonitorWindowHostView: NSVisualEffectView {
+    var onWindowChanged: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChanged?(window)
+    }
+}
+
+@available(macOS 26.0, *)
+@MainActor
 private final class ReviewMonitorWindowContentViewController: NSViewController {
     private weak var displayedContentViewController: NSViewController?
     private var displayedContentConstraints: [NSLayoutConstraint] = []
     private var embeddedConstraintsByControllerID: [ObjectIdentifier: [NSLayoutConstraint]] = [:]
+    private let onWindowChanged: ((NSWindow?) -> Void)?
 
-    init() {
+    init(onWindowChanged: ((NSWindow?) -> Void)? = nil) {
+        self.onWindowChanged = onWindowChanged
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -149,10 +174,11 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
     }
 
     override func loadView() {
-        let backgroundView = NSVisualEffectView(frame: .zero)
+        let backgroundView = ReviewMonitorWindowHostView(frame: .zero)
         backgroundView.material = .underWindowBackground
         backgroundView.blendingMode = .behindWindow
         backgroundView.state = .active
+        backgroundView.onWindowChanged = onWindowChanged
         view = backgroundView
     }
 
@@ -252,7 +278,15 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
     store.auth.updateState(authState)
     let splitViewController = ReviewMonitorSplitViewController(store: store)
     splitViewController.loadViewIfNeeded()
-    let contentViewController = ReviewMonitorWindowContentViewController()
+    let contentViewController = ReviewMonitorWindowContentViewController { window in
+        guard let window else {
+            splitViewController.detachFromWindow()
+            return
+        }
+        configureReviewMonitorWindowBase(window)
+        configureReviewMonitorWindowForSplitPresentation(window)
+        splitViewController.attach(to: window)
+    }
     contentViewController.loadViewIfNeeded()
     contentViewController.setContentViewController(
         splitViewController,

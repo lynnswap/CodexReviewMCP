@@ -153,6 +153,27 @@ struct CodexReviewUITests {
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
     }
 
+    @Test func previewContentViewControllerConfiguresAttachedWindowLikeSplitPresentation() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let viewController = makeReviewMonitorPreviewContentViewControllerForPreview()
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        window.layoutIfNeeded()
+
+        #expect(window.toolbar != nil)
+        #expect(window.styleMask.contains(.fullSizeContentView))
+        #expect(window.titleVisibility == .visible)
+        #expect(window.titlebarAppearsTransparent)
+        #expect(window.titlebarSeparatorStyle == .line)
+        #expect(window.isMovableByWindowBackground == false)
+        #expect(window.backgroundColor == .clear)
+        #expect(window.isOpaque == false)
+    }
+
     @Test func windowControllerUsesSeededAuthenticatedStateOnFirstPresentation() {
         guard #available(macOS 26.0, *) else {
             return

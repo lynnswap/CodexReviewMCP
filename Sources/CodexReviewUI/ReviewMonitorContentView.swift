@@ -22,6 +22,7 @@ private struct ReviewMonitorPreviewView: NSViewControllerRepresentable {
 @available(macOS 26.0, *)
 #Preview("Normal") {
     ReviewMonitorPreviewView()
+        .ignoresSafeArea()
 }
 
 @available(macOS 26.0, *)
@@ -29,5 +30,6 @@ private struct ReviewMonitorPreviewView: NSViewControllerRepresentable {
     ReviewMonitorPreviewView(
         serverState: .failed("The embedded server stopped responding.")
     )
+    .ignoresSafeArea()
 }
 #endif
