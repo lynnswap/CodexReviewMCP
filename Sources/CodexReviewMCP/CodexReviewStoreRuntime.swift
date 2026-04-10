@@ -1363,6 +1363,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func beginAuthentication(auth: CodexReviewAuthModel) async {
         authRefreshTask?.cancel()
         authRefreshTask = nil
+        let priorState = auth.state
         do {
             try await authManager.beginAuthentication { state in
                 await MainActor.run {
@@ -1371,11 +1372,31 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             }
             await recycleSharedAppServerAfterAuthChange()
         } catch ReviewAuthError.cancelled {
-            auth.updateState(.signedOut)
+            auth.updateState(priorState.isAuthenticated ? priorState : .signedOut)
         } catch let error as ReviewAuthError {
-            auth.updateState(.failed(error.errorDescription ?? "Authentication failed."))
+            if priorState.isAuthenticated {
+                auth.updateState(
+                    .failed(
+                        error.errorDescription ?? "Authentication failed.",
+                        isAuthenticated: true,
+                        accountID: priorState.accountID
+                    )
+                )
+            } else {
+                auth.updateState(.failed(error.errorDescription ?? "Authentication failed."))
+            }
         } catch {
-            auth.updateState(.failed(error.localizedDescription))
+            if priorState.isAuthenticated {
+                auth.updateState(
+                    .failed(
+                        error.localizedDescription,
+                        isAuthenticated: true,
+                        accountID: priorState.accountID
+                    )
+                )
+            } else {
+                auth.updateState(.failed(error.localizedDescription))
+            }
         }
     }
 
@@ -1421,6 +1442,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 )
             } else {
                 auth.updateState(resolvedState)
+                await recycleSharedAppServerAfterAuthChange()
             }
             return
         }

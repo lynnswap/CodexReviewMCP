@@ -702,8 +702,8 @@ struct CodexReviewMCPTests {
         await store.auth.logout()
 
         #expect(store.auth.state == .signedOut)
-        #expect(await manager.prepareCount() == 1)
-        #expect(await manager.shutdownCount() == 0)
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
 
         await store.stop()
     }
@@ -803,6 +803,88 @@ struct CodexReviewMCPTests {
         #expect(await authTransport.completeParams() == nil)
         #expect(performer.cancelCallCount == 1)
         #expect(store.auth.state == CodexReviewAuthModel.State.signedOut)
+    }
+
+    @Test func reviewMonitorStorePreservesAuthenticatedStateWhenRetryAuthenticationIsCancelled() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .failure(ReviewAuthError.cancelled)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+        store.auth.updateState(
+            .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+
+        await store.auth.beginAuthentication()
+
+        #expect(
+            store.auth.state == .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+    }
+
+    @Test func reviewMonitorStorePreservesAuthenticatedStateWhenRetryAuthenticationFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransport: AuthCapableAppServerSessionTransport(
+                startLoginBehavior: .legacyBrowser
+            )
+        )
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+        store.auth.updateState(
+            .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+
+        await store.auth.beginAuthentication()
+
+        #expect(
+            store.auth.state == .failed(
+                "Native authentication is unavailable. Update the app-server and try again.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
     }
 
     @Test func reviewMonitorStoreFailsNativeAuthenticationWhenCompleteEndpointIsUnsupported() async throws {
