@@ -20,7 +20,8 @@ struct SignInView: View {
                 .fontWidth(.compressed)
                 .fontWeight(.semibold)
                 .scenePadding(.bottom)
-            Button {
+            
+            Button(role:store.auth.isAuthenticating ? .cancel :.confirm) {
                 startAuthentication()
             } label: {
                 LabeledContent {
@@ -29,14 +30,15 @@ struct SignInView: View {
                             .controlSize(.small)
                     }
                 } label: {
-                    Text("Sign in with ChatGPT")
+                    Text(store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT")
                 }
                 .padding(.vertical, 4)
             }
-            .disabled(canStartAuthentication == false)
             .buttonSizing(.flexible)
             .buttonBorderShape(.capsule)
             .buttonStyle(.glassProminent)
+            .tint(store.auth.isAuthenticating ? .clear : .none)
+            
         } description: {
             if let descriptionText {
                 Text(descriptionText)
@@ -65,7 +67,48 @@ struct SignInView: View {
 }
 
 @available(macOS 26.0, *)
-#Preview {
-    let store = ReviewMonitorPreviewContent.makeStore()
-    SignInView(store: store)
+struct AuthenticationButtonStyle: PrimitiveButtonStyle {
+    let isAuthenticating: Bool
+
+    @ViewBuilder
+    func makeBody(configuration: Configuration) -> some View {
+        if isAuthenticating {
+            Button(configuration)
+                .buttonStyle(.glass)
+        } else {
+            Button(configuration)
+                .buttonStyle(.glassProminent)
+        }
+    }
 }
+#if DEBUG
+@available(macOS 26.0, *)
+#Preview("Signed Out") {
+    SignInView(store: makeSignInPreviewStore())
+}
+
+@available(macOS 26.0, *)
+#Preview("Authenticating") {
+    SignInView(store: makeAuthenticatingSignInPreviewStore())
+}
+
+@MainActor
+func makeSignInPreviewStore() -> CodexReviewStore {
+    ReviewMonitorPreviewContent.makeStore()
+}
+
+@MainActor
+func makeAuthenticatingSignInPreviewStore() -> CodexReviewStore {
+    let store = makeSignInPreviewStore()
+    store.auth.updateState(
+        .signingIn(
+            .init(
+                title: "Sign in with ChatGPT",
+                detail: "Open the browser to continue.",
+                browserURL: "https://auth.openai.com/oauth/authorize"
+            )
+        )
+    )
+    return store
+}
+#endif
