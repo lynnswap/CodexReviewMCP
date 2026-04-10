@@ -1338,7 +1338,17 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             auth.updateState(state)
         } catch {
             if auth.isAuthenticating == false {
-                auth.updateState(.signedOut)
+                if auth.isAuthenticated {
+                    auth.updateState(
+                        .failed(
+                            error.localizedDescription,
+                            isAuthenticated: true,
+                            accountID: auth.accountID
+                        )
+                    )
+                } else {
+                    auth.updateState(.signedOut)
+                }
             }
         }
     }
@@ -1375,14 +1385,46 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             auth.updateState(state)
             await recycleSharedAppServerAfterAuthChange()
         } catch let error as ReviewAuthError {
-            auth.updateState(
-                .failed(error.errorDescription ?? "Failed to sign out.")
+            await resolveLogoutFailureState(
+                auth: auth,
+                message: error.errorDescription ?? "Failed to sign out."
             )
         } catch {
-            auth.updateState(
-                .failed(error.localizedDescription)
+            await resolveLogoutFailureState(
+                auth: auth,
+                message: error.localizedDescription
             )
         }
+    }
+
+    private func resolveLogoutFailureState(
+        auth: CodexReviewAuthModel,
+        message: String
+    ) async {
+        let priorAccountID = auth.accountID
+        let priorIsAuthenticated = auth.isAuthenticated
+        if let resolvedState = try? await authManager.loadState() {
+            if resolvedState.isAuthenticated {
+                auth.updateState(
+                    .failed(
+                        message,
+                        isAuthenticated: true,
+                        accountID: resolvedState.accountID
+                    )
+                )
+            } else {
+                auth.updateState(resolvedState)
+            }
+            return
+        }
+
+        auth.updateState(
+            .failed(
+                message,
+                isAuthenticated: priorIsAuthenticated,
+                accountID: priorAccountID
+            )
+        )
     }
 
     private func makeServer(store: CodexReviewStore) -> ReviewMCPHTTPServer {

@@ -118,6 +118,38 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func startingStoreKeepsSeededAuthWhenBackgroundRefreshFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = MockAppServerManager { _ in .success() }
+        let authSession = FailingReadAccountReviewAuthSession(message: "refresh failed")
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let authStateProbe = ObservableValueProbe { store.auth.state }
+        defer { authStateProbe.cancel() }
+
+        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        await store.start()
+
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .failed(
+                "refresh failed",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        }
+
+        await store.stop()
+    }
+
     @Test func diagnosticsSnapshotIncludesServerAndCompletedReviewState() async throws {
         let environment = try isolatedHomeEnvironment()
         let diagnosticsDirectoryURL = try makeTemporaryDirectory()
@@ -649,7 +681,7 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func logoutFailurePublishesSignedOutAuthError() async throws {
+    @Test func logoutFailureUsesResolvedSignedOutState() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = FailingLogoutReviewAuthSession()
@@ -669,7 +701,40 @@ struct CodexReviewMCPTests {
         store.auth.updateState(.signedIn(accountID: "review@example.com"))
         await store.auth.logout()
 
-        #expect(store.auth.state == .failed("Failed to sign out."))
+        #expect(store.auth.state == .signedOut)
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 0)
+
+        await store.stop()
+    }
+
+    @Test func logoutFailurePreservesResolvedAuthenticatedState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = LogoutFailureWithPersistedAuthReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        await store.auth.logout()
+
+        #expect(
+            store.auth.state == .failed(
+                "Failed to sign out.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
         #expect(await manager.prepareCount() == 1)
         #expect(await manager.shutdownCount() == 0)
 
@@ -1735,6 +1800,40 @@ private actor ImmediateReadAccountReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
+private actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
+    private let message: String
+
+    init(message: String) {
+        self.message = message
+    }
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        throw NSError(
+            domain: "CodexReviewMCPTests.FailingReadAccountReviewAuthSession",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+}
+
 private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
@@ -1818,6 +1917,35 @@ private actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
 private actor FailingLogoutReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {
+        throw ReviewAuthError.logoutFailed("Failed to sign out.")
+    }
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+}
+
+private actor LogoutFailureWithPersistedAuthReviewAuthSession: ReviewAuthSession {
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        .init(
+            account: .chatGPT(email: "review@example.com", planType: "pro"),
+            requiresOpenAIAuth: false
+        )
     }
 
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
