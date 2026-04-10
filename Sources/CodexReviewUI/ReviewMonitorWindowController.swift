@@ -200,6 +200,22 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
 #if DEBUG
 @available(macOS 26.0, *)
 @MainActor
+func makeReviewMonitorPreviewContentViewController() -> NSViewController {
+    let store = ReviewMonitorPreviewContent.makeStore()
+    store.auth.updateState(.signedIn(accountID: "review@example.com"))
+    let splitViewController = ReviewMonitorSplitViewController(store: store)
+    splitViewController.loadViewIfNeeded()
+    let contentViewController = ReviewMonitorWindowContentViewController()
+    contentViewController.loadViewIfNeeded()
+    contentViewController.setContentViewController(
+        splitViewController,
+        animated: false
+    )
+    return contentViewController
+}
+
+@available(macOS 26.0, *)
+@MainActor
 extension ReviewMonitorWindowController {
     var splitViewControllerForTesting: ReviewMonitorSplitViewController {
         splitViewController

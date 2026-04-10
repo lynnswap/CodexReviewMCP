@@ -5,20 +5,20 @@ import CodexReviewModel
 @available(macOS 26.0, *)
 @MainActor
 private struct ReviewMonitorPreviewView: NSViewControllerRepresentable {
-    let store: CodexReviewStore
 
-    func makeNSViewController(context: Context) -> ReviewMonitorSplitViewController {
-        ReviewMonitorSplitViewController(store: store)
+    func makeNSViewController(context: Context) -> NSViewController {
+        makeReviewMonitorPreviewContentViewController()
     }
 
-    func updateNSViewController(_ nsViewController: ReviewMonitorSplitViewController, context: Context) {
+    func updateNSViewController(_ nsViewController: NSViewController, context: Context) {
     }
 }
 
+@available(macOS 26.0, *)
 #Preview {
-    if #available(macOS 26.0, *) {
-        ReviewMonitorPreviewView(store: ReviewMonitorPreviewContent.makeStore())
-            .frame(height:1000)
-    }
+    ReviewMonitorPreviewView()
+        .ignoresSafeArea()
+        .presentedWindowStyle(.automatic)
+        .presentedWindowToolbarStyle(.unified)
 }
 #endif
