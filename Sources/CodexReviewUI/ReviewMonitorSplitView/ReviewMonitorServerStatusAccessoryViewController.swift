@@ -26,10 +26,13 @@ struct StatusView: View {
     var body: some View {
         Menu {
             Label(accountDisplayName, systemImage: "person.circle.fill")
-            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
-                Task {
-                    await store.auth.logout()
+            if canRetryAuthentication {
+                Button("Sign in with ChatGPT", systemImage: "person.badge.key") {
+                    performRetryAuthentication()
                 }
+            }
+            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+                performLogout()
             }
             .disabled(isSignedIn == false)
         } label: {
@@ -52,6 +55,22 @@ struct StatusView: View {
 
     var isSignedIn: Bool {
         store.auth.isAuthenticated
+    }
+
+    var canRetryAuthentication: Bool {
+        store.auth.errorMessage != nil && store.auth.isAuthenticating == false
+    }
+
+    func performRetryAuthentication() {
+        Task {
+            await store.auth.beginAuthentication()
+        }
+    }
+
+    func performLogout() {
+        Task {
+            await store.auth.logout()
+        }
     }
 }
 

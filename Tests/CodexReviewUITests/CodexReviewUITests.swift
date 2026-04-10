@@ -2279,6 +2279,29 @@ struct CodexReviewUITests {
         #expect(backend.beginAuthenticationCallCount() == 0)
     }
 
+    @Test func statusViewStartsAuthenticationFromRetryAction() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = AuthActionBackend()
+        let store = CodexReviewStore(backend: backend)
+        store.auth.updateState(
+            .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+        let view = StatusView(store: store)
+
+        #expect(view.canRetryAuthentication)
+
+        view.performRetryAuthentication()
+        await backend.waitForBeginAuthenticationCallCount(1)
+
+        #expect(backend.beginAuthenticationCallCount() == 1)
+    }
+
     @Test func signInViewDescriptionTextReflectsAuthState() {
         guard #available(macOS 26.0, *) else {
             return

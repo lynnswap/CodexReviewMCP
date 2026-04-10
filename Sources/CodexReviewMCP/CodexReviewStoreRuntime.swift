@@ -885,6 +885,13 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         else {
             throw ReviewAuthError.loginFailed("Authentication did not provide a valid authorization URL.")
         }
+        if isClosed {
+            do {
+                try await sharedSession.cancelLogin(loginID: loginID)
+            } catch {
+            }
+            throw ReviewAuthError.cancelled
+        }
         guard let callbackScheme = nativeWebAuthentication?.callbackURLScheme.nilIfEmpty else {
             do {
                 try await sharedSession.cancelLogin(loginID: loginID)
