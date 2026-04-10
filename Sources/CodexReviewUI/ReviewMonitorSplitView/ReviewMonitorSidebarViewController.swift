@@ -134,6 +134,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         outlineView.contextMenuProvider = { [weak self] point in
             self?.makeContextMenu(at: point)
         }
+        outlineView.draggingExitedHandler = { [weak self] in
+            self?.clearDropTarget()
+        }
 
         scrollView.documentView = outlineView
     }
@@ -506,6 +509,10 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         return try? JSONDecoder().decode(SidebarDragPayload.self, from: data)
     }
 
+    private func clearDropTarget() {
+        outlineView.setDropItem(nil, dropChildIndex: NSOutlineViewDropOnItemIndex)
+    }
+
     private func resolvedDrop(
         for payload: SidebarDragPayload,
         draggingInfo: (any NSDraggingInfo)? = nil,
@@ -792,6 +799,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
                 proposedChildIndex: index
               )
         else {
+            clearDropTarget()
             return []
         }
 
@@ -805,6 +813,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         item: Any?,
         childIndex index: Int
     ) -> Bool {
+        defer {
+            clearDropTarget()
+        }
         guard let payload = dragPayload(from: info),
               let resolvedDrop = resolvedDrop(
                 for: payload,
@@ -1138,6 +1149,14 @@ extension ReviewMonitorSidebarViewController {
         return applyResolvedDrop(resolvedDrop)
     }
 
+    func jobDropIsRejectedForTesting(_ job: CodexReviewJob) -> Bool {
+        resolvedDrop(
+            for: .job(id: job.id, cwd: job.cwd),
+            proposedItem: nil,
+            proposedChildIndex: NSOutlineViewDropOnItemIndex
+        ) == nil
+    }
+
     private func blankPointForTesting() -> NSPoint {
         let blankY: CGFloat
         if outlineView.numberOfRows > 0 {
@@ -1177,6 +1196,7 @@ extension ReviewMonitorSidebarViewController {
 private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
     var inertRowEvaluator: ((Int) -> Bool)?
     var contextMenuProvider: ((NSPoint) -> NSMenu?)?
+    var draggingExitedHandler: (() -> Void)?
     private var isPresentingContextMenu = false
     private weak var contextMenuFirstResponder: NSResponder?
     private var previousContextMenu: NSMenu?
@@ -1205,6 +1225,11 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
         if isPresentingContextMenu {
             endContextMenuPresentation()
         }
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        draggingExitedHandler?()
+        super.draggingExited(sender)
     }
 
     override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {

@@ -836,11 +836,17 @@ final class SystemReviewMonitorWebAuthenticationPerformer: NSObject, ReviewMonit
 
 @available(macOS 15.0, *)
 actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
+    private enum NotificationTerminalState {
+        case finished
+        case failed(any Error)
+    }
+
     private let sharedSession: SharedAppServerReviewAuthSession
     private let nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration
     private let webAuthenticationPerformer: any ReviewMonitorWebAuthenticationPerforming
     private var notificationSubscribers: [UUID: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation] = [:]
     private var bufferedNotifications: [AppServerServerNotification] = []
+    private var notificationTerminalState: NotificationTerminalState?
     private var relayTask: Task<Void, Never>?
     private var relayCancellation: (@Sendable () async -> Void)?
     private var activeLoginID: String?
@@ -910,13 +916,16 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             return
         }
         authenticationTask?.cancel()
-        authenticationTask = nil
         await MainActor.run {
             webAuthenticationPerformer.cancel()
         }
         activeLoginID = nil
-        try await sharedSession.cancelLogin(loginID: loginID)
-        finishNotificationSubscribers(failing: nil)
+        finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
+        authenticationTask = nil
+        do {
+            try await sharedSession.cancelLogin(loginID: loginID)
+        } catch {
+        }
     }
 
     func logout() async throws {
@@ -925,6 +934,14 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
 
     func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        if let notificationTerminalState {
+            for notification in bufferedNotifications {
+                continuation.yield(notification)
+            }
+            finishNotificationContinuation(continuation, with: notificationTerminalState)
+            return .init(stream: stream, cancel: {})
+        }
+
         let subscriberID = UUID()
         notificationSubscribers[subscriberID] = continuation
         for notification in bufferedNotifications {
@@ -943,12 +960,18 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         )
     }
 
+    func waitForAuthenticationTaskCompletion() async {
+        _ = await authenticationTask?.result
+    }
+
     func close() async {
         guard isClosed == false else {
             return
         }
         isClosed = true
+        activeLoginID = nil
         authenticationTask?.cancel()
+        finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
         authenticationTask = nil
         await MainActor.run {
             webAuthenticationPerformer.cancel()
@@ -960,7 +983,6 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         relayTask?.cancel()
         relayTask = nil
         await sharedSession.close()
-        finishNotificationSubscribers(failing: nil)
     }
 
     private func startRelayIfNeeded() async throws {
@@ -982,6 +1004,9 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
     }
 
     private func handleNotification(_ notification: AppServerServerNotification) {
+        guard notificationTerminalState == nil else {
+            return
+        }
         bufferedNotifications.append(notification)
         switch notification {
         case .accountLoginCompleted(let completed):
@@ -1017,12 +1042,12 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             return
         }
         activeLoginID = nil
-        authenticationTask = nil
+        finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
         do {
             try await sharedSession.cancelLogin(loginID: loginID)
         } catch {
         }
-        finishNotificationSubscribers(failing: nil)
+        authenticationTask = nil
     }
 
     private func handleAuthenticationFailure(for loginID: String, error: Error) async {
@@ -1030,14 +1055,14 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             return
         }
         activeLoginID = nil
-        authenticationTask = nil
+        finishNotificationSubscribers(
+            failing: error as? ReviewAuthError ?? ReviewAuthError.loginFailed(error.localizedDescription)
+        )
         do {
             try await sharedSession.cancelLogin(loginID: loginID)
         } catch {
         }
-        finishNotificationSubscribers(
-            failing: error as? ReviewAuthError ?? ReviewAuthError.loginFailed(error.localizedDescription)
-        )
+        authenticationTask = nil
     }
 
     private func finishRelay(error: Error?) {
@@ -1054,15 +1079,20 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         notificationSubscribers.removeValue(forKey: id)
     }
 
-    private func finishNotificationSubscribers(failing error: Error?) {
+    private func finishNotificationSubscribers(
+        failing error: Error?,
+        discardBufferedNotifications: Bool = false
+    ) {
+        if notificationTerminalState == nil {
+            notificationTerminalState = makeNotificationTerminalState(failing: error)
+        }
+        if discardBufferedNotifications {
+            bufferedNotifications.removeAll(keepingCapacity: false)
+        }
         let subscribers = notificationSubscribers.values
         notificationSubscribers.removeAll()
         for continuation in subscribers {
-            if let error {
-                continuation.finish(throwing: error)
-            } else {
-                continuation.finish()
-            }
+            finishNotificationContinuation(continuation, with: notificationTerminalState!)
         }
     }
 
@@ -1070,6 +1100,28 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         if isClosed {
             throw ReviewAuthError.loginFailed("Authentication session is closed.")
         }
+    }
+
+    private func finishNotificationContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation,
+        with terminalState: NotificationTerminalState
+    ) {
+        switch terminalState {
+        case .finished:
+            continuation.finish()
+        case .failed(let error):
+            continuation.finish(throwing: error)
+        }
+    }
+
+    private func makeNotificationTerminalState(failing error: Error?) -> NotificationTerminalState {
+        guard let error else {
+            return .finished
+        }
+        if error is CancellationError {
+            return .finished
+        }
+        return .failed(error)
     }
 }
 

@@ -16,6 +16,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     }
 
     private let documentContainerView = DocumentContainerView()
+    private let documentHeightConstraint: NSLayoutConstraint
     let textView: NSTextView
     private let storage: NSTextStorage
     private let layoutManager: NSLayoutManager
@@ -56,7 +57,9 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.translatesAutoresizingMaskIntoConstraints = false
+        let documentHeightConstraint = documentContainerView.heightAnchor.constraint(equalToConstant: 1)
 
+        self.documentHeightConstraint = documentHeightConstraint
         self.storage = storage
         self.layoutManager = layoutManager
         self.textContainer = textContainer
@@ -67,16 +70,20 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         borderType = .noBorder
         hasVerticalScroller = true
         autohidesScrollers = true
-        
-        documentContainerView.frame = .zero
+
+        documentContainerView.translatesAutoresizingMaskIntoConstraints = false
         documentContainerView.addSubview(textView)
+        documentView = documentContainerView
         NSLayoutConstraint.activate([
+            documentContainerView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            documentContainerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            documentContainerView.widthAnchor.constraint(equalTo: contentView.widthAnchor),
+            documentHeightConstraint,
             textView.topAnchor.constraint(equalTo: documentContainerView.topAnchor),
             textView.leadingAnchor.constraint(equalTo: documentContainerView.leadingAnchor),
             textView.trailingAnchor.constraint(equalTo: documentContainerView.trailingAnchor),
             textView.bottomAnchor.constraint(equalTo: documentContainerView.bottomAnchor),
         ])
-        documentView = documentContainerView
         textView.textContainerInset = NSSize(width: 4, height: 6)
         textView.isEditable = false
         textView.isSelectable = true
@@ -98,7 +105,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         textView.writingToolsBehavior = NSWritingToolsBehavior.none
         textView.setAccessibilityIdentifier("review-monitor.activity-log")
         textView.font = baseFont
-        updateDocumentGeometry()
+        updateDocumentHeightConstraint()
     }
 
     @available(*, unavailable)
@@ -106,10 +113,10 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         nil
     }
 
-    override func layout() {
+    override func tile() {
         let shouldPreserveBottom = displayedText.isEmpty == false && isPinnedToBottom()
-        super.layout()
-        updateDocumentGeometry()
+        super.tile()
+        updateDocumentHeightConstraint()
         if shouldPreserveBottom {
             scrollToBottom(countAsAutoFollow: false)
         }
@@ -141,7 +148,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         let shouldAutoFollow = isPinnedToBottom()
         appendToTextStorage(suffix)
         displayedText += suffix
-        updateDocumentGeometry()
+        updateDocumentHeightConstraint()
         layoutSubtreeIfNeeded()
 #if DEBUG
         appendCount += 1
@@ -166,7 +173,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
 
         replaceAllText(with: text)
         displayedText = text
-        updateDocumentGeometry()
+        updateDocumentHeightConstraint()
         layoutSubtreeIfNeeded()
 #if DEBUG
         reloadCount += 1
@@ -203,28 +210,16 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         return String(text[suffixStart...])
     }
 
-    private func updateDocumentGeometry() {
-        let targetWidth = max(0, contentSize.width)
-        if documentContainerView.frame.width != targetWidth {
-            documentContainerView.frame = NSRect(
-                origin: documentContainerView.frame.origin,
-                size: NSSize(width: targetWidth, height: documentContainerView.frame.height)
-            )
-            documentContainerView.layoutSubtreeIfNeeded()
-        }
-
+    private func updateDocumentHeightConstraint() {
+        contentView.layoutSubtreeIfNeeded()
+        documentContainerView.layoutSubtreeIfNeeded()
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
         let textHeight = ceil(usedRect.height + textView.textContainerInset.height * 2)
-        let targetSize = NSSize(
-            width: targetWidth,
-            height: max(contentSize.height, textHeight)
-        )
-
-        if documentContainerView.frame.size != targetSize {
-            documentContainerView.frame = NSRect(origin: .zero, size: targetSize)
+        let targetHeight = max(contentView.bounds.height, textHeight)
+        if abs(documentHeightConstraint.constant - targetHeight) > 0.5 {
+            documentHeightConstraint.constant = targetHeight
         }
-
         documentContainerView.layoutSubtreeIfNeeded()
     }
 

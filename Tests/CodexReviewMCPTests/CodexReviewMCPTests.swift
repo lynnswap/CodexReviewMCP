@@ -740,6 +740,70 @@ struct CodexReviewMCPTests {
         #expect(store.auth.state == CodexReviewAuthModel.State.signedOut)
     }
 
+    @Test func nativeAuthSessionFinishesLateSubscribersAfterCancellation() async throws {
+        let transport = AuthCapableAppServerSessionTransport()
+        let session = NativeWebAuthenticationReviewSession(
+            sharedSession: SharedAppServerReviewAuthSession(transport: transport),
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: FakeReviewMonitorWebAuthenticationPerformer(
+                result: .failure(ReviewAuthError.cancelled)
+            )
+        )
+        defer { Task { await session.close() } }
+
+        _ = try await session.startLogin(.chatGPT)
+        await session.waitForAuthenticationTaskCompletion()
+
+        let subscription = await session.notificationStream()
+        defer { Task { await subscription.cancel() } }
+
+        try await withTestTimeout {
+            for try await _ in subscription.stream {
+                Issue.record("Expected late native-auth subscribers to observe terminal cancellation without buffered notifications.")
+            }
+        }
+    }
+
+    @Test func nativeAuthSessionFailsLateSubscribersAfterAuthenticationFailure() async throws {
+        let transport = AuthCapableAppServerSessionTransport()
+        let session = NativeWebAuthenticationReviewSession(
+            sharedSession: SharedAppServerReviewAuthSession(transport: transport),
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: FakeReviewMonitorWebAuthenticationPerformer(
+                result: .failure(
+                    NSError(
+                        domain: "CodexReviewMCPTests",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Native authentication failed."]
+                    )
+                )
+            )
+        )
+        defer { Task { await session.close() } }
+
+        _ = try await session.startLogin(.chatGPT)
+        await session.waitForAuthenticationTaskCompletion()
+
+        let subscription = await session.notificationStream()
+        defer { Task { await subscription.cancel() } }
+
+        await #expect(throws: ReviewAuthError.loginFailed("Native authentication failed.")) {
+            try await withTestTimeout {
+                for try await _ in subscription.stream {
+                    Issue.record("Expected late native-auth subscribers to fail before receiving notifications.")
+                }
+            }
+        }
+    }
+
     @Test func forceRestartStopsServerAndRecordedAppServerGroup() async throws {
         let endpointRecord = LiveEndpointRecord(
             url: "http://localhost:9417/mcp",

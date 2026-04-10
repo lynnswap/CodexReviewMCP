@@ -429,6 +429,53 @@ struct CodexReviewUITests {
         #expect(textViewFrame.height <= documentViewFrame.height + 0.5)
     }
 
+    @Test func detailLogExpandsAfterSidebarReopensFromCompactWidth() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-sidebar-width-regression",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            logText: Array(repeating: "Long line that should reflow across the widened detail pane.\n", count: 40).joined()
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 520, height: 420)
+        )
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        let transport = viewController.transportViewControllerForTesting
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        window.setContentSize(NSSize(width: 360, height: 420))
+        sidebarItem.isCollapsed = true
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        let compactDocumentWidth = transport.logDocumentViewFrameForTesting.width
+
+        sidebarItem.isCollapsed = false
+        window.setContentSize(NSSize(width: 960, height: 600))
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        await transport.flushMainQueueForTesting()
+
+        let expandedDocumentWidth = transport.logDocumentViewFrameForTesting.width
+        let expandedLogWidth = transport.logFrameForTesting.width
+
+        #expect(expandedDocumentWidth > compactDocumentWidth + 200)
+        #expect(abs(expandedDocumentWidth - expandedLogWidth) < 32)
+    }
+
     @Test func windowControllerDoesNotStartStoreWhenConstructed() {
         guard #available(macOS 26.0, *) else {
             return
@@ -691,6 +738,38 @@ struct CodexReviewUITests {
         }
 
         #expect(sidebar.workspaceDropIsRejectedForTesting(workspaceBeta, proposedJob: alphaJob))
+    }
+
+    @Test func jobDropOnBlankAreaIsRejected() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let firstJob = makeJob(
+            id: "job-blank-area-reject",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let secondJob = makeJob(
+            id: "job-blank-area-peer",
+            cwd: "/tmp/workspace-alpha",
+            status: .queued,
+            targetSummary: "Queued review"
+        )
+        let workspace = CodexReviewWorkspace(
+            cwd: "/tmp/workspace-alpha",
+            jobs: [firstJob, secondJob]
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [workspace]
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        #expect(sidebar.jobDropIsRejectedForTesting(firstJob))
     }
 
     @Test func jobDropReordersWithinWorkspaceAndPreservesSelection() {
