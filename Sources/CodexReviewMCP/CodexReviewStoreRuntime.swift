@@ -885,8 +885,15 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         else {
             throw ReviewAuthError.loginFailed("Authentication did not provide a valid authorization URL.")
         }
-        let callbackScheme = nativeWebAuthentication?.callbackURLScheme.nilIfEmpty
-            ?? nativeAuthenticationConfiguration.callbackScheme
+        guard let callbackScheme = nativeWebAuthentication?.callbackURLScheme.nilIfEmpty else {
+            do {
+                try await sharedSession.cancelLogin(loginID: loginID)
+            } catch {
+            }
+            throw ReviewAuthError.loginFailed(
+                "Native authentication is unavailable. Update the app-server and try again."
+            )
+        }
 
         activeLoginID = loginID
         let webAuthenticationPerformer = self.webAuthenticationPerformer
@@ -1032,11 +1039,49 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
                 loginID: loginID,
                 callbackURL: callbackURL.absoluteString
             )
+            try await ensureAuthenticationCompletionDelivered(loginID: loginID)
         } catch let error as AppServerResponseError where error.isUnsupportedMethod {
             throw ReviewAuthError.loginFailed(
                 "Authentication completion is unavailable. Update the app-server and try again."
             )
         }
+    }
+
+    private func ensureAuthenticationCompletionDelivered(loginID: String) async throws {
+        if bufferedNotifications.contains(where: { notification in
+            switch notification {
+            case .accountUpdated:
+                true
+            case .accountLoginCompleted(let completed):
+                completed.loginID?.nilIfEmpty == loginID && completed.success
+            default:
+                false
+            }
+        }) {
+            return
+        }
+
+        let account = try await sharedSession.readAccount(refreshToken: true)
+        guard case .chatGPT(_, let planType) = account.account else {
+            throw ReviewAuthError.loginFailed("Authentication failed. Sign in again.")
+        }
+        handleNotification(
+            .accountUpdated(
+                .init(
+                    authMode: .chatGPT,
+                    planType: planType
+                )
+            )
+        )
+        handleNotification(
+            .accountLoginCompleted(
+                .init(
+                    error: nil,
+                    loginID: loginID,
+                    success: true
+                )
+            )
+        )
     }
 
     private func handleAuthenticationCancellation(for loginID: String) async {

@@ -780,6 +780,71 @@ struct CodexReviewMCPTests {
         )
     }
 
+    @Test func reviewMonitorStoreFailsNativeAuthenticationWhenServerDoesNotAcknowledgeNativeCallback() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransport: AuthCapableAppServerSessionTransport(
+                startLoginBehavior: .legacyBrowser
+            )
+        )
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+
+        await store.auth.beginAuthentication()
+
+        #expect(performer.lastAuthenticateRequest == nil)
+        #expect(
+            store.auth.state == .failed(
+                "Native authentication is unavailable. Update the app-server and try again."
+            )
+        )
+    }
+
+    @Test func reviewMonitorStoreCompletesNativeAuthenticationWithoutFollowUpNotifications() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransport: AuthCapableAppServerSessionTransport(
+                completeLoginBehavior: .succeedWithoutNotifications
+            )
+        )
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+
+        await store.auth.beginAuthentication()
+
+        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+    }
+
     @Test func nativeAuthSessionFinishesLateSubscribersAfterCancellation() async throws {
         let transport = AuthCapableAppServerSessionTransport()
         let session = NativeWebAuthenticationReviewSession(
@@ -1990,8 +2055,14 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
 }
 
 private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
+    enum StartLoginBehavior {
+        case nativeCallback
+        case legacyBrowser
+    }
+
     enum CompleteLoginBehavior {
         case succeed
+        case succeedWithoutNotifications
         case unsupported
     }
 
@@ -2002,9 +2073,14 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         "account": NSNull(),
         "requiresOpenaiAuth": true,
     ]
+    private let startLoginBehavior: StartLoginBehavior
     private let completeLoginBehavior: CompleteLoginBehavior
 
-    init(completeLoginBehavior: CompleteLoginBehavior = .succeed) {
+    init(
+        startLoginBehavior: StartLoginBehavior = .nativeCallback,
+        completeLoginBehavior: CompleteLoginBehavior = .succeed
+    ) {
+        self.startLoginBehavior = startLoginBehavior
         self.completeLoginBehavior = completeLoginBehavior
     }
 
@@ -2027,20 +2103,34 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         case "account/read":
             return try decode(accountReadResponseObject, as: responseType)
         case "account/login/start":
-            return try decode(
-                [
-                    "type": "chatgpt",
-                    "loginId": "login-browser",
-                    "authUrl": "https://auth.openai.com/oauth/authorize?foo=bar",
-                    "nativeWebAuthentication": [
-                        "callbackUrlScheme": "lynnpd.codexreviewmonitor.auth",
+            switch startLoginBehavior {
+            case .nativeCallback:
+                return try decode(
+                    [
+                        "type": "chatgpt",
+                        "loginId": "login-browser",
+                        "authUrl": "https://auth.openai.com/oauth/authorize?foo=bar",
+                        "nativeWebAuthentication": [
+                            "callbackUrlScheme": "lynnpd.codexreviewmonitor.auth",
+                        ],
                     ],
-                ],
-                as: responseType
-            )
+                    as: responseType
+                )
+            case .legacyBrowser:
+                return try decode(
+                    [
+                        "type": "chatgpt",
+                        "loginId": "login-browser",
+                        "authUrl": "https://auth.openai.com/oauth/authorize?foo=bar",
+                    ],
+                    as: responseType
+                )
+            }
         case "account/login/complete":
             switch completeLoginBehavior {
             case .succeed:
+                break
+            case .succeedWithoutNotifications:
                 break
             case .unsupported:
                 throw AppServerResponseError(code: -32601, message: "method not found")
@@ -2054,16 +2144,18 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
                 ],
                 "requiresOpenaiAuth": false,
             ]
-            continuation?.yield(.accountUpdated(.init(authMode: .chatGPT, planType: "plus")))
-            continuation?.yield(
-                .accountLoginCompleted(
-                    .init(
-                        error: nil,
-                        loginID: recordedCompleteParams?.loginID,
-                        success: true
+            if completeLoginBehavior != .succeedWithoutNotifications {
+                continuation?.yield(.accountUpdated(.init(authMode: .chatGPT, planType: "plus")))
+                continuation?.yield(
+                    .accountLoginCompleted(
+                        .init(
+                            error: nil,
+                            loginID: recordedCompleteParams?.loginID,
+                            success: true
+                        )
                     )
                 )
-            )
+            }
             return try decode([:], as: responseType)
         case "account/login/cancel":
             return try decode([:], as: responseType)

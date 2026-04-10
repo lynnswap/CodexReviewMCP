@@ -936,6 +936,16 @@ package struct AppServerAccountLoginCompletedNotification: Decodable, Sendable, 
     package var loginID: String?
     package var success: Bool
 
+    package init(
+        error: String?,
+        loginID: String?,
+        success: Bool
+    ) {
+        self.error = error
+        self.loginID = loginID
+        self.success = success
+    }
+
     package enum CodingKeys: String, CodingKey {
         case error
         case loginID = "loginId"
@@ -964,6 +974,14 @@ package enum AppServerAccountAuthMode: Decodable, Sendable, Equatable {
 package struct AppServerAccountUpdatedNotification: Decodable, Sendable, Equatable {
     package var authMode: AppServerAccountAuthMode?
     package var planType: String?
+
+    package init(
+        authMode: AppServerAccountAuthMode?,
+        planType: String?
+    ) {
+        self.authMode = authMode
+        self.planType = planType
+    }
 }
 
 package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendable {
