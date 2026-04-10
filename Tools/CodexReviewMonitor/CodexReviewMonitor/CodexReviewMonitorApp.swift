@@ -140,6 +140,7 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private let launchModeProvider: () -> CodexReviewMonitorLaunchMode
     private let windowControllerFactory: (CodexReviewStore) -> NSWindowController
 
+    private lazy var launchMode = launchModeProvider()
     lazy var store = CodexReviewStore()
     lazy var lifecycle = CodexReviewMonitorLifecycleController(store: store)
     lazy var windowController = windowControllerFactory(store)
@@ -172,11 +173,15 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = notification
+        guard launchMode == .application else {
+            lifecycle.applicationDidFinishLaunching(launchMode: launchMode)
+            return
+        }
         NSApp.setActivationPolicy(.regular)
         showMainWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         lifecycle.applicationDidFinishLaunching(
-            launchMode: launchModeProvider()
+            launchMode: launchMode
         )
     }
 
@@ -186,6 +191,9 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         _ = sender
+        guard launchMode == .application else {
+            return false
+        }
         guard flag == false else {
             return false
         }

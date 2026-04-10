@@ -201,8 +201,25 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
 @available(macOS 26.0, *)
 @MainActor
 func makeReviewMonitorPreviewContentViewController() -> NSViewController {
-    let store = ReviewMonitorPreviewContent.makeStore()
-    store.auth.updateState(.signedIn(accountID: "review@example.com"))
+    makeReviewMonitorPreviewContentViewControllerForPreview()
+}
+
+@available(macOS 26.0, *)
+@MainActor
+func makeReviewMonitorPreviewContentViewControllerForPreview(
+    authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
+    serverState: CodexReviewServerState = .running
+) -> NSViewController {
+    let store: CodexReviewStore
+    switch serverState {
+    case .running:
+        store = ReviewMonitorPreviewContent.makeStore()
+    case .failed, .starting, .stopped:
+        store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.serverState = serverState
+        store.serverURL = nil
+    }
+    store.auth.updateState(authState)
     let splitViewController = ReviewMonitorSplitViewController(store: store)
     splitViewController.loadViewIfNeeded()
     let contentViewController = ReviewMonitorWindowContentViewController()

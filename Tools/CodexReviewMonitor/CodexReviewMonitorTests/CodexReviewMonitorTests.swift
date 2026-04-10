@@ -155,10 +155,10 @@ struct CodexReviewMonitorTests {
         #expect(responder.replies == [true])
     }
 
-    @Test func appDelegateCreatesSingleWindowControllerOnLaunch() {
+    @Test func appDelegateCreatesSingleWindowControllerOnApplicationLaunch() {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
-            launchModeProvider: { .xctest },
+            launchModeProvider: { .application },
             windowControllerFactory: { _ in
                 recorder.makeWindowController()
             }
@@ -173,10 +173,24 @@ struct CodexReviewMonitorTests {
         #expect(windowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 1)
     }
 
+    @Test func appDelegateSkipsWindowControllerCreationOnPreviewLaunch() {
+        let recorder = WindowControllerFactoryRecorder()
+        let delegate = CodexReviewMonitorAppDelegate(
+            launchModeProvider: { .preview },
+            windowControllerFactory: { _ in
+                recorder.makeWindowController()
+            }
+        )
+
+        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
+
+        #expect(recorder.makeCallCount == 0)
+    }
+
     @Test func appDelegateReusesSingleWindowControllerWhenReopening() {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
-            launchModeProvider: { .xctest },
+            launchModeProvider: { .application },
             windowControllerFactory: { _ in
                 recorder.makeWindowController()
             }
@@ -197,7 +211,7 @@ struct CodexReviewMonitorTests {
     @Test func appDelegateSkipsReopenWhenWindowIsAlreadyVisible() {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
-            launchModeProvider: { .xctest },
+            launchModeProvider: { .application },
             windowControllerFactory: { _ in
                 recorder.makeWindowController()
             }
@@ -212,6 +226,21 @@ struct CodexReviewMonitorTests {
         #expect(recorder.makeCallCount == 1)
         #expect(delegate.windowController === initialWindowController)
         #expect(initialWindowController?.showWindowCallCount == 1)
+    }
+
+    @Test func appDelegateSkipsReopenOutsideApplicationLaunchMode() {
+        let recorder = WindowControllerFactoryRecorder()
+        let delegate = CodexReviewMonitorAppDelegate(
+            launchModeProvider: { .preview },
+            windowControllerFactory: { _ in
+                recorder.makeWindowController()
+            }
+        )
+
+        let handled = delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false)
+
+        #expect(handled == false)
+        #expect(recorder.makeCallCount == 0)
     }
 }
 

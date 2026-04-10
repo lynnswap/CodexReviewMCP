@@ -21,7 +21,7 @@ struct CodexReviewUITests {
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
         #expect(viewController.contentAccessoryCountForTesting == 0)
         #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.contentPaneViewControllerForTesting.isShowingEmptyStateForTesting)
     }
 
     @Test func splitViewShowsEmptyStateWithoutJobs() {
@@ -36,7 +36,97 @@ struct CodexReviewUITests {
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
         #expect(viewController.contentAccessoryCountForTesting == 0)
         #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.contentPaneViewControllerForTesting.isShowingEmptyStateForTesting)
+    }
+
+    @Test func splitViewShowsUnavailableSidebarWhenServerFailedOnLoad() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .failed("Embedded server is unavailable in preview mode."),
+            workspaces: []
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.splitViewItems.count == 2)
+        #expect(viewController.sidebarPresentationForTesting == .unavailable)
+        #expect(viewController.sidebarAccessoryCountForTesting == 1)
+    }
+
+    @Test func splitViewShowsJobSidebarWhenServerRunningOnLoad() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            serverURL: URL(string: "http://localhost:9417/mcp"),
+            workspaces: []
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.sidebarPresentationForTesting == .jobList)
+        #expect(viewController.sidebarAccessoryCountForTesting == 1)
+    }
+
+    @Test func contentPanePinsDisplayedContentToSafeArea() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 900, height: 600)
+        )
+        let window = harness.window
+        defer { window.close() }
+
+        let contentPane = harness.viewController.contentPaneViewControllerForTesting
+        window.layoutIfNeeded()
+        contentPane.view.layoutSubtreeIfNeeded()
+
+        let safeAreaFrame = contentPane.safeAreaFrameForTesting
+        let displayedViewFrame = contentPane.displayedViewFrameForTesting
+
+        #expect(abs(displayedViewFrame.minX - safeAreaFrame.minX) < 0.5)
+        #expect(abs(displayedViewFrame.maxX - safeAreaFrame.maxX) < 0.5)
+        #expect(abs(displayedViewFrame.minY - safeAreaFrame.minY) < 0.5)
+        #expect(abs(displayedViewFrame.maxY - safeAreaFrame.maxY) < 0.5)
+    }
+
+    @Test func splitViewSwitchesSidebarWhenServerAvailabilityChanges() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            serverURL: URL(string: "http://localhost:9417/mcp"),
+            workspaces: []
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.sidebarPresentationForTesting == .jobList)
+
+        store.loadForTesting(
+            serverState: .failed("Embedded server is unavailable in preview mode."),
+            workspaces: []
+        )
+        try await waitForSidebarPresentation(viewController, .unavailable)
+        #expect(viewController.sidebarAccessoryCountForTesting == 1)
+
+        store.loadForTesting(
+            serverState: .running,
+            serverURL: URL(string: "http://localhost:9417/mcp"),
+            workspaces: []
+        )
+        try await waitForSidebarPresentation(viewController, .jobList)
+        #expect(viewController.sidebarAccessoryCountForTesting == 1)
     }
 
     @Test func splitViewInstallsToolbarWithSidebarTrackingSeparator() {
@@ -909,8 +999,8 @@ struct CodexReviewUITests {
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
-        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == nil)
+        #expect(viewController.contentPaneViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.contentPaneViewControllerForTesting.displayedTitleForTesting == nil)
     }
 
     @Test func selectingJobUpdatesDetailPane() async throws {
@@ -1475,7 +1565,7 @@ struct CodexReviewUITests {
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
-        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.contentPaneViewControllerForTesting.isShowingEmptyStateForTesting)
 
         store.loadForTesting(
             serverState: .running,
@@ -1483,8 +1573,8 @@ struct CodexReviewUITests {
         )
 
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
-        #expect(viewController.transportViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.transportViewControllerForTesting.displayedTitleForTesting == nil)
+        #expect(viewController.contentPaneViewControllerForTesting.isShowingEmptyStateForTesting)
+        #expect(viewController.contentPaneViewControllerForTesting.displayedTitleForTesting == nil)
     }
 
     @Test func removingSelectedJobClearsSelectionWithoutAutoSelectingReplacement() async throws {
@@ -1512,6 +1602,7 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
+        let contentPane = viewController.contentPaneViewControllerForTesting
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
@@ -1521,13 +1612,13 @@ struct CodexReviewUITests {
         #expect(activeSnapshot.title == nil)
         #expect(activeSnapshot.summary == nil)
 
-        let removalRenderCount = transport.renderCountForTesting
+        let removalRenderCount = contentPane.renderCountForTesting
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [recentJob])
         )
 
-        let emptySnapshot = try await awaitTransportRender(transport, after: removalRenderCount)
+        let emptySnapshot = try await awaitContentPaneRender(contentPane, after: removalRenderCount)
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
         #expect(emptySnapshot.isShowingEmptyState)
         #expect(emptySnapshot.title == nil)
@@ -1554,6 +1645,7 @@ struct CodexReviewUITests {
         let viewController = harness.viewController
         let window = harness.window
         defer { window.close() }
+        let contentPane = viewController.contentPaneViewControllerForTesting
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
@@ -1564,10 +1656,10 @@ struct CodexReviewUITests {
         #expect(window.title == job.targetSummary)
         #expect(window.subtitle == job.cwd)
 
-        let clearRenderCount = transport.renderCountForTesting
+        let clearRenderCount = contentPane.renderCountForTesting
         viewController.sidebarViewControllerForTesting.clearSelectionForTesting()
 
-        let emptySnapshot = try await awaitTransportRender(transport, after: clearRenderCount)
+        let emptySnapshot = try await awaitContentPaneRender(contentPane, after: clearRenderCount)
         #expect(emptySnapshot.isShowingEmptyState)
         #expect(emptySnapshot.title == nil)
         #expect(emptySnapshot.summary == nil)
@@ -1581,7 +1673,7 @@ struct CodexReviewUITests {
         await transport.flushMainQueueForTesting()
 
         #expect(transport.renderCountForTesting == stableRenderCount)
-        #expect(transport.renderSnapshotForTesting == emptySnapshot)
+        #expect(contentPane.renderSnapshotForTesting == emptySnapshot)
     }
 
     @Test func inPlaceJobUpdateKeepsSelectionAndRefreshesDetailPane() async throws {
@@ -1944,6 +2036,31 @@ struct CodexReviewUITests {
         #expect(SignInView(store: store).descriptionText == nil)
     }
 
+    @Test func mcpServerUnavailableViewRestartServerUsesStoreRestartFlow() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(
+            shouldAutoStartEmbeddedServer: false,
+            initialAuthState: .signedIn(accountID: "review@example.com")
+        )
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authState: .signedIn(accountID: "review@example.com"),
+            workspaces: []
+        )
+        let view = MCPServerUnavailableView(store: store)
+
+        #expect(view.failureMessage == "The embedded server stopped responding.")
+
+        view.restartServer()
+        await backend.waitForStartCallCount(1)
+
+        #expect(backend.startCallCount() == 1)
+        #expect(store.serverState == .starting)
+    }
+
 }
 
 @available(macOS 26.0, *)
@@ -1993,6 +2110,23 @@ private func waitForDisplayedContentKind(
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
             windowControllerBox.value.displayedContentKindForTesting != expected
+        }) {
+            await Task.yield()
+        }
+    }
+}
+
+@available(macOS 26.0, *)
+@MainActor
+private func waitForSidebarPresentation(
+    _ viewController: ReviewMonitorSplitViewController,
+    _ expected: ReviewMonitorSplitViewController.SidebarPresentationForTesting,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let viewControllerBox = UncheckedSendableBox(viewController)
+    try await withTestTimeout(timeout) {
+        while await MainActor.run(body: {
+            viewControllerBox.value.sidebarPresentationForTesting != expected
         }) {
             await Task.yield()
         }
@@ -2053,6 +2187,22 @@ private func awaitTransportRender(
         await transportBox.value.waitForRenderCountForTesting(renderCount + 1)
         return await MainActor.run {
             transportBox.value.renderSnapshotForTesting
+        }
+    }
+}
+
+@available(macOS 26.0, *)
+@MainActor
+private func awaitContentPaneRender(
+    _ contentPane: ReviewMonitorContentPaneViewController,
+    after renderCount: Int,
+    timeout: Duration = .seconds(2)
+) async throws -> ReviewMonitorContentPaneViewController.RenderSnapshotForTesting {
+    let contentPaneBox = UncheckedSendableBox(contentPane)
+    return try await withTestTimeout(timeout) {
+        await contentPaneBox.value.waitForRenderCountForTesting(renderCount + 1)
+        return await MainActor.run {
+            contentPaneBox.value.renderSnapshotForTesting
         }
     }
 }

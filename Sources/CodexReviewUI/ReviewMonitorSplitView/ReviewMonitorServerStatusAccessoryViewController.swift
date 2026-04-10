@@ -20,7 +20,7 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
 
 
 @available(macOS 26.0, *)
-private struct StatusView: View {
+struct StatusView: View {
     let store: CodexReviewStore
 
     var body: some View {
@@ -63,10 +63,25 @@ private struct StatusView: View {
     return StatusView(store: store)
         .padding()
 }
+
+@available(macOS 26.0, *)
+#Preview("Server Failed") {
+    let store = makeStatusPreviewStore(
+        serverState: .failed("The embedded server stopped responding.")
+    )
+    return StatusView(store: store)
+        .padding()
+}
 @MainActor
-func makeStatusPreviewStore() -> CodexReviewStore {
+func makeStatusPreviewStore(
+    authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
+    serverState: CodexReviewServerState = .running
+) -> CodexReviewStore {
     let store = ReviewMonitorPreviewContent.makeStore()
-    store.auth.updateState(.signedIn(accountID: "review@example.com"))
+    let runningServerURL = store.serverURL
+    store.auth.updateState(authState)
+    store.serverState = serverState
+    store.serverURL = serverState == .running ? runningServerURL : nil
     return store
 }
 #endif
