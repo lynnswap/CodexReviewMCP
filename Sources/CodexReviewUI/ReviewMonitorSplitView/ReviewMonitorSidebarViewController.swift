@@ -987,6 +987,19 @@ extension ReviewMonitorSidebarViewController {
         outlineView.performInertClickForTesting(at: point)
     }
 
+    func presentContextMenuForTesting(
+        for job: CodexReviewJob,
+        presenter: @escaping (NSMenu) -> Void
+    ) {
+        view.layoutSubtreeIfNeeded()
+        guard let row = row(forJobID: job.id) else {
+            preconditionFailure("Job row is not visible.")
+        }
+        let rect = outlineView.rect(ofRow: row)
+        let point = NSPoint(x: rect.midX, y: rect.midY)
+        outlineView.presentContextMenuForTesting(at: point, presenter: presenter)
+    }
+
     func workspaceIsExpandedForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
         workspace.isExpanded
     }
@@ -1144,6 +1157,7 @@ extension ReviewMonitorSidebarViewController {
 private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
     var inertRowEvaluator: ((Int) -> Bool)?
     var contextMenuProvider: ((NSPoint) -> NSMenu?)?
+    var contextMenuPresenter: ((NSMenu, NSEvent, NSView) -> Void)?
     private var isPresentingContextMenu = false
 
     override var acceptsFirstResponder: Bool {
@@ -1170,16 +1184,16 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
             isPresentingContextMenu = true
             _ = window?.makeFirstResponder(nil)
         }
-        let previousMenu = menu
-        menu = contextMenu
         defer {
-            menu = previousMenu
             if shouldRestoreFirstResponder {
                 restoreFirstResponder(previousFirstResponder)
             }
             isPresentingContextMenu = false
         }
-        super.rightMouseDown(with: event)
+        let contextMenuPresenter = contextMenuPresenter ?? { menu, event, view in
+            NSMenu.popUpContextMenu(menu, with: event, for: view)
+        }
+        contextMenuPresenter(contextMenu, event, self)
     }
 
     private func shouldSuppressSelectionClearing(at point: NSPoint) -> Bool {
@@ -1249,6 +1263,42 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
 
     func suppressesSelectionClearingForTesting(at point: NSPoint) -> Bool {
         shouldSuppressSelectionClearing(at: point)
+    }
+
+    func presentContextMenuForTesting(
+        at point: NSPoint,
+        presenter: @escaping (NSMenu) -> Void
+    ) {
+        let previousPresenter = contextMenuPresenter
+        contextMenuPresenter = { menu, _, _ in
+            presenter(menu)
+        }
+        defer {
+            contextMenuPresenter = previousPresenter
+        }
+        let event = contextMenuEventForTesting(at: point)
+        rightMouseDown(with: event)
+    }
+
+    private func contextMenuEventForTesting(at point: NSPoint) -> NSEvent {
+        guard let window = self.window else {
+            fatalError("Sidebar outline view must be attached to a window for context menu testing.")
+        }
+        let locationInWindow = convert(point, to: nil)
+        guard let event = NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: locationInWindow,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ) else {
+            fatalError("Failed to create a synthetic context-menu event.")
+        }
+        return event
     }
 
 #endif
