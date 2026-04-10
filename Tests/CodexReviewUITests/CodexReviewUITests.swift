@@ -1728,6 +1728,43 @@ struct CodexReviewUITests {
         #expect(snapshot.log == "Authentication required. Sign in to ReviewMCP and retry.")
     }
 
+    @Test func signInViewStartsAuthenticationFromButtonAction() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = AuthActionBackend()
+        let store = CodexReviewStore(backend: backend)
+        let view = SignInView(store: store)
+
+        view.startAuthentication()
+        await backend.waitForBeginAuthenticationCallCount(1)
+
+        #expect(backend.beginAuthenticationCallCount() == 1)
+    }
+
+    @Test func signInViewDescriptionTextReflectsAuthState() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+
+        store.auth.updateState(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            )
+        )
+        #expect(SignInView(store: store).descriptionText == nil)
+
+        store.auth.updateState(.failed("Authentication failed."))
+        #expect(SignInView(store: store).descriptionText == "Authentication failed.")
+
+        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        #expect(SignInView(store: store).descriptionText == nil)
+    }
+
 }
 
 @available(macOS 26.0, *)
@@ -1973,5 +2010,69 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
             return
         }
         await startSignal.wait(untilCount: count)
+    }
+}
+
+@MainActor
+private final class AuthActionBackend: CodexReviewStoreBackend {
+    var isActive: Bool = false
+    let shouldAutoStartEmbeddedServer = false
+
+    private let beginSignal = AsyncSignal()
+    private var beginCalls = 0
+
+    func start(
+        store: CodexReviewStore,
+        forceRestartIfNeeded: Bool
+    ) async {
+        _ = store
+        _ = forceRestartIfNeeded
+    }
+
+    func stop(store: CodexReviewStore) async {
+        _ = store
+    }
+
+    func waitUntilStopped() async {}
+
+    func cancelReview(
+        jobID: String,
+        sessionID: String,
+        reason: String,
+        store: CodexReviewStore
+    ) async throws {
+        _ = jobID
+        _ = sessionID
+        _ = reason
+        _ = store
+    }
+
+    func refreshAuthState(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+        beginCalls += 1
+        await beginSignal.signal()
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func logout(auth: CodexReviewAuthModel) async {
+        _ = auth
+    }
+
+    func beginAuthenticationCallCount() -> Int {
+        beginCalls
+    }
+
+    func waitForBeginAuthenticationCallCount(_ count: Int) async {
+        if beginCalls >= count {
+            return
+        }
+        await beginSignal.wait(untilCount: count)
     }
 }

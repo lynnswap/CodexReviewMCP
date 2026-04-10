@@ -119,7 +119,7 @@ private struct StatusView: View {
         .padding()
 }
 @MainActor
-private func makeStatusPreviewStore(state: CodexReviewAuthModel.State) -> CodexReviewStore {
+func makeStatusPreviewStore(state: CodexReviewAuthModel.State) -> CodexReviewStore {
     let store = ReviewMonitorPreviewContent.makeStore()
     store.auth.updateState(state)
     return store
