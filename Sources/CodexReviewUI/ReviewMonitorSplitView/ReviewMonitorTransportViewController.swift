@@ -9,7 +9,9 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private let uiState: ReviewMonitorUIState
     private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
         title: "Select a job",
-        description: "Choose a review from the list."
+        description: "Choose a review from the list.",
+        titleAccessibilityIdentifier: "review-monitor.detail-empty.title",
+        descriptionAccessibilityIdentifier: "review-monitor.detail-empty.description"
     )
     private var uiStateObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationHandles: Set<ObservationHandle> = []

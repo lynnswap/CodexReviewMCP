@@ -1,20 +1,6 @@
 import AppKit
-import SwiftUI
 import CodexReviewModel
 import ObservationBridge
-
-@available(macOS 26.0, *)
-@MainActor
-struct ReviewMonitorSplitViewRepresentable: NSViewControllerRepresentable {
-    let store: CodexReviewStore
-
-    func makeNSViewController(context: Context) -> ReviewMonitorSplitViewController {
-        ReviewMonitorSplitViewController(store: store)
-    }
-
-    func updateNSViewController(_ nsViewController: ReviewMonitorSplitViewController, context: Context) {
-    }
-}
 
 @available(macOS 26.0, *)
 @MainActor
@@ -30,15 +16,12 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var contentItem: NSSplitViewItem?
     private var toolbar: NSToolbar?
     private var observationHandles: Set<ObservationHandle> = []
-    private var didTriggerStoreStart = false
+    private weak var attachedWindow: NSWindow?
 
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState = ReviewMonitorUIState()) {
         self.store = store
         self.uiState = uiState
         super.init(nibName: nil, bundle: nil)
-        
-        view.window?.isOpaque = false
-        view.window?.backgroundColor = .clear
     }
 
     @available(*, unavailable)
@@ -57,6 +40,8 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         }
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
         sidebarItem.allowsFullHeightLayout = true
+        sidebarItem.minimumThickness = 220
+        sidebarItem.preferredThicknessFraction = 0.22
         sidebarItem.titlebarSeparatorStyle = .none
         sidebarItem.addBottomAlignedAccessoryViewController(statusAccessoryViewController)
 
@@ -77,28 +62,40 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         sidebarViewController.bind(store: store)
     }
 
-    override func viewDidAppear() {
-        super.viewDidAppear()
+    func attach(to window: NSWindow) {
+        loadViewIfNeeded()
+        guard attachedWindow !== window else {
+            return
+        }
+
+        attachedWindow = window
+        // macOS 26 applies NSSplitView autosave reliably only after the split view is in a window.
         splitView.identifier = NSUserInterfaceItemIdentifier(Self.autosaveName)
         splitView.autosaveName = Self.autosaveName
-        installToolbarIfNeeded()
-        bindJobEntry()
-        triggerStoreStartIfNeeded()
+        installToolbarIfNeeded(on: window)
+        bindJobEntry(to: window)
     }
 
-    private func bindJobEntry() {
+    private func bindJobEntry(to window: NSWindow) {
         observationHandles.removeAll()
 
-        uiState.observe(\.selectedJobEntry?.targetSummary) { [weak self] targetSummary in
-            guard let window = self?.view.window else {
+        if let selectedJob = uiState.selectedJobEntry {
+            window.title = selectedJob.targetSummary
+            window.subtitle = selectedJob.cwd
+        } else {
+            window.subtitle = ""
+        }
+
+        uiState.observe(\.selectedJobEntry?.targetSummary) { [weak window] targetSummary in
+            guard let window else {
                 return
             }
             window.title = targetSummary ?? ""
         }
         .store(in: &observationHandles)
 
-        uiState.observe(\.selectedJobEntry?.cwd) { [weak self] cwd in
-            guard let window = self?.view.window else {
+        uiState.observe(\.selectedJobEntry?.cwd) { [weak window] cwd in
+            guard let window else {
                 return
             }
             window.subtitle = cwd ?? ""
@@ -106,10 +103,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         .store(in: &observationHandles)
     }
 
-    private func installToolbarIfNeeded() {
-        guard let window = view.window else {
-            return
-        }
+    private func installToolbarIfNeeded(on window: NSWindow) {
         if toolbar == nil {
             let toolbar = NSToolbar(identifier: "CodexReviewMCP.ReviewMonitor.Toolbar")
             toolbar.delegate = self
@@ -123,27 +117,9 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             window.styleMask.insert(.fullSizeContentView)
             window.toolbarStyle = .unified
             window.titleVisibility = .visible
-            
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .line
             window.toolbar = toolbar
-            Task {
-                window.titlebarAppearsTransparent = true
-                window.titlebarSeparatorStyle = .line
-            }
-        }
-    }
-
-    private func triggerStoreStartIfNeeded() {
-        guard didTriggerStoreStart == false,
-              store.shouldAutoStartEmbeddedServer
-        else {
-            return
-        }
-        didTriggerStoreStart = true
-        Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-            await self.store.start()
         }
     }
 
@@ -226,10 +202,6 @@ extension ReviewMonitorSplitViewController {
 
     var contentAutomaticallyAdjustsSafeAreaInsetsForTesting: Bool {
         contentItem?.automaticallyAdjustsSafeAreaInsets ?? false
-    }
-
-    var didTriggerStoreStartForTesting: Bool {
-        didTriggerStoreStart
     }
 }
 #endif

@@ -154,6 +154,65 @@ struct CodexReviewMonitorTests {
         #expect(shouldTerminate == true)
         #expect(responder.replies == [true])
     }
+
+    @Test func appDelegateCreatesSingleWindowControllerOnLaunch() {
+        let recorder = WindowControllerFactoryRecorder()
+        let delegate = CodexReviewMonitorAppDelegate(
+            launchModeProvider: { .xctest },
+            windowControllerFactory: { _ in
+                recorder.makeWindowController()
+            }
+        )
+
+        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
+
+        let windowController = recorder.lastWindowController
+        #expect(recorder.makeCallCount == 1)
+        #expect(delegate.windowController === windowController)
+        #expect(windowController?.showWindowCallCount == 1)
+        #expect(windowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 1)
+    }
+
+    @Test func appDelegateReusesSingleWindowControllerWhenReopening() {
+        let recorder = WindowControllerFactoryRecorder()
+        let delegate = CodexReviewMonitorAppDelegate(
+            launchModeProvider: { .xctest },
+            windowControllerFactory: { _ in
+                recorder.makeWindowController()
+            }
+        )
+
+        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
+        let initialWindowController = recorder.lastWindowController
+
+        let handled = delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false)
+
+        #expect(handled)
+        #expect(recorder.makeCallCount == 1)
+        #expect(delegate.windowController === initialWindowController)
+        #expect(initialWindowController?.showWindowCallCount == 2)
+        #expect(initialWindowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 2)
+    }
+
+    @Test func appDelegateSkipsReopenWhenWindowIsAlreadyVisible() {
+        let recorder = WindowControllerFactoryRecorder()
+        let delegate = CodexReviewMonitorAppDelegate(
+            launchModeProvider: { .xctest },
+            windowControllerFactory: { _ in
+                recorder.makeWindowController()
+            }
+        )
+
+        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
+        let initialWindowController = recorder.lastWindowController
+
+        let handled = delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: true)
+
+        #expect(handled == false)
+        #expect(recorder.makeCallCount == 1)
+        #expect(delegate.windowController === initialWindowController)
+        #expect(initialWindowController?.showWindowCallCount == 1)
+    }
 }
 
 @MainActor
@@ -190,5 +249,61 @@ private final class TerminationReplyRecorder: CodexReviewMonitorTerminationReply
 
     func waitForReply() async -> Bool? {
         await repliesQueue.next()
+    }
+}
+
+@MainActor
+private final class WindowControllerFactoryRecorder {
+    private(set) var makeCallCount = 0
+    private(set) var lastWindowController: CountingWindowController?
+
+    func makeWindowController() -> CountingWindowController {
+        makeCallCount += 1
+        let windowController = CountingWindowController()
+        lastWindowController = windowController
+        return windowController
+    }
+}
+
+@MainActor
+private final class CountingWindowController: NSWindowController {
+    private(set) var showWindowCallCount = 0
+
+    var windowForTesting: CountingWindow {
+        guard let window = window as? CountingWindow else {
+            fatalError("Expected CountingWindow.")
+        }
+        return window
+    }
+
+    init() {
+        super.init(
+            window: CountingWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+        )
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func showWindow(_ sender: Any?) {
+        _ = sender
+        showWindowCallCount += 1
+    }
+}
+
+@MainActor
+private final class CountingWindow: NSWindow {
+    private(set) var makeKeyAndOrderFrontCallCount = 0
+
+    override func makeKeyAndOrderFront(_ sender: Any?) {
+        _ = sender
+        makeKeyAndOrderFrontCallCount += 1
     }
 }

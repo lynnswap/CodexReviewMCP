@@ -6,8 +6,8 @@
 //
 
 import AppKit
-import SwiftUI
 import CodexReviewMCP
+import CodexReviewUI
 
 enum CodexReviewMonitorLaunchMode {
     case application
@@ -134,30 +134,68 @@ final class CodexReviewMonitorLifecycleController {
     }
 }
 
+@main
 @MainActor
 final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
+    private let launchModeProvider: () -> CodexReviewMonitorLaunchMode
+    private let windowControllerFactory: (CodexReviewStore) -> NSWindowController
+
     lazy var store = CodexReviewStore()
     lazy var lifecycle = CodexReviewMonitorLifecycleController(store: store)
+    lazy var windowController = windowControllerFactory(store)
+
+    override init() {
+        launchModeProvider = {
+            CodexReviewMonitorLaunchEnvironment.launchMode()
+        }
+        windowControllerFactory = { store in
+            ReviewMonitorWindowController(store: store)
+        }
+        super.init()
+    }
+
+    init(
+        launchModeProvider: @escaping () -> CodexReviewMonitorLaunchMode,
+        windowControllerFactory: @escaping (CodexReviewStore) -> NSWindowController
+    ) {
+        self.launchModeProvider = launchModeProvider
+        self.windowControllerFactory = windowControllerFactory
+        super.init()
+    }
+
+    static func main() {
+        let application = NSApplication.shared
+        let delegate = CodexReviewMonitorAppDelegate()
+        application.delegate = delegate
+        application.run()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = notification
+        NSApp.setActivationPolicy(.regular)
+        showMainWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
         lifecycle.applicationDidFinishLaunching(
-            launchMode: CodexReviewMonitorLaunchEnvironment.launchMode()
+            launchMode: launchModeProvider()
         )
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         lifecycle.applicationShouldTerminate(replyingTo: sender)
     }
-}
 
-@main
-struct CodexReviewMonitorApp: App {
-    @NSApplicationDelegateAdaptor(CodexReviewMonitorAppDelegate.self) private var appDelegate
-
-    var body: some Scene {
-        WindowGroup {
-            ContentView(store: appDelegate.store)
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        _ = sender
+        guard flag == false else {
+            return false
         }
+        showMainWindow(nil)
+        return true
+    }
+
+    private func showMainWindow(_ sender: Any?) {
+        windowController.showWindow(sender)
+        windowController.window?.orderFrontRegardless()
+        windowController.window?.makeKeyAndOrderFront(sender)
     }
 }

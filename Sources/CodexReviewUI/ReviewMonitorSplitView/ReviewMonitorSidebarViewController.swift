@@ -39,7 +39,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     private let outlineView = ReviewMonitorSidebarOutlineView()
     private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
         title: "No review jobs",
-        description: "Start a review through the embedded server to see workspaces here."
+        description: "Start a review through the embedded server to see workspaces here.",
+        titleAccessibilityIdentifier: "review-monitor.sidebar-empty.title",
+        descriptionAccessibilityIdentifier: "review-monitor.sidebar-empty.description"
     )
 
     private var storeObservationHandles: Set<ObservationHandle> = []

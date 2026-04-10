@@ -35,6 +35,20 @@
                ReferencedContainer = "container:CodexReviewMonitor.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AB19F4452F77D8AD009726F1"
+               BuildableName = "CodexReviewUITests.xctest"
+               BlueprintName = "CodexReviewUITests"
+               ReferencedContainer = "container:CodexReviewMonitor.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -52,6 +66,13 @@
             ReferencedContainer = "container:CodexReviewMonitor.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "CODEX_REVIEW_MONITOR_RUN_UI_TESTS"
+            value = "$(CODEX_REVIEW_MONITOR_RUN_UI_TESTS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
       <Testables>
          <TestableReference
             skipped = "NO"
@@ -61,6 +82,17 @@
                BlueprintIdentifier = "AB19F43B2F77D8AD009726F1"
                BuildableName = "CodexReviewMonitorTests.xctest"
                BlueprintName = "CodexReviewMonitorTests"
+               ReferencedContainer = "container:CodexReviewMonitor.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AB19F4452F77D8AD009726F1"
+               BuildableName = "CodexReviewUITests.xctest"
+               BlueprintName = "CodexReviewUITests"
                ReferencedContainer = "container:CodexReviewMonitor.xcodeproj">
             </BuildableReference>
          </TestableReference>

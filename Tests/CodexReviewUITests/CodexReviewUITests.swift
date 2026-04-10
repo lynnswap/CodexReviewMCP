@@ -44,11 +44,10 @@ struct CodexReviewUITests {
             return
         }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        let window = NSWindow(contentViewController: viewController)
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
         defer { window.close() }
-
-        viewController.viewDidAppear()
 
         #expect(window.toolbar != nil)
         #expect(viewController.toolbarIdentifiersForTesting.contains(.toggleSidebar))
@@ -73,12 +72,13 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        let window = NSWindow(contentViewController: viewController)
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 900, height: 600)
+        )
+        let viewController = harness.viewController
+        let window = harness.window
         defer { window.close() }
-        window.setContentSize(NSSize(width: 900, height: 600))
-        viewController.loadViewIfNeeded()
-        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
@@ -107,12 +107,13 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        let window = NSWindow(contentViewController: viewController)
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 900, height: 600)
+        )
+        let viewController = harness.viewController
+        let window = harness.window
         defer { window.close() }
-        window.setContentSize(NSSize(width: 900, height: 600))
-        viewController.loadViewIfNeeded()
-        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
@@ -128,7 +129,20 @@ struct CodexReviewUITests {
         #expect(textViewFrame.height <= documentViewFrame.height + 0.5)
     }
 
-    @Test func splitViewStartsStoreOnceOnFirstAppearance() async throws {
+    @Test func windowControllerDoesNotStartStoreWhenConstructed() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend()
+        let store = CodexReviewStore(backend: backend)
+        let harness = makeWindowHarness(store: store)
+        let window = harness.window
+        defer { window.close() }
+
+        #expect(backend.startCallCount() == 0)
+    }
+
+    @Test func splitViewAttachIsIdempotentForSameWindow() {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -138,31 +152,13 @@ struct CodexReviewUITests {
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
 
-        viewController.viewDidAppear()
-        viewController.viewDidAppear()
+        viewController.attach(to: window)
+        let initialToolbar = window.toolbar
+        let initialIdentifiers = viewController.toolbarIdentifiersForTesting
+        viewController.attach(to: window)
 
-        let backendBox = UncheckedSendableBox(backend)
-        try await withTestTimeout {
-            await backendBox.value.waitForStartCallCount(1)
-        }
-
-        #expect(viewController.didTriggerStoreStartForTesting)
-        #expect(backend.startCallCount() == 1)
-    }
-
-    @Test func splitViewSkipsStoreStartWhenAutoStartIsDisabled() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
-        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
-        let store = CodexReviewStore(backend: backend)
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        let window = NSWindow(contentViewController: viewController)
-        defer { window.close() }
-
-        viewController.viewDidAppear()
-
-        #expect(viewController.didTriggerStoreStartForTesting == false)
+        #expect(window.toolbar === initialToolbar)
+        #expect(viewController.toolbarIdentifiersForTesting == initialIdentifiers)
         #expect(backend.startCallCount() == 0)
     }
 
@@ -754,11 +750,10 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        let window = NSWindow(contentViewController: viewController)
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
         defer { window.close() }
-        viewController.loadViewIfNeeded()
-        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
@@ -812,11 +807,10 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        let window = NSWindow(contentViewController: viewController)
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
         defer { window.close() }
-        viewController.loadViewIfNeeded()
-        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
@@ -857,11 +851,10 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        let window = NSWindow(contentViewController: viewController)
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
         defer { window.close() }
-        viewController.loadViewIfNeeded()
-        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let firstRenderCount = transport.renderCountForTesting
@@ -1378,11 +1371,10 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        let window = NSWindow(contentViewController: viewController)
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
         defer { window.close() }
-        viewController.loadViewIfNeeded()
-        viewController.viewDidAppear()
         let transport = viewController.transportViewControllerForTesting
 
         let initialRenderCount = transport.renderCountForTesting
@@ -1736,6 +1728,34 @@ struct CodexReviewUITests {
         #expect(snapshot.log == "Authentication required. Sign in to ReviewMCP and retry.")
     }
 
+}
+
+@available(macOS 26.0, *)
+@MainActor
+private struct ReviewMonitorWindowHarness {
+    let windowController: ReviewMonitorWindowController
+    let viewController: ReviewMonitorSplitViewController
+    let window: NSWindow
+}
+
+@available(macOS 26.0, *)
+@MainActor
+private func makeWindowHarness(
+    store: CodexReviewStore,
+    contentSize: NSSize? = nil
+) -> ReviewMonitorWindowHarness {
+    let windowController = ReviewMonitorWindowController(store: store)
+    guard let window = windowController.window else {
+        fatalError("ReviewMonitorWindowController did not create a window.")
+    }
+    if let contentSize {
+        window.setContentSize(contentSize)
+    }
+    return ReviewMonitorWindowHarness(
+        windowController: windowController,
+        viewController: windowController.splitViewControllerForTesting,
+        window: window
+    )
 }
 
 @MainActor
