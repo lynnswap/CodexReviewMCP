@@ -9,6 +9,10 @@ import AppKit
 import CodexReviewMCP
 import CodexReviewUI
 
+enum CodexReviewMonitorNativeAuthentication {
+    static let callbackScheme = "lynnpd.codexreviewmonitor.auth"
+}
+
 enum CodexReviewMonitorLaunchMode {
     case application
     case xctest
@@ -134,16 +138,34 @@ final class CodexReviewMonitorLifecycleController {
     }
 }
 
+@MainActor
+private final class ReviewMonitorPresentationAnchorSource {
+    weak var window: NSWindow?
+}
+
 @main
 @MainActor
 final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private let launchModeProvider: () -> CodexReviewMonitorLaunchMode
     private let windowControllerFactory: (CodexReviewStore) -> NSWindowController
+    private let presentationAnchorSource = ReviewMonitorPresentationAnchorSource()
 
     private lazy var launchMode = launchModeProvider()
-    lazy var store = CodexReviewStore()
+    lazy var store = CodexReviewStore.makeReviewMonitorStore(
+        nativeAuthenticationConfiguration: .init(
+            callbackScheme: CodexReviewMonitorNativeAuthentication.callbackScheme,
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { [weak presentationAnchorSource] in
+                presentationAnchorSource?.window
+            }
+        )
+    )
     lazy var lifecycle = CodexReviewMonitorLifecycleController(store: store)
-    lazy var windowController = windowControllerFactory(store)
+    lazy var windowController: NSWindowController = {
+        let windowController = windowControllerFactory(store)
+        presentationAnchorSource.window = windowController.window
+        return windowController
+    }()
 
     override init() {
         launchModeProvider = {

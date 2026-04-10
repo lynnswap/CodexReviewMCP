@@ -15,28 +15,22 @@ public final class ReviewMonitorWindowController: NSWindowController {
     private let rootContentViewController: ReviewMonitorWindowContentViewController
     private var displayedContentKind: DisplayedContentKind?
     private var authRefreshTask: Task<Void, Never>?
+    private var presentedContentUpdateTask: Task<Void, Never>?
 
     public convenience init(store: CodexReviewStore) {
         self.init(
             store: store,
-            browserURLOpener: { url in
-                _ = NSWorkspace.shared.open(url)
-            },
             performInitialAuthRefresh: true
         )
     }
 
     package init(
         store: CodexReviewStore,
-        browserURLOpener: @escaping @MainActor (URL) -> Void,
         performInitialAuthRefresh: Bool
     ) {
         let splitViewController = ReviewMonitorSplitViewController(store: store)
         splitViewController.loadViewIfNeeded()
-        let signInViewController = ReviewMonitorSignInViewController(
-            store: store,
-            browserURLOpener: browserURLOpener
-        )
+        let signInViewController = ReviewMonitorSignInViewController(store: store)
         let contentViewController = ReviewMonitorWindowContentViewController()
 
         let window = NSWindow(contentViewController: contentViewController)
@@ -55,7 +49,14 @@ public final class ReviewMonitorWindowController: NSWindowController {
         window.setFrameAutosaveName(Self.frameAutosaveName)
 
         signInViewController.onAuthenticationStateChanged = { [weak self] isAuthenticated in
-            self?.updatePresentedContent(isAuthenticated: isAuthenticated)
+            guard let self else {
+                return
+            }
+            if self.displayedContentKind == nil {
+                self.updatePresentedContent(isAuthenticated: isAuthenticated)
+            } else {
+                self.schedulePresentedContentUpdate(isAuthenticated: isAuthenticated)
+            }
         }
         signInViewController.startObservingAuth()
 
@@ -73,6 +74,15 @@ public final class ReviewMonitorWindowController: NSWindowController {
 
     deinit {
         authRefreshTask?.cancel()
+        presentedContentUpdateTask?.cancel()
+    }
+
+    private func schedulePresentedContentUpdate(isAuthenticated: Bool) {
+        presentedContentUpdateTask?.cancel()
+        presentedContentUpdateTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.updatePresentedContent(isAuthenticated: isAuthenticated)
+        }
     }
 
     private func updatePresentedContent(isAuthenticated: Bool) {

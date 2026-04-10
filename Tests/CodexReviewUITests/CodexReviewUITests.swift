@@ -162,7 +162,6 @@ struct CodexReviewUITests {
         let store = CodexReviewStore(backend: backend)
         let windowController = ReviewMonitorWindowController(
             store: store,
-            browserURLOpener: { _ in },
             performInitialAuthRefresh: false
         )
         guard let window = windowController.window else {
@@ -311,44 +310,29 @@ struct CodexReviewUITests {
         #expect(SignInView(store: store).descriptionText == "Authentication failed.")
     }
 
-    @Test func windowControllerOpensBrowserOncePerAuthURL() async throws {
+    @Test func windowControllerKeepsSignInViewPresentedWhileAuthenticating() async throws {
         guard #available(macOS 26.0, *) else {
             return
         }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let recorder = BrowserOpenRecorder()
         let harness = makeWindowHarness(
             store: store,
-            authState: .signedOut,
-            browserURLOpener: { url in
-                recorder.record(url)
-            }
+            authState: .signedOut
         )
         defer { harness.window.close() }
 
-        let authURL = "https://auth.openai.com/oauth/authorize?foo=bar"
         store.auth.updateState(
             .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
                     detail: "Open the browser to continue.",
-                    browserURL: authURL
+                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
                 )
             )
         )
-        try await waitForOpenedURLCount(recorder, 1)
-        #expect(recorder.urls == [URL(string: authURL)!])
+        try await waitForDisplayedContentKind(harness.windowController, .signInView)
 
-        store.auth.updateState(
-            .signingIn(
-                .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue.",
-                    browserURL: authURL
-                )
-            )
-        )
-        #expect(recorder.urls.count == 1)
+        #expect(harness.windowController.displayedContentKindForTesting == .signInView)
     }
 
     @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {
@@ -2122,13 +2106,11 @@ private func makeWindowHarness(
     store: CodexReviewStore,
     authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
     contentSize: NSSize? = nil,
-    performInitialAuthRefresh: Bool = false,
-    browserURLOpener: @escaping @MainActor (URL) -> Void = { _ in }
+    performInitialAuthRefresh: Bool = false
 ) -> ReviewMonitorWindowHarness {
     store.auth.updateState(authState)
     let windowController = ReviewMonitorWindowController(
         store: store,
-        browserURLOpener: browserURLOpener,
         performInitialAuthRefresh: performInitialAuthRefresh
     )
     guard let window = windowController.window else {
@@ -2172,31 +2154,6 @@ private func waitForSidebarPresentation(
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
             viewControllerBox.value.sidebarPresentationForTesting != expected
-        }) {
-            await Task.yield()
-        }
-    }
-}
-
-@MainActor
-private final class BrowserOpenRecorder {
-    private(set) var urls: [URL] = []
-
-    func record(_ url: URL) {
-        urls.append(url)
-    }
-}
-
-@MainActor
-private func waitForOpenedURLCount(
-    _ recorder: BrowserOpenRecorder,
-    _ count: Int,
-    timeout: Duration = .seconds(2)
-) async throws {
-    let recorderBox = UncheckedSendableBox(recorder)
-    try await withTestTimeout(timeout) {
-        while await MainActor.run(body: {
-            recorderBox.value.urls.count < count
         }) {
             await Task.yield()
         }

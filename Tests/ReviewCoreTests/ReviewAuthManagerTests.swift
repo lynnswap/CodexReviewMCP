@@ -472,7 +472,7 @@ struct ReviewAuthManagerTests {
 
         let response = try await session.startLogin(.chatGPT)
 
-        guard case .chatGPT(let loginID, let authURL) = response else {
+        guard case .chatGPT(let loginID, let authURL, _) = response else {
             Issue.record("Expected chatgpt browser response, got \(response)")
             return
         }

@@ -1,3 +1,5 @@
+import AppKit
+import AuthenticationServices
 import Foundation
 import Observation
 import Testing
@@ -672,6 +674,70 @@ struct CodexReviewMCPTests {
         #expect(await manager.shutdownCount() == 0)
 
         await store.stop()
+    }
+
+    @Test func reviewMonitorStoreUsesInjectedNativeAuthSessionFactory() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+
+        let updates = ObservableValueProbe { store.auth.state }
+
+        await store.auth.beginAuthentication()
+
+        try await waitForObservedValue(updates) { $0.isAuthenticated }
+
+        #expect(await manager.authTransportCheckoutCount() > 0)
+        #expect(performer.lastAuthenticateRequest?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
+        #expect(performer.lastAuthenticateRequest?.prefersEphemeral == true)
+        let authTransport = await manager.authTransportForTesting()
+        #expect(await authTransport.completeParams()?.callbackURL == "lynnpd.codexreviewmonitor.auth://callback?code=123")
+        #expect(store.auth.state == CodexReviewAuthModel.State.signedIn(accountID: "review@example.com"))
+    }
+
+    @Test func reviewMonitorStoreCancelsNativeAuthenticationFlow() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .failure(ReviewAuthError.cancelled)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+
+        await store.auth.beginAuthentication()
+
+        let authTransport = await manager.authTransportForTesting()
+        #expect(await authTransport.completeParams() == nil)
+        #expect(performer.cancelCallCount == 1)
+        #expect(store.auth.state == CodexReviewAuthModel.State.signedOut)
     }
 
     @Test func forceRestartStopsServerAndRecordedAppServerGroup() async throws {
@@ -1689,6 +1755,10 @@ private actor AuthCapableAppServerManager: AppServerManaging {
         authCheckoutCountStorage
     }
 
+    func authTransportForTesting() -> AuthCapableAppServerSessionTransport {
+        authTransport
+    }
+
     func reviewTransportCheckoutCount() -> Int {
         reviewCheckoutCountStorage
     }
@@ -1814,6 +1884,11 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
 private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var isClosedStorage = false
+    private var recordedCompleteParams: AppServerCompleteLoginAccountParams?
+    private var accountReadResponseObject: [String: Any] = [
+        "account": NSNull(),
+        "requiresOpenaiAuth": true,
+    ]
 
     func initializeResponse() async -> AppServerInitializeResponse {
         .init(
@@ -1832,19 +1907,40 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         _ = params
         switch method {
         case "account/read":
-            return try decode(
-                ["account": NSNull(), "requiresOpenaiAuth": true],
-                as: responseType
-            )
+            return try decode(accountReadResponseObject, as: responseType)
         case "account/login/start":
             return try decode(
                 [
                     "type": "chatgpt",
                     "loginId": "login-browser",
                     "authUrl": "https://auth.openai.com/oauth/authorize?foo=bar",
+                    "nativeWebAuthentication": [
+                        "callbackUrlScheme": "lynnpd.codexreviewmonitor.auth",
+                    ],
                 ],
                 as: responseType
             )
+        case "account/login/complete":
+            recordedCompleteParams = params as? AppServerCompleteLoginAccountParams
+            accountReadResponseObject = [
+                "account": [
+                    "type": "chatgpt",
+                    "email": "review@example.com",
+                    "planType": "plus",
+                ],
+                "requiresOpenaiAuth": false,
+            ]
+            continuation?.yield(.accountUpdated(.init(authMode: .chatGPT, planType: "plus")))
+            continuation?.yield(
+                .accountLoginCompleted(
+                    .init(
+                        error: nil,
+                        loginID: recordedCompleteParams?.loginID,
+                        success: true
+                    )
+                )
+            )
+            return try decode([:], as: responseType)
         case "account/login/cancel":
             return try decode([:], as: responseType)
         case "account/logout":
@@ -1894,6 +1990,51 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         _ = responseType
         let data = try JSONSerialization.data(withJSONObject: object)
         return try JSONDecoder().decode(Response.self, from: data)
+    }
+
+    func completeParams() -> AppServerCompleteLoginAccountParams? {
+        recordedCompleteParams
+    }
+}
+
+@MainActor
+private final class FakeReviewMonitorWebAuthenticationPerformer: ReviewMonitorWebAuthenticationPerforming, @unchecked Sendable {
+    struct Request: Equatable {
+        var url: URL
+        var callbackScheme: String
+        var prefersEphemeral: Bool
+    }
+
+    let result: Result<URL, Error>
+    private(set) var lastAuthenticateRequest: Request?
+    private(set) var cancelCallCount = 0
+
+    init(result: Result<URL, Error>) {
+        self.result = result
+    }
+
+    func authenticate(
+        using url: URL,
+        callbackScheme: String,
+        browserSessionPolicy: ReviewMonitorNativeAuthenticationConfiguration.BrowserSessionPolicy,
+        presentationAnchorProvider: @escaping @MainActor @Sendable () -> ASPresentationAnchor?
+    ) async throws -> URL {
+        _ = presentationAnchorProvider
+        lastAuthenticateRequest = .init(
+            url: url,
+            callbackScheme: callbackScheme,
+            prefersEphemeral: {
+                switch browserSessionPolicy {
+                case .ephemeral:
+                    true
+                }
+            }()
+        )
+        return try result.get()
+    }
+
+    func cancel() {
+        cancelCallCount += 1
     }
 }
 

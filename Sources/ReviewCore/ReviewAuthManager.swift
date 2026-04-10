@@ -159,7 +159,7 @@ package actor ReviewAuthManager {
 
             let finalState: CodexReviewAuthModel.State
             switch response {
-            case .chatGPT(let loginID, _):
+            case .chatGPT(let loginID, _, _):
                 finalState = try await waitForAuthenticationCompletion(
                     session: session,
                     attemptID: attemptID,
@@ -505,7 +505,7 @@ package actor ReviewAuthManager {
         for response: AppServerLoginAccountResponse
     ) -> CodexReviewAuthModel.State {
         switch response {
-        case .chatGPT(_, let authURL):
+        case .chatGPT(_, let authURL, _):
             return .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
@@ -553,6 +553,20 @@ package actor SharedAppServerReviewAuthSession: ReviewAuthSession {
             responseType: AppServerLoginAccountResponse.self
         )
         return response
+    }
+
+    package func completeLogin(
+        loginID: String,
+        callbackURL: String
+    ) async throws {
+        let _: AppServerCompleteLoginAccountResponse = try await transport.request(
+            method: "account/login/complete",
+            params: AppServerCompleteLoginAccountParams(
+                loginID: loginID,
+                callbackURL: callbackURL
+            ),
+            responseType: AppServerCompleteLoginAccountResponse.self
+        )
     }
 
     package func cancelLogin(loginID: String) async throws {
@@ -651,9 +665,11 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         }
 
         let arguments: [String]
-        switch params {
-        case .chatGPT:
+        switch params.type {
+        case "chatgpt":
             arguments = reviewMCPCodexCommandArguments(["login"])
+        default:
+            throw ReviewAuthError.loginFailed("Unsupported authentication mode.")
         }
 
         let stdinPipe = Pipe()
@@ -863,13 +879,15 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
             activeLogin.outputLines.removeFirst(activeLogin.outputLines.count - 50)
         }
 
-        switch activeLogin.mode {
-        case .chatGPT:
+        switch activeLogin.mode.type {
+        case "chatgpt":
             if activeLogin.browserURL == nil,
                let url = extractReviewAuthHTTPSURL(from: cleaned)
             {
                 activeLogin.browserURL = url
             }
+        default:
+            break
         }
 
         maybeResolveStartResponse(for: activeLogin)
@@ -881,8 +899,8 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         }
 
         let response: AppServerLoginAccountResponse?
-        switch activeLogin.mode {
-        case .chatGPT:
+        switch activeLogin.mode.type {
+        case "chatgpt":
             if let browserURL = activeLogin.browserURL {
                 response = .chatGPT(
                     loginID: activeLogin.loginID,
@@ -891,6 +909,8 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
             } else {
                 response = nil
             }
+        default:
+            response = nil
         }
 
         guard let response else {

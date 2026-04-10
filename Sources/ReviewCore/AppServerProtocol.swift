@@ -323,24 +323,55 @@ package struct AppServerAccountReadResponse: Decodable, Sendable, Equatable {
     }
 }
 
-package enum AppServerLoginAccountParams: Encodable, Sendable, Equatable {
-    case chatGPT
+package struct AppServerNativeWebAuthenticationRequest: Codable, Sendable, Equatable {
+    package var callbackURLScheme: String
 
-    package func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .chatGPT:
-            try container.encode("chatgpt", forKey: .type)
-        }
+    package enum CodingKeys: String, CodingKey {
+        case callbackURLScheme = "callbackUrlScheme"
     }
 
-    private enum CodingKeys: String, CodingKey {
+    package init(callbackURLScheme: String) {
+        self.callbackURLScheme = callbackURLScheme
+    }
+}
+
+package struct AppServerLoginAccountParams: Encodable, Sendable, Equatable {
+    package var type: String
+    package var nativeWebAuthentication: AppServerNativeWebAuthenticationRequest?
+
+    package enum CodingKeys: String, CodingKey {
         case type
+        case nativeWebAuthentication = "nativeWebAuthentication"
+    }
+
+    package init(
+        type: String,
+        nativeWebAuthentication: AppServerNativeWebAuthenticationRequest? = nil
+    ) {
+        self.type = type
+        self.nativeWebAuthentication = nativeWebAuthentication
+    }
+
+    package static var chatGPT: Self {
+        .init(type: "chatgpt")
+    }
+
+    package static func chatGPT(
+        nativeWebAuthentication: AppServerNativeWebAuthenticationRequest?
+    ) -> Self {
+        .init(
+            type: "chatgpt",
+            nativeWebAuthentication: nativeWebAuthentication
+        )
     }
 }
 
 package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
-    case chatGPT(loginID: String, authURL: String)
+    case chatGPT(
+        loginID: String,
+        authURL: String,
+        nativeWebAuthentication: AppServerNativeWebAuthenticationRequest?
+    )
 
     package init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -348,7 +379,11 @@ package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
         case "chatgpt":
             self = .chatGPT(
                 loginID: try container.decode(String.self, forKey: .loginID),
-                authURL: try container.decode(String.self, forKey: .authURL)
+                authURL: try container.decode(String.self, forKey: .authURL),
+                nativeWebAuthentication: try container.decodeIfPresent(
+                    AppServerNativeWebAuthenticationRequest.self,
+                    forKey: .nativeWebAuthentication
+                )
             )
         default:
             throw DecodingError.dataCorruptedError(
@@ -361,15 +396,41 @@ package enum AppServerLoginAccountResponse: Decodable, Sendable, Equatable {
 
     package var loginID: String? {
         switch self {
-        case .chatGPT(let loginID, _):
+        case .chatGPT(let loginID, _, _):
             loginID
         }
+    }
+
+    package var authURL: String? {
+        switch self {
+        case .chatGPT(_, let authURL, _):
+            authURL
+        }
+    }
+
+    package var nativeWebAuthentication: AppServerNativeWebAuthenticationRequest? {
+        switch self {
+        case .chatGPT(_, _, let nativeWebAuthentication):
+            nativeWebAuthentication
+        }
+    }
+
+    package static func chatGPT(
+        loginID: String,
+        authURL: String
+    ) -> Self {
+        .chatGPT(
+            loginID: loginID,
+            authURL: authURL,
+            nativeWebAuthentication: nil
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
         case type
         case loginID = "loginId"
         case authURL = "authUrl"
+        case nativeWebAuthentication = "nativeWebAuthentication"
     }
 }
 
@@ -396,6 +457,25 @@ package struct AppServerCancelLoginAccountResponse: Decodable, Sendable, Equatab
     package init(status: AppServerCancelLoginAccountStatus) {
         self.status = status
     }
+}
+
+package struct AppServerCompleteLoginAccountParams: Encodable, Sendable, Equatable {
+    package var loginID: String
+    package var callbackURL: String
+
+    package enum CodingKeys: String, CodingKey {
+        case loginID = "loginId"
+        case callbackURL = "callbackUrl"
+    }
+
+    package init(loginID: String, callbackURL: String) {
+        self.loginID = loginID
+        self.callbackURL = callbackURL
+    }
+}
+
+package struct AppServerCompleteLoginAccountResponse: Decodable, Sendable, Equatable {
+    package init() {}
 }
 
 package struct AppServerLogoutAccountResponse: Decodable, Sendable, Equatable {
