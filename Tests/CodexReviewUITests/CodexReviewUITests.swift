@@ -498,6 +498,95 @@ struct CodexReviewUITests {
         #expect(abs(expandedDocumentWidth - expandedLogWidth) < 32)
     }
 
+    @Test func detailLogShrinksAfterSidebarReopensIntoNarrowWidth() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-sidebar-width-shrink-regression",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            logText: Array(repeating: "Long line that should reflow when the detail pane narrows.\n", count: 40).joined()
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 960, height: 600)
+        )
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        let transport = viewController.transportViewControllerForTesting
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        window.layoutIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        let expandedDocumentWidth = transport.logDocumentViewFrameForTesting.width
+
+        sidebarItem.isCollapsed = true
+        window.setContentSize(NSSize(width: 360, height: 420))
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        await transport.flushMainQueueForTesting()
+
+        let compactDocumentWidth = transport.logDocumentViewFrameForTesting.width
+        let compactLogWidth = transport.logFrameForTesting.width
+
+        #expect(compactDocumentWidth < expandedDocumentWidth - 200)
+        #expect(abs(compactDocumentWidth - compactLogWidth) < 32)
+    }
+
+    @Test func detailLogTracksSimpleWindowResizeInBothDirections() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-window-resize-width-regression",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            logText: Array(repeating: "Long line that should reflow as the window resizes.\n", count: 40).joined()
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 960, height: 600)
+        )
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        window.layoutIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        let wideWidth = transport.logDocumentViewFrameForTesting.width
+
+        window.setContentSize(NSSize(width: 520, height: 420))
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        await transport.flushMainQueueForTesting()
+        let narrowWidth = transport.logDocumentViewFrameForTesting.width
+
+        window.setContentSize(NSSize(width: 900, height: 600))
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        await transport.flushMainQueueForTesting()
+        let widenedAgainWidth = transport.logDocumentViewFrameForTesting.width
+
+        #expect(narrowWidth < wideWidth - 150)
+        #expect(widenedAgainWidth > narrowWidth + 150)
+    }
+
     @Test func windowControllerDoesNotStartStoreWhenConstructed() {
         guard #available(macOS 26.0, *) else {
             return

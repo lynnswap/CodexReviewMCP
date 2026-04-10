@@ -3,12 +3,36 @@ import ReviewRuntime
 
 @MainActor
 final class ReviewMonitorLogScrollView: NSScrollView {
+    private final class DocumentContainerView: NSView {
+        var measuredTextHeight: @MainActor () -> CGFloat = { 0 }
+
+        override var isFlipped: Bool {
+            true
+        }
+
+        override var intrinsicContentSize: NSSize {
+            NSSize(
+                width: NSView.noIntrinsicMetric,
+                height: measuredTextHeight()
+            )
+        }
+
+        override func setFrameSize(_ newSize: NSSize) {
+            let widthChanged = abs(frame.width - newSize.width) > 0.5
+            super.setFrameSize(newSize)
+            if widthChanged {
+                invalidateIntrinsicContentSize()
+            }
+        }
+    }
+
     enum ScrollRestorationTarget: Equatable {
         case top
         case offset(CGFloat)
         case bottom
     }
 
+    private let documentContainerView = DocumentContainerView()
     let textView: NSTextView
     private let storage: NSTextStorage
     private let layoutManager: NSLayoutManager
@@ -48,7 +72,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
+        textView.translatesAutoresizingMaskIntoConstraints = false
 
         self.storage = storage
         self.layoutManager = layoutManager
@@ -61,7 +85,22 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         hasVerticalScroller = true
         autohidesScrollers = true
 
-        documentView = textView
+        documentContainerView.translatesAutoresizingMaskIntoConstraints = false
+        documentContainerView.measuredTextHeight = { [weak self] in
+            self?.measuredTextHeight() ?? 0
+        }
+        documentContainerView.addSubview(textView)
+        documentView = documentContainerView
+        NSLayoutConstraint.activate([
+            documentContainerView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            documentContainerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            documentContainerView.widthAnchor.constraint(equalTo: contentView.widthAnchor),
+            documentContainerView.heightAnchor.constraint(greaterThanOrEqualTo: contentView.heightAnchor),
+            textView.topAnchor.constraint(equalTo: documentContainerView.topAnchor),
+            textView.leadingAnchor.constraint(equalTo: documentContainerView.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: documentContainerView.trailingAnchor),
+            textView.bottomAnchor.constraint(equalTo: documentContainerView.bottomAnchor),
+        ])
         textView.textContainerInset = NSSize(width: 4, height: 6)
         textView.isEditable = false
         textView.isSelectable = true
@@ -83,7 +122,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         textView.writingToolsBehavior = NSWritingToolsBehavior.none
         textView.setAccessibilityIdentifier("review-monitor.activity-log")
         textView.font = baseFont
-        updateTextViewGeometry()
+        invalidateDocumentLayout()
     }
 
     @available(*, unavailable)
@@ -94,7 +133,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     override func tile() {
         let shouldPreserveBottom = displayedText.isEmpty == false && isPinnedToBottom()
         super.tile()
-        updateTextViewGeometry()
+        invalidateDocumentLayout()
         if shouldPreserveBottom {
             scrollToBottom(countAsAutoFollow: false)
         }
@@ -126,7 +165,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         let shouldAutoFollow = isPinnedToBottom()
         appendToTextStorage(suffix)
         displayedText += suffix
-        updateTextViewGeometry()
+        invalidateDocumentLayout()
         layoutSubtreeIfNeeded()
 #if DEBUG
         appendCount += 1
@@ -151,7 +190,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
 
         replaceAllText(with: text)
         displayedText = text
-        updateTextViewGeometry()
+        invalidateDocumentLayout()
         layoutSubtreeIfNeeded()
 #if DEBUG
         reloadCount += 1
@@ -188,19 +227,14 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         return String(text[suffixStart...])
     }
 
-    private func updateTextViewGeometry() {
-        let targetWidth = max(1, contentView.bounds.width)
-        if abs(textView.frame.width - targetWidth) > 0.5 {
-            textView.setFrameSize(NSSize(width: targetWidth, height: textView.frame.height))
-        }
+    private func invalidateDocumentLayout() {
+        documentContainerView.invalidateIntrinsicContentSize()
+    }
 
+    private func measuredTextHeight() -> CGFloat {
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
-        let textHeight = ceil(usedRect.height + textView.textContainerInset.height * 2)
-        let targetHeight = max(contentView.bounds.height, textHeight)
-        if abs(textView.frame.height - targetHeight) > 0.5 {
-            textView.setFrameSize(NSSize(width: textView.frame.width, height: targetHeight))
-        }
+        return ceil(usedRect.height + textView.textContainerInset.height * 2)
     }
 
     private func scrollToBottom(countAsAutoFollow: Bool) {
@@ -317,7 +351,7 @@ extension ReviewMonitorLogScrollView {
     }
 
     var documentViewFrameForTesting: NSRect {
-        textView.frame
+        documentContainerView.frame
     }
 
     func scrollToBottomForTesting() {
