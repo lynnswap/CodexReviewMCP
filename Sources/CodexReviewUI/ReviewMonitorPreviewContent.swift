@@ -3,8 +3,9 @@ import Foundation
 import ReviewJobs
 import ReviewRuntime
 
+@_spi(PreviewSupport)
 @MainActor
-enum ReviewMonitorPreviewContent {
+public enum ReviewMonitorPreviewContent {
     private struct PreviewJobDefinition {
         let status: CodexReviewJobStatus
         let targetSummary: String
@@ -16,12 +17,83 @@ enum ReviewMonitorPreviewContent {
         let hasFinalReview: Bool
     }
 
-    static func makeStore() -> CodexReviewStore {
+    @MainActor
+    private final class PreviewLogStreamer {
+        private weak var store: CodexReviewStore?
+        private let interval: Duration
+        private var task: Task<Void, Never>?
+        private var tick = 0
+        private let fragments = [
+            "delta/sidebar +4 -1",
+            "delta/layout +2 -0",
+            "delta/selection +1 -1",
+            "delta/transport +3 -2",
+            "delta/render +5 -3",
+            "delta/preview +2 -1",
+        ]
+
+        init(store: CodexReviewStore, interval: Duration) {
+            self.store = store
+            self.interval = interval
+            task = Task { [weak self, interval] in
+                while Task.isCancelled == false {
+                    try? await Task.sleep(for: interval)
+                    guard let self, Task.isCancelled == false else {
+                        return
+                    }
+                    self.emitTick()
+                }
+            }
+        }
+
+        deinit {
+            task?.cancel()
+        }
+
+        private func emitTick() {
+            guard let store else {
+                task?.cancel()
+                return
+            }
+
+            let runningJobs = store.workspaces
+                .flatMap(\.jobs)
+                .filter { $0.status == .running }
+
+            guard runningJobs.isEmpty == false else {
+                return
+            }
+
+            tick += 1
+            for (index, job) in runningJobs.enumerated() {
+                job.appendLogEntry(
+                    .init(
+                        kind: .progress,
+                        text: streamLine(forJobAt: index, tick: tick)
+                    )
+                )
+            }
+        }
+
+        private func streamLine(forJobAt index: Int, tick: Int) -> String {
+            let fragment = fragments[(tick + index) % fragments.count]
+            return String(format: "stream.tick %03d %@", tick, fragment)
+        }
+    }
+
+    @_spi(PreviewSupport)
+    public static func makeStore(
+        streamInterval: Duration = .seconds(1)
+    ) -> CodexReviewStore {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.loadForTesting(
             serverState: .running,
             serverURL: URL(string: "http://localhost:9417/mcp"),
             workspaces: makeWorkspaces()
+        )
+        store.previewSupportRetainer = PreviewLogStreamer(
+            store: store,
+            interval: streamInterval
         )
         return store
     }
@@ -40,7 +112,6 @@ enum ReviewMonitorPreviewContent {
                 makeJob(
                     id: "preview-\(workspaceIndex)-\(jobIndex)",
                     cwd: cwd,
-                    sortOrder: jobIndex,
                     model: definition.model,
                     status: definition.status,
                     targetSummary: definition.targetSummary,
@@ -49,17 +120,12 @@ enum ReviewMonitorPreviewContent {
                     summary: definition.summary,
                     hasFinalReview: definition.hasFinalReview,
                     lastAgentMessage: definition.lastAgentMessage,
-                    logText: """
-                    \(definition.summary)
-
-                    \(definition.lastAgentMessage)
-                    """
+                    logText: makePreviewLogText(for: definition)
                 )
             }
 
             return CodexReviewWorkspace(
                 cwd: cwd,
-                sortOrder: workspaceIndex + 1,
                 jobs: jobs
             )
         }
@@ -68,7 +134,6 @@ enum ReviewMonitorPreviewContent {
     private static func makeJob(
         id: String,
         cwd: String,
-        sortOrder: Int,
         model: String,
         status: CodexReviewJobStatus,
         targetSummary: String,
@@ -81,7 +146,6 @@ enum ReviewMonitorPreviewContent {
     ) -> CodexReviewJob {
         CodexReviewJob.makeForTesting(
             id: id,
-            sortOrder: sortOrder,
             cwd: cwd,
             targetSummary: targetSummary,
             model: model,
@@ -100,6 +164,29 @@ enum ReviewMonitorPreviewContent {
                 )
             ]
         )
+    }
+
+    private static func makePreviewLogText(for definition: PreviewJobDefinition) -> String {
+        if definition.status == .running {
+            return """
+            $ review.start
+            queue.pop -> session/open
+            turn.create -> 01HZX9M4K2
+            plan.delta + sidebar.scan
+            plan.delta + row.identity
+            plan.delta + log.scroll
+            item.start -> diff/sidebar
+            diff/sidebar +18 -6
+            item.start -> render/layout
+            render/layout frame=900x600
+            """
+        }
+
+        return """
+        \(definition.summary)
+
+        \(definition.lastAgentMessage)
+        """
     }
 
     private static func makeJobDefinitions(for workspaceName: String) -> [PreviewJobDefinition] {

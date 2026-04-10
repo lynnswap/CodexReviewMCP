@@ -4,7 +4,6 @@ import ReviewRuntime
 
 struct ReviewMonitorJobRowView: View {
     var job: CodexReviewJob
-    var onCancel: () -> Void = {}
 
     var body: some View {
         Label {
@@ -34,7 +33,7 @@ struct ReviewMonitorJobRowView: View {
         } icon: {
             ZStack {
                 Image(systemName: "circle.fill")
-                    .foregroundStyle(job.status.color)
+                    .foregroundStyle(.clear)
                 if job.status == .running {
                     ProgressView()
                         .controlSize(.mini)
@@ -44,12 +43,6 @@ struct ReviewMonitorJobRowView: View {
         }
         .transaction(value: job.id) { transaction in
             transaction.disablesAnimations = true
-        }
-        .contextMenu{
-            Button(role: .cancel, action: onCancel) {
-                Text("Cancel")
-            }
-            .disabled(job.isTerminal || job.cancellationRequested)
         }
     }
 

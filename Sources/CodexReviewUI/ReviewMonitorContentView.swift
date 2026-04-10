@@ -1,24 +1,24 @@
 import SwiftUI
 import CodexReviewModel
 
+#if DEBUG
 @available(macOS 26.0, *)
-public struct ReviewMonitorContentView: View {
+@MainActor
+private struct ReviewMonitorPreviewView: NSViewControllerRepresentable {
     let store: CodexReviewStore
 
-    public init(store: CodexReviewStore) {
-        self.store = store
+    func makeNSViewController(context: Context) -> ReviewMonitorSplitViewController {
+        ReviewMonitorSplitViewController(store: store)
     }
 
-    public var body: some View {
-        ReviewMonitorSplitViewRepresentable(store: store)
-            .ignoresSafeArea()
+    func updateNSViewController(_ nsViewController: ReviewMonitorSplitViewController, context: Context) {
     }
 }
 
-#if DEBUG
 #Preview {
     if #available(macOS 26.0, *) {
-        ReviewMonitorContentView(store: ReviewMonitorPreviewContent.makeStore())
+        ReviewMonitorPreviewView(store: ReviewMonitorPreviewContent.makeStore())
+            .frame(height:1000)
     }
 }
 #endif

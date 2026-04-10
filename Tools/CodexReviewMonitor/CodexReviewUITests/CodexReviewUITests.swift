@@ -25,12 +25,11 @@ final class CodexReviewUITests: XCTestCase {
 
     @MainActor
     func testLaunchDisplaysEmptyReviewState() throws {
-        try skipUnlessUITestsEnabled()
         let app = XCUIApplication()
         app.launch()
 
-        XCTAssertTrue(app.staticTexts["No active reviews"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Select a job"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["review-monitor.sidebar-empty.title"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["review-monitor.detail-empty.title"].waitForExistence(timeout: 5))
     }
 
     @MainActor

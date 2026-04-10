@@ -3,6 +3,19 @@ import ReviewRuntime
 
 @MainActor
 final class ReviewMonitorLogScrollView: NSScrollView {
+    private final class DocumentContainerView: NSView {
+        override var isFlipped: Bool {
+            true
+        }
+    }
+
+    enum ScrollRestorationTarget: Equatable {
+        case top
+        case offset(CGFloat)
+        case bottom
+    }
+
+    private let documentContainerView = DocumentContainerView()
     let textView: NSTextView
     private let storage: NSTextStorage
     private let layoutManager: NSLayoutManager
@@ -42,21 +55,29 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.autoresizingMask = NSView.AutoresizingMask(arrayLiteral: .width)
+        textView.translatesAutoresizingMaskIntoConstraints = false
 
         self.storage = storage
         self.layoutManager = layoutManager
         self.textContainer = textContainer
         self.textView = textView
         super.init(frame: .zero)
-
         translatesAutoresizingMaskIntoConstraints = false
         drawsBackground = false
         borderType = .noBorder
         hasVerticalScroller = true
         autohidesScrollers = true
-        documentView = textView
-
+        
+        documentContainerView.frame = .zero
+        documentContainerView.addSubview(textView)
+        NSLayoutConstraint.activate([
+            textView.topAnchor.constraint(equalTo: documentContainerView.topAnchor),
+            textView.leadingAnchor.constraint(equalTo: documentContainerView.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: documentContainerView.trailingAnchor),
+            textView.bottomAnchor.constraint(equalTo: documentContainerView.bottomAnchor),
+        ])
+        documentView = documentContainerView
+        textView.textContainerInset = NSSize(width: 4, height: 6)
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
@@ -95,23 +116,20 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     }
 
     @discardableResult
-    func apply(update: ReviewMonitorLogUpdate) -> Bool {
-        switch update {
-        case .append(let suffix):
-            applyAppend(suffix)
-        case .reload(let text):
-            applyReload(text, preserveScrollPosition: true)
-        }
-    }
-
-    @discardableResult
     func clear() -> Bool {
-        applyReload("", preserveScrollPosition: false)
+        applyReload("", restoring: .top, countBottomRestoreAsAutoFollow: false)
     }
 
     @discardableResult
-    func replaceText(_ text: String, preserveScrollPosition: Bool) -> Bool {
-        applyReload(text, preserveScrollPosition: preserveScrollPosition)
+    func replaceText(
+        _ text: String,
+        restoring restorationTarget: ScrollRestorationTarget,
+        allowIncrementalUpdate: Bool
+    ) -> Bool {
+        if allowIncrementalUpdate, let suffix = appendedSuffix(for: text) {
+            return applyAppend(suffix)
+        }
+        return applyReload(text, restoring: restorationTarget, countBottomRestoreAsAutoFollow: false)
     }
 
     @discardableResult
@@ -135,19 +153,17 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     }
 
     @discardableResult
-    private func applyReload(_ text: String, preserveScrollPosition: Bool) -> Bool {
+    private func applyReload(
+        _ text: String,
+        restoring restorationTarget: ScrollRestorationTarget,
+        countBottomRestoreAsAutoFollow: Bool
+    ) -> Bool {
         if displayedText == text {
-            if preserveScrollPosition {
-                return false
-            }
-
             let previousOrigin = contentView.bounds.origin
-            restoreScrollOrigin(.zero)
+            restoreScrollPosition(restorationTarget, countAsAutoFollow: countBottomRestoreAsAutoFollow)
             return contentView.bounds.origin != previousOrigin
         }
 
-        let shouldAutoFollow = preserveScrollPosition && isPinnedToBottom()
-        let preservedOrigin = contentView.bounds.origin
         replaceAllText(with: text)
         displayedText = text
         updateDocumentGeometry()
@@ -155,13 +171,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
 #if DEBUG
         reloadCount += 1
 #endif
-        if shouldAutoFollow {
-            scrollToBottom(countAsAutoFollow: true)
-        } else if preserveScrollPosition {
-            restoreScrollOrigin(preservedOrigin)
-        } else {
-            restoreScrollOrigin(.zero)
-        }
+        restoreScrollPosition(restorationTarget, countAsAutoFollow: countBottomRestoreAsAutoFollow)
         return true
     }
 
@@ -183,29 +193,43 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         storage.endEditing()
     }
 
+    private func appendedSuffix(for text: String) -> String? {
+        guard text.count > displayedText.count,
+              text.hasPrefix(displayedText)
+        else {
+            return nil
+        }
+        let suffixStart = text.index(text.startIndex, offsetBy: displayedText.count)
+        return String(text[suffixStart...])
+    }
+
     private func updateDocumentGeometry() {
+        let targetWidth = max(0, contentSize.width)
+        if documentContainerView.frame.width != targetWidth {
+            documentContainerView.frame = NSRect(
+                origin: documentContainerView.frame.origin,
+                size: NSSize(width: targetWidth, height: documentContainerView.frame.height)
+            )
+            documentContainerView.layoutSubtreeIfNeeded()
+        }
+
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
+        let textHeight = ceil(usedRect.height + textView.textContainerInset.height * 2)
         let targetSize = NSSize(
-            width: max(0, contentSize.width),
-            height: max(contentSize.height, ceil(usedRect.height + textView.textContainerInset.height * 2))
+            width: targetWidth,
+            height: max(contentSize.height, textHeight)
         )
 
-        if textView.frame.size != targetSize {
-            textView.frame = NSRect(origin: .zero, size: targetSize)
+        if documentContainerView.frame.size != targetSize {
+            documentContainerView.frame = NSRect(origin: .zero, size: targetSize)
         }
+
+        documentContainerView.layoutSubtreeIfNeeded()
     }
 
     private func scrollToBottom(countAsAutoFollow: Bool) {
-        guard let documentView else {
-            return
-        }
-        let maxY = max(0, documentView.frame.height - contentView.bounds.height)
-        let targetOrigin = contentView.constrainBoundsRect(
-            NSRect(origin: NSPoint(x: 0, y: maxY), size: contentView.bounds.size)
-        ).origin
-        contentView.scroll(to: targetOrigin)
-        reflectScrolledClipView(contentView)
+        restoreScrollOrigin(NSPoint(x: 0, y: maximumVerticalScrollOffset()))
 #if DEBUG
         if countAsAutoFollow {
             autoFollowCount += 1
@@ -226,13 +250,51 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         reflectScrolledClipView(contentView)
     }
 
-    private func isPinnedToBottom() -> Bool {
+    private func restoreScrollPosition(
+        _ restorationTarget: ScrollRestorationTarget,
+        countAsAutoFollow: Bool
+    ) {
+        switch restorationTarget {
+        case .top:
+            restoreScrollOrigin(.zero)
+        case .offset(let y):
+            restoreScrollOrigin(NSPoint(x: 0, y: y))
+        case .bottom:
+            scrollToBottom(countAsAutoFollow: countAsAutoFollow)
+        }
+    }
+
+    var currentScrollRestorationTarget: ScrollRestorationTarget {
+        guard displayedText.isEmpty == false else {
+            return .top
+        }
+
+        let maxOffset = maximumVerticalScrollOffset()
+        guard maxOffset > 0 else {
+            return .top
+        }
+
+        let offset = contentView.bounds.origin.y
+        if abs(offset - maxOffset) < 0.5 {
+            return .bottom
+        }
+
+        return offset > 0 ? .offset(offset) : .top
+    }
+
+    private func maximumVerticalScrollOffset() -> CGFloat {
         guard let documentView else {
+            return 0
+        }
+        return max(0, documentView.frame.height - contentView.bounds.height)
+    }
+
+    private func isPinnedToBottom() -> Bool {
+        let maxOffset = maximumVerticalScrollOffset()
+        guard maxOffset > 0 else {
             return true
         }
-        let visibleMaxY = contentView.bounds.maxY
-        let documentMaxY = documentView.frame.maxY
-        return documentMaxY - visibleMaxY < 24
+        return maxOffset - contentView.bounds.origin.y < 24
     }
 }
 
@@ -273,6 +335,14 @@ extension ReviewMonitorLogScrollView {
 
     var verticalScrollOffsetForTesting: CGFloat {
         contentView.bounds.origin.y
+    }
+
+    var textViewFrameForTesting: NSRect {
+        textView.frame
+    }
+
+    var documentViewFrameForTesting: NSRect {
+        documentContainerView.frame
     }
 
     func scrollToBottomForTesting() {

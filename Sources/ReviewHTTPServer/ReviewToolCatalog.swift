@@ -94,16 +94,16 @@ enum ReviewToolCatalog {
     private static let reviewReadInputSchema: Value = [
         "type": "object",
         "properties": [
-            "reviewThreadId": ["type": "string", "description": "The `reviewThreadId` returned by `review_start` or `review_list`. See `\(ReviewHelpCatalog.toolURI("review_read"))` for usage."],
+            "jobId": ["type": "string", "description": "The `jobId` returned by `review_start` or `review_list`. See `\(ReviewHelpCatalog.toolURI("review_read"))` for usage."],
         ],
-        "required": ["reviewThreadId"],
+        "required": ["jobId"],
         "additionalProperties": false,
     ]
 
     private static let cancelInputSchema: Value = [
         "type": "object",
         "properties": [
-            "reviewThreadId": ["type": "string", "description": "Cancel a specific review job by ID."],
+            "jobId": ["type": "string", "description": "Cancel a specific review job by ID."],
             "cwd": ["type": "string", "description": "Optional selector that narrows matches to a repository path."],
             "statuses": [
                 "type": "array",
@@ -113,7 +113,6 @@ enum ReviewToolCatalog {
                 ],
                 "description": "Optional selector statuses. If omitted, queued and running jobs are considered.",
             ],
-            "latest": ["type": "boolean", "description": "When using selector mode, cancel the most recent matching job instead of requiring a unique match."],
         ],
         "additionalProperties": false,
     ]

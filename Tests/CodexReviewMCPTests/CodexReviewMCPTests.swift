@@ -399,7 +399,7 @@ struct CodexReviewMCPTests {
         await sessionBTransport.waitForRequest("review/start")
 
         _ = try await store.cancelReview(
-            selector: .init(reviewThreadID: nil, cwd: nil, statuses: [.running], latest: true),
+            selector: .init(cwd: nil, statuses: [.running]),
             sessionID: "session-a"
         )
         let cancelledResult = try await sessionAReview.value
@@ -484,7 +484,7 @@ struct CodexReviewMCPTests {
         await transport.waitForRequest("config/read")
 
         let cancelResult = try await store.cancelReview(
-            selector: .init(reviewThreadID: nil, cwd: nil, statuses: [.running], latest: true),
+            selector: .init(cwd: nil, statuses: [.running]),
             sessionID: "session-bootstrap"
         )
 

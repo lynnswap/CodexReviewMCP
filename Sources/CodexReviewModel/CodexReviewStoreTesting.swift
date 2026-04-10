@@ -37,7 +37,6 @@ extension CodexReviewStore {
 
         for workspace in workspaces {
             if let existingWorkspace = existingByCWD.removeValue(forKey: workspace.cwd) {
-                existingWorkspace.sortOrder = workspace.sortOrder
                 existingWorkspace.jobs = workspace.jobs
                 resolvedWorkspaces.append(existingWorkspace)
             } else {

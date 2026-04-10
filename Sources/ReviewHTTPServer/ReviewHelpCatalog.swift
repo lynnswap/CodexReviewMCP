@@ -207,7 +207,7 @@ package enum ReviewHelpCatalog {
     }
 
     package static var reviewCancelDescription: String {
-        "Cancel a running review job owned by the current MCP session. Pass either `reviewThreadId` or a selector (`cwd`, `statuses`, `latest`). Read `\(toolURI("review_cancel"))` for details."
+        "Cancel a running review job owned by the current MCP session. Pass either `jobId` or a selector (`cwd`, `statuses`). Read `\(toolURI("review_cancel"))` for details."
     }
 
     private static var overviewMarkdown: String {
@@ -301,7 +301,7 @@ package enum ReviewHelpCatalog {
 
             ## Returns
 
-            - `reviewThreadId`
+            - `jobId`
             - `threadId`
             - `turnId`
             - `model` (effective resolved review model)
@@ -327,13 +327,13 @@ package enum ReviewHelpCatalog {
             return """
             # `review_read`
 
-            Reads one known review job by `reviewThreadId`.
+            Reads one known review job by `jobId`.
 
             ## Minimal Input
 
             ```json
             {
-              "reviewThreadId": "<id returned by review_start>"
+              "jobId": "<id returned by review_start>"
             }
             ```
 
@@ -371,7 +371,7 @@ package enum ReviewHelpCatalog {
 
             ```json
             {
-              "reviewThreadId": "<id>"
+              "jobId": "<id>"
             }
             ```
 
@@ -379,8 +379,7 @@ package enum ReviewHelpCatalog {
 
             ```json
             {
-              "cwd": "/absolute/path/to/repo",
-              "latest": true
+              "cwd": "/absolute/path/to/repo"
             }
             ```
             """

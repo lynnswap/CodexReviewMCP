@@ -83,7 +83,7 @@ Key inputs:
 
 Returns:
 
-- `reviewThreadId`
+- `jobId`
 - `threadId` when available
 - `turnId`
 - `model` effective resolved review model
@@ -116,7 +116,7 @@ This is optional for normal clients because `review_start` already returns the f
 
 Returns:
 
-- `reviewThreadId`
+- `jobId`
 - `threadId` when available
 - `turnId`
 - `model` effective resolved review model
@@ -140,7 +140,7 @@ Optional inputs:
 Returns:
 
 - `items`
-  - `reviewThreadId`
+  - `jobId`
   - `cwd`
   - `targetSummary`
   - `model` effective resolved review model
@@ -160,17 +160,15 @@ Cancels a review job owned by the current MCP session.
 Inputs:
 
 - exact:
-  - `reviewThreadId`
+  - `jobId`
 - selector:
   - `cwd`
   - `statuses`
-  - `latest`
 
 Notes:
 
 - `cwd` is a search key, not a unique identifier.
-- When `latest: true`, the newest matching active review is selected automatically.
-- Without `reviewThreadId`, `review_cancel` searches only the current MCP session.
+- Without `jobId`, `review_cancel` searches only the current MCP session.
 
 ## Resources
 

@@ -21,7 +21,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
             ]
         )
 
@@ -45,7 +45,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
             ]
         )
 
@@ -75,7 +75,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
             ]
         )
 
@@ -107,7 +107,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
             ]
         )
 
@@ -137,7 +137,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
             ]
         )
 
@@ -170,7 +170,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
             ]
         )
 
@@ -214,7 +214,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
             ]
         )
 
@@ -243,7 +243,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
             ]
         )
 
@@ -272,7 +272,7 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", sortOrder: 1, jobs: [job]),
+                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
             ]
         )
 

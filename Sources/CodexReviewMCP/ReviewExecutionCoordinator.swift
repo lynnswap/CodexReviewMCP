@@ -100,7 +100,7 @@ package actor ReviewExecutionCoordinator {
     }
 
     package func cancelReview(
-        reviewThreadID: String,
+        jobID: String,
         sessionID: String,
         reason: String = "Cancellation requested.",
         store: CodexReviewStore
@@ -108,7 +108,7 @@ package actor ReviewExecutionCoordinator {
         let normalizedReason = reason.nilIfEmpty ?? "Cancellation requested."
         let job = try await store.resolveJob(
             sessionID: sessionID,
-            selector: .init(reviewThreadID: reviewThreadID)
+            selector: .init(jobID: jobID)
         )
         return try await cancelResolvedJob(
             job: job,
@@ -369,14 +369,13 @@ package actor ReviewExecutionCoordinator {
         if result.signalled {
             await interruptBootstrapIfPresent(jobID: job.id)
         }
-        let resolvedReviewThreadID = await job.reviewThreadID
         let resolvedThreadID = await job.threadID
         let status = await job.status.state
         let cancelled = result.state == .cancelled
             || status == .cancelled
             || (result.signalled && status == .running)
         return ReviewCancelOutcome(
-            reviewThreadID: resolvedReviewThreadID ?? job.id,
+            jobID: job.id,
             threadID: resolvedThreadID,
             cancelled: cancelled,
             status: status

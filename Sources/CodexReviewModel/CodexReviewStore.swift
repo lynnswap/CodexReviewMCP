@@ -14,6 +14,7 @@ public final class CodexReviewStore {
 
     @ObservationIgnored package let diagnosticsURL: URL?
     @ObservationIgnored package let backend: any CodexReviewStoreBackend
+    @ObservationIgnored package var previewSupportRetainer: AnyObject?
 
     package init(
         backend: any CodexReviewStoreBackend,
