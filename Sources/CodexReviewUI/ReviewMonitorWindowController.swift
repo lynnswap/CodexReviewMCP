@@ -105,6 +105,7 @@ public final class ReviewMonitorWindowController: NSWindowController {
     }
 
     private func showSplitView(in window: NSWindow) {
+        window.isMovableByWindowBackground = false
         window.title = "Untitled"
         window.subtitle = ""
         splitViewController.attach(to: window)
@@ -117,6 +118,7 @@ public final class ReviewMonitorWindowController: NSWindowController {
 
     private func showSignInView(in window: NSWindow) {
         splitViewController.detachFromWindow()
+        window.isMovableByWindowBackground = true
         window.toolbar = nil
         window.title = ""
         window.subtitle = ""

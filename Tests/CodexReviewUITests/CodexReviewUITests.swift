@@ -148,6 +148,7 @@ struct CodexReviewUITests {
         #expect(window.titleVisibility == .visible)
         #expect(window.title == "Untitled")
         #expect(window.subtitle == "")
+        #expect(window.isMovableByWindowBackground == false)
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
     }
@@ -191,6 +192,7 @@ struct CodexReviewUITests {
         #expect(window.titleVisibility == .hidden)
         #expect(window.title == "")
         #expect(window.subtitle == "")
+        #expect(window.isMovableByWindowBackground)
     }
 
     @Test func windowControllerRefreshesAuthStateOnInitialLoad() async {
@@ -225,6 +227,7 @@ struct CodexReviewUITests {
         #expect(window.toolbar == nil)
         #expect(window.title == "")
         #expect(window.subtitle == "")
+        #expect(window.isMovableByWindowBackground)
     }
 
     @Test func windowControllerCrossfadesBackToSplitViewAfterAuthentication() async throws {
@@ -243,6 +246,7 @@ struct CodexReviewUITests {
         try await waitForDisplayedContentKind(harness.windowController, .splitView)
 
         #expect(window.toolbar != nil)
+        #expect(window.isMovableByWindowBackground == false)
     }
 
     @Test func windowControllerRapidAuthFlipsKeepLatestContentEmbedded() async throws {
