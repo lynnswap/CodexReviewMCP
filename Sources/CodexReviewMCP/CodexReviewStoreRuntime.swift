@@ -1033,7 +1033,9 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
                 callbackURL: callbackURL.absoluteString
             )
         } catch let error as AppServerResponseError where error.isUnsupportedMethod {
-            return
+            throw ReviewAuthError.loginFailed(
+                "Authentication completion is unavailable. Update the app-server and try again."
+            )
         }
     }
 
@@ -1314,17 +1316,27 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func logout(auth: CodexReviewAuthModel) async {
         authRefreshTask?.cancel()
         authRefreshTask = nil
+        let wasAuthenticated = auth.isAuthenticated
+        let accountID = auth.accountID
         do {
             let state = try await authManager.logout()
             auth.updateState(state)
             await recycleSharedAppServerAfterAuthChange()
         } catch let error as ReviewAuthError {
             auth.updateState(
-                .failed(error.errorDescription ?? "Failed to sign out.")
+                .failed(
+                    error.errorDescription ?? "Failed to sign out.",
+                    isAuthenticated: wasAuthenticated,
+                    accountID: accountID
+                )
             )
         } catch {
             auth.updateState(
-                .failed(error.localizedDescription)
+                .failed(
+                    error.localizedDescription,
+                    isAuthenticated: wasAuthenticated,
+                    accountID: accountID
+                )
             )
         }
     }

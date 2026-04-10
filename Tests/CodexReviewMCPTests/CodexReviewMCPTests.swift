@@ -669,7 +669,13 @@ struct CodexReviewMCPTests {
         store.auth.updateState(.signedIn(accountID: "review@example.com"))
         await store.auth.logout()
 
-        #expect(store.auth.state == .failed("Failed to sign out."))
+        #expect(
+            store.auth.state == .failed(
+                "Failed to sign out.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
         #expect(await manager.prepareCount() == 1)
         #expect(await manager.shutdownCount() == 0)
 
@@ -706,7 +712,7 @@ struct CodexReviewMCPTests {
         #expect(await manager.authTransportCheckoutCount() > 0)
         #expect(performer.lastAuthenticateRequest?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
         #expect(performer.lastAuthenticateRequest?.prefersEphemeral == true)
-        let authTransport = await manager.authTransportForTesting()
+        let authTransport = try #require(await manager.authTransportForTesting())
         #expect(await authTransport.completeParams()?.callbackURL == "lynnpd.codexreviewmonitor.auth://callback?code=123")
         #expect(store.auth.state == CodexReviewAuthModel.State.signedIn(accountID: "review@example.com"))
     }
@@ -734,10 +740,44 @@ struct CodexReviewMCPTests {
 
         await store.auth.beginAuthentication()
 
-        let authTransport = await manager.authTransportForTesting()
+        let authTransport = try #require(await manager.authTransportForTesting())
         #expect(await authTransport.completeParams() == nil)
         #expect(performer.cancelCallCount == 1)
         #expect(store.auth.state == CodexReviewAuthModel.State.signedOut)
+    }
+
+    @Test func reviewMonitorStoreFailsNativeAuthenticationWhenCompleteEndpointIsUnsupported() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransport: AuthCapableAppServerSessionTransport(
+                completeLoginBehavior: .unsupported
+            )
+        )
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+
+        await store.auth.beginAuthentication()
+
+        #expect(
+            store.auth.state == .failed(
+                "Authentication completion is unavailable. Update the app-server and try again."
+            )
+        )
     }
 
     @Test func nativeAuthSessionFinishesLateSubscribersAfterCancellation() async throws {
@@ -1776,11 +1816,15 @@ private actor AuthCapableAppServerManager: AppServerManaging {
         processGroupLeaderPID: 200,
         processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
     )
-    private let authTransport = AuthCapableAppServerSessionTransport()
+    private let authTransport: any AppServerSessionTransport
     private var authCheckoutCountStorage = 0
     private var reviewCheckoutCountStorage = 0
     private var shutdownCountStorage = 0
     private var prepareCountStorage = 0
+
+    init(authTransport: any AppServerSessionTransport = AuthCapableAppServerSessionTransport()) {
+        self.authTransport = authTransport
+    }
 
     func prepare() async throws -> AppServerRuntimeState {
         prepareCountStorage += 1
@@ -1819,8 +1863,8 @@ private actor AuthCapableAppServerManager: AppServerManaging {
         authCheckoutCountStorage
     }
 
-    func authTransportForTesting() -> AuthCapableAppServerSessionTransport {
-        authTransport
+    func authTransportForTesting() -> AuthCapableAppServerSessionTransport? {
+        authTransport as? AuthCapableAppServerSessionTransport
     }
 
     func reviewTransportCheckoutCount() -> Int {
@@ -1946,6 +1990,11 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
 }
 
 private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
+    enum CompleteLoginBehavior {
+        case succeed
+        case unsupported
+    }
+
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var isClosedStorage = false
     private var recordedCompleteParams: AppServerCompleteLoginAccountParams?
@@ -1953,6 +2002,11 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         "account": NSNull(),
         "requiresOpenaiAuth": true,
     ]
+    private let completeLoginBehavior: CompleteLoginBehavior
+
+    init(completeLoginBehavior: CompleteLoginBehavior = .succeed) {
+        self.completeLoginBehavior = completeLoginBehavior
+    }
 
     func initializeResponse() async -> AppServerInitializeResponse {
         .init(
@@ -1985,6 +2039,12 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
                 as: responseType
             )
         case "account/login/complete":
+            switch completeLoginBehavior {
+            case .succeed:
+                break
+            case .unsupported:
+                throw AppServerResponseError(code: -32601, message: "method not found")
+            }
             recordedCompleteParams = params as? AppServerCompleteLoginAccountParams
             accountReadResponseObject = [
                 "account": [
