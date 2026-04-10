@@ -1000,6 +1000,26 @@ extension ReviewMonitorSidebarViewController {
         outlineView.presentContextMenuForTesting(at: point, presenter: presenter)
     }
 
+    func focusSidebarForTesting() {
+        _ = view.window?.makeFirstResponder(outlineView)
+    }
+
+    var sidebarHasFirstResponderForTesting: Bool {
+        view.window?.firstResponder === outlineView
+    }
+
+    var isPresentingContextMenuForTesting: Bool {
+        outlineView.isPresentingContextMenuForTesting
+    }
+
+    var acceptsFirstResponderForTesting: Bool {
+        outlineView.acceptsFirstResponderForTesting
+    }
+
+    var hasTemporaryContextMenuForTesting: Bool {
+        outlineView.menu != nil
+    }
+
     func workspaceIsExpandedForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
         workspace.isExpanded
     }
@@ -1157,8 +1177,9 @@ extension ReviewMonitorSidebarViewController {
 private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
     var inertRowEvaluator: ((Int) -> Bool)?
     var contextMenuProvider: ((NSPoint) -> NSMenu?)?
-    var contextMenuPresenter: ((NSMenu, NSEvent, NSView) -> Void)?
     private var isPresentingContextMenu = false
+    private weak var contextMenuFirstResponder: NSResponder?
+    private var previousContextMenu: NSMenu?
 
     override var acceptsFirstResponder: Bool {
         isPresentingContextMenu ? false : super.acceptsFirstResponder
@@ -1178,22 +1199,20 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
             return
         }
 
-        let previousFirstResponder = window?.firstResponder
-        let shouldRestoreFirstResponder = previousFirstResponder.map(isSidebarFirstResponder(_:)) ?? false
-        if shouldRestoreFirstResponder {
-            isPresentingContextMenu = true
-            _ = window?.makeFirstResponder(nil)
+        beginContextMenuPresentation(with: contextMenu)
+        super.rightMouseDown(with: event)
+
+        if isPresentingContextMenu {
+            endContextMenuPresentation()
         }
-        defer {
-            if shouldRestoreFirstResponder {
-                restoreFirstResponder(previousFirstResponder)
-            }
-            isPresentingContextMenu = false
+    }
+
+    override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+        super.didCloseMenu(menu, with: event)
+        guard isPresentingContextMenu else {
+            return
         }
-        let contextMenuPresenter = contextMenuPresenter ?? { menu, event, view in
-            NSMenu.popUpContextMenu(menu, with: event, for: view)
-        }
-        contextMenuPresenter(contextMenu, event, self)
+        endContextMenuPresentation()
     }
 
     private func shouldSuppressSelectionClearing(at point: NSPoint) -> Bool {
@@ -1254,6 +1273,41 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
         _ = window.makeFirstResponder(self)
     }
 
+    private func beginContextMenuPresentation(with contextMenu: NSMenu) {
+        previousContextMenu = menu
+        menu = contextMenu
+        isPresentingContextMenu = true
+
+        guard let window else {
+            contextMenuFirstResponder = nil
+            return
+        }
+
+        let previousFirstResponder = window.firstResponder
+        guard previousFirstResponder.map(isSidebarFirstResponder(_:)) ?? false else {
+            contextMenuFirstResponder = nil
+            return
+        }
+
+        contextMenuFirstResponder = previousFirstResponder
+        _ = window.makeFirstResponder(nil)
+    }
+
+    private func endContextMenuPresentation() {
+        let previousFirstResponder = contextMenuFirstResponder
+        let previousContextMenu = previousContextMenu
+
+        contextMenuFirstResponder = nil
+        self.previousContextMenu = nil
+        isPresentingContextMenu = false
+        menu = previousContextMenu
+
+        guard let previousFirstResponder else {
+            return
+        }
+        restoreFirstResponder(previousFirstResponder)
+    }
+
 #if DEBUG
     func performInertClickForTesting(at point: NSPoint) {
         handlePrimaryInteraction(at: point) {
@@ -1269,36 +1323,25 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
         at point: NSPoint,
         presenter: @escaping (NSMenu) -> Void
     ) {
-        let previousPresenter = contextMenuPresenter
-        contextMenuPresenter = { menu, _, _ in
-            presenter(menu)
-        }
-        defer {
-            contextMenuPresenter = previousPresenter
-        }
-        let event = contextMenuEventForTesting(at: point)
-        rightMouseDown(with: event)
-    }
-
-    private func contextMenuEventForTesting(at point: NSPoint) -> NSEvent {
-        guard let window = self.window else {
+        guard window != nil else {
             fatalError("Sidebar outline view must be attached to a window for context menu testing.")
         }
-        let locationInWindow = convert(point, to: nil)
-        guard let event = NSEvent.mouseEvent(
-            with: .rightMouseDown,
-            location: locationInWindow,
-            modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: window.windowNumber,
-            context: nil,
-            eventNumber: 0,
-            clickCount: 1,
-            pressure: 1
-        ) else {
-            fatalError("Failed to create a synthetic context-menu event.")
+        guard let contextMenu = contextMenuProvider?(point) else {
+            return
         }
-        return event
+        beginContextMenuPresentation(with: contextMenu)
+        presenter(contextMenu)
+        if isPresentingContextMenu {
+            endContextMenuPresentation()
+        }
+    }
+
+    var isPresentingContextMenuForTesting: Bool {
+        isPresentingContextMenu
+    }
+
+    var acceptsFirstResponderForTesting: Bool {
+        acceptsFirstResponder
     }
 
 #endif

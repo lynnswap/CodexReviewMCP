@@ -994,6 +994,51 @@ struct CodexReviewUITests {
         #expect(job.endedAt == nil)
     }
 
+    @Test func sidebarContextMenuPresentationRestoresResponderStateAfterClosing() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-running",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review."
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: [job])
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        sidebar.focusSidebarForTesting()
+
+        #expect(sidebar.sidebarHasFirstResponderForTesting)
+        #expect(sidebar.acceptsFirstResponderForTesting)
+        #expect(sidebar.hasTemporaryContextMenuForTesting == false)
+
+        var presentedTitles: [String] = []
+        sidebar.presentContextMenuForTesting(for: job) { menu in
+            presentedTitles = menu.items.map(\.title)
+            #expect(sidebar.isPresentingContextMenuForTesting)
+            #expect(sidebar.acceptsFirstResponderForTesting == false)
+            #expect(sidebar.sidebarHasFirstResponderForTesting == false)
+            #expect(sidebar.hasTemporaryContextMenuForTesting)
+        }
+
+        #expect(presentedTitles == ["Cancel"])
+        #expect(sidebar.isPresentingContextMenuForTesting == false)
+        #expect(sidebar.acceptsFirstResponderForTesting)
+        #expect(sidebar.sidebarHasFirstResponderForTesting)
+        #expect(sidebar.hasTemporaryContextMenuForTesting == false)
+    }
+
     @Test func jobsPresentOnInitialLoadStayUnselected() {
         guard #available(macOS 26.0, *) else {
             return
