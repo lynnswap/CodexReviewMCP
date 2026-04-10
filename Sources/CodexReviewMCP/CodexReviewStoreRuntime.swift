@@ -1431,8 +1431,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     }
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        let priorState = auth.state
         await authManager.cancelAuthentication()
-        auth.updateState(.signedOut)
+        auth.updateState(priorState.isAuthenticated ? priorState : .signedOut)
     }
 
     func logout(auth: CodexReviewAuthModel) async {
