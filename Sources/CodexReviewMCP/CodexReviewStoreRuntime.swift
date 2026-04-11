@@ -1517,8 +1517,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         authRefreshTask = nil
         do {
             let state = try await authManager.logout()
-            auth.updateState(state)
             await recycleSharedAppServerAfterAuthChange()
+            auth.updateState(state)
         } catch let error as ReviewAuthError {
             await resolveLogoutFailureState(
                 auth: auth,
