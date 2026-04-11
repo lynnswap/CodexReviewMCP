@@ -514,9 +514,11 @@ struct CodexReviewUITests {
 
         let expandedDocumentWidth = transport.logDocumentViewFrameForTesting.width
         let expandedLogWidth = transport.logFrameForTesting.width
+        let expandedTextWidth = transport.logTextViewFrameForTesting.width
 
         #expect(expandedDocumentWidth > compactDocumentWidth + 200)
         #expect(abs(expandedDocumentWidth - expandedLogWidth) < 32)
+        #expect(abs(expandedTextWidth - expandedLogWidth) < 32)
     }
 
     @Test func detailLogShrinksAfterSidebarReopensIntoNarrowWidth() async throws {
@@ -557,9 +559,11 @@ struct CodexReviewUITests {
 
         let compactDocumentWidth = transport.logDocumentViewFrameForTesting.width
         let compactLogWidth = transport.logFrameForTesting.width
+        let compactTextWidth = transport.logTextViewFrameForTesting.width
 
         #expect(compactDocumentWidth < expandedDocumentWidth - 200)
         #expect(abs(compactDocumentWidth - compactLogWidth) < 32)
+        #expect(abs(compactTextWidth - compactLogWidth) < 32)
     }
 
     @Test func detailLogTracksSimpleWindowResizeInBothDirections() async throws {
@@ -596,6 +600,8 @@ struct CodexReviewUITests {
         transport.view.layoutSubtreeIfNeeded()
         await transport.flushMainQueueForTesting()
         let narrowWidth = transport.logDocumentViewFrameForTesting.width
+        let narrowTextWidth = transport.logTextViewFrameForTesting.width
+        let narrowLogWidth = transport.logFrameForTesting.width
 
         window.setContentSize(NSSize(width: 900, height: 600))
         window.layoutIfNeeded()
@@ -603,9 +609,15 @@ struct CodexReviewUITests {
         transport.view.layoutSubtreeIfNeeded()
         await transport.flushMainQueueForTesting()
         let widenedAgainWidth = transport.logDocumentViewFrameForTesting.width
+        let widenedAgainTextWidth = transport.logTextViewFrameForTesting.width
+        let widenedAgainLogWidth = transport.logFrameForTesting.width
 
         #expect(narrowWidth < wideWidth - 150)
         #expect(widenedAgainWidth > narrowWidth + 150)
+        #expect(abs(narrowWidth - narrowLogWidth) < 32)
+        #expect(abs(narrowTextWidth - narrowLogWidth) < 32)
+        #expect(abs(widenedAgainWidth - widenedAgainLogWidth) < 32)
+        #expect(abs(widenedAgainTextWidth - widenedAgainLogWidth) < 32)
     }
 
     @Test func windowControllerDoesNotStartStoreWhenConstructed() {

@@ -5,6 +5,7 @@ import ReviewRuntime
 final class ReviewMonitorLogScrollView: NSScrollView {
     private final class DocumentContainerView: NSView {
         var measuredTextHeight: @MainActor () -> CGFloat = { 0 }
+        private var lastLayoutWidth: CGFloat = 0
 
         override var isFlipped: Bool {
             true
@@ -23,6 +24,16 @@ final class ReviewMonitorLogScrollView: NSScrollView {
             if widthChanged {
                 invalidateIntrinsicContentSize()
             }
+        }
+
+        override func layout() {
+            super.layout()
+            let width = bounds.width
+            guard abs(lastLayoutWidth - width) > 0.5 else {
+                return
+            }
+            lastLayoutWidth = width
+            invalidateIntrinsicContentSize()
         }
     }
 
@@ -94,6 +105,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         NSLayoutConstraint.activate([
             documentContainerView.topAnchor.constraint(equalTo: contentView.topAnchor),
             documentContainerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            documentContainerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             documentContainerView.widthAnchor.constraint(equalTo: contentView.widthAnchor),
             documentContainerView.heightAnchor.constraint(greaterThanOrEqualTo: contentView.heightAnchor),
             textView.topAnchor.constraint(equalTo: documentContainerView.topAnchor),
@@ -137,6 +149,11 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         if shouldPreserveBottom {
             scrollToBottom(countAsAutoFollow: false)
         }
+    }
+
+    override func layout() {
+        super.layout()
+        invalidateDocumentLayout()
     }
 
     @discardableResult
