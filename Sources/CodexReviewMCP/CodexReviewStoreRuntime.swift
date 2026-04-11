@@ -1432,6 +1432,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             do {
                 try await restartSharedAppServerForAuthenticationRetry()
                 try await beginAuthenticationAttempt(auth: auth, priorState: priorState)
+            } catch ReviewAuthError.cancelled {
+                auth.updateState(authenticationRestoreState(from: priorState))
             } catch {
                 updateAuthenticationFailureState(error, auth: auth, priorState: priorState)
             }

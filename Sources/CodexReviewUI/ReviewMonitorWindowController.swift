@@ -90,6 +90,9 @@ public final class ReviewMonitorWindowController: NSWindowController {
         presentedContentUpdateTask?.cancel()
         presentedContentUpdateTask = Task { @MainActor [weak self] in
             await Task.yield()
+            guard Task.isCancelled == false else {
+                return
+            }
             self?.updatePresentedContent(authState: authState)
         }
     }

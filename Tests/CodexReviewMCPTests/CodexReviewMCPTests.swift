@@ -1021,6 +1021,56 @@ struct CodexReviewMCPTests {
         #expect(authTransportCheckoutCount >= 2)
     }
 
+    @Test func reviewMonitorStoreRestoresPriorStateWhenRestartedAuthenticationRetryIsCancelled() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransports: [
+                AuthCapableAppServerSessionTransport(startLoginBehavior: .legacyBrowser),
+                AuthCapableAppServerSessionTransport(),
+            ]
+        )
+        let performer = BlockingReviewMonitorWebAuthenticationPerformer()
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+        store.auth.updateState(
+            .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+        await performer.waitForAuthenticateStart()
+
+        await store.auth.cancelAuthentication()
+        _ = await beginTask.value
+
+        #expect(
+            store.auth.state == .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+        #expect(await manager.shutdownCount() == 1)
+        #expect(await manager.prepareCount() == 1)
+    }
+
     @Test func reviewMonitorStoreFailsNativeAuthenticationWhenCompleteEndpointIsUnsupported() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager(
@@ -2756,7 +2806,12 @@ private final class FakeReviewMonitorWebAuthenticationPerformer: ReviewMonitorWe
 
 @MainActor
 private final class BlockingReviewMonitorWebAuthenticationPerformer: ReviewMonitorWebAuthenticationPerforming, @unchecked Sendable {
+    private let authenticateStartedSignal = AsyncSignal()
     private var continuation: CheckedContinuation<URL, Error>?
+
+    func waitForAuthenticateStart() async {
+        await authenticateStartedSignal.wait()
+    }
 
     func authenticate(
         using url: URL,
@@ -2771,6 +2826,7 @@ private final class BlockingReviewMonitorWebAuthenticationPerformer: ReviewMonit
         if Task.isCancelled {
             throw ReviewAuthError.cancelled
         }
+        await authenticateStartedSignal.signal()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 self.continuation = continuation
