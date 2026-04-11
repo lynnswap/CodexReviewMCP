@@ -1,6 +1,7 @@
 import Foundation
 
 public enum CodexReviewStoreTestEnvironment {
+    public static let uiTestModeKey = "CODEX_REVIEW_MONITOR_UI_TEST_MODE"
     public static let portKey = "CODEX_REVIEW_MONITOR_TEST_PORT"
     public static let codexCommandKey = "CODEX_REVIEW_MONITOR_TEST_CODEX_COMMAND"
     public static let diagnosticsPathKey = "CODEX_REVIEW_MONITOR_TEST_DIAGNOSTICS_PATH"

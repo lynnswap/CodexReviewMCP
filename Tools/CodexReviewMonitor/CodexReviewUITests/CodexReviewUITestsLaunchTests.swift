@@ -8,6 +8,8 @@
 import XCTest
 
 final class CodexReviewUITestsLaunchTests: XCTestCase {
+    private let uiTestModeKey = "CODEX_REVIEW_MONITOR_UI_TEST_MODE"
+
     private func skipUnlessUITestsEnabled() throws {
         if ProcessInfo.processInfo.environment["CODEX_REVIEW_MONITOR_RUN_UI_TESTS"] != "1" {
             throw XCTSkip("UI launch smoke is opt-in. Set CODEX_REVIEW_MONITOR_RUN_UI_TESTS=1 to run it.")
@@ -26,6 +28,7 @@ final class CodexReviewUITestsLaunchTests: XCTestCase {
     func testLaunch() throws {
         try skipUnlessUITestsEnabled()
         let app = XCUIApplication()
+        app.launchEnvironment[uiTestModeKey] = "1"
         app.launch()
 
         // Insert steps here to perform after app launch but before taking a screenshot,

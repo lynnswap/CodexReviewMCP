@@ -20,7 +20,11 @@ enum CodexReviewMonitorLaunchMode {
 }
 
 enum CodexReviewMonitorLaunchEnvironment {
+    static let uiTestModeKey = CodexReviewStoreTestEnvironment.uiTestModeKey
     static let xctestConfigurationKey = "XCTestConfigurationFilePath"
+    static let xctestBundlePathKey = "XCTestBundlePath"
+    static let xcInjectBundleIntoKey = "XCInjectBundleInto"
+    static let xctestSessionIdentifierKey = "XCTestSessionIdentifier"
     static let xcodeRunningForPlaygroundsKey = "XCODE_RUNNING_FOR_PLAYGROUNDS"
     static let xcodeRunningForPreviewsKey = "XCODE_RUNNING_FOR_PREVIEWS"
     static let testPortKey = "CODEX_REVIEW_MONITOR_TEST_PORT"
@@ -34,14 +38,16 @@ enum CodexReviewMonitorLaunchEnvironment {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         arguments: [String] = CommandLine.arguments
     ) -> CodexReviewMonitorLaunchMode {
+        if isEnabledFlag(environment[uiTestModeKey]) {
+            return .xctest
+        }
         if isRunningInPreviews(environment: environment) {
             return .preview
         }
         if hasExplicitTestOverride(environment: environment, arguments: arguments) {
             return .application
         }
-        if let xctestConfiguration = environment[xctestConfigurationKey],
-           xctestConfiguration.isEmpty == false {
+        if isRunningUnderXCTest(environment: environment) {
             return .xctest
         }
         return .application
@@ -51,12 +57,30 @@ enum CodexReviewMonitorLaunchEnvironment {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         arguments: [String] = CommandLine.arguments
     ) -> Bool {
-        launchMode(environment: environment, arguments: arguments) == .application
+        if isEnabledFlag(environment[uiTestModeKey]) {
+            return false
+        }
+        return launchMode(environment: environment, arguments: arguments) == .application
     }
 
     private static func isRunningInPreviews(environment: [String: String]) -> Bool {
         isEnabledFlag(environment[xcodeRunningForPreviewsKey])
             || isEnabledFlag(environment[xcodeRunningForPlaygroundsKey])
+    }
+
+    static func shouldUseUITestStore(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        isEnabledFlag(environment[uiTestModeKey])
+    }
+
+    static func isRunningUnderXCTest(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        isNonEmpty(environment[xctestConfigurationKey])
+            || isNonEmpty(environment[xctestBundlePathKey])
+            || isNonEmpty(environment[xcInjectBundleIntoKey])
+            || isNonEmpty(environment[xctestSessionIdentifierKey])
     }
 
     private static func hasExplicitTestOverride(
@@ -78,6 +102,10 @@ enum CodexReviewMonitorLaunchEnvironment {
         default:
             false
         }
+    }
+
+    private static func isNonEmpty(_ value: String?) -> Bool {
+        value?.isEmpty == false
     }
 }
 
@@ -147,19 +175,29 @@ private final class ReviewMonitorPresentationAnchorSource {
 @MainActor
 final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private let launchModeProvider: () -> CodexReviewMonitorLaunchMode
+    private let customStoreFactory: (() -> CodexReviewStore)?
     private let windowControllerFactory: (CodexReviewStore) -> NSWindowController
     private let presentationAnchorSource = ReviewMonitorPresentationAnchorSource()
 
     private lazy var launchMode = launchModeProvider()
-    lazy var store = CodexReviewStore.makeReviewMonitorStore(
-        nativeAuthenticationConfiguration: .init(
-            callbackScheme: CodexReviewMonitorNativeAuthentication.callbackScheme,
-            browserSessionPolicy: .ephemeral,
-            presentationAnchorProvider: { [weak presentationAnchorSource] in
-                presentationAnchorSource?.window
-            }
+    lazy var store: CodexReviewStore = {
+        if let customStoreFactory {
+            return customStoreFactory()
+        }
+        let environment = ProcessInfo.processInfo.environment
+        if CodexReviewMonitorLaunchEnvironment.shouldUseUITestStore(environment: environment) {
+            return CodexReviewStore.makeReviewMonitorUITestStore()
+        }
+        return CodexReviewStore.makeReviewMonitorStore(
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: CodexReviewMonitorNativeAuthentication.callbackScheme,
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { [weak presentationAnchorSource] in
+                    presentationAnchorSource?.window
+                }
+            )
         )
-    )
+    }()
     lazy var lifecycle = CodexReviewMonitorLifecycleController(store: store)
     lazy var windowController: NSWindowController = {
         let windowController = windowControllerFactory(store)
@@ -171,6 +209,7 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
         launchModeProvider = {
             CodexReviewMonitorLaunchEnvironment.launchMode()
         }
+        customStoreFactory = nil
         windowControllerFactory = { store in
             ReviewMonitorWindowController(store: store)
         }
@@ -179,9 +218,11 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
 
     init(
         launchModeProvider: @escaping () -> CodexReviewMonitorLaunchMode,
+        storeFactory: (() -> CodexReviewStore)? = nil,
         windowControllerFactory: @escaping (CodexReviewStore) -> NSWindowController
     ) {
         self.launchModeProvider = launchModeProvider
+        self.customStoreFactory = storeFactory
         self.windowControllerFactory = windowControllerFactory
         super.init()
     }

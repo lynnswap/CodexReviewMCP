@@ -167,7 +167,7 @@ package actor ReviewAuthManager {
                     onUpdate: onUpdate
                 )
             }
-            if finalState.isAuthenticated == false {
+            if CodexReviewAuthStateAccessors.isAuthenticated(finalState) == false {
                 throw ReviewAuthError.loginFailed("Authentication failed. Sign in again.")
             }
 
@@ -386,7 +386,7 @@ package actor ReviewAuthManager {
         case .signedOut:
             throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
         case .unavailable:
-            guard refreshedState.isAuthenticated else {
+            guard CodexReviewAuthStateAccessors.isAuthenticated(refreshedState) else {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
             return refreshedState
@@ -420,7 +420,7 @@ package actor ReviewAuthManager {
                         return Self.authState(from: account)
                     }
                 }
-                if state.isAuthenticated == false {
+                if CodexReviewAuthStateAccessors.isAuthenticated(state) == false {
                     sawSignedOut = true
                 } else {
                     return .signedIn(state)
@@ -463,29 +463,29 @@ package actor ReviewAuthManager {
         refreshedState: CodexReviewAuthModel.State,
         durableState: CodexReviewAuthModel.State
     ) -> CodexReviewAuthModel.State {
-        let refreshedAccountID = refreshedState.accountID
-        let durableAccountID = durableState.accountID
+        let refreshedAccountID = CodexReviewAuthStateAccessors.accountID(refreshedState)
+        let durableAccountID = CodexReviewAuthStateAccessors.accountID(durableState)
 
-        if refreshedState.isAuthenticated,
-           durableState.isAuthenticated,
+        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState),
+           CodexReviewAuthStateAccessors.isAuthenticated(durableState),
            refreshedAccountID == "ChatGPT",
            durableAccountID != "ChatGPT"
         {
             return .signedIn(accountID: durableAccountID)
         }
-        if refreshedState.isAuthenticated,
-           durableState.isAuthenticated,
+        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState),
+           CodexReviewAuthStateAccessors.isAuthenticated(durableState),
            refreshedAccountID != "ChatGPT"
         {
             return .signedIn(accountID: refreshedAccountID)
         }
-        if refreshedState.isAuthenticated == false,
-           durableState.isAuthenticated
+        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState) == false,
+           CodexReviewAuthStateAccessors.isAuthenticated(durableState)
         {
             return durableState
         }
-        if refreshedState.isAuthenticated,
-           durableState.isAuthenticated
+        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState),
+           CodexReviewAuthStateAccessors.isAuthenticated(durableState)
         {
             return refreshedState
         }

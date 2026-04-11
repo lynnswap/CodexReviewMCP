@@ -119,16 +119,16 @@ public final class ReviewMonitorWindowController: NSWindowController {
     private func desiredContentKind(
         for authState: CodexReviewAuthModel.State
     ) -> DisplayedContentKind {
-        if authState.isAuthenticated {
+        if CodexReviewAuthStateAccessors.isAuthenticated(authState) {
             return .splitView
         }
-        if authState.progress != nil {
+        if CodexReviewAuthStateAccessors.progress(authState) != nil {
             if displayedContentKind == .splitView {
                 return .splitView
             }
             return .signInView
         }
-        if authState.errorMessage != nil,
+        if CodexReviewAuthStateAccessors.errorMessage(authState) != nil,
            displayedContentKind == .splitView {
             return .splitView
         }

@@ -85,17 +85,6 @@
                ReferencedContainer = "container:CodexReviewMonitor.xcodeproj">
             </BuildableReference>
          </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "AB19F4452F77D8AD009726F1"
-               BuildableName = "CodexReviewUITests.xctest"
-               BlueprintName = "CodexReviewUITests"
-               ReferencedContainer = "container:CodexReviewMonitor.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

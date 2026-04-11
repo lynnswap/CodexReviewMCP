@@ -1,6 +1,24 @@
 import Foundation
 import Observation
 
+public enum CodexReviewAuthStateAccessors {
+    public static func isAuthenticated(_ state: CodexReviewAuthModel.State) -> Bool {
+        state.isAuthenticated
+    }
+
+    public static func accountID(_ state: CodexReviewAuthModel.State) -> String? {
+        state.accountID
+    }
+
+    public static func progress(_ state: CodexReviewAuthModel.State) -> CodexReviewAuthModel.Progress? {
+        state.progress
+    }
+
+    public static func errorMessage(_ state: CodexReviewAuthModel.State) -> String? {
+        state.errorMessage
+    }
+}
+
 @MainActor
 @Observable
 public final class CodexReviewAuthModel {
@@ -62,6 +80,7 @@ public final class CodexReviewAuthModel {
                 errorMessage: message
             )
         }
+
     }
 
     public package(set) var state: State = .signedOut

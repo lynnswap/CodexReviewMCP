@@ -630,7 +630,7 @@ struct CodexReviewMCPTests {
 
         await authSession.waitForLoginStart()
         try await waitForObservedValue(authStateProbe) { authState in
-            guard let progress = authState.progress else {
+            guard let progress = CodexReviewAuthStateAccessors.progress(authState) else {
                 return false
             }
             return progress.browserURL?.contains("/oauth/authorize") == true
@@ -810,7 +810,7 @@ struct CodexReviewMCPTests {
 
         await store.auth.beginAuthentication()
 
-        try await waitForObservedValue(updates) { $0.isAuthenticated }
+        try await waitForObservedValue(updates) { CodexReviewAuthStateAccessors.isAuthenticated($0) }
 
         #expect(await manager.authTransportCheckoutCount() > 0)
         #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")

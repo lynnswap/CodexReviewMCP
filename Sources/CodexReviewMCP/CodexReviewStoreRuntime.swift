@@ -660,6 +660,15 @@ public struct ReviewMonitorNativeAuthenticationConfiguration: Sendable {
 @available(macOS 15.0, *)
 @MainActor
 extension CodexReviewStore {
+    @MainActor
+    public static func makeReviewMonitorUITestStore() -> CodexReviewStore {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.serverState = .running
+        store.serverURL = URL(string: "http://127.0.0.1:9417/mcp")
+        store.auth.updateState(.signedIn(accountID: "ui-test@example.com"))
+        return store
+    }
+
     public static func makeReviewMonitorStore(
         nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration
     ) -> CodexReviewStore {
@@ -1501,12 +1510,12 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     ) async throws {
         try await authManager.beginAuthentication { state in
             await MainActor.run {
-                if let progress = state.progress,
-                   priorState.isAuthenticated {
+                if let progress = CodexReviewAuthStateAccessors.progress(state),
+                   CodexReviewAuthStateAccessors.isAuthenticated(priorState) {
                     auth.updateState(
                         .init(
                             isAuthenticated: true,
-                            accountID: priorState.accountID,
+                            accountID: CodexReviewAuthStateAccessors.accountID(priorState),
                             progress: progress
                         )
                     )
@@ -1530,12 +1539,12 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             message = error.localizedDescription
         }
 
-        if priorState.isAuthenticated {
+        if CodexReviewAuthStateAccessors.isAuthenticated(priorState) {
             auth.updateState(
                 .failed(
                     message,
                     isAuthenticated: true,
-                    accountID: priorState.accountID
+                    accountID: CodexReviewAuthStateAccessors.accountID(priorState)
                 )
             )
         } else {
@@ -1554,11 +1563,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     private func authenticationRestoreState(
         from state: CodexReviewAuthModel.State
     ) -> CodexReviewAuthModel.State {
-        guard state.isAuthenticated else {
+        guard CodexReviewAuthStateAccessors.isAuthenticated(state) else {
             return .signedOut
         }
-        guard state.progress == nil else {
-            return .signedIn(accountID: state.accountID)
+        guard CodexReviewAuthStateAccessors.progress(state) == nil else {
+            return .signedIn(accountID: CodexReviewAuthStateAccessors.accountID(state))
         }
         return state
     }
@@ -1590,12 +1599,12 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         let priorAccountID = auth.accountID
         let priorIsAuthenticated = auth.isAuthenticated
         if let resolvedState = try? await authManager.loadState() {
-            if resolvedState.isAuthenticated {
+            if CodexReviewAuthStateAccessors.isAuthenticated(resolvedState) {
                 auth.updateState(
                     .failed(
                         message,
                         isAuthenticated: true,
-                        accountID: resolvedState.accountID
+                        accountID: CodexReviewAuthStateAccessors.accountID(resolvedState)
                     )
                 )
             } else {

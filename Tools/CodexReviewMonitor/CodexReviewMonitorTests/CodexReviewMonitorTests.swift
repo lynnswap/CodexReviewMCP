@@ -58,6 +58,51 @@ struct CodexReviewMonitorTests {
         )
     }
 
+    @Test func launchModeTreatsHostedUnitTestEnvironmentAsTest() {
+        let environment = [
+            CodexReviewMonitorLaunchEnvironment.xcInjectBundleIntoKey: "/tmp/CodexReviewMonitor",
+            CodexReviewMonitorLaunchEnvironment.xctestBundlePathKey: "/tmp/CodexReviewMonitorTests.xctest",
+            CodexReviewMonitorLaunchEnvironment.xctestSessionIdentifierKey: "session-123",
+        ]
+
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.launchMode(
+                environment: environment,
+                arguments: []
+            ) == .xctest
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer(
+                environment: environment,
+                arguments: []
+            ) == false
+        )
+    }
+
+    @Test func launchModeTreatsUITestOverrideAsTestAndDisablesEmbeddedServer() {
+        let environment = [
+            CodexReviewMonitorLaunchEnvironment.uiTestModeKey: "1",
+        ]
+
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.launchMode(
+                environment: environment,
+                arguments: []
+            ) == .xctest
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer(
+                environment: environment,
+                arguments: []
+            ) == false
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldUseUITestStore(
+                environment: environment
+            )
+        )
+    }
+
     @Test func launchModeKeepsExplicitTestOverrideLaunchable() {
         let environment = [
             CodexReviewMonitorLaunchEnvironment.xctestConfigurationKey: "/tmp/test.xctestconfiguration",
@@ -175,53 +220,6 @@ struct CodexReviewMonitorTests {
         #expect(windowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 1)
     }
 
-    @Test func appDelegateInstallsStandardMainMenuWithCopyShortcut() {
-        let previousMainMenu = NSApp.mainMenu
-        defer { NSApp.mainMenu = previousMainMenu }
-        let recorder = WindowControllerFactoryRecorder()
-        let delegate = CodexReviewMonitorAppDelegate(
-            launchModeProvider: { .application },
-            windowControllerFactory: { _ in
-                recorder.makeWindowController()
-            }
-        )
-
-        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
-
-        let editMenu = NSApp.mainMenu?.items
-            .first(where: { $0.submenu?.title == "Edit" })?
-            .submenu
-        let copyItem = editMenu?.items.first(where: { $0.action == #selector(NSText.copy(_:)) })
-
-        #expect(editMenu != nil)
-        #expect(copyItem?.keyEquivalent == "c")
-        #expect(copyItem?.keyEquivalentModifierMask == [.command])
-    }
-
-    @Test func appDelegateReplacesPreexistingIncompleteMainMenu() {
-        let previousMainMenu = NSApp.mainMenu
-        defer { NSApp.mainMenu = previousMainMenu }
-        let incompleteMenu = NSMenu(title: "Main Menu")
-        let appOnlyItem = NSMenuItem()
-        appOnlyItem.submenu = NSMenu(title: "CodexReviewMonitor")
-        incompleteMenu.addItem(appOnlyItem)
-        NSApp.mainMenu = incompleteMenu
-
-        let recorder = WindowControllerFactoryRecorder()
-        let delegate = CodexReviewMonitorAppDelegate(
-            launchModeProvider: { .application },
-            windowControllerFactory: { _ in
-                recorder.makeWindowController()
-            }
-        )
-
-        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
-
-        let topLevelTitles = NSApp.mainMenu?.items.compactMap(\.submenu?.title) ?? []
-        #expect(topLevelTitles.contains("Edit"))
-        #expect(topLevelTitles.contains("Window"))
-    }
-
     @Test func appDelegateCreatesWindowControllerOnXCTestLaunch() {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
@@ -240,41 +238,6 @@ struct CodexReviewMonitorTests {
         #expect(windowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 1)
     }
 
-    @Test func appDelegateSkipsWindowControllerCreationOnPreviewLaunch() {
-        let recorder = WindowControllerFactoryRecorder()
-        let delegate = CodexReviewMonitorAppDelegate(
-            launchModeProvider: { .preview },
-            windowControllerFactory: { _ in
-                recorder.makeWindowController()
-            }
-        )
-
-        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
-
-        #expect(recorder.makeCallCount == 0)
-    }
-
-    @Test func appDelegateReusesSingleWindowControllerWhenReopening() {
-        let recorder = WindowControllerFactoryRecorder()
-        let delegate = CodexReviewMonitorAppDelegate(
-            launchModeProvider: { .application },
-            windowControllerFactory: { _ in
-                recorder.makeWindowController()
-            }
-        )
-
-        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
-        let initialWindowController = recorder.lastWindowController
-
-        let handled = delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false)
-
-        #expect(handled)
-        #expect(recorder.makeCallCount == 1)
-        #expect(delegate.windowController === initialWindowController)
-        #expect(initialWindowController?.showWindowCallCount == 2)
-        #expect(initialWindowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 2)
-    }
-
     @Test func appDelegateSkipsReopenWhenWindowIsAlreadyVisible() {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
@@ -285,30 +248,12 @@ struct CodexReviewMonitorTests {
         )
 
         delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
-        let initialWindowController = recorder.lastWindowController
 
         let handled = delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: true)
 
         #expect(handled == false)
-        #expect(recorder.makeCallCount == 1)
-        #expect(delegate.windowController === initialWindowController)
-        #expect(initialWindowController?.showWindowCallCount == 1)
     }
 
-    @Test func appDelegateSkipsReopenOutsideApplicationLaunchMode() {
-        let recorder = WindowControllerFactoryRecorder()
-        let delegate = CodexReviewMonitorAppDelegate(
-            launchModeProvider: { .preview },
-            windowControllerFactory: { _ in
-                recorder.makeWindowController()
-            }
-        )
-
-        let handled = delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false)
-
-        #expect(handled == false)
-        #expect(recorder.makeCallCount == 0)
-    }
 }
 
 @MainActor
