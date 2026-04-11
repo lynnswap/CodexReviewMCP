@@ -2412,7 +2412,7 @@ struct CodexReviewUITests {
         #expect(backend.beginAuthenticationCallCount() == 0)
     }
 
-    @Test func statusViewStartsAuthenticationFromRetryAction() async {
+    @Test func statusViewDoesNotRetryAuthenticationWhileAuthenticated() async {
         guard #available(macOS 26.0, *) else {
             return
         }
@@ -2427,13 +2427,13 @@ struct CodexReviewUITests {
         )
         let view = StatusView(store: store)
 
-        #expect(view.canRetryAuthentication)
+        #expect(view.canRetryAuthentication == false)
+        #expect(view.showsAuthenticationAction == false)
         #expect(view.canSignOut)
 
         view.performAuthenticationAction()
-        await backend.waitForBeginAuthenticationCallCount(1)
 
-        #expect(backend.beginAuthenticationCallCount() == 1)
+        #expect(backend.beginAuthenticationCallCount() == 0)
     }
 
     @Test func statusViewCancelsAuthenticationWhileRetryAuthenticating() async {
@@ -2462,6 +2462,30 @@ struct CodexReviewUITests {
         await backend.waitForCancelAuthenticationCallCount(1)
 
         #expect(backend.cancelAuthenticationCallCount() == 1)
+    }
+
+    @Test func statusViewRestartsStoppedServer() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(
+            shouldAutoStartEmbeddedServer: false,
+            initialAuthState: .signedIn(accountID: "review@example.com")
+        )
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .stopped,
+            authState: .signedIn(accountID: "review@example.com"),
+            workspaces: []
+        )
+        let view = StatusView(store: store)
+
+        #expect(view.showsServerRestartAction)
+
+        view.restartServer()
+        await backend.waitForStartCallCount(1)
+
+        #expect(backend.startCallCount() == 1)
     }
 
     @Test func signInViewDescriptionTextReflectsAuthState() {

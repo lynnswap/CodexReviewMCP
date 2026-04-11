@@ -31,6 +31,11 @@ struct StatusView: View {
                     performAuthenticationAction()
                 }
             }
+            if showsServerRestartAction {
+                Button("Reset Server", systemImage: "arrow.clockwise") {
+                    restartServer()
+                }
+            }
             Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
                 performLogout()
             }
@@ -62,11 +67,22 @@ struct StatusView: View {
     }
 
     var canRetryAuthentication: Bool {
-        store.auth.errorMessage != nil && store.auth.isAuthenticating == false
+        store.auth.errorMessage != nil &&
+        store.auth.isAuthenticated == false &&
+        store.auth.isAuthenticating == false
     }
 
     var showsAuthenticationAction: Bool {
         canRetryAuthentication || store.auth.isAuthenticating
+    }
+
+    var showsServerRestartAction: Bool {
+        switch store.serverState {
+        case .failed, .stopped:
+            true
+        case .running, .starting:
+            false
+        }
     }
 
     var authenticationActionTitle: String {
@@ -81,9 +97,18 @@ struct StatusView: View {
         Task {
             if store.auth.isAuthenticating {
                 await store.auth.cancelAuthentication()
-            } else {
+            } else if canRetryAuthentication {
                 await store.auth.beginAuthentication()
             }
+        }
+    }
+
+    func restartServer() {
+        Task {
+            if store.auth.isAuthenticating {
+                await store.auth.cancelAuthentication()
+            }
+            await store.restart()
         }
     }
 
