@@ -5,7 +5,6 @@ import ReviewRuntime
 final class ReviewMonitorLogScrollView: NSScrollView {
     private final class DocumentContainerView: NSView {
         var measuredTextHeight: @MainActor () -> CGFloat = { 0 }
-        private var lastLayoutWidth: CGFloat = 0
 
         override var isFlipped: Bool {
             true
@@ -16,24 +15,6 @@ final class ReviewMonitorLogScrollView: NSScrollView {
                 width: NSView.noIntrinsicMetric,
                 height: measuredTextHeight()
             )
-        }
-
-        override func setFrameSize(_ newSize: NSSize) {
-            let widthChanged = abs(frame.width - newSize.width) > 0.5
-            super.setFrameSize(newSize)
-            if widthChanged {
-                invalidateIntrinsicContentSize()
-            }
-        }
-
-        override func layout() {
-            super.layout()
-            let width = bounds.width
-            guard abs(lastLayoutWidth - width) > 0.5 else {
-                return
-            }
-            lastLayoutWidth = width
-            invalidateIntrinsicContentSize()
         }
     }
 
@@ -72,7 +53,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         let textContainer = NSTextContainer(
             size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         )
-        textContainer.widthTracksTextView = true
+        textContainer.widthTracksTextView = false
         textContainer.heightTracksTextView = false
         storage.addLayoutManager(layoutManager)
         layoutManager.addTextContainer(textContainer)
@@ -145,6 +126,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     override func tile() {
         let shouldPreserveBottom = displayedText.isEmpty == false && isPinnedToBottom()
         super.tile()
+        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
         if shouldPreserveBottom {
             scrollToBottom(countAsAutoFollow: false)
@@ -153,6 +135,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
 
     override func layout() {
         super.layout()
+        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
     }
 
@@ -182,6 +165,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         let shouldAutoFollow = isPinnedToBottom()
         appendToTextStorage(suffix)
         displayedText += suffix
+        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
         layoutSubtreeIfNeeded()
 #if DEBUG
@@ -201,12 +185,15 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     ) -> Bool {
         if displayedText == text {
             let previousOrigin = contentView.bounds.origin
+            syncTextContainerWidthToTextView()
+            invalidateDocumentLayout()
             restoreScrollPosition(restorationTarget, countAsAutoFollow: countBottomRestoreAsAutoFollow)
             return contentView.bounds.origin != previousOrigin
         }
 
         replaceAllText(with: text)
         displayedText = text
+        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
         layoutSubtreeIfNeeded()
 #if DEBUG
@@ -248,7 +235,28 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         documentContainerView.invalidateIntrinsicContentSize()
     }
 
+    @discardableResult
+    private func syncTextContainerWidthToTextView() -> Bool {
+        let targetWidth = max(0, textView.bounds.width - textView.textContainerInset.width * 2)
+        let targetSize = NSSize(width: targetWidth, height: CGFloat.greatestFiniteMagnitude)
+        guard abs(textContainer.containerSize.width - targetSize.width) > 0.5 ||
+              textContainer.containerSize.height != targetSize.height
+        else {
+            return false
+        }
+
+        textContainer.containerSize = targetSize
+        if storage.length > 0 {
+            let fullRange = NSRange(location: 0, length: storage.length)
+            layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
+            layoutManager.invalidateDisplay(forCharacterRange: fullRange)
+        }
+        documentContainerView.invalidateIntrinsicContentSize()
+        return true
+    }
+
     private func measuredTextHeight() -> CGFloat {
+        syncTextContainerWidthToTextView()
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
         return ceil(usedRect.height + textView.textContainerInset.height * 2)
@@ -369,6 +377,15 @@ extension ReviewMonitorLogScrollView {
 
     var documentViewFrameForTesting: NSRect {
         documentContainerView.frame
+    }
+
+    var textContainerSizeForTesting: NSSize {
+        syncTextContainerWidthToTextView()
+        return textContainer.containerSize
+    }
+
+    var textContainerInsetForTesting: NSSize {
+        textView.textContainerInset
     }
 
     func scrollToBottomForTesting() {

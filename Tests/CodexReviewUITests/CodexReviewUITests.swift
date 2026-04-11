@@ -472,6 +472,7 @@ struct CodexReviewUITests {
         #expect(abs(textViewFrame.minY) < 0.5)
         #expect(textViewFrame.maxY <= documentViewFrame.maxY + 0.5)
         #expect(textViewFrame.height <= documentViewFrame.height + 0.5)
+        expectLogTextContainerWidthTracksTextView(transport)
     }
 
     @Test func detailLogExpandsAfterSidebarReopensFromCompactWidth() async throws {
@@ -493,6 +494,7 @@ struct CodexReviewUITests {
         let viewController = harness.viewController
         let window = harness.window
         defer { window.close() }
+        try await waitForDisplayedContentKind(harness.windowController, .splitView)
         let transport = viewController.transportViewControllerForTesting
         let sidebarItem = try #require(viewController.splitViewItems.first)
 
@@ -506,6 +508,7 @@ struct CodexReviewUITests {
         viewController.view.layoutSubtreeIfNeeded()
         transport.view.layoutSubtreeIfNeeded()
         let compactDocumentWidth = transport.logDocumentViewFrameForTesting.width
+        expectLogTextContainerWidthTracksTextView(transport)
 
         sidebarItem.isCollapsed = false
         window.setContentSize(NSSize(width: 960, height: 600))
@@ -521,6 +524,7 @@ struct CodexReviewUITests {
         #expect(expandedDocumentWidth > compactDocumentWidth + 200)
         #expect(abs(expandedDocumentWidth - expandedLogWidth) < 32)
         #expect(abs(expandedTextWidth - expandedLogWidth) < 32)
+        expectLogTextContainerWidthTracksTextView(transport)
     }
 
     @Test func detailLogShrinksAfterSidebarReopensIntoNarrowWidth() async throws {
@@ -542,6 +546,7 @@ struct CodexReviewUITests {
         let viewController = harness.viewController
         let window = harness.window
         defer { window.close() }
+        try await waitForDisplayedContentKind(harness.windowController, .splitView)
         let transport = viewController.transportViewControllerForTesting
         let sidebarItem = try #require(viewController.splitViewItems.first)
 
@@ -551,6 +556,7 @@ struct CodexReviewUITests {
         window.layoutIfNeeded()
         transport.view.layoutSubtreeIfNeeded()
         let expandedDocumentWidth = transport.logDocumentViewFrameForTesting.width
+        expectLogTextContainerWidthTracksTextView(transport)
 
         sidebarItem.isCollapsed = true
         window.setContentSize(NSSize(width: 360, height: 420))
@@ -566,6 +572,7 @@ struct CodexReviewUITests {
         #expect(compactDocumentWidth < expandedDocumentWidth - 200)
         #expect(abs(compactDocumentWidth - compactLogWidth) < 32)
         #expect(abs(compactTextWidth - compactLogWidth) < 32)
+        expectLogTextContainerWidthTracksTextView(transport)
     }
 
     @Test func detailLogTracksSimpleWindowResizeInBothDirections() async throws {
@@ -595,6 +602,7 @@ struct CodexReviewUITests {
         window.layoutIfNeeded()
         transport.view.layoutSubtreeIfNeeded()
         let wideWidth = transport.logDocumentViewFrameForTesting.width
+        expectLogTextContainerWidthTracksTextView(transport)
 
         window.setContentSize(NSSize(width: 520, height: 420))
         window.layoutIfNeeded()
@@ -604,6 +612,7 @@ struct CodexReviewUITests {
         let narrowWidth = transport.logDocumentViewFrameForTesting.width
         let narrowTextWidth = transport.logTextViewFrameForTesting.width
         let narrowLogWidth = transport.logFrameForTesting.width
+        expectLogTextContainerWidthTracksTextView(transport)
 
         window.setContentSize(NSSize(width: 900, height: 600))
         window.layoutIfNeeded()
@@ -620,6 +629,72 @@ struct CodexReviewUITests {
         #expect(abs(narrowTextWidth - narrowLogWidth) < 32)
         #expect(abs(widenedAgainWidth - widenedAgainLogWidth) < 32)
         #expect(abs(widenedAgainTextWidth - widenedAgainLogWidth) < 32)
+        expectLogTextContainerWidthTracksTextView(transport)
+    }
+
+    @Test func detailLogTextContainerExpandsAfterToolbarSidebarToggleAtCompactWidth() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let job = makeJob(
+            id: "job-toolbar-sidebar-toggle-textkit-width-regression",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            logText: Array(repeating: "Long line that should reflow after the toolbar sidebar toggle path.\n", count: 40).joined()
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 520, height: 420)
+        )
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        try await waitForDisplayedContentKind(harness.windowController, .splitView)
+        let transport = viewController.transportViewControllerForTesting
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        await transport.flushMainQueueForTesting()
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        viewController.toggleSidebar(nil)
+        window.setContentSize(NSSize(width: 360, height: 420))
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        await transport.flushMainQueueForTesting()
+        #expect(sidebarItem.isCollapsed)
+
+        viewController.toggleSidebar(nil)
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        await transport.flushMainQueueForTesting()
+        let compactDocumentWidth = transport.logDocumentViewFrameForTesting.width
+        expectLogTextContainerWidthTracksTextView(transport)
+
+        window.setContentSize(NSSize(width: 960, height: 600))
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+        await transport.flushMainQueueForTesting()
+
+        let expandedDocumentWidth = transport.logDocumentViewFrameForTesting.width
+        let expandedLogWidth = transport.logFrameForTesting.width
+        let expandedTextWidth = transport.logTextViewFrameForTesting.width
+
+        #expect(sidebarItem.isCollapsed == false)
+        #expect(expandedDocumentWidth > compactDocumentWidth + 200)
+        #expect(abs(expandedDocumentWidth - expandedLogWidth) < 32)
+        #expect(abs(expandedTextWidth - expandedLogWidth) < 32)
+        expectLogTextContainerWidthTracksTextView(transport)
     }
 
     @Test func windowControllerDoesNotStartStoreWhenConstructed() {
@@ -2655,6 +2730,19 @@ private func awaitTransportRender(
             transportBox.value.renderSnapshotForTesting
         }
     }
+}
+
+@available(macOS 26.0, *)
+@MainActor
+private func expectLogTextContainerWidthTracksTextView(
+    _ transport: ReviewMonitorTransportViewController
+) {
+    let textViewFrame = transport.logTextViewFrameForTesting
+    let textContainerInset = transport.logTextContainerInsetForTesting
+    let textContainerSize = transport.logTextContainerSizeForTesting
+    let expectedWidth = max(0, textViewFrame.width - textContainerInset.width * 2)
+
+    #expect(abs(textContainerSize.width - expectedWidth) < 1)
 }
 
 @available(macOS 26.0, *)

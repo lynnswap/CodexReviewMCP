@@ -260,6 +260,14 @@ extension ReviewMonitorTransportViewController {
         logScrollView.documentViewFrameForTesting
     }
 
+    var logTextContainerSizeForTesting: NSSize {
+        logScrollView.textContainerSizeForTesting
+    }
+
+    var logTextContainerInsetForTesting: NSSize {
+        logScrollView.textContainerInsetForTesting
+    }
+
     func scrollLogToBottomForTesting() {
         logScrollView.scrollToBottomForTesting()
     }
