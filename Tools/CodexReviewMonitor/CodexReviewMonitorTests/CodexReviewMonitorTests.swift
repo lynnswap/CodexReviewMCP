@@ -79,6 +79,12 @@ struct CodexReviewMonitorTests {
         )
     }
 
+    @Test func hostedUnitTestRuntimeDisablesEmbeddedServer() {
+        #expect(CodexReviewMonitorLaunchEnvironment.isRunningUnderXCTest())
+        #expect(CodexReviewMonitorLaunchEnvironment.launchMode() == .xctest)
+        #expect(CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer() == false)
+    }
+
     @Test func launchModeTreatsUITestOverrideAsTestAndDisablesEmbeddedServer() {
         let environment = [
             CodexReviewMonitorLaunchEnvironment.uiTestModeKey: "1",
