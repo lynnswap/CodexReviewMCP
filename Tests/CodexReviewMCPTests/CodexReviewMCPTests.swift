@@ -787,9 +787,7 @@ struct CodexReviewMCPTests {
     @Test func reviewMonitorStoreUsesInjectedNativeAuthSessionFactory() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -802,7 +800,10 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            )
         )
 
         let updates = ObservableValueProbe { store.auth.state }
@@ -812,8 +813,8 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(updates) { $0.isAuthenticated }
 
         #expect(await manager.authTransportCheckoutCount() > 0)
-        #expect(performer.lastAuthenticateRequest?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
-        #expect(performer.lastAuthenticateRequest?.prefersEphemeral == true)
+        #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
+        #expect(await recorder.lastAuthenticateRequest()?.prefersEphemeral == true)
         let authTransport = try #require(await manager.authTransportForTesting())
         #expect(await authTransport.completeParams()?.callbackURL == "lynnpd.codexreviewmonitor.auth://callback?code=123")
         #expect(store.auth.state == CodexReviewAuthModel.State.signedIn(accountID: "review@example.com"))
@@ -822,9 +823,7 @@ struct CodexReviewMCPTests {
     @Test func reviewMonitorStoreCancelsNativeAuthenticationFlow() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .failure(ReviewAuthError.cancelled)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -837,23 +836,24 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .failure(.cancelled)
+            )
         )
 
         await store.auth.beginAuthentication()
 
         let authTransport = try #require(await manager.authTransportForTesting())
         #expect(await authTransport.completeParams() == nil)
-        #expect(performer.cancelCallCount == 1)
+        #expect(await recorder.cancelCallCount() == 0)
         #expect(store.auth.state == CodexReviewAuthModel.State.signedOut)
     }
 
     @Test func reviewMonitorStorePreservesAuthenticatedStateWhenRetryAuthenticationIsCancelled() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .failure(ReviewAuthError.cancelled)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -866,7 +866,10 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .failure(.cancelled)
+            )
         )
         store.auth.updateState(
             .failed(
@@ -945,9 +948,7 @@ struct CodexReviewMCPTests {
                 startLoginBehavior: .legacyBrowser
             )
         )
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -960,7 +961,10 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            )
         )
         store.auth.updateState(
             .failed(
@@ -972,7 +976,7 @@ struct CodexReviewMCPTests {
 
         await store.auth.beginAuthentication()
 
-        #expect(performer.lastAuthenticateRequest?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
+        #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
         #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
         #expect(await manager.shutdownCount() == 0)
         #expect(await manager.prepareCount() == 0)
@@ -985,9 +989,7 @@ struct CodexReviewMCPTests {
                 completeLoginBehavior: .unsupported
             )
         )
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -1000,7 +1002,10 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            )
         )
 
         await store.auth.beginAuthentication()
@@ -1019,9 +1024,7 @@ struct CodexReviewMCPTests {
                 startLoginBehavior: .legacyBrowser
             )
         )
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -1034,13 +1037,16 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            )
         )
 
         await store.auth.beginAuthentication()
 
-        #expect(performer.lastAuthenticateRequest?.url.absoluteString == "https://auth.openai.com/oauth/authorize?foo=bar")
-        #expect(performer.lastAuthenticateRequest?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
+        #expect(await recorder.lastAuthenticateRequest()?.url.absoluteString == "https://auth.openai.com/oauth/authorize?foo=bar")
+        #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
         #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
     }
 
@@ -1051,9 +1057,7 @@ struct CodexReviewMCPTests {
                 startLoginBehavior: .customNativeCallback("other.app.callback")
             )
         )
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -1066,12 +1070,15 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            )
         )
 
         await store.auth.beginAuthentication()
 
-        #expect(performer.lastAuthenticateRequest == nil)
+        #expect(await recorder.lastAuthenticateRequest() == nil)
         #expect(
             store.auth.state == .failed(
                 "Authentication callback is misconfigured. Update the app-server and try again."
@@ -1086,9 +1093,7 @@ struct CodexReviewMCPTests {
                 completeLoginBehavior: .succeedWithoutNotifications
             )
         )
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -1101,7 +1106,10 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            )
         )
 
         await store.auth.beginAuthentication()
@@ -1116,9 +1124,7 @@ struct CodexReviewMCPTests {
                 completeLoginBehavior: .succeedWithAccountUpdatedOnly
             )
         )
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -1131,7 +1137,10 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            )
         )
 
         await store.auth.beginAuthentication()
@@ -1152,9 +1161,7 @@ struct CodexReviewMCPTests {
                 ]
             )
         )
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
-        )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -1167,7 +1174,10 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: performer
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            )
         )
 
         await store.auth.beginAuthentication()
@@ -1177,6 +1187,7 @@ struct CodexReviewMCPTests {
 
     @Test func nativeAuthSessionFinishesLateSubscribersAfterCancellation() async throws {
         let transport = AuthCapableAppServerSessionTransport()
+        let recorder = TestWebAuthenticationSessionRecorder()
         let session = NativeWebAuthenticationReviewSession(
             sharedSession: SharedAppServerReviewAuthSession(transport: transport),
             nativeAuthenticationConfiguration: .init(
@@ -1184,8 +1195,9 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: FakeReviewMonitorWebAuthenticationPerformer(
-                result: .failure(ReviewAuthError.cancelled)
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .failure(.cancelled)
             )
         )
         defer { Task { await session.close() } }
@@ -1205,6 +1217,7 @@ struct CodexReviewMCPTests {
 
     @Test func nativeAuthSessionFailsLateSubscribersAfterAuthenticationFailure() async throws {
         let transport = AuthCapableAppServerSessionTransport()
+        let recorder = TestWebAuthenticationSessionRecorder()
         let session = NativeWebAuthenticationReviewSession(
             sharedSession: SharedAppServerReviewAuthSession(transport: transport),
             nativeAuthenticationConfiguration: .init(
@@ -1212,14 +1225,9 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: FakeReviewMonitorWebAuthenticationPerformer(
-                result: .failure(
-                    NSError(
-                        domain: "CodexReviewMCPTests",
-                        code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "Authentication failed."]
-                    )
-                )
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .failure(.loginFailed("Authentication failed."))
             )
         )
         defer { Task { await session.close() } }
@@ -1241,6 +1249,7 @@ struct CodexReviewMCPTests {
 
     @Test func nativeAuthSessionCloseCancelsActiveLogin() async throws {
         let transport = AuthCapableAppServerSessionTransport()
+        let recorder = TestWebAuthenticationSessionRecorder()
         let session = NativeWebAuthenticationReviewSession(
             sharedSession: SharedAppServerReviewAuthSession(transport: transport),
             nativeAuthenticationConfiguration: .init(
@@ -1248,12 +1257,15 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: BlockingReviewMonitorWebAuthenticationPerformer()
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder
+            )
         )
 
         _ = try await session.startLogin(.chatGPT)
         await session.close()
 
+        #expect(await recorder.cancelCallCount() == 1)
         #expect(await transport.cancelLoginIDs() == ["login-browser"])
         #expect(await transport.isClosed())
     }
@@ -1262,6 +1274,7 @@ struct CodexReviewMCPTests {
         let transport = AuthCapableAppServerSessionTransport(
             completeLoginBehavior: .succeedWithoutLoginID
         )
+        let recorder = TestWebAuthenticationSessionRecorder()
         let session = NativeWebAuthenticationReviewSession(
             sharedSession: SharedAppServerReviewAuthSession(transport: transport),
             nativeAuthenticationConfiguration: .init(
@@ -1269,8 +1282,9 @@ struct CodexReviewMCPTests {
                 browserSessionPolicy: .ephemeral,
                 presentationAnchorProvider: { NSWindow() }
             ),
-            webAuthenticationPerformer: FakeReviewMonitorWebAuthenticationPerformer(
-                result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
             )
         )
 
@@ -2693,87 +2707,83 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     }
 }
 
-@MainActor
-private final class FakeReviewMonitorWebAuthenticationPerformer: ReviewMonitorWebAuthenticationPerforming, @unchecked Sendable {
-    struct Request: Equatable {
-        var url: URL
-        var callbackScheme: String
-        var prefersEphemeral: Bool
-    }
-
-    let result: Result<URL, Error>
-    private(set) var lastAuthenticateRequest: Request?
-    private(set) var cancelCallCount = 0
-
-    init(result: Result<URL, Error>) {
-        self.result = result
-    }
-
-    func authenticate(
-        using url: URL,
-        callbackScheme: String,
-        browserSessionPolicy: ReviewMonitorNativeAuthenticationConfiguration.BrowserSessionPolicy,
-        presentationAnchorProvider: @escaping @MainActor @Sendable () -> ASPresentationAnchor?
-    ) async throws -> URL {
-        _ = presentationAnchorProvider
-        lastAuthenticateRequest = .init(
-            url: url,
-            callbackScheme: callbackScheme,
-            prefersEphemeral: {
-                switch browserSessionPolicy {
-                case .ephemeral:
-                    true
-                }
-            }()
-        )
-        return try result.get()
-    }
-
-    func cancel() {
-        cancelCallCount += 1
-    }
+private struct TestWebAuthenticationRequest: Equatable {
+    var url: URL
+    var callbackScheme: String
+    var prefersEphemeral: Bool
 }
 
-@MainActor
-private final class BlockingReviewMonitorWebAuthenticationPerformer: ReviewMonitorWebAuthenticationPerforming, @unchecked Sendable {
+private actor TestWebAuthenticationSessionRecorder {
     private let authenticateStartedSignal = AsyncSignal()
-    private var continuation: CheckedContinuation<URL, Error>?
+    private var lastRequest: TestWebAuthenticationRequest?
+    private var cancelCalls = 0
+    private var activeSession: ReviewMonitorWebAuthenticationSession?
+
+    func recordRequest(_ request: TestWebAuthenticationRequest) {
+        lastRequest = request
+    }
+
+    func signalAuthenticateStart() async {
+        await authenticateStartedSignal.signal()
+    }
 
     func waitForAuthenticateStart() async {
         await authenticateStartedSignal.wait()
     }
 
-    func authenticate(
-        using url: URL,
-        callbackScheme: String,
-        browserSessionPolicy: ReviewMonitorNativeAuthenticationConfiguration.BrowserSessionPolicy,
-        presentationAnchorProvider: @escaping @MainActor @Sendable () -> ASPresentationAnchor?
-    ) async throws -> URL {
-        _ = url
-        _ = callbackScheme
-        _ = browserSessionPolicy
-        _ = presentationAnchorProvider
-        if Task.isCancelled {
-            throw ReviewAuthError.cancelled
-        }
-        await authenticateStartedSignal.signal()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                self.continuation = continuation
-            }
-        } onCancel: {
-            Task { @MainActor in
-                self.cancel()
-            }
-        }
+    func recordCancel() {
+        cancelCalls += 1
     }
 
-    func cancel() {
-        guard let continuation else {
-            return
+    func setActiveSession(_ session: ReviewMonitorWebAuthenticationSession) {
+        activeSession = session
+    }
+
+    func finishActiveSession(with result: Result<URL, ReviewAuthError>) async {
+        await activeSession?.finishForTesting(result)
+    }
+
+    func lastAuthenticateRequest() -> TestWebAuthenticationRequest? {
+        lastRequest
+    }
+
+    func cancelCallCount() -> Int {
+        cancelCalls
+    }
+}
+
+private func makeWebAuthenticationSessionFactory(
+    recorder: TestWebAuthenticationSessionRecorder,
+    autoResult: Result<URL, ReviewAuthError>? = nil
+) -> ReviewMonitorWebAuthenticationSessionFactory {
+    { url, callbackScheme, browserSessionPolicy, _ in
+        await recorder.recordRequest(
+            .init(
+                url: url,
+                callbackScheme: callbackScheme,
+                prefersEphemeral: {
+                    switch browserSessionPolicy {
+                    case .ephemeral:
+                        true
+                    }
+                }()
+            )
+        )
+        let session = ReviewMonitorWebAuthenticationSession(
+            onWaitStart: {
+                await recorder.signalAuthenticateStart()
+            },
+            onCancel: {
+                await recorder.recordCancel()
+            }
+        )
+        await recorder.setActiveSession(session)
+        if let autoResult {
+            Task { @MainActor in
+                session.finishForTesting(autoResult)
+            }
         }
-        self.continuation = nil
-        continuation.resume(throwing: ReviewAuthError.cancelled)
+        return session
     }
 }
 

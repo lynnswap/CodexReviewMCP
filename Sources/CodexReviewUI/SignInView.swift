@@ -1,17 +1,18 @@
-//
-//  SignInView.swift
-//  CodexReviewMCP
-//
-//  Created by Kazuki Nakashima on 2026/04/10.
-//
-
 import SwiftUI
 import CodexReviewModel
 
 @available(macOS 26.0, *)
 struct SignInView: View {
     let store: CodexReviewStore
-    @State private var isRestarting = false
+    let onPrimaryAction: @MainActor () -> Void
+
+    init(
+        store: CodexReviewStore,
+        onPrimaryAction: @escaping @MainActor () -> Void = {}
+    ) {
+        self.store = store
+        self.onPrimaryAction = onPrimaryAction
+    }
 
     var body: some View {
         ContentUnavailableView {
@@ -22,8 +23,8 @@ struct SignInView: View {
                 .fontWeight(.semibold)
                 .scenePadding(.bottom)
             
-            Button(role: store.auth.isAuthenticating ? .cancel : .confirm) {
-                performAuthenticationAction()
+            Button(role: authenticationActionRole) {
+                onPrimaryAction()
             } label: {
                 LabeledContent {
                     if store.auth.isAuthenticating {
@@ -31,7 +32,7 @@ struct SignInView: View {
                             .controlSize(.small)
                     }
                 } label: {
-                    Text(store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT")
+                    Text(authenticationActionTitle)
                 }
                 .padding(.vertical, 4)
             }
@@ -39,20 +40,6 @@ struct SignInView: View {
             .buttonBorderShape(.capsule)
             .buttonStyle(.glassProminent)
             .tint(store.auth.isAuthenticating ? .clear : .none)
-
-            if showsServerRestartAction {
-                Button {
-                    restartServer()
-                } label: {
-                    Label("Reset Server", systemImage: "arrow.clockwise")
-                        .padding(.vertical, 8)
-                }
-                .labelStyle(.titleAndIcon)
-                .buttonSizing(.flexible)
-                .buttonBorderShape(.capsule)
-                .buttonStyle(.bordered)
-                .disabled(isRestarting)
-            }
             
         } description: {
             if let descriptionText {
@@ -63,8 +50,12 @@ struct SignInView: View {
         .scenePadding()
     }
 
-    var canStartAuthentication: Bool {
-        store.auth.isAuthenticating == false && store.auth.isAuthenticated == false
+    var authenticationActionTitle: String {
+        store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT"
+    }
+
+    var authenticationActionRole: ButtonRole? {
+        store.auth.isAuthenticating ? .cancel : .confirm
     }
 
     var descriptionText: String? {
@@ -77,39 +68,6 @@ struct SignInView: View {
         }
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedMessage.isEmpty ? nil : trimmedMessage
-    }
-
-    var showsServerRestartAction: Bool {
-        if case .failed = store.serverState {
-            return true
-        }
-        return false
-    }
-
-    func performAuthenticationAction() {
-        Task {
-            if store.auth.isAuthenticating {
-                await store.auth.cancelAuthentication()
-            } else if canStartAuthentication {
-                await store.auth.beginAuthentication()
-            }
-        }
-    }
-
-    func restartServer() {
-        guard isRestarting == false else {
-            return
-        }
-        isRestarting = true
-        Task { @MainActor in
-            defer {
-                isRestarting = false
-            }
-            if store.auth.isAuthenticating {
-                await store.auth.cancelAuthentication()
-            }
-            await store.restart()
-        }
     }
 }
 

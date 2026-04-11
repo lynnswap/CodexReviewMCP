@@ -684,7 +684,7 @@ extension CodexReviewStore {
             diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
             nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
-            webAuthenticationPerformer: SystemReviewMonitorWebAuthenticationPerformer()
+            webAuthenticationSessionFactory: ReviewMonitorWebAuthenticationSession.startSystem
         )
     }
 
@@ -693,7 +693,7 @@ extension CodexReviewStore {
         diagnosticsURL: URL? = nil,
         appServerManager: any AppServerManaging,
         nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
-        webAuthenticationPerformer: any ReviewMonitorWebAuthenticationPerforming
+        webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
     ) -> CodexReviewStore {
         let authSessionFactory: @Sendable () async throws -> any ReviewAuthSession = {
             let transport = try await appServerManager.checkoutAuthTransport()
@@ -701,7 +701,7 @@ extension CodexReviewStore {
                 NativeWebAuthenticationReviewSession(
                     sharedSession: SharedAppServerReviewAuthSession(transport: transport),
                     nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
-                    webAuthenticationPerformer: webAuthenticationPerformer
+                    webAuthenticationSessionFactory: webAuthenticationSessionFactory
                 )
             }
         }
@@ -715,21 +715,17 @@ extension CodexReviewStore {
     }
 }
 
-@MainActor
-protocol ReviewMonitorWebAuthenticationPerforming: AnyObject, Sendable {
-    func authenticate(
-        using url: URL,
-        callbackScheme: String,
-        browserSessionPolicy: ReviewMonitorNativeAuthenticationConfiguration.BrowserSessionPolicy,
-        presentationAnchorProvider: @escaping @MainActor @Sendable () -> ASPresentationAnchor?
-    ) async throws -> URL
-
-    func cancel()
-}
+@available(macOS 15.0, *)
+typealias ReviewMonitorWebAuthenticationSessionFactory = @MainActor @Sendable (
+    URL,
+    String,
+    ReviewMonitorNativeAuthenticationConfiguration.BrowserSessionPolicy,
+    @escaping @MainActor @Sendable () -> ASPresentationAnchor?
+) async throws -> ReviewMonitorWebAuthenticationSession
 
 @available(macOS 15.0, *)
 @MainActor
-final class SystemReviewMonitorWebAuthenticationPerformer: NSObject, ReviewMonitorWebAuthenticationPerforming, @unchecked Sendable {
+final class ReviewMonitorWebAuthenticationSession: Sendable {
     private final class PresentationContextProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
         let anchor: ASPresentationAnchor
 
@@ -743,94 +739,143 @@ final class SystemReviewMonitorWebAuthenticationPerformer: NSObject, ReviewMonit
         }
     }
 
-    private final class ActiveSession {
-        let session: ASWebAuthenticationSession
-        let provider: PresentationContextProvider
+    private var session: ASWebAuthenticationSession?
+    private var provider: PresentationContextProvider?
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var result: Result<URL, ReviewAuthError>?
+    private let onWaitStart: (@Sendable () async -> Void)?
+    private let onCancel: (@Sendable () async -> Void)?
 
-        init(session: ASWebAuthenticationSession, provider: PresentationContextProvider) {
-            self.session = session
-            self.provider = provider
-        }
+    init(
+        onWaitStart: (@Sendable () async -> Void)? = nil,
+        onCancel: (@Sendable () async -> Void)? = nil
+    ) {
+        self.onWaitStart = onWaitStart
+        self.onCancel = onCancel
     }
 
-    private var activeSession: ActiveSession?
-
-    func authenticate(
+    static func startSystem(
         using url: URL,
         callbackScheme: String,
         browserSessionPolicy: ReviewMonitorNativeAuthenticationConfiguration.BrowserSessionPolicy,
         presentationAnchorProvider: @escaping @MainActor @Sendable () -> ASPresentationAnchor?
-    ) async throws -> URL {
+    ) async throws -> ReviewMonitorWebAuthenticationSession {
         guard let anchor = presentationAnchorProvider() else {
             throw ReviewAuthError.loginFailed("Unable to present authentication session.")
         }
 
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let callback = ASWebAuthenticationSession.Callback.customScheme(callbackScheme)
-                let completionHandler = Self.makeCompletionHandler(
-                    performer: self,
-                    continuation: continuation
-                )
-                let session = ASWebAuthenticationSession(
-                    url: url,
-                    callback: callback,
-                    completionHandler: completionHandler
-                )
-                session.prefersEphemeralWebBrowserSession = {
-                    switch browserSessionPolicy {
-                    case .ephemeral:
-                        true
-                    }
-                }()
-                let provider = PresentationContextProvider(anchor: anchor)
-                session.presentationContextProvider = provider
-                activeSession = ActiveSession(session: session, provider: provider)
-                guard session.start() else {
-                    activeSession = nil
-                    continuation.resume(throwing: ReviewAuthError.loginFailed("Unable to start authentication session."))
-                    return
-                }
+        let activeSession = ReviewMonitorWebAuthenticationSession()
+        let provider = PresentationContextProvider(anchor: anchor)
+        let session = ASWebAuthenticationSession(
+            url: url,
+            callback: .customScheme(callbackScheme),
+            completionHandler: makeReviewMonitorWebAuthenticationCompletionHandler(activeSession)
+        )
+        session.prefersEphemeralWebBrowserSession = {
+            switch browserSessionPolicy {
+            case .ephemeral:
+                true
             }
-        } onCancel: {
-            Task { @MainActor in
-                self.cancel()
+        }()
+        session.presentationContextProvider = provider
+
+        activeSession.install(
+            session: session,
+            provider: provider
+        )
+        let didStart = session.start()
+        guard didStart else {
+            activeSession.finish(
+                callbackURL: nil,
+                error: .loginFailed("Unable to start authentication session.")
+            )
+            throw ReviewAuthError.loginFailed("Unable to start authentication session.")
+        }
+
+        return activeSession
+    }
+
+    func waitForCallbackURL() async throws -> URL {
+        await onWaitStart?()
+        if let result {
+            return try result.get()
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            if let result {
+                continuation.resume(with: result)
+                return
             }
+            self.continuation = continuation
         }
     }
 
-    func cancel() {
-        activeSession?.session.cancel()
-        activeSession = nil
+    func cancel() async {
+        await onCancel?()
+        session?.cancel()
     }
 
-    private nonisolated static func makeCompletionHandler(
-        performer: SystemReviewMonitorWebAuthenticationPerformer,
-        continuation: CheckedContinuation<URL, Error>
-    ) -> @Sendable (URL?, Error?) -> Void {
-        { [weak performer] callbackURL, error in
-            Task { @MainActor [weak performer] in
-                performer?.activeSession = nil
-                if let callbackURL {
-                    continuation.resume(returning: callbackURL)
-                    return
-                }
-                if let error {
-                    continuation.resume(throwing: Self.mapAuthenticationError(error))
-                    return
-                }
-                continuation.resume(throwing: ReviewAuthError.cancelled)
-            }
+    func finish(callbackURL: URL?, error: ReviewAuthError?) {
+        guard result == nil else {
+            return
+        }
+        let terminalResult: Result<URL, ReviewAuthError>
+        if let callbackURL {
+            terminalResult = .success(callbackURL)
+        } else if let error {
+            terminalResult = .failure(error)
+        } else {
+            terminalResult = .failure(.cancelled)
+        }
+        result = terminalResult
+        session = nil
+        provider = nil
+        continuation?.resume(with: terminalResult)
+        continuation = nil
+    }
+
+    func finishForTesting(_ result: Result<URL, ReviewAuthError>) {
+        switch result {
+        case .success(let callbackURL):
+            finish(callbackURL: callbackURL, error: nil)
+        case .failure(let error):
+            finish(callbackURL: nil, error: error)
         }
     }
 
-    private nonisolated static func mapAuthenticationError(_ error: Error) -> Error {
-        let nsError = error as NSError
-        if nsError.domain == ASWebAuthenticationSessionErrorDomain,
-           nsError.code == 1 {
-            return ReviewAuthError.cancelled
+    private func install(
+        session: ASWebAuthenticationSession,
+        provider: PresentationContextProvider
+    ) {
+        self.session = session
+        self.provider = provider
+    }
+}
+
+@available(macOS 15.0, *)
+private func mapAuthenticationError(_ error: Error?) -> ReviewAuthError? {
+    guard let error else {
+        return nil
+    }
+    if let reviewAuthError = error as? ReviewAuthError {
+        return reviewAuthError
+    }
+    let nsError = error as NSError
+    if nsError.domain == ASWebAuthenticationSessionErrorDomain,
+       nsError.code == 1 {
+        return .cancelled
+    }
+    return .loginFailed(error.localizedDescription)
+}
+
+@available(macOS 15.0, *)
+private func makeReviewMonitorWebAuthenticationCompletionHandler(
+    _ activeSession: ReviewMonitorWebAuthenticationSession
+) -> @Sendable (URL?, Error?) -> Void {
+    { [weak activeSession] callbackURL, error in
+        let mappedError = mapAuthenticationError(error)
+        Task { @MainActor [weak activeSession] in
+            activeSession?.finish(callbackURL: callbackURL, error: mappedError)
         }
-        return ReviewAuthError.loginFailed(error.localizedDescription)
     }
 }
 
@@ -843,24 +888,25 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
 
     private let sharedSession: SharedAppServerReviewAuthSession
     private let nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration
-    private let webAuthenticationPerformer: any ReviewMonitorWebAuthenticationPerforming
+    private let webAuthenticationSessionFactory: ReviewMonitorWebAuthenticationSessionFactory
     private var notificationSubscribers: [UUID: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation] = [:]
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var notificationTerminalState: NotificationTerminalState?
     private var relayTask: Task<Void, Never>?
     private var relayCancellation: (@Sendable () async -> Void)?
     private var activeLoginID: String?
+    private var activeAuthenticationSession: ReviewMonitorWebAuthenticationSession?
     private var authenticationTask: Task<Void, Never>?
     private var isClosed = false
 
     init(
         sharedSession: SharedAppServerReviewAuthSession,
         nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
-        webAuthenticationPerformer: any ReviewMonitorWebAuthenticationPerforming
+        webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
     ) {
         self.sharedSession = sharedSession
         self.nativeAuthenticationConfiguration = nativeAuthenticationConfiguration
-        self.webAuthenticationPerformer = webAuthenticationPerformer
+        self.webAuthenticationSessionFactory = webAuthenticationSessionFactory
     }
 
     func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
@@ -906,17 +952,33 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         }
 
         activeLoginID = loginID
-        let webAuthenticationPerformer = self.webAuthenticationPerformer
-        let browserSessionPolicy = nativeAuthenticationConfiguration.browserSessionPolicy
-        let presentationAnchorProvider = nativeAuthenticationConfiguration.presentationAnchorProvider
+        let activeAuthenticationSession: ReviewMonitorWebAuthenticationSession
+        do {
+            activeAuthenticationSession = try await webAuthenticationSessionFactory(
+                authURL,
+                callbackScheme,
+                nativeAuthenticationConfiguration.browserSessionPolicy,
+                nativeAuthenticationConfiguration.presentationAnchorProvider
+            )
+        } catch {
+            activeLoginID = nil
+            do {
+                try await sharedSession.cancelLogin(loginID: loginID)
+            } catch {
+            }
+            throw error
+        }
+        guard activeLoginID == loginID, isClosed == false else {
+            await activeAuthenticationSession.cancel()
+            if activeLoginID == loginID {
+                activeLoginID = nil
+            }
+            throw ReviewAuthError.cancelled
+        }
+        self.activeAuthenticationSession = activeAuthenticationSession
         authenticationTask = Task {
             do {
-                let callbackURL = try await webAuthenticationPerformer.authenticate(
-                    using: authURL,
-                    callbackScheme: callbackScheme,
-                    browserSessionPolicy: browserSessionPolicy,
-                    presentationAnchorProvider: presentationAnchorProvider
-                )
+                let callbackURL = try await activeAuthenticationSession.waitForCallbackURL()
                 try await self.completeLogin(loginID: loginID, callbackURL: callbackURL)
             } catch ReviewAuthError.cancelled {
                 await self.handleAuthenticationCancellation(for: loginID)
@@ -932,10 +994,10 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         guard activeLoginID == loginID else {
             return
         }
+        let activeAuthenticationSession = self.activeAuthenticationSession
+        self.activeAuthenticationSession = nil
         authenticationTask?.cancel()
-        await MainActor.run {
-            webAuthenticationPerformer.cancel()
-        }
+        await activeAuthenticationSession?.cancel()
         activeLoginID = nil
         finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
         authenticationTask = nil
@@ -987,13 +1049,13 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         }
         isClosed = true
         let activeLoginIDToCancel = activeLoginID
+        let activeAuthenticationSession = self.activeAuthenticationSession
         activeLoginID = nil
+        self.activeAuthenticationSession = nil
         authenticationTask?.cancel()
         finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
         authenticationTask = nil
-        await MainActor.run {
-            webAuthenticationPerformer.cancel()
-        }
+        await activeAuthenticationSession?.cancel()
         if let activeLoginIDToCancel {
             do {
                 try await sharedSession.cancelLogin(loginID: activeLoginIDToCancel)
@@ -1018,7 +1080,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         relayTask = Task {
             do {
                 for try await notification in subscription.stream {
-                    self.handleNotification(notification)
+                    await self.handleNotification(notification)
                 }
                 self.finishRelay(error: nil)
             } catch {
@@ -1027,7 +1089,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         }
     }
 
-    private func handleNotification(_ notification: AppServerServerNotification) {
+    private func handleNotification(_ notification: AppServerServerNotification) async {
         guard notificationTerminalState == nil else {
             return
         }
@@ -1036,8 +1098,13 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         case .accountLoginCompleted(let completed):
             let completedLoginID = completed.loginID?.nilIfEmpty
             if completedLoginID == nil || completedLoginID == activeLoginID {
+                let activeAuthenticationSession = self.activeAuthenticationSession
+                let authenticationTask = self.authenticationTask
                 activeLoginID = nil
-                authenticationTask = nil
+                self.activeAuthenticationSession = nil
+                self.authenticationTask = nil
+                authenticationTask?.cancel()
+                await activeAuthenticationSession?.cancel()
             }
         default:
             break
@@ -1085,7 +1152,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
 
         if hasBufferedAuthenticationUpdate == false,
            let synthesizedPlanType {
-            handleNotification(
+            await handleNotification(
                 .accountUpdated(
                     try makeSyntheticAccountUpdatedNotification(planType: synthesizedPlanType)
                 )
@@ -1096,7 +1163,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             return
         }
 
-        handleNotification(
+        await handleNotification(
             .accountLoginCompleted(
                 try makeSyntheticAccountLoginCompletedNotification(loginID: loginID)
             )
@@ -1153,6 +1220,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             return
         }
         activeLoginID = nil
+        activeAuthenticationSession = nil
         finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
         do {
             try await sharedSession.cancelLogin(loginID: loginID)
@@ -1166,6 +1234,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             return
         }
         activeLoginID = nil
+        activeAuthenticationSession = nil
         finishNotificationSubscribers(
             failing: error as? ReviewAuthError ?? ReviewAuthError.loginFailed(error.localizedDescription)
         )

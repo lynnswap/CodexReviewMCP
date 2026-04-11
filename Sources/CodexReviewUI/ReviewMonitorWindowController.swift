@@ -250,7 +250,7 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
                         }
                         return
                     }
-                    let embeddedConstraints = self.pin(contentViewController)
+                    let embeddedConstraints = self.replacePinnedConstraints(contentViewController)
                     self.displayedContentConstraints = embeddedConstraints
                     self.embeddedConstraintsByControllerID[ObjectIdentifier(contentViewController)] = embeddedConstraints
                     self.removeEmbeddedContent(for: outgoingContentViewController)
@@ -285,6 +285,15 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
         ]
         NSLayoutConstraint.activate(constraints)
         return constraints
+    }
+
+    @discardableResult
+    private func replacePinnedConstraints(_ contentViewController: NSViewController) -> [NSLayoutConstraint] {
+        let controllerID = ObjectIdentifier(contentViewController)
+        if let existingConstraints = embeddedConstraintsByControllerID[controllerID] {
+            NSLayoutConstraint.deactivate(existingConstraints)
+        }
+        return pin(contentViewController)
     }
 
     private func removeEmbeddedContent(for viewController: NSViewController) {

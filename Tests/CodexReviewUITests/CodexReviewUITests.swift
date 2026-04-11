@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @_spi(Testing) @testable import CodexReviewModel
 @_spi(PreviewSupport) @testable import CodexReviewUI
@@ -298,6 +299,30 @@ struct CodexReviewUITests {
         #expect(harness.windowController.isSplitViewEmbeddedForTesting)
         #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
         #expect(window.toolbar != nil)
+    }
+
+    @Test func windowControllerRapidAuthFlipsDoNotAccumulateEmbeddedConstraints() async throws {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedIn(accountID: "review@example.com")
+        )
+        defer { harness.window.close() }
+
+        store.auth.updateState(.signedOut)
+        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        store.auth.updateState(.signedOut)
+        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+
+        try await waitForDisplayedContentKind(harness.windowController, .splitView)
+        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
+        try await Task.sleep(for: .milliseconds(300))
+
+        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
+        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
     }
 
     @Test func windowControllerPreservesWindowSizeWhenSwitchingToSignInView() async throws {
@@ -2375,26 +2400,22 @@ struct CodexReviewUITests {
         #expect(snapshot.log == "Authentication required. Sign in to ReviewMCP and retry.")
     }
 
-    @Test func signInViewStartsAuthenticationFromButtonAction() async {
+    @Test func signInViewShowsPrimaryActionLabelWhenSignedOut() {
         guard #available(macOS 26.0, *) else {
             return
         }
-        let backend = AuthActionBackend()
-        let store = CodexReviewStore(backend: backend)
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let view = SignInView(store: store)
 
-        view.performAuthenticationAction()
-        await backend.waitForBeginAuthenticationCallCount(1)
-
-        #expect(backend.beginAuthenticationCallCount() == 1)
+        #expect(view.authenticationActionTitle == "Sign in with ChatGPT")
+        #expect(view.authenticationActionRole == .confirm)
     }
 
-    @Test func signInViewCancelsAuthenticationFromButtonAction() async {
+    @Test func signInViewShowsPrimaryActionLabelWhenAuthenticating() {
         guard #available(macOS 26.0, *) else {
             return
         }
-        let backend = AuthActionBackend()
-        let store = CodexReviewStore(backend: backend)
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.auth.updateState(
             .signingIn(
                 .init(
@@ -2405,11 +2426,117 @@ struct CodexReviewUITests {
         )
         let view = SignInView(store: store)
 
-        view.performAuthenticationAction()
+        #expect(view.authenticationActionTitle == "Cancel")
+        #expect(view.authenticationActionRole == .cancel)
+    }
+
+    @Test func signInViewControllerStartsAuthenticationWhenSignedOutAndServerRunning() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(serverState: .running, authState: .signedOut, workspaces: [])
+        let viewController = ReviewMonitorSignInViewController(store: store)
+        viewController.loadViewIfNeeded()
+        viewController.startObservingAuth()
+
+        viewController.performPrimaryAction()
+        await backend.waitForBeginAuthenticationCallCount(1)
+
+        #expect(backend.recordedActions() == ["begin"])
+    }
+
+    @Test func signInViewControllerCancelsAuthenticationWhenAuthenticating() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .running,
+            authState: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            workspaces: []
+        )
+        let viewController = ReviewMonitorSignInViewController(store: store)
+        viewController.loadViewIfNeeded()
+        viewController.startObservingAuth()
+
+        viewController.performPrimaryAction()
         await backend.waitForCancelAuthenticationCallCount(1)
 
-        #expect(backend.cancelAuthenticationCallCount() == 1)
-        #expect(backend.beginAuthenticationCallCount() == 0)
+        #expect(backend.recordedActions() == ["cancel"])
+    }
+
+    @Test func signInViewControllerRestartsFailedServerBeforeBeginningAuthentication() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authState: .signedOut,
+            workspaces: []
+        )
+        let viewController = ReviewMonitorSignInViewController(store: store)
+        viewController.loadViewIfNeeded()
+        viewController.startObservingAuth()
+
+        viewController.performPrimaryAction()
+        await backend.waitForStartCallCount(1)
+        await backend.waitForBeginAuthenticationCallCount(1)
+
+        #expect(backend.recordedActions() == ["start", "begin"])
+        #expect(store.serverState == .starting)
+    }
+
+    @Test func signInViewControllerRestartsStoppedServerBeforeBeginningAuthentication() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(serverState: .stopped, authState: .signedOut, workspaces: [])
+        let viewController = ReviewMonitorSignInViewController(store: store)
+        viewController.loadViewIfNeeded()
+        viewController.startObservingAuth()
+
+        viewController.performPrimaryAction()
+        await backend.waitForStartCallCount(1)
+        await backend.waitForBeginAuthenticationCallCount(1)
+
+        #expect(backend.recordedActions() == ["start", "begin"])
+        #expect(store.serverState == .starting)
+    }
+
+    @Test func signInViewControllerDoesNotActOnBrowserProgressUpdates() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
+        let store = CodexReviewStore(backend: backend)
+        let viewController = ReviewMonitorSignInViewController(store: store)
+        viewController.loadViewIfNeeded()
+        viewController.startObservingAuth()
+
+        store.auth.updateState(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue.",
+                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+                )
+            )
+        )
+        await Task.yield()
+        await Task.yield()
+        #expect(backend.recordedActions().isEmpty)
     }
 
     @Test func statusViewDoesNotRetryAuthenticationWhileAuthenticated() async {
@@ -2498,7 +2625,8 @@ struct CodexReviewUITests {
             .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue."
+                    detail: "Open the browser to continue.",
+                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
                 )
             )
         )
@@ -2516,68 +2644,13 @@ struct CodexReviewUITests {
             workspaces: []
         )
         #expect(SignInView(store: store).descriptionText == "The embedded server stopped responding.")
-        #expect(SignInView(store: store).showsServerRestartAction)
 
         store.loadForTesting(
             serverState: .stopped,
             authState: .signedOut,
             workspaces: []
         )
-        #expect(SignInView(store: store).showsServerRestartAction == false)
-    }
-
-    @Test func signInViewRestartServerUsesStoreRestartFlow() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
-        let backend = CountingStartBackend(
-            shouldAutoStartEmbeddedServer: false,
-            initialAuthState: .signedOut
-        )
-        let store = CodexReviewStore(backend: backend)
-        store.loadForTesting(
-            serverState: .failed("The embedded server stopped responding."),
-            authState: .signedOut,
-            workspaces: []
-        )
-        let view = SignInView(store: store)
-
-        #expect(view.showsServerRestartAction)
-
-        view.restartServer()
-        await backend.waitForStartCallCount(1)
-
-        #expect(backend.startCallCount() == 1)
-        #expect(store.serverState == .starting)
-    }
-
-    @Test func signInViewRestartServerCancelsAuthenticationBeforeRestart() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
-        let backend = CountingStartBackend(
-            shouldAutoStartEmbeddedServer: false,
-            initialAuthState: .signedOut
-        )
-        let store = CodexReviewStore(backend: backend)
-        store.loadForTesting(
-            serverState: .failed("The embedded server stopped responding."),
-            authState: .signingIn(
-                .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue."
-                )
-            ),
-            workspaces: []
-        )
-        let view = SignInView(store: store)
-
-        view.restartServer()
-        await backend.waitForCancelAuthenticationCallCount(1)
-        await backend.waitForStartCallCount(1)
-
-        #expect(backend.cancelAuthenticationCallCount() == 1)
-        #expect(backend.startCallCount() == 1)
+        #expect(SignInView(store: store).descriptionText == nil)
     }
 
     @Test func mcpServerUnavailableViewRestartServerUsesStoreRestartFlow() async {
@@ -2671,6 +2744,7 @@ private func makeWindowHarness(
         window: window
     )
 }
+
 
 @available(macOS 26.0, *)
 @MainActor
@@ -2906,9 +2980,12 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer: Bool
     let initialAuthState: CodexReviewAuthModel.State
     private let startSignal = AsyncSignal()
+    private let beginSignal = AsyncSignal()
     private let cancelSignal = AsyncSignal()
     private var startCalls = 0
+    private var beginCalls = 0
     private var cancelCalls = 0
+    private var actions: [String] = []
 
     init(
         shouldAutoStartEmbeddedServer: Bool = true,
@@ -2929,6 +3006,7 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
         _ = store
         _ = forceRestartIfNeeded
         startCalls += 1
+        actions.append("start")
         await startSignal.signal()
     }
 
@@ -2956,11 +3034,15 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
 
     func beginAuthentication(auth: CodexReviewAuthModel) async {
         _ = auth
+        beginCalls += 1
+        actions.append("begin")
+        await beginSignal.signal()
     }
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
         _ = auth
         cancelCalls += 1
+        actions.append("cancel")
         await cancelSignal.signal()
     }
 
@@ -2981,6 +3063,21 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
 
     func cancelAuthenticationCallCount() -> Int {
         cancelCalls
+    }
+
+    func beginAuthenticationCallCount() -> Int {
+        beginCalls
+    }
+
+    func waitForBeginAuthenticationCallCount(_ count: Int) async {
+        if beginCalls >= count {
+            return
+        }
+        await beginSignal.wait(untilCount: count)
+    }
+
+    func recordedActions() -> [String] {
+        actions
     }
 
     func waitForCancelAuthenticationCallCount(_ count: Int) async {
