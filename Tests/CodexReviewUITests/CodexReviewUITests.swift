@@ -168,7 +168,7 @@ struct CodexReviewUITests {
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .visible)
         #expect(window.titlebarAppearsTransparent)
-        #expect(window.titlebarSeparatorStyle == .line)
+        #expect(window.titlebarSeparatorStyle == .automatic)
         #expect(window.isMovableByWindowBackground == false)
         #expect(window.backgroundColor == .clear)
         #expect(window.isOpaque == false)
@@ -271,7 +271,7 @@ struct CodexReviewUITests {
         #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
         #expect(window.toolbar != nil)
         #expect(window.titleVisibility == .visible)
-        #expect(window.titlebarSeparatorStyle == .line)
+        #expect(window.titlebarSeparatorStyle == .automatic)
         #expect(window.isMovableByWindowBackground == false)
     }
 

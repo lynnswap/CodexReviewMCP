@@ -127,7 +127,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             window.toolbarStyle = .unified
             window.titleVisibility = .visible
             window.titlebarAppearsTransparent = true
-            window.titlebarSeparatorStyle = .line
+            window.titlebarSeparatorStyle = .automatic
             window.toolbar = toolbar
         }
     }
