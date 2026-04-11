@@ -11,6 +11,8 @@
 		F0A100000000000000000001 /* CodexReviewMCP in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000003 /* CodexReviewMCP */; };
 		F0A100000000000000000004 /* CodexReviewUI in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000005 /* CodexReviewUI */; };
 		F0A100000000000000000006 /* ReviewTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000007 /* ReviewTestSupport */; };
+		F0A100000000000000000008 /* CodexReviewMCP in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000003 /* CodexReviewMCP */; };
+		F0A100000000000000000009 /* CodexReviewUI in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000005 /* CodexReviewUI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -82,6 +84,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F0A100000000000000000008 /* CodexReviewMCP in Frameworks */,
+				F0A100000000000000000009 /* CodexReviewUI in Frameworks */,
 				F0A100000000000000000006 /* ReviewTestSupport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -131,6 +135,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				AB19F43E2F77D8AD009726F1 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				AB19F4312F77D8AD009726F1 /* CodexReviewMonitor */,
@@ -162,6 +167,8 @@
 			);
 			name = CodexReviewMonitorTests;
 			packageProductDependencies = (
+				F0A100000000000000000003 /* CodexReviewMCP */,
+				F0A100000000000000000005 /* CodexReviewUI */,
 				F0A100000000000000000007 /* ReviewTestSupport */,
 			);
 			productName = CodexReviewMonitorTests;
@@ -206,7 +213,6 @@
 					};
 					AB19F43B2F77D8AD009726F1 = {
 						CreatedOnToolsVersion = 26.4;
-						TestTargetID = AB19F42E2F77D8AD009726F1;
 					};
 					AB19F4452F77D8AD009726F1 = {
 						CreatedOnToolsVersion = 26.4;

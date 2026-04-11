@@ -1,3 +1,5 @@
+import AppKit
+import AuthenticationServices
 import Darwin
 import CodexReviewModel
 import Foundation
@@ -633,12 +635,692 @@ extension CodexReviewStore {
 
 }
 
+@available(macOS 15.0, *)
+@MainActor
+public struct ReviewMonitorNativeAuthenticationConfiguration: Sendable {
+    public enum BrowserSessionPolicy: Sendable {
+        case ephemeral
+    }
+
+    public var callbackScheme: String
+    public var browserSessionPolicy: BrowserSessionPolicy
+    public var presentationAnchorProvider: @MainActor @Sendable () -> ASPresentationAnchor?
+
+    public init(
+        callbackScheme: String,
+        browserSessionPolicy: BrowserSessionPolicy,
+        presentationAnchorProvider: @escaping @MainActor @Sendable () -> ASPresentationAnchor?
+    ) {
+        self.callbackScheme = callbackScheme
+        self.browserSessionPolicy = browserSessionPolicy
+        self.presentationAnchorProvider = presentationAnchorProvider
+    }
+}
+
+@available(macOS 15.0, *)
+@MainActor
+extension CodexReviewStore {
+    @MainActor
+    public static func makeReviewMonitorUITestStore() -> CodexReviewStore {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.serverState = .running
+        store.serverURL = URL(string: "http://127.0.0.1:9417/mcp")
+        store.auth.updateState(.signedIn(accountID: "ui-test@example.com"))
+        return store
+    }
+
+    public static func makeReviewMonitorStore(
+        nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration
+    ) -> CodexReviewStore {
+        let environment = ProcessInfo.processInfo.environment
+        let arguments = CommandLine.arguments
+        let configuration = makeConfiguration(
+            environment: environment,
+            arguments: arguments
+        )
+        let diagnosticsURL = makeDiagnosticsURL(
+            environment: environment,
+            arguments: arguments
+        )
+        let appServerManager = AppServerSupervisor(
+            configuration: .init(
+                codexCommand: configuration.codexCommand,
+                environment: configuration.environment
+            )
+        )
+        return makeReviewMonitorStore(
+            configuration: configuration,
+            diagnosticsURL: diagnosticsURL,
+            appServerManager: appServerManager,
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: ReviewMonitorWebAuthenticationSession.startSystem
+        )
+    }
+
+    static func makeReviewMonitorStore(
+        configuration: ReviewServerConfiguration,
+        diagnosticsURL: URL? = nil,
+        appServerManager: any AppServerManaging,
+        nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
+        webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
+    ) -> CodexReviewStore {
+        let authSessionFactory: @Sendable () async throws -> any ReviewAuthSession = {
+            let transport = try await appServerManager.checkoutAuthTransport()
+            return await MainActor.run {
+                NativeWebAuthenticationReviewSession(
+                    sharedSession: SharedAppServerReviewAuthSession(transport: transport),
+                    nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                    webAuthenticationSessionFactory: webAuthenticationSessionFactory
+                )
+            }
+        }
+
+        return CodexReviewStore(
+            configuration: configuration,
+            diagnosticsURL: diagnosticsURL,
+            appServerManager: appServerManager,
+            authSessionFactory: authSessionFactory
+        )
+    }
+}
+
+@available(macOS 15.0, *)
+typealias ReviewMonitorWebAuthenticationSessionFactory = @MainActor @Sendable (
+    URL,
+    String,
+    ReviewMonitorNativeAuthenticationConfiguration.BrowserSessionPolicy,
+    @escaping @MainActor @Sendable () -> ASPresentationAnchor?
+) async throws -> ReviewMonitorWebAuthenticationSession
+
+@available(macOS 15.0, *)
+@MainActor
+final class ReviewMonitorWebAuthenticationSession: Sendable {
+    private final class PresentationContextProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
+        let anchor: ASPresentationAnchor
+
+        init(anchor: ASPresentationAnchor) {
+            self.anchor = anchor
+        }
+
+        func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+            _ = session
+            return anchor
+        }
+    }
+
+    private var session: ASWebAuthenticationSession?
+    private var provider: PresentationContextProvider?
+    private var continuation: CheckedContinuation<URL, Error>?
+    private var result: Result<URL, ReviewAuthError>?
+    private let onWaitStart: (@Sendable () async -> Void)?
+    private let onCancel: (@Sendable () async -> Void)?
+
+    init(
+        onWaitStart: (@Sendable () async -> Void)? = nil,
+        onCancel: (@Sendable () async -> Void)? = nil
+    ) {
+        self.onWaitStart = onWaitStart
+        self.onCancel = onCancel
+    }
+
+    static func startSystem(
+        using url: URL,
+        callbackScheme: String,
+        browserSessionPolicy: ReviewMonitorNativeAuthenticationConfiguration.BrowserSessionPolicy,
+        presentationAnchorProvider: @escaping @MainActor @Sendable () -> ASPresentationAnchor?
+    ) async throws -> ReviewMonitorWebAuthenticationSession {
+        guard let anchor = presentationAnchorProvider() else {
+            throw ReviewAuthError.loginFailed("Unable to present authentication session.")
+        }
+
+        let activeSession = ReviewMonitorWebAuthenticationSession()
+        let provider = PresentationContextProvider(anchor: anchor)
+        let session = ASWebAuthenticationSession(
+            url: url,
+            callback: .customScheme(callbackScheme),
+            completionHandler: makeReviewMonitorWebAuthenticationCompletionHandler(activeSession)
+        )
+        session.prefersEphemeralWebBrowserSession = {
+            switch browserSessionPolicy {
+            case .ephemeral:
+                true
+            }
+        }()
+        session.presentationContextProvider = provider
+
+        activeSession.install(
+            session: session,
+            provider: provider
+        )
+        let didStart = session.start()
+        guard didStart else {
+            activeSession.finish(
+                callbackURL: nil,
+                error: .loginFailed("Unable to start authentication session.")
+            )
+            throw ReviewAuthError.loginFailed("Unable to start authentication session.")
+        }
+
+        return activeSession
+    }
+
+    func waitForCallbackURL() async throws -> URL {
+        await onWaitStart?()
+        if let result {
+            return try result.get()
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            if let result {
+                continuation.resume(with: result)
+                return
+            }
+            self.continuation = continuation
+        }
+    }
+
+    func cancel() async {
+        await onCancel?()
+        session?.cancel()
+    }
+
+    func finish(callbackURL: URL?, error: ReviewAuthError?) {
+        guard result == nil else {
+            return
+        }
+        let terminalResult: Result<URL, ReviewAuthError>
+        if let callbackURL {
+            terminalResult = .success(callbackURL)
+        } else if let error {
+            terminalResult = .failure(error)
+        } else {
+            terminalResult = .failure(.cancelled)
+        }
+        result = terminalResult
+        session = nil
+        provider = nil
+        continuation?.resume(with: terminalResult)
+        continuation = nil
+    }
+
+    func finishForTesting(_ result: Result<URL, ReviewAuthError>) {
+        switch result {
+        case .success(let callbackURL):
+            finish(callbackURL: callbackURL, error: nil)
+        case .failure(let error):
+            finish(callbackURL: nil, error: error)
+        }
+    }
+
+    private func install(
+        session: ASWebAuthenticationSession,
+        provider: PresentationContextProvider
+    ) {
+        self.session = session
+        self.provider = provider
+    }
+}
+
+@available(macOS 15.0, *)
+private func mapAuthenticationError(_ error: Error?) -> ReviewAuthError? {
+    guard let error else {
+        return nil
+    }
+    if let reviewAuthError = error as? ReviewAuthError {
+        return reviewAuthError
+    }
+    let nsError = error as NSError
+    if nsError.domain == ASWebAuthenticationSessionErrorDomain,
+       nsError.code == 1 {
+        return .cancelled
+    }
+    return .loginFailed(error.localizedDescription)
+}
+
+@available(macOS 15.0, *)
+private func makeReviewMonitorWebAuthenticationCompletionHandler(
+    _ activeSession: ReviewMonitorWebAuthenticationSession
+) -> @Sendable (URL?, Error?) -> Void {
+    { [weak activeSession] callbackURL, error in
+        let mappedError = mapAuthenticationError(error)
+        Task { @MainActor [weak activeSession] in
+            activeSession?.finish(callbackURL: callbackURL, error: mappedError)
+        }
+    }
+}
+
+@available(macOS 15.0, *)
+actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
+    private enum NotificationTerminalState {
+        case finished
+        case failed(any Error)
+    }
+
+    private let sharedSession: SharedAppServerReviewAuthSession
+    private let nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration
+    private let webAuthenticationSessionFactory: ReviewMonitorWebAuthenticationSessionFactory
+    private var notificationSubscribers: [UUID: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation] = [:]
+    private var bufferedNotifications: [AppServerServerNotification] = []
+    private var notificationTerminalState: NotificationTerminalState?
+    private var relayTask: Task<Void, Never>?
+    private var relayCancellation: (@Sendable () async -> Void)?
+    private var activeLoginID: String?
+    private var activeAuthenticationSession: ReviewMonitorWebAuthenticationSession?
+    private var authenticationTask: Task<Void, Never>?
+    private var isClosed = false
+
+    init(
+        sharedSession: SharedAppServerReviewAuthSession,
+        nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
+        webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
+    ) {
+        self.sharedSession = sharedSession
+        self.nativeAuthenticationConfiguration = nativeAuthenticationConfiguration
+        self.webAuthenticationSessionFactory = webAuthenticationSessionFactory
+    }
+
+    func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
+        try await sharedSession.readAccount(refreshToken: refreshToken)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        try throwIfClosed()
+        try await startRelayIfNeeded()
+
+        let response = try await sharedSession.startLogin(
+            .chatGPT(
+                nativeWebAuthentication: .init(
+                    callbackURLScheme: nativeAuthenticationConfiguration.callbackScheme
+                )
+            )
+        )
+
+        guard case .chatGPT(let loginID, let authURL, let nativeWebAuthentication) = response,
+              let authURL = URL(string: authURL)
+        else {
+            throw ReviewAuthError.loginFailed("Authentication did not provide a valid authorization URL.")
+        }
+        if isClosed {
+            do {
+                try await sharedSession.cancelLogin(loginID: loginID)
+            } catch {
+            }
+            throw ReviewAuthError.cancelled
+        }
+        let callbackScheme = nativeWebAuthentication?.callbackURLScheme.nilIfEmpty
+            ?? nativeAuthenticationConfiguration.callbackScheme
+        if let serverCallbackScheme = nativeWebAuthentication?.callbackURLScheme.nilIfEmpty,
+           serverCallbackScheme != nativeAuthenticationConfiguration.callbackScheme {
+            do {
+                try await sharedSession.cancelLogin(loginID: loginID)
+            } catch {
+            }
+            throw ReviewAuthError.loginFailed(
+                "Authentication callback is misconfigured. Update the app-server and try again."
+            )
+        }
+
+        activeLoginID = loginID
+        let activeAuthenticationSession: ReviewMonitorWebAuthenticationSession
+        do {
+            activeAuthenticationSession = try await webAuthenticationSessionFactory(
+                authURL,
+                callbackScheme,
+                nativeAuthenticationConfiguration.browserSessionPolicy,
+                nativeAuthenticationConfiguration.presentationAnchorProvider
+            )
+        } catch {
+            activeLoginID = nil
+            do {
+                try await sharedSession.cancelLogin(loginID: loginID)
+            } catch {
+            }
+            throw error
+        }
+        guard activeLoginID == loginID, isClosed == false else {
+            await activeAuthenticationSession.cancel()
+            if activeLoginID == loginID {
+                activeLoginID = nil
+            }
+            throw ReviewAuthError.cancelled
+        }
+        self.activeAuthenticationSession = activeAuthenticationSession
+        authenticationTask = Task {
+            do {
+                let callbackURL = try await activeAuthenticationSession.waitForCallbackURL()
+                try await self.completeLogin(loginID: loginID, callbackURL: callbackURL)
+            } catch ReviewAuthError.cancelled {
+                await self.handleAuthenticationCancellation(for: loginID)
+            } catch {
+                await self.handleAuthenticationFailure(for: loginID, error: error)
+            }
+        }
+
+        return response
+    }
+
+    func cancelLogin(loginID: String) async throws {
+        guard activeLoginID == loginID else {
+            return
+        }
+        let activeAuthenticationSession = self.activeAuthenticationSession
+        self.activeAuthenticationSession = nil
+        authenticationTask?.cancel()
+        await activeAuthenticationSession?.cancel()
+        activeLoginID = nil
+        finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
+        authenticationTask = nil
+        do {
+            try await sharedSession.cancelLogin(loginID: loginID)
+        } catch {
+        }
+    }
+
+    func logout() async throws {
+        try await sharedSession.logout()
+    }
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        if let notificationTerminalState {
+            for notification in bufferedNotifications {
+                continuation.yield(notification)
+            }
+            finishNotificationContinuation(continuation, with: notificationTerminalState)
+            return .init(stream: stream, cancel: {})
+        }
+
+        let subscriberID = UUID()
+        notificationSubscribers[subscriberID] = continuation
+        for notification in bufferedNotifications {
+            continuation.yield(notification)
+        }
+        continuation.onTermination = { _ in
+            Task {
+                await self.removeNotificationSubscriber(id: subscriberID)
+            }
+        }
+        return .init(
+            stream: stream,
+            cancel: { [weak self] in
+                await self?.removeNotificationSubscriber(id: subscriberID)
+            }
+        )
+    }
+
+    func waitForAuthenticationTaskCompletion() async {
+        _ = await authenticationTask?.result
+    }
+
+    func close() async {
+        guard isClosed == false else {
+            return
+        }
+        isClosed = true
+        let activeLoginIDToCancel = activeLoginID
+        let activeAuthenticationSession = self.activeAuthenticationSession
+        activeLoginID = nil
+        self.activeAuthenticationSession = nil
+        authenticationTask?.cancel()
+        finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
+        authenticationTask = nil
+        await activeAuthenticationSession?.cancel()
+        if let activeLoginIDToCancel {
+            do {
+                try await sharedSession.cancelLogin(loginID: activeLoginIDToCancel)
+            } catch {
+            }
+        }
+        if let relayCancellation {
+            await relayCancellation()
+            self.relayCancellation = nil
+        }
+        relayTask?.cancel()
+        relayTask = nil
+        await sharedSession.close()
+    }
+
+    private func startRelayIfNeeded() async throws {
+        guard relayTask == nil else {
+            return
+        }
+        let subscription = await sharedSession.notificationStream()
+        relayCancellation = subscription.cancel
+        relayTask = Task {
+            do {
+                for try await notification in subscription.stream {
+                    await self.handleNotification(notification)
+                }
+                self.finishRelay(error: nil)
+            } catch {
+                self.finishRelay(error: error)
+            }
+        }
+    }
+
+    private func handleNotification(_ notification: AppServerServerNotification) async {
+        guard notificationTerminalState == nil else {
+            return
+        }
+        bufferedNotifications.append(notification)
+        switch notification {
+        case .accountLoginCompleted(let completed):
+            let completedLoginID = completed.loginID?.nilIfEmpty
+            if completedLoginID == nil || completedLoginID == activeLoginID {
+                let activeAuthenticationSession = self.activeAuthenticationSession
+                let authenticationTask = self.authenticationTask
+                activeLoginID = nil
+                self.activeAuthenticationSession = nil
+                self.authenticationTask = nil
+                authenticationTask?.cancel()
+                await activeAuthenticationSession?.cancel()
+            }
+        default:
+            break
+        }
+        for continuation in notificationSubscribers.values {
+            continuation.yield(notification)
+        }
+    }
+
+    private func completeLogin(loginID: String, callbackURL: URL) async throws {
+        guard activeLoginID == loginID else {
+            return
+        }
+        do {
+            try await sharedSession.completeLogin(
+                loginID: loginID,
+                callbackURL: callbackURL.absoluteString
+            )
+            try await ensureAuthenticationCompletionDelivered(loginID: loginID)
+        } catch let error as AppServerResponseError where error.isUnsupportedMethod {
+            throw ReviewAuthError.loginFailed(
+                "Authentication completion is unavailable. Update the app-server and try again."
+            )
+        }
+    }
+
+    private func ensureAuthenticationCompletionDelivered(loginID: String) async throws {
+        if hasBufferedAuthenticationCompletion(loginID: loginID) {
+            return
+        }
+
+        let shouldSynthesizeAccountUpdate = hasBufferedAuthenticationUpdate == false
+        let synthesizedPlanType: String?
+        if shouldSynthesizeAccountUpdate,
+           let account = try? await sharedSession.readAccount(refreshToken: true),
+           case .chatGPT(_, let planType) = account.account {
+            synthesizedPlanType = planType
+        } else {
+            synthesizedPlanType = nil
+        }
+
+        if hasBufferedAuthenticationCompletion(loginID: loginID) {
+            return
+        }
+
+        if hasBufferedAuthenticationUpdate == false,
+           let synthesizedPlanType {
+            await handleNotification(
+                .accountUpdated(
+                    try makeSyntheticAccountUpdatedNotification(planType: synthesizedPlanType)
+                )
+            )
+        }
+
+        if hasBufferedAuthenticationCompletion(loginID: loginID) {
+            return
+        }
+
+        await handleNotification(
+            .accountLoginCompleted(
+                try makeSyntheticAccountLoginCompletedNotification(loginID: loginID)
+            )
+        )
+    }
+
+    private var hasBufferedAuthenticationUpdate: Bool {
+        bufferedNotifications.contains { notification in
+            if case .accountUpdated = notification {
+                return true
+            }
+            return false
+        }
+    }
+
+    private func hasBufferedAuthenticationCompletion(loginID: String) -> Bool {
+        bufferedNotifications.contains { notification in
+            guard case .accountLoginCompleted(let completed) = notification else {
+                return false
+            }
+            guard let completedLoginID = completed.loginID?.nilIfEmpty else {
+                return true
+            }
+            return completedLoginID == loginID
+        }
+    }
+
+    private func makeSyntheticAccountUpdatedNotification(
+        planType: String?
+    ) throws -> AppServerAccountUpdatedNotification {
+        var payload: [String: Any] = [
+            "authMode": "chatgpt",
+        ]
+        payload["planType"] = planType
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        return try JSONDecoder().decode(AppServerAccountUpdatedNotification.self, from: data)
+    }
+
+    private func makeSyntheticAccountLoginCompletedNotification(
+        loginID: String
+    ) throws -> AppServerAccountLoginCompletedNotification {
+        let data = try JSONSerialization.data(
+            withJSONObject: [
+                "error": NSNull(),
+                "loginId": loginID,
+                "success": true,
+            ]
+        )
+        return try JSONDecoder().decode(AppServerAccountLoginCompletedNotification.self, from: data)
+    }
+
+    private func handleAuthenticationCancellation(for loginID: String) async {
+        guard activeLoginID == loginID else {
+            return
+        }
+        activeLoginID = nil
+        activeAuthenticationSession = nil
+        finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
+        do {
+            try await sharedSession.cancelLogin(loginID: loginID)
+        } catch {
+        }
+        authenticationTask = nil
+    }
+
+    private func handleAuthenticationFailure(for loginID: String, error: Error) async {
+        guard activeLoginID == loginID else {
+            return
+        }
+        activeLoginID = nil
+        activeAuthenticationSession = nil
+        finishNotificationSubscribers(
+            failing: error as? ReviewAuthError ?? ReviewAuthError.loginFailed(error.localizedDescription)
+        )
+        do {
+            try await sharedSession.cancelLogin(loginID: loginID)
+        } catch {
+        }
+        authenticationTask = nil
+    }
+
+    private func finishRelay(error: Error?) {
+        relayTask = nil
+        relayCancellation = nil
+        if let error {
+            finishNotificationSubscribers(failing: error)
+        } else {
+            finishNotificationSubscribers(failing: nil)
+        }
+    }
+
+    private func removeNotificationSubscriber(id: UUID) {
+        notificationSubscribers.removeValue(forKey: id)
+    }
+
+    private func finishNotificationSubscribers(
+        failing error: Error?,
+        discardBufferedNotifications: Bool = false
+    ) {
+        if notificationTerminalState == nil {
+            notificationTerminalState = makeNotificationTerminalState(failing: error)
+        }
+        if discardBufferedNotifications {
+            bufferedNotifications.removeAll(keepingCapacity: false)
+        }
+        let subscribers = notificationSubscribers.values
+        notificationSubscribers.removeAll()
+        for continuation in subscribers {
+            finishNotificationContinuation(continuation, with: notificationTerminalState!)
+        }
+    }
+
+    private func throwIfClosed() throws {
+        if isClosed {
+            throw ReviewAuthError.loginFailed("Authentication session is closed.")
+        }
+    }
+
+    private func finishNotificationContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation,
+        with terminalState: NotificationTerminalState
+    ) {
+        switch terminalState {
+        case .finished:
+            continuation.finish()
+        case .failed(let error):
+            continuation.finish(throwing: error)
+        }
+    }
+
+    private func makeNotificationTerminalState(failing error: Error?) -> NotificationTerminalState {
+        guard let error else {
+            return .finished
+        }
+        if error is CancellationError {
+            return .finished
+        }
+        return .failed(error)
+    }
+}
+
 @MainActor
 private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
     let appServerManager: any AppServerManaging
     let authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)?
     let shouldAutoStartEmbeddedServer: Bool
+    let initialAuthState: CodexReviewAuthModel.State
     lazy var liveAuthSessionFactory: @Sendable () async throws -> any ReviewAuthSession = { [configuration] in
         CLIReviewAuthSession(
             configuration: .init(
@@ -679,6 +1361,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     private var waitTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
     private var authRefreshTask: Task<Void, Never>?
+    private var authenticationCancellationRestoreState: CodexReviewAuthModel.State?
     private var startupTaskID: UUID?
     var closedSessions: Set<String> = []
     private var discoveryFileURL: URL {
@@ -706,6 +1389,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         )
         self.authSessionFactory = authSessionFactory
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
+        self.initialAuthState = loadStoredReviewAuthState(environment: configuration.environment) ?? .signedOut
     }
 
     func start(
@@ -788,7 +1472,17 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             auth.updateState(state)
         } catch {
             if auth.isAuthenticating == false {
-                auth.updateState(.signedOut)
+                if auth.isAuthenticated {
+                    auth.updateState(
+                        .failed(
+                            error.localizedDescription,
+                            isAuthenticated: true,
+                            accountID: auth.accountID
+                        )
+                    )
+                } else {
+                    auth.updateState(.signedOut)
+                }
             }
         }
     }
@@ -796,25 +1490,86 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func beginAuthentication(auth: CodexReviewAuthModel) async {
         authRefreshTask?.cancel()
         authRefreshTask = nil
+        let priorState = auth.state
+        authenticationCancellationRestoreState = priorState
+        defer {
+            authenticationCancellationRestoreState = nil
+        }
         do {
-            try await authManager.beginAuthentication { state in
-                await MainActor.run {
+            try await beginAuthenticationAttempt(auth: auth, priorState: priorState)
+        } catch ReviewAuthError.cancelled {
+            auth.updateState(authenticationRestoreState(from: priorState))
+        } catch {
+            updateAuthenticationFailureState(error, auth: auth, priorState: priorState)
+        }
+    }
+
+    private func beginAuthenticationAttempt(
+        auth: CodexReviewAuthModel,
+        priorState: CodexReviewAuthModel.State
+    ) async throws {
+        try await authManager.beginAuthentication { state in
+            await MainActor.run {
+                if let progress = CodexReviewAuthStateAccessors.progress(state),
+                   CodexReviewAuthStateAccessors.isAuthenticated(priorState) {
+                    auth.updateState(
+                        .init(
+                            isAuthenticated: true,
+                            accountID: CodexReviewAuthStateAccessors.accountID(priorState),
+                            progress: progress
+                        )
+                    )
+                } else {
                     auth.updateState(state)
                 }
             }
-            await recycleSharedAppServerAfterAuthChange()
-        } catch ReviewAuthError.cancelled {
-            auth.updateState(.signedOut)
-        } catch let error as ReviewAuthError {
-            auth.updateState(.failed(error.errorDescription ?? "Authentication failed."))
-        } catch {
-            auth.updateState(.failed(error.localizedDescription))
+        }
+        await recycleSharedAppServerAfterAuthChange()
+    }
+
+    private func updateAuthenticationFailureState(
+        _ error: Error,
+        auth: CodexReviewAuthModel,
+        priorState: CodexReviewAuthModel.State
+    ) {
+        let message: String
+        if let error = error as? ReviewAuthError {
+            message = error.errorDescription ?? "Authentication failed."
+        } else {
+            message = error.localizedDescription
+        }
+
+        if CodexReviewAuthStateAccessors.isAuthenticated(priorState) {
+            auth.updateState(
+                .failed(
+                    message,
+                    isAuthenticated: true,
+                    accountID: CodexReviewAuthStateAccessors.accountID(priorState)
+                )
+            )
+        } else {
+            auth.updateState(.failed(message))
         }
     }
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        let restoreState = authenticationRestoreState(
+            from: authenticationCancellationRestoreState ?? auth.state
+        )
         await authManager.cancelAuthentication()
-        auth.updateState(.signedOut)
+        auth.updateState(restoreState)
+    }
+
+    private func authenticationRestoreState(
+        from state: CodexReviewAuthModel.State
+    ) -> CodexReviewAuthModel.State {
+        guard CodexReviewAuthStateAccessors.isAuthenticated(state) else {
+            return .signedOut
+        }
+        guard CodexReviewAuthStateAccessors.progress(state) == nil else {
+            return .signedIn(accountID: CodexReviewAuthStateAccessors.accountID(state))
+        }
+        return state
     }
 
     func logout(auth: CodexReviewAuthModel) async {
@@ -822,13 +1577,50 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         authRefreshTask = nil
         do {
             let state = try await authManager.logout()
-            auth.updateState(state)
             await recycleSharedAppServerAfterAuthChange()
+            auth.updateState(state)
         } catch let error as ReviewAuthError {
-            auth.updateState(.failed(error.errorDescription ?? "Failed to sign out."))
+            await resolveLogoutFailureState(
+                auth: auth,
+                message: error.errorDescription ?? "Failed to sign out."
+            )
         } catch {
-            auth.updateState(.failed(error.localizedDescription))
+            await resolveLogoutFailureState(
+                auth: auth,
+                message: error.localizedDescription
+            )
         }
+    }
+
+    private func resolveLogoutFailureState(
+        auth: CodexReviewAuthModel,
+        message: String
+    ) async {
+        let priorAccountID = auth.accountID
+        let priorIsAuthenticated = auth.isAuthenticated
+        if let resolvedState = try? await authManager.loadState() {
+            if CodexReviewAuthStateAccessors.isAuthenticated(resolvedState) {
+                auth.updateState(
+                    .failed(
+                        message,
+                        isAuthenticated: true,
+                        accountID: CodexReviewAuthStateAccessors.accountID(resolvedState)
+                    )
+                )
+            } else {
+                auth.updateState(resolvedState)
+                await recycleSharedAppServerAfterAuthChange()
+            }
+            return
+        }
+
+        auth.updateState(
+            .failed(
+                message,
+                isAuthenticated: priorIsAuthenticated,
+                accountID: priorAccountID
+            )
+        )
     }
 
     private func makeServer(store: CodexReviewStore) -> ReviewMCPHTTPServer {

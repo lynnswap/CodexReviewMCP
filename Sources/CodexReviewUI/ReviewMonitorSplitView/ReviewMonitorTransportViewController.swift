@@ -6,27 +6,16 @@ import ReviewRuntime
 @MainActor
 final class ReviewMonitorTransportViewController: NSViewController {
     private let logScrollView = ReviewMonitorLogScrollView()
-    private let uiState: ReviewMonitorUIState
-    private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
-        title: "Select a job",
-        description: "Choose a review from the list.",
-        titleAccessibilityIdentifier: "review-monitor.detail-empty.title",
-        descriptionAccessibilityIdentifier: "review-monitor.detail-empty.description"
-    )
-    private var uiStateObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationHandles: Set<ObservationHandle> = []
     private var boundJob: CodexReviewJob?
-    private var showingEmptyState = true
     private var logScrollTargetsByJobID: [String: ReviewMonitorLogScrollView.ScrollRestorationTarget] = [:]
 #if DEBUG
     private var renderCountForTestingStorage = 0
     private var renderWaitersForTesting: [Int: [CheckedContinuation<Void, Never>]] = [:]
 #endif
 
-    init(uiState: ReviewMonitorUIState) {
-        self.uiState = uiState
+    init() {
         super.init(nibName: nil, bundle: nil)
-        bindObservation()
     }
 
     @available(*, unavailable)
@@ -41,48 +30,25 @@ final class ReviewMonitorTransportViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         configureHierarchy()
-        bindSelectedJob(uiState.selectedJobEntry)
     }
 
     private func configureHierarchy() {
         let safeArea = view.safeAreaLayoutGuide
 
         view.addSubview(logScrollView)
-        view.addSubview(emptyStateView)
 
         NSLayoutConstraint.activate([
             logScrollView.topAnchor.constraint(equalTo: safeArea.topAnchor),
             logScrollView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
             logScrollView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
             logScrollView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
-
-            emptyStateView.centerXAnchor.constraint(equalTo: safeArea.centerXAnchor),
-            emptyStateView.centerYAnchor.constraint(equalTo: safeArea.centerYAnchor),
-            emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: safeArea.leadingAnchor, constant: 24),
-            emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: safeArea.trailingAnchor, constant: -24)
         ])
     }
 
-    private func bindObservation() {
-        uiStateObservationHandles.removeAll()
-        uiState.observe(\.selectedJobEntry) { [weak self] selectedJob in
-            guard let self, self.isViewLoaded else {
-                return
-            }
-            self.bindSelectedJob(selectedJob)
-        }
-        .store(in: &uiStateObservationHandles)
-    }
-
-    private func bindSelectedJob(_ selectedJob: CodexReviewJob?) {
+    func displayJob(_ selectedJob: CodexReviewJob) {
         cacheBoundJobScrollTarget()
         selectedJobObservationHandles.removeAll()
         boundJob = selectedJob
-
-        guard let selectedJob else {
-            renderEmptyState()
-            return
-        }
 
         renderSelectedJob(
             selectedJob,
@@ -100,6 +66,15 @@ final class ReviewMonitorTransportViewController: NSViewController {
             }
         }
         .store(in: &selectedJobObservationHandles)
+    }
+
+    func clearDisplayedJob() {
+        cacheBoundJobScrollTarget()
+        selectedJobObservationHandles.removeAll()
+        boundJob = nil
+        if logScrollView.clear() {
+            noteRenderForTesting()
+        }
     }
 
     private func renderSelectedJob(
@@ -123,16 +98,11 @@ final class ReviewMonitorTransportViewController: NSViewController {
         restorationTarget: ReviewMonitorLogScrollView.ScrollRestorationTarget,
         allowIncrementalUpdate: Bool
     ) -> Bool {
-        let visibilityChanged = showJobContentIfNeeded()
-        if visibilityChanged {
-            view.layoutSubtreeIfNeeded()
-        }
-        let logChanged = logScrollView.replaceText(
+        logScrollView.replaceText(
             text,
             restoring: restorationTarget,
             allowIncrementalUpdate: allowIncrementalUpdate
         )
-        return visibilityChanged || logChanged
     }
 
     @discardableResult
@@ -147,33 +117,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
         )
     }
 
-    @discardableResult
-    private func showJobContentIfNeeded() -> Bool {
-        guard showingEmptyState else {
-            return false
-        }
-
-        logScrollView.isHidden = false
-        emptyStateView.isHidden = true
-        showingEmptyState = false
-        return true
-    }
-
-    private func renderEmptyState() {
-        let clearedLog = logScrollView.clear()
-        let wasEmpty = showingEmptyState
-
-        logScrollView.isHidden = true
-        emptyStateView.isHidden = false
-        showingEmptyState = true
-
-        if wasEmpty == false || clearedLog {
-            noteRenderForTesting()
-        }
-    }
-
     private func cacheBoundJobScrollTarget() {
-        guard let boundJob, showingEmptyState == false else {
+        guard let boundJob else {
             return
         }
         logScrollTargetsByJobID[boundJob.id] = logScrollView.currentScrollRestorationTarget
@@ -222,7 +167,7 @@ extension ReviewMonitorTransportViewController {
     }
 
     var isShowingEmptyStateForTesting: Bool {
-        emptyStateView.isHidden == false
+        false
     }
 
     var renderCountForTesting: Int {
@@ -313,6 +258,14 @@ extension ReviewMonitorTransportViewController {
 
     var logDocumentViewFrameForTesting: NSRect {
         logScrollView.documentViewFrameForTesting
+    }
+
+    var logTextContainerSizeForTesting: NSSize {
+        logScrollView.textContainerSizeForTesting
+    }
+
+    var logTextContainerInsetForTesting: NSSize {
+        logScrollView.textContainerInsetForTesting
     }
 
     func scrollLogToBottomForTesting() {

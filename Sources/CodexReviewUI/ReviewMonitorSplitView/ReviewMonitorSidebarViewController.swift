@@ -134,6 +134,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         outlineView.contextMenuProvider = { [weak self] point in
             self?.makeContextMenu(at: point)
         }
+        outlineView.draggingExitedHandler = { [weak self] in
+            self?.clearDropTarget()
+        }
 
         scrollView.documentView = outlineView
     }
@@ -506,6 +509,10 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         return try? JSONDecoder().decode(SidebarDragPayload.self, from: data)
     }
 
+    private func clearDropTarget() {
+        outlineView.setDropItem(nil, dropChildIndex: NSOutlineViewDropOnItemIndex)
+    }
+
     private func resolvedDrop(
         for payload: SidebarDragPayload,
         draggingInfo: (any NSDraggingInfo)? = nil,
@@ -792,6 +799,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
                 proposedChildIndex: index
               )
         else {
+            clearDropTarget()
             return []
         }
 
@@ -805,6 +813,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         item: Any?,
         childIndex index: Int
     ) -> Bool {
+        defer {
+            clearDropTarget()
+        }
         guard let payload = dragPayload(from: info),
               let resolvedDrop = resolvedDrop(
                 for: payload,
@@ -987,6 +998,39 @@ extension ReviewMonitorSidebarViewController {
         outlineView.performInertClickForTesting(at: point)
     }
 
+    func presentContextMenuForTesting(
+        for job: CodexReviewJob,
+        presenter: @escaping (NSMenu) -> Void
+    ) {
+        view.layoutSubtreeIfNeeded()
+        guard let row = row(forJobID: job.id) else {
+            preconditionFailure("Job row is not visible.")
+        }
+        let rect = outlineView.rect(ofRow: row)
+        let point = NSPoint(x: rect.midX, y: rect.midY)
+        outlineView.presentContextMenuForTesting(at: point, presenter: presenter)
+    }
+
+    func focusSidebarForTesting() {
+        _ = view.window?.makeFirstResponder(outlineView)
+    }
+
+    var sidebarHasFirstResponderForTesting: Bool {
+        view.window?.firstResponder === outlineView
+    }
+
+    var isPresentingContextMenuForTesting: Bool {
+        outlineView.isPresentingContextMenuForTesting
+    }
+
+    var acceptsFirstResponderForTesting: Bool {
+        outlineView.acceptsFirstResponderForTesting
+    }
+
+    var hasTemporaryContextMenuForTesting: Bool {
+        outlineView.menu != nil
+    }
+
     func workspaceIsExpandedForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
         workspace.isExpanded
     }
@@ -1105,6 +1149,14 @@ extension ReviewMonitorSidebarViewController {
         return applyResolvedDrop(resolvedDrop)
     }
 
+    func jobDropIsRejectedForTesting(_ job: CodexReviewJob) -> Bool {
+        resolvedDrop(
+            for: .job(id: job.id, cwd: job.cwd),
+            proposedItem: nil,
+            proposedChildIndex: NSOutlineViewDropOnItemIndex
+        ) == nil
+    }
+
     private func blankPointForTesting() -> NSPoint {
         let blankY: CGFloat
         if outlineView.numberOfRows > 0 {
@@ -1144,7 +1196,10 @@ extension ReviewMonitorSidebarViewController {
 private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
     var inertRowEvaluator: ((Int) -> Bool)?
     var contextMenuProvider: ((NSPoint) -> NSMenu?)?
+    var draggingExitedHandler: (() -> Void)?
     private var isPresentingContextMenu = false
+    private weak var contextMenuFirstResponder: NSResponder?
+    private var previousContextMenu: NSMenu?
 
     override var acceptsFirstResponder: Bool {
         isPresentingContextMenu ? false : super.acceptsFirstResponder
@@ -1164,22 +1219,25 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
             return
         }
 
-        let previousFirstResponder = window?.firstResponder
-        let shouldRestoreFirstResponder = previousFirstResponder.map(isSidebarFirstResponder(_:)) ?? false
-        if shouldRestoreFirstResponder {
-            isPresentingContextMenu = true
-            _ = window?.makeFirstResponder(nil)
-        }
-        let previousMenu = menu
-        menu = contextMenu
-        defer {
-            menu = previousMenu
-            if shouldRestoreFirstResponder {
-                restoreFirstResponder(previousFirstResponder)
-            }
-            isPresentingContextMenu = false
-        }
+        beginContextMenuPresentation(with: contextMenu)
         super.rightMouseDown(with: event)
+
+        if isPresentingContextMenu {
+            endContextMenuPresentation()
+        }
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        draggingExitedHandler?()
+        super.draggingExited(sender)
+    }
+
+    override func didCloseMenu(_ menu: NSMenu, with event: NSEvent?) {
+        super.didCloseMenu(menu, with: event)
+        guard isPresentingContextMenu else {
+            return
+        }
+        endContextMenuPresentation()
     }
 
     private func shouldSuppressSelectionClearing(at point: NSPoint) -> Bool {
@@ -1240,6 +1298,41 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
         _ = window.makeFirstResponder(self)
     }
 
+    private func beginContextMenuPresentation(with contextMenu: NSMenu) {
+        previousContextMenu = menu
+        menu = contextMenu
+        isPresentingContextMenu = true
+
+        guard let window else {
+            contextMenuFirstResponder = nil
+            return
+        }
+
+        let previousFirstResponder = window.firstResponder
+        guard previousFirstResponder.map(isSidebarFirstResponder(_:)) ?? false else {
+            contextMenuFirstResponder = nil
+            return
+        }
+
+        contextMenuFirstResponder = previousFirstResponder
+        _ = window.makeFirstResponder(nil)
+    }
+
+    private func endContextMenuPresentation() {
+        let previousFirstResponder = contextMenuFirstResponder
+        let previousContextMenu = previousContextMenu
+
+        contextMenuFirstResponder = nil
+        self.previousContextMenu = nil
+        isPresentingContextMenu = false
+        menu = previousContextMenu
+
+        guard let previousFirstResponder else {
+            return
+        }
+        restoreFirstResponder(previousFirstResponder)
+    }
+
 #if DEBUG
     func performInertClickForTesting(at point: NSPoint) {
         handlePrimaryInteraction(at: point) {
@@ -1249,6 +1342,31 @@ private final class ReviewMonitorSidebarOutlineView: NSOutlineView {
 
     func suppressesSelectionClearingForTesting(at point: NSPoint) -> Bool {
         shouldSuppressSelectionClearing(at: point)
+    }
+
+    func presentContextMenuForTesting(
+        at point: NSPoint,
+        presenter: @escaping (NSMenu) -> Void
+    ) {
+        guard window != nil else {
+            fatalError("Sidebar outline view must be attached to a window for context menu testing.")
+        }
+        guard let contextMenu = contextMenuProvider?(point) else {
+            return
+        }
+        beginContextMenuPresentation(with: contextMenu)
+        presenter(contextMenu)
+        if isPresentingContextMenu {
+            endContextMenuPresentation()
+        }
+    }
+
+    var isPresentingContextMenuForTesting: Bool {
+        isPresentingContextMenu
+    }
+
+    var acceptsFirstResponderForTesting: Bool {
+        acceptsFirstResponder
     }
 
 #endif

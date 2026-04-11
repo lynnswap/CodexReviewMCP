@@ -20,92 +20,101 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
 
 
 @available(macOS 26.0, *)
-private struct StatusView: View {
+struct StatusView: View {
     let store: CodexReviewStore
 
     var body: some View {
-        Menu{
-            authStatusSection
-            if store.serverState.isRestartAvailable{
-                Section{
-                    Button("Reset Server") {
-                        Task {
-                            await store.restart()
-                        }
-                    }
+        Menu {
+            Label(accountDisplayName, systemImage: "person.circle.fill")
+            if showsAuthenticationAction {
+                Button(authenticationActionTitle, systemImage: authenticationActionSystemImage) {
+                    performAuthenticationAction()
                 }
             }
-            authMenuSection
-        }label:{
-            Label("Settings",systemImage:"gear")
+            if showsServerRestartAction {
+                Button("Reset Server", systemImage: "arrow.clockwise") {
+                    restartServer()
+                }
+            }
+            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+                performLogout()
+            }
+            .disabled(canSignOut == false)
+        } label: {
+            Label("Settings", systemImage: "gear")
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 8)
                 .contentShape(.rect)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
-        .sheet(isPresented: Binding(
-            get: { store.auth.isAuthenticating },
-            set: { isPresented in
-                guard isPresented == false else {
-                    return
-                }
-                Task {
-                    await store.auth.cancelAuthentication()
-                }
-            }
-        )) {
-            ReviewMonitorAuthSheet(auth: store.auth)
+    }
+
+    var accountDisplayName: String {
+        if let accountID = store.auth.accountID,
+           accountID.isEmpty == false {
+            return accountID
+        }
+        return "Unknown"
+    }
+
+    var isSignedIn: Bool {
+        store.auth.isAuthenticated
+    }
+
+    var canSignOut: Bool {
+        store.auth.isAuthenticated && store.auth.isAuthenticating == false
+    }
+
+    var canRetryAuthentication: Bool {
+        store.auth.errorMessage != nil &&
+        store.auth.isAuthenticated == false &&
+        store.auth.isAuthenticating == false
+    }
+
+    var showsAuthenticationAction: Bool {
+        canRetryAuthentication || store.auth.isAuthenticating
+    }
+
+    var showsServerRestartAction: Bool {
+        switch store.serverState {
+        case .failed, .stopped, .starting:
+            true
+        case .running:
+            false
         }
     }
-    @ViewBuilder
-    private var authStatusSection: some View {
-        Section{
-            switch store.auth.state{
-            case .signingIn(_):
-                EmptyView()
-            case .signedIn(let accountID):
-                Label(accountID ?? "Unknown",systemImage: "person.circle.fill")
-            case .signedOut:
-                EmptyView()
-            case .failed(let reason):
-                Label{
-                    Text(reason)
-                }icon:{
-                    Image(systemName: "person.crop.circle.badge.exclamationmark.fill")
-                        .symbolRenderingMode(.multicolor)
-                        .foregroundStyle(.primary, .yellow)
-                }
+
+    var authenticationActionTitle: String {
+        store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT"
+    }
+
+    var authenticationActionSystemImage: String {
+        store.auth.isAuthenticating ? "xmark.circle" : "person.badge.key"
+    }
+
+    func performAuthenticationAction() {
+        Task {
+            if store.auth.isAuthenticating {
+                await store.auth.cancelAuthentication()
+            } else if canRetryAuthentication {
+                await store.auth.beginAuthentication()
             }
         }
     }
 
-    @ViewBuilder
-    private var authMenuSection: some View {
-        switch store.auth.state {
-        case .signedIn:
-            Button("Sign Out",systemImage:"rectangle.portrait.and.arrow.right") {
-                Task {
-                    await store.auth.logout()
-                }
+    func restartServer() {
+        Task {
+            if store.auth.isAuthenticating {
+                await store.auth.cancelAuthentication()
             }
-        case .signingIn:
-            Label{
-                Text("Authentication in progress")
-            }icon:{
-                ProgressView()
-            }
-            Button("Cancel Sign In") {
-                Task {
-                    await store.auth.cancelAuthentication()
-                }
-            }
-        case .signedOut, .failed:
-            Button("Sign in with ChatGPT",systemImage:"person.circle.fill") {
-                Task {
-                    await store.auth.beginAuthentication()
-                }
-            }
+            await store.restart()
+        }
+    }
+
+    func performLogout() {
+        Task {
+            await store.auth.logout()
         }
     }
 }
@@ -114,14 +123,30 @@ private struct StatusView: View {
 #if DEBUG
 @available(macOS 26.0, *)
 #Preview("Signed In") {
-    let store = makeStatusPreviewStore(state: .signedIn(accountID: "review@example.com"))
+    let store = makeStatusPreviewStore()
     return StatusView(store: store)
         .padding()
 }
+
+@available(macOS 26.0, *)
+#Preview("Server Failed") {
+    let store = makeStatusPreviewStore(
+        serverState: .failed("The embedded server stopped responding.")
+    )
+    return StatusView(store: store)
+        .padding()
+}
+
 @MainActor
-private func makeStatusPreviewStore(state: CodexReviewAuthModel.State) -> CodexReviewStore {
+func makeStatusPreviewStore(
+    authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
+    serverState: CodexReviewServerState = .running
+) -> CodexReviewStore {
     let store = ReviewMonitorPreviewContent.makeStore()
-    store.auth.updateState(state)
+    let runningServerURL = store.serverURL
+    store.auth.updateState(authState)
+    store.serverState = serverState
+    store.serverURL = serverState == .running ? runningServerURL : nil
     return store
 }
 #endif

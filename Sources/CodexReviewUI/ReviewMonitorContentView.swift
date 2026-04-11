@@ -5,20 +5,31 @@ import CodexReviewModel
 @available(macOS 26.0, *)
 @MainActor
 private struct ReviewMonitorPreviewView: NSViewControllerRepresentable {
-    let store: CodexReviewStore
+    var authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com")
+    var serverState: CodexReviewServerState = .running
 
-    func makeNSViewController(context: Context) -> ReviewMonitorSplitViewController {
-        ReviewMonitorSplitViewController(store: store)
+    func makeNSViewController(context: Context) -> NSViewController {
+        makeReviewMonitorPreviewContentViewControllerForPreview(
+            authState: authState,
+            serverState: serverState
+        )
     }
 
-    func updateNSViewController(_ nsViewController: ReviewMonitorSplitViewController, context: Context) {
+    func updateNSViewController(_ nsViewController: NSViewController, context: Context) {
     }
 }
 
-#Preview {
-    if #available(macOS 26.0, *) {
-        ReviewMonitorPreviewView(store: ReviewMonitorPreviewContent.makeStore())
-            .frame(height:1000)
-    }
+@available(macOS 26.0, *)
+#Preview("Normal") {
+    ReviewMonitorPreviewView()
+        .ignoresSafeArea()
+}
+
+@available(macOS 26.0, *)
+#Preview("Server Failed") {
+    ReviewMonitorPreviewView(
+        serverState: .failed("The embedded server stopped responding.")
+    )
+    .ignoresSafeArea()
 }
 #endif

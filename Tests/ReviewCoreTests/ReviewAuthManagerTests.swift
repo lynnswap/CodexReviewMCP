@@ -59,7 +59,7 @@ struct ReviewAuthManagerTests {
         let updates = await recorder.values()
         #expect(
             updates.contains {
-                guard case .signingIn(let progress) = $0 else {
+                guard let progress = CodexReviewAuthStateAccessors.progress($0) else {
                     return false
                 }
                 return progress.browserURL?.contains("/oauth/authorize") == true
@@ -320,7 +320,7 @@ struct ReviewAuthManagerTests {
 
         await factory.waitForRequest()
         await recorder.waitUntilContains { state in
-            guard case .signingIn(let progress) = state else {
+            guard let progress = CodexReviewAuthStateAccessors.progress(state) else {
                 return false
             }
             return progress.browserURL == nil
@@ -472,7 +472,7 @@ struct ReviewAuthManagerTests {
 
         let response = try await session.startLogin(.chatGPT)
 
-        guard case .chatGPT(let loginID, let authURL) = response else {
+        guard case .chatGPT(let loginID, let authURL, _) = response else {
             Issue.record("Expected chatgpt browser response, got \(response)")
             return
         }

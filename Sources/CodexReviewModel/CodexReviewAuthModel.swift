@@ -1,6 +1,24 @@
 import Foundation
 import Observation
 
+public enum CodexReviewAuthStateAccessors {
+    public static func isAuthenticated(_ state: CodexReviewAuthModel.State) -> Bool {
+        state.isAuthenticated
+    }
+
+    public static func accountID(_ state: CodexReviewAuthModel.State) -> String? {
+        state.accountID
+    }
+
+    public static func progress(_ state: CodexReviewAuthModel.State) -> CodexReviewAuthModel.Progress? {
+        state.progress
+    }
+
+    public static func errorMessage(_ state: CodexReviewAuthModel.State) -> String? {
+        state.errorMessage
+    }
+}
+
 @MainActor
 @Observable
 public final class CodexReviewAuthModel {
@@ -20,37 +38,73 @@ public final class CodexReviewAuthModel {
         }
     }
 
-    public enum State: Sendable, Equatable {
-        case signedOut
-        case signingIn(Progress)
-        case signedIn(accountID: String?)
-        case failed(String)
+    public struct State: Sendable, Equatable {
+        public var isAuthenticated: Bool
+        public var accountID: String?
+        public var progress: Progress?
+        public var errorMessage: String?
+
+        public init(
+            isAuthenticated: Bool = false,
+            accountID: String? = nil,
+            progress: Progress? = nil,
+            errorMessage: String? = nil
+        ) {
+            self.isAuthenticated = isAuthenticated
+            self.accountID = isAuthenticated ? accountID : nil
+            self.progress = progress
+            self.errorMessage = progress == nil ? errorMessage : nil
+        }
+
+        public static let signedOut = State()
+
+        public static func signedIn(accountID: String?) -> State {
+            State(
+                isAuthenticated: true,
+                accountID: accountID
+            )
+        }
+
+        public static func signingIn(_ progress: Progress) -> State {
+            State(progress: progress)
+        }
+
+        public static func failed(
+            _ message: String,
+            isAuthenticated: Bool = false,
+            accountID: String? = nil
+        ) -> State {
+            State(
+                isAuthenticated: isAuthenticated,
+                accountID: accountID,
+                errorMessage: message
+            )
+        }
+
     }
 
     public package(set) var state: State = .signedOut
 
     @ObservationIgnored private let backend: any CodexReviewStoreBackend
 
-
     public var progress: Progress? {
-        guard case .signingIn(let progress) = state else {
-            return nil
-        }
-        return progress
+        state.progress
     }
 
     public var isAuthenticating: Bool {
-        if case .signingIn = state {
-            return true
-        }
-        return false
+        state.progress != nil
     }
 
     public var isAuthenticated: Bool {
-        if case .signedIn = state {
-            return true
-        }
-        return false
+        state.isAuthenticated
+    }
+
+    public var accountID: String? {
+        state.accountID
+    }
+
+    public var errorMessage: String? {
+        state.errorMessage
     }
 
     package init(backend: any CodexReviewStoreBackend) {

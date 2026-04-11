@@ -159,7 +159,7 @@ package actor ReviewAuthManager {
 
             let finalState: CodexReviewAuthModel.State
             switch response {
-            case .chatGPT(let loginID, _):
+            case .chatGPT(let loginID, _, _):
                 finalState = try await waitForAuthenticationCompletion(
                     session: session,
                     attemptID: attemptID,
@@ -167,7 +167,7 @@ package actor ReviewAuthManager {
                     onUpdate: onUpdate
                 )
             }
-            if finalState == .signedOut {
+            if CodexReviewAuthStateAccessors.isAuthenticated(finalState) == false {
                 throw ReviewAuthError.loginFailed("Authentication failed. Sign in again.")
             }
 
@@ -386,7 +386,7 @@ package actor ReviewAuthManager {
         case .signedOut:
             throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
         case .unavailable:
-            guard refreshedState != .signedOut else {
+            guard CodexReviewAuthStateAccessors.isAuthenticated(refreshedState) else {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
             return refreshedState
@@ -420,7 +420,7 @@ package actor ReviewAuthManager {
                         return Self.authState(from: account)
                     }
                 }
-                if state == .signedOut {
+                if CodexReviewAuthStateAccessors.isAuthenticated(state) == false {
                     sawSignedOut = true
                 } else {
                     return .signedIn(state)
@@ -463,20 +463,33 @@ package actor ReviewAuthManager {
         refreshedState: CodexReviewAuthModel.State,
         durableState: CodexReviewAuthModel.State
     ) -> CodexReviewAuthModel.State {
-        switch (refreshedState, durableState) {
-        case (.signedIn(let refreshedAccountID), .signedIn(let durableAccountID))
-            where refreshedAccountID == "ChatGPT" && durableAccountID != "ChatGPT":
+        let refreshedAccountID = CodexReviewAuthStateAccessors.accountID(refreshedState)
+        let durableAccountID = CodexReviewAuthStateAccessors.accountID(durableState)
+
+        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState),
+           CodexReviewAuthStateAccessors.isAuthenticated(durableState),
+           refreshedAccountID == "ChatGPT",
+           durableAccountID != "ChatGPT"
+        {
             return .signedIn(accountID: durableAccountID)
-        case (.signedIn(let refreshedAccountID), .signedIn)
-            where refreshedAccountID != "ChatGPT":
+        }
+        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState),
+           CodexReviewAuthStateAccessors.isAuthenticated(durableState),
+           refreshedAccountID != "ChatGPT"
+        {
             return .signedIn(accountID: refreshedAccountID)
-        case (.signedOut, .signedIn):
-            return durableState
-        case (.signedIn, .signedIn):
-            return refreshedState
-        default:
+        }
+        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState) == false,
+           CodexReviewAuthStateAccessors.isAuthenticated(durableState)
+        {
             return durableState
         }
+        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState),
+           CodexReviewAuthStateAccessors.isAuthenticated(durableState)
+        {
+            return refreshedState
+        }
+        return durableState
     }
 
     private static func initialProgressState() -> CodexReviewAuthModel.State {
@@ -492,7 +505,7 @@ package actor ReviewAuthManager {
         for response: AppServerLoginAccountResponse
     ) -> CodexReviewAuthModel.State {
         switch response {
-        case .chatGPT(_, let authURL):
+        case .chatGPT(_, let authURL, _):
             return .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
@@ -540,6 +553,20 @@ package actor SharedAppServerReviewAuthSession: ReviewAuthSession {
             responseType: AppServerLoginAccountResponse.self
         )
         return response
+    }
+
+    package func completeLogin(
+        loginID: String,
+        callbackURL: String
+    ) async throws {
+        let _: AppServerCompleteLoginAccountResponse = try await transport.request(
+            method: "account/login/complete",
+            params: AppServerCompleteLoginAccountParams(
+                loginID: loginID,
+                callbackURL: callbackURL
+            ),
+            responseType: AppServerCompleteLoginAccountResponse.self
+        )
     }
 
     package func cancelLogin(loginID: String) async throws {
@@ -638,9 +665,11 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         }
 
         let arguments: [String]
-        switch params {
-        case .chatGPT:
+        switch params.type {
+        case "chatgpt":
             arguments = reviewMCPCodexCommandArguments(["login"])
+        default:
+            throw ReviewAuthError.loginFailed("Unsupported authentication mode.")
         }
 
         let stdinPipe = Pipe()
@@ -850,13 +879,15 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
             activeLogin.outputLines.removeFirst(activeLogin.outputLines.count - 50)
         }
 
-        switch activeLogin.mode {
-        case .chatGPT:
+        switch activeLogin.mode.type {
+        case "chatgpt":
             if activeLogin.browserURL == nil,
                let url = extractReviewAuthHTTPSURL(from: cleaned)
             {
                 activeLogin.browserURL = url
             }
+        default:
+            break
         }
 
         maybeResolveStartResponse(for: activeLogin)
@@ -868,8 +899,8 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         }
 
         let response: AppServerLoginAccountResponse?
-        switch activeLogin.mode {
-        case .chatGPT:
+        switch activeLogin.mode.type {
+        case "chatgpt":
             if let browserURL = activeLogin.browserURL {
                 response = .chatGPT(
                     loginID: activeLogin.loginID,
@@ -878,6 +909,8 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
             } else {
                 response = nil
             }
+        default:
+            response = nil
         }
 
         guard let response else {
@@ -1130,6 +1163,15 @@ private func loadStoredCLIAuthAccount(
     }
 
     return nil
+}
+
+package func loadStoredReviewAuthState(
+    environment: [String: String]
+) -> CodexReviewAuthModel.State? {
+    guard let account = loadStoredCLIAuthAccount(environment: environment) else {
+        return nil
+    }
+    return .signedIn(accountID: account.email?.nilIfEmpty ?? "ChatGPT")
 }
 
 private func decodeReviewAuthJWTClaims(_ token: String) -> [String: Any]? {
