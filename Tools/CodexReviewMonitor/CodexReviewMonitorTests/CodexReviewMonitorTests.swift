@@ -156,6 +156,8 @@ struct CodexReviewMonitorTests {
     }
 
     @Test func appDelegateCreatesSingleWindowControllerOnApplicationLaunch() {
+        let previousMainMenu = NSApp.mainMenu
+        defer { NSApp.mainMenu = previousMainMenu }
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
             launchModeProvider: { .application },
@@ -171,6 +173,53 @@ struct CodexReviewMonitorTests {
         #expect(delegate.windowController === windowController)
         #expect(windowController?.showWindowCallCount == 1)
         #expect(windowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 1)
+    }
+
+    @Test func appDelegateInstallsStandardMainMenuWithCopyShortcut() {
+        let previousMainMenu = NSApp.mainMenu
+        defer { NSApp.mainMenu = previousMainMenu }
+        let recorder = WindowControllerFactoryRecorder()
+        let delegate = CodexReviewMonitorAppDelegate(
+            launchModeProvider: { .application },
+            windowControllerFactory: { _ in
+                recorder.makeWindowController()
+            }
+        )
+
+        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
+
+        let editMenu = NSApp.mainMenu?.items
+            .first(where: { $0.submenu?.title == "Edit" })?
+            .submenu
+        let copyItem = editMenu?.items.first(where: { $0.action == #selector(NSText.copy(_:)) })
+
+        #expect(editMenu != nil)
+        #expect(copyItem?.keyEquivalent == "c")
+        #expect(copyItem?.keyEquivalentModifierMask == [.command])
+    }
+
+    @Test func appDelegateReplacesPreexistingIncompleteMainMenu() {
+        let previousMainMenu = NSApp.mainMenu
+        defer { NSApp.mainMenu = previousMainMenu }
+        let incompleteMenu = NSMenu(title: "Main Menu")
+        let appOnlyItem = NSMenuItem()
+        appOnlyItem.submenu = NSMenu(title: "CodexReviewMonitor")
+        incompleteMenu.addItem(appOnlyItem)
+        NSApp.mainMenu = incompleteMenu
+
+        let recorder = WindowControllerFactoryRecorder()
+        let delegate = CodexReviewMonitorAppDelegate(
+            launchModeProvider: { .application },
+            windowControllerFactory: { _ in
+                recorder.makeWindowController()
+            }
+        )
+
+        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
+
+        let topLevelTitles = NSApp.mainMenu?.items.compactMap(\.submenu?.title) ?? []
+        #expect(topLevelTitles.contains("Edit"))
+        #expect(topLevelTitles.contains("Window"))
     }
 
     @Test func appDelegateCreatesWindowControllerOnXCTestLaunch() {

@@ -2477,7 +2477,10 @@ struct CodexReviewUITests {
         guard #available(macOS 26.0, *) else {
             return
         }
-        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
+        let backend = CountingStartBackend(
+            shouldAutoStartEmbeddedServer: false,
+            restartResultingServerState: .running
+        )
         let store = CodexReviewStore(backend: backend)
         store.loadForTesting(
             serverState: .failed("The embedded server stopped responding."),
@@ -2493,14 +2496,17 @@ struct CodexReviewUITests {
         await backend.waitForBeginAuthenticationCallCount(1)
 
         #expect(backend.recordedActions() == ["start", "begin"])
-        #expect(store.serverState == .starting)
+        #expect(store.serverState == .running)
     }
 
     @Test func signInViewControllerRestartsStoppedServerBeforeBeginningAuthentication() async {
         guard #available(macOS 26.0, *) else {
             return
         }
-        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
+        let backend = CountingStartBackend(
+            shouldAutoStartEmbeddedServer: false,
+            restartResultingServerState: .running
+        )
         let store = CodexReviewStore(backend: backend)
         store.loadForTesting(serverState: .stopped, authState: .signedOut, workspaces: [])
         let viewController = ReviewMonitorSignInViewController(store: store)
@@ -2512,7 +2518,33 @@ struct CodexReviewUITests {
         await backend.waitForBeginAuthenticationCallCount(1)
 
         #expect(backend.recordedActions() == ["start", "begin"])
-        #expect(store.serverState == .starting)
+        #expect(store.serverState == .running)
+    }
+
+    @Test func signInViewControllerDoesNotBeginAuthenticationWhenRestartStillFails() async {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let backend = CountingStartBackend(
+            shouldAutoStartEmbeddedServer: false,
+            restartResultingServerState: .failed("Still unavailable.")
+        )
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authState: .signedOut,
+            workspaces: []
+        )
+        let viewController = ReviewMonitorSignInViewController(store: store)
+        viewController.loadViewIfNeeded()
+        viewController.startObservingAuth()
+
+        viewController.performPrimaryAction()
+        await backend.waitForStartCallCount(1)
+        await Task.yield()
+
+        #expect(backend.recordedActions() == ["start"])
+        #expect(store.serverState == .failed("Still unavailable."))
     }
 
     @Test func signInViewControllerDoesNotActOnBrowserProgressUpdates() async {
@@ -2597,7 +2629,8 @@ struct CodexReviewUITests {
         }
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
-            initialAuthState: .signedIn(accountID: "review@example.com")
+            initialAuthState: .signedIn(accountID: "review@example.com"),
+            restartResultingServerState: .running
         )
         let store = CodexReviewStore(backend: backend)
         store.loadForTesting(
@@ -2613,6 +2646,21 @@ struct CodexReviewUITests {
         await backend.waitForStartCallCount(1)
 
         #expect(backend.startCallCount() == 1)
+    }
+
+    @Test func statusViewShowsRestartActionWhileServerStarting() {
+        guard #available(macOS 26.0, *) else {
+            return
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .starting,
+            authState: .signedIn(accountID: "review@example.com"),
+            workspaces: []
+        )
+        let view = StatusView(store: store)
+
+        #expect(view.showsServerRestartAction)
     }
 
     @Test func signInViewDescriptionTextReflectsAuthState() {
@@ -2979,6 +3027,7 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
 private final class CountingStartBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer: Bool
     let initialAuthState: CodexReviewAuthModel.State
+    let restartResultingServerState: CodexReviewServerState
     private let startSignal = AsyncSignal()
     private let beginSignal = AsyncSignal()
     private let cancelSignal = AsyncSignal()
@@ -2989,10 +3038,12 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
 
     init(
         shouldAutoStartEmbeddedServer: Bool = true,
-        initialAuthState: CodexReviewAuthModel.State = .signedOut
+        initialAuthState: CodexReviewAuthModel.State = .signedOut,
+        restartResultingServerState: CodexReviewServerState = .starting
     ) {
         self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
         self.initialAuthState = initialAuthState
+        self.restartResultingServerState = restartResultingServerState
     }
 
     var isActive: Bool {
@@ -3007,6 +3058,7 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
         _ = forceRestartIfNeeded
         startCalls += 1
         actions.append("start")
+        store.serverState = restartResultingServerState
         await startSignal.signal()
     }
 

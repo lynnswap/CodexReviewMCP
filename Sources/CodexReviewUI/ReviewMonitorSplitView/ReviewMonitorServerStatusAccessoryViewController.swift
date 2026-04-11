@@ -78,9 +78,9 @@ struct StatusView: View {
 
     var showsServerRestartAction: Bool {
         switch store.serverState {
-        case .failed, .stopped:
+        case .failed, .stopped, .starting:
             true
-        case .running, .starting:
+        case .running:
             false
         }
     }
