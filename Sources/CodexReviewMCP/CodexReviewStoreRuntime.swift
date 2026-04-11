@@ -8,9 +8,6 @@ import ReviewHTTPServer
 import ReviewJobs
 import ReviewRuntime
 
-private let reviewMonitorAuthenticationUnavailableMessage =
-    "Authentication is unavailable. Update the app-server and try again."
-
 extension CodexReviewStore {
     public convenience init() {
         let environment = ProcessInfo.processInfo.environment
@@ -895,14 +892,10 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             }
             throw ReviewAuthError.cancelled
         }
-        guard let callbackScheme = nativeWebAuthentication?.callbackURLScheme.nilIfEmpty else {
-            do {
-                try await sharedSession.cancelLogin(loginID: loginID)
-            } catch {
-            }
-            throw ReviewAuthError.loginFailed(reviewMonitorAuthenticationUnavailableMessage)
-        }
-        guard callbackScheme == nativeAuthenticationConfiguration.callbackScheme else {
+        let callbackScheme = nativeWebAuthentication?.callbackURLScheme.nilIfEmpty
+            ?? nativeAuthenticationConfiguration.callbackScheme
+        if let serverCallbackScheme = nativeWebAuthentication?.callbackURLScheme.nilIfEmpty,
+           serverCallbackScheme != nativeAuthenticationConfiguration.callbackScheme {
             do {
                 try await sharedSession.cancelLogin(loginID: loginID)
             } catch {
@@ -1426,17 +1419,6 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         }
         do {
             try await beginAuthenticationAttempt(auth: auth, priorState: priorState)
-        } catch ReviewAuthError.loginFailed(let message)
-            where message == reviewMonitorAuthenticationUnavailableMessage
-        {
-            do {
-                try await restartSharedAppServerForAuthenticationRetry()
-                try await beginAuthenticationAttempt(auth: auth, priorState: priorState)
-            } catch ReviewAuthError.cancelled {
-                auth.updateState(authenticationRestoreState(from: priorState))
-            } catch {
-                updateAuthenticationFailureState(error, auth: auth, priorState: priorState)
-            }
         } catch ReviewAuthError.cancelled {
             auth.updateState(authenticationRestoreState(from: priorState))
         } catch {
@@ -1798,15 +1780,6 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             }
             await self.refreshAuthState(auth: auth)
         }
-    }
-
-    private func restartSharedAppServerForAuthenticationRetry() async throws {
-        await appServerManager.shutdown()
-        let runtimeState = try await appServerManager.prepare()
-        writeRuntimeState(
-            endpointRecord: server?.currentEndpointRecord(),
-            appServerRuntimeState: runtimeState
-        )
     }
 
     private func recycleSharedAppServerAfterAuthChange() async {

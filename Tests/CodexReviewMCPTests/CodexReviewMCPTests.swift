@@ -938,7 +938,7 @@ struct CodexReviewMCPTests {
         )
     }
 
-    @Test func reviewMonitorStorePreservesAuthenticatedStateWhenRetryAuthenticationFails() async throws {
+    @Test func reviewMonitorStoreUsesConfiguredCallbackSchemeForLegacyAuthenticationResponse() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager(
             authTransport: AuthCapableAppServerSessionTransport(
@@ -972,103 +972,10 @@ struct CodexReviewMCPTests {
 
         await store.auth.beginAuthentication()
 
-        #expect(
-            store.auth.state == .failed(
-                "Authentication is unavailable. Update the app-server and try again.",
-                isAuthenticated: true,
-                accountID: "review@example.com"
-            )
-        )
-        #expect(await manager.shutdownCount() == 1)
-        #expect(await manager.prepareCount() == 1)
-        #expect(await manager.authTransportCheckoutCount() == 2)
-    }
-
-    @Test func reviewMonitorStoreRestartsAppServerAndRetriesWhenAuthenticationIsUnavailable() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let manager = AuthCapableAppServerManager(
-            authTransports: [
-                AuthCapableAppServerSessionTransport(startLoginBehavior: .legacyBrowser),
-                AuthCapableAppServerSessionTransport(),
-            ]
-        )
-        let performer = FakeReviewMonitorWebAuthenticationPerformer(
-            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
-        )
-        let store = CodexReviewStore.makeReviewMonitorStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationPerformer: performer
-        )
-
-        await store.auth.beginAuthentication()
-
-        let shutdownCount = await manager.shutdownCount()
-        let prepareCount = await manager.prepareCount()
-        let authTransportCheckoutCount = await manager.authTransportCheckoutCount()
+        #expect(performer.lastAuthenticateRequest?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
         #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
-        #expect(shutdownCount == 1)
-        #expect(prepareCount == 1)
-        #expect(authTransportCheckoutCount >= 2)
-    }
-
-    @Test func reviewMonitorStoreRestoresPriorStateWhenRestartedAuthenticationRetryIsCancelled() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let manager = AuthCapableAppServerManager(
-            authTransports: [
-                AuthCapableAppServerSessionTransport(startLoginBehavior: .legacyBrowser),
-                AuthCapableAppServerSessionTransport(),
-            ]
-        )
-        let performer = BlockingReviewMonitorWebAuthenticationPerformer()
-        let store = CodexReviewStore.makeReviewMonitorStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationPerformer: performer
-        )
-        store.auth.updateState(
-            .failed(
-                "Authentication failed.",
-                isAuthenticated: true,
-                accountID: "review@example.com"
-            )
-        )
-
-        let beginTask = Task {
-            await store.auth.beginAuthentication()
-        }
-        await performer.waitForAuthenticateStart()
-
-        await store.auth.cancelAuthentication()
-        _ = await beginTask.value
-
-        #expect(
-            store.auth.state == .failed(
-                "Authentication failed.",
-                isAuthenticated: true,
-                accountID: "review@example.com"
-            )
-        )
-        #expect(await manager.shutdownCount() == 1)
-        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 0)
+        #expect(await manager.prepareCount() == 0)
     }
 
     @Test func reviewMonitorStoreFailsNativeAuthenticationWhenCompleteEndpointIsUnsupported() async throws {
@@ -1105,7 +1012,7 @@ struct CodexReviewMCPTests {
         )
     }
 
-    @Test func reviewMonitorStoreFailsNativeAuthenticationWhenServerDoesNotAcknowledgeNativeCallback() async throws {
+    @Test func reviewMonitorStorePresentsOAuthForLegacyAuthenticationResponse() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager(
             authTransport: AuthCapableAppServerSessionTransport(
@@ -1132,12 +1039,9 @@ struct CodexReviewMCPTests {
 
         await store.auth.beginAuthentication()
 
-        #expect(performer.lastAuthenticateRequest == nil)
-        #expect(
-            store.auth.state == .failed(
-                "Authentication is unavailable. Update the app-server and try again."
-            )
-        )
+        #expect(performer.lastAuthenticateRequest?.url.absoluteString == "https://auth.openai.com/oauth/authorize?foo=bar")
+        #expect(performer.lastAuthenticateRequest?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
+        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
     }
 
     @Test func reviewMonitorStoreFailsNativeAuthenticationWhenCallbackSchemeDoesNotMatch() async throws {
