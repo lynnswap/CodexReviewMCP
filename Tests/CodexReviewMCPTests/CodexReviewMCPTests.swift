@@ -921,7 +921,21 @@ struct CodexReviewMCPTests {
         #expect(store.auth.accountID == "review@example.com")
 
         await store.auth.cancelAuthentication()
+        #expect(
+            store.auth.state == .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
         _ = await beginTask.value
+        #expect(
+            store.auth.state == .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
     }
 
     @Test func reviewMonitorStorePreservesAuthenticatedStateWhenRetryAuthenticationFails() async throws {

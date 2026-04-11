@@ -1282,6 +1282,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     private var waitTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
     private var authRefreshTask: Task<Void, Never>?
+    private var authenticationCancellationRestoreState: CodexReviewAuthModel.State?
     private var startupTaskID: UUID?
     var closedSessions: Set<String> = []
     private var discoveryFileURL: URL {
@@ -1411,6 +1412,10 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         authRefreshTask?.cancel()
         authRefreshTask = nil
         let priorState = auth.state
+        authenticationCancellationRestoreState = priorState
+        defer {
+            authenticationCancellationRestoreState = nil
+        }
         do {
             try await authManager.beginAuthentication { state in
                 await MainActor.run {
@@ -1430,7 +1435,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             }
             await recycleSharedAppServerAfterAuthChange()
         } catch ReviewAuthError.cancelled {
-            auth.updateState(priorState.isAuthenticated ? priorState : .signedOut)
+            auth.updateState(authenticationRestoreState(from: priorState))
         } catch let error as ReviewAuthError {
             if priorState.isAuthenticated {
                 auth.updateState(
@@ -1459,9 +1464,23 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     }
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        let priorState = auth.state
+        let restoreState = authenticationRestoreState(
+            from: authenticationCancellationRestoreState ?? auth.state
+        )
         await authManager.cancelAuthentication()
-        auth.updateState(priorState.isAuthenticated ? priorState : .signedOut)
+        auth.updateState(restoreState)
+    }
+
+    private func authenticationRestoreState(
+        from state: CodexReviewAuthModel.State
+    ) -> CodexReviewAuthModel.State {
+        guard state.isAuthenticated else {
+            return .signedOut
+        }
+        guard state.progress == nil else {
+            return .signedIn(accountID: state.accountID)
+        }
+        return state
     }
 
     func logout(auth: CodexReviewAuthModel) async {
