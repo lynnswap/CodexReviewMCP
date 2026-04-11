@@ -1034,8 +1034,8 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         bufferedNotifications.append(notification)
         switch notification {
         case .accountLoginCompleted(let completed):
-            if let completedLoginID = completed.loginID?.nilIfEmpty,
-               completedLoginID == activeLoginID {
+            let completedLoginID = completed.loginID?.nilIfEmpty
+            if completedLoginID == nil || completedLoginID == activeLoginID {
                 activeLoginID = nil
                 authenticationTask = nil
             }

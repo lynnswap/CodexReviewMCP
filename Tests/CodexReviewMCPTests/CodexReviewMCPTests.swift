@@ -1258,6 +1258,29 @@ struct CodexReviewMCPTests {
         #expect(await transport.isClosed())
     }
 
+    @Test func nativeAuthSessionDoesNotCancelCompletedLoginWithoutLoginID() async throws {
+        let transport = AuthCapableAppServerSessionTransport(
+            completeLoginBehavior: .succeedWithoutLoginID
+        )
+        let session = NativeWebAuthenticationReviewSession(
+            sharedSession: SharedAppServerReviewAuthSession(transport: transport),
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: FakeReviewMonitorWebAuthenticationPerformer(
+                result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            )
+        )
+
+        _ = try await session.startLogin(.chatGPT)
+        await session.waitForAuthenticationTaskCompletion()
+        await session.close()
+
+        #expect(await transport.cancelLoginIDs().isEmpty)
+    }
+
     @Test func forceRestartStopsServerAndRecordedAppServerGroup() async throws {
         let endpointRecord = LiveEndpointRecord(
             url: "http://localhost:9417/mcp",
@@ -2483,6 +2506,7 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         case succeed
         case succeedWithAccountUpdatedOnly
         case succeedWithoutNotifications
+        case succeedWithoutLoginID
         case unsupported
     }
 
@@ -2576,6 +2600,8 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
                 break
             case .succeedWithoutNotifications:
                 break
+            case .succeedWithoutLoginID:
+                break
             case .unsupported:
                 throw AppServerResponseError(code: -32601, message: "method not found")
             }
@@ -2592,12 +2618,12 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
             if completeLoginBehavior == .succeed || completeLoginBehavior == .succeedWithAccountUpdatedOnly {
                 continuation?.yield(.accountUpdated(.init(authMode: .chatGPT, planType: "plus")))
             }
-            if completeLoginBehavior == .succeed {
+            if completeLoginBehavior == .succeed || completeLoginBehavior == .succeedWithoutLoginID {
                 continuation?.yield(
                     .accountLoginCompleted(
                         .init(
                             error: nil,
-                            loginID: recordedCompleteParams?.loginID,
+                            loginID: completeLoginBehavior == .succeedWithoutLoginID ? nil : recordedCompleteParams?.loginID,
                             success: true
                         )
                     )
