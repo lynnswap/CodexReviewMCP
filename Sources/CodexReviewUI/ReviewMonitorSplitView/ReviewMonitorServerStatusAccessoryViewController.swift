@@ -34,7 +34,7 @@ struct StatusView: View {
             Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
                 performLogout()
             }
-            .disabled(isSignedIn == false)
+            .disabled(canSignOut == false)
         } label: {
             Label("Settings", systemImage: "gear")
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -55,6 +55,10 @@ struct StatusView: View {
 
     var isSignedIn: Bool {
         store.auth.isAuthenticated
+    }
+
+    var canSignOut: Bool {
+        store.auth.isAuthenticated && store.auth.isAuthenticating == false
     }
 
     var canRetryAuthentication: Bool {

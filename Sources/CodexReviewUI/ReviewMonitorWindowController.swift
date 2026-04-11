@@ -173,6 +173,7 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
     private weak var displayedContentViewController: NSViewController?
     private var displayedContentConstraints: [NSLayoutConstraint] = []
     private var embeddedConstraintsByControllerID: [ObjectIdentifier: [NSLayoutConstraint]] = [:]
+    private var contentTransitionGeneration = 0
     private let onWindowChanged: ((NSWindow?) -> Void)?
 
     init(onWindowChanged: ((NSWindow?) -> Void)? = nil) {
@@ -204,6 +205,7 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
         }
 
         guard let currentContentViewController = displayedContentViewController else {
+            contentTransitionGeneration += 1
             displayedContentViewController = contentViewController
             addChild(contentViewController)
             displayedContentConstraints = embed(contentViewController)
@@ -212,7 +214,11 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
         }
 
         let outgoingContentViewController = currentContentViewController
-        addChild(contentViewController)
+        contentTransitionGeneration += 1
+        let transitionGeneration = contentTransitionGeneration
+        if contentViewController.parent !== self {
+            addChild(contentViewController)
+        }
         if animated {
             let incomingContentView = contentViewController.view
             incomingContentView.frame = view.bounds
@@ -231,6 +237,14 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
                     }
                     outgoingContentViewController.view.alphaValue = 1
                     incomingContentView.alphaValue = 1
+                    guard self.contentTransitionGeneration == transitionGeneration,
+                          self.displayedContentViewController === contentViewController
+                    else {
+                        if self.displayedContentViewController !== contentViewController {
+                            self.removeEmbeddedContent(for: contentViewController)
+                        }
+                        return
+                    }
                     let embeddedConstraints = self.pin(contentViewController)
                     self.displayedContentConstraints = embeddedConstraints
                     self.embeddedConstraintsByControllerID[ObjectIdentifier(contentViewController)] = embeddedConstraints

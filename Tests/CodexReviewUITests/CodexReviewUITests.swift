@@ -289,6 +289,8 @@ struct CodexReviewUITests {
         store.auth.updateState(.signedIn(accountID: "review@example.com"))
         try await waitForDisplayedContentKind(harness.windowController, .splitView)
         try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
+        try await Task.sleep(for: .milliseconds(300))
+        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
 
         #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
         #expect(harness.windowController.isSplitViewEmbeddedForTesting)
@@ -2337,6 +2339,7 @@ struct CodexReviewUITests {
         let view = StatusView(store: store)
 
         #expect(view.canRetryAuthentication)
+        #expect(view.canSignOut)
 
         view.performAuthenticationAction()
         await backend.waitForBeginAuthenticationCallCount(1)
@@ -2364,6 +2367,7 @@ struct CodexReviewUITests {
 
         #expect(view.showsAuthenticationAction)
         #expect(view.authenticationActionTitle == "Cancel")
+        #expect(view.canSignOut == false)
 
         view.performAuthenticationAction()
         await backend.waitForCancelAuthenticationCallCount(1)
