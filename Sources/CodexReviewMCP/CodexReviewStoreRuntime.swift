@@ -8,6 +8,9 @@ import ReviewHTTPServer
 import ReviewJobs
 import ReviewRuntime
 
+private let reviewMonitorAuthenticationUnavailableMessage =
+    "Authentication is unavailable. Update the app-server and try again."
+
 extension CodexReviewStore {
     public convenience init() {
         let environment = ProcessInfo.processInfo.environment
@@ -897,9 +900,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
                 try await sharedSession.cancelLogin(loginID: loginID)
             } catch {
             }
-            throw ReviewAuthError.loginFailed(
-                "Native authentication is unavailable. Update the app-server and try again."
-            )
+            throw ReviewAuthError.loginFailed(reviewMonitorAuthenticationUnavailableMessage)
         }
         guard callbackScheme == nativeAuthenticationConfiguration.callbackScheme else {
             do {
@@ -907,7 +908,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             } catch {
             }
             throw ReviewAuthError.loginFailed(
-                "Native authentication callback is misconfigured. Update the app-server and try again."
+                "Authentication callback is misconfigured. Update the app-server and try again."
             )
         }
 
@@ -992,12 +993,19 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             return
         }
         isClosed = true
+        let activeLoginIDToCancel = activeLoginID
         activeLoginID = nil
         authenticationTask?.cancel()
         finishNotificationSubscribers(failing: nil, discardBufferedNotifications: true)
         authenticationTask = nil
         await MainActor.run {
             webAuthenticationPerformer.cancel()
+        }
+        if let activeLoginIDToCancel {
+            do {
+                try await sharedSession.cancelLogin(loginID: activeLoginIDToCancel)
+            } catch {
+            }
         }
         if let relayCancellation {
             await relayCancellation()
@@ -1417,49 +1425,68 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             authenticationCancellationRestoreState = nil
         }
         do {
-            try await authManager.beginAuthentication { state in
-                await MainActor.run {
-                    if let progress = state.progress,
-                       priorState.isAuthenticated {
-                        auth.updateState(
-                            .init(
-                                isAuthenticated: true,
-                                accountID: priorState.accountID,
-                                progress: progress
-                            )
-                        )
-                    } else {
-                        auth.updateState(state)
-                    }
-                }
+            try await beginAuthenticationAttempt(auth: auth, priorState: priorState)
+        } catch ReviewAuthError.loginFailed(let message)
+            where message == reviewMonitorAuthenticationUnavailableMessage
+        {
+            do {
+                try await restartSharedAppServerForAuthenticationRetry()
+                try await beginAuthenticationAttempt(auth: auth, priorState: priorState)
+            } catch {
+                updateAuthenticationFailureState(error, auth: auth, priorState: priorState)
             }
-            await recycleSharedAppServerAfterAuthChange()
         } catch ReviewAuthError.cancelled {
             auth.updateState(authenticationRestoreState(from: priorState))
-        } catch let error as ReviewAuthError {
-            if priorState.isAuthenticated {
-                auth.updateState(
-                    .failed(
-                        error.errorDescription ?? "Authentication failed.",
-                        isAuthenticated: true,
-                        accountID: priorState.accountID
-                    )
-                )
-            } else {
-                auth.updateState(.failed(error.errorDescription ?? "Authentication failed."))
-            }
         } catch {
-            if priorState.isAuthenticated {
-                auth.updateState(
-                    .failed(
-                        error.localizedDescription,
-                        isAuthenticated: true,
-                        accountID: priorState.accountID
+            updateAuthenticationFailureState(error, auth: auth, priorState: priorState)
+        }
+    }
+
+    private func beginAuthenticationAttempt(
+        auth: CodexReviewAuthModel,
+        priorState: CodexReviewAuthModel.State
+    ) async throws {
+        try await authManager.beginAuthentication { state in
+            await MainActor.run {
+                if let progress = state.progress,
+                   priorState.isAuthenticated {
+                    auth.updateState(
+                        .init(
+                            isAuthenticated: true,
+                            accountID: priorState.accountID,
+                            progress: progress
+                        )
                     )
-                )
-            } else {
-                auth.updateState(.failed(error.localizedDescription))
+                } else {
+                    auth.updateState(state)
+                }
             }
+        }
+        await recycleSharedAppServerAfterAuthChange()
+    }
+
+    private func updateAuthenticationFailureState(
+        _ error: Error,
+        auth: CodexReviewAuthModel,
+        priorState: CodexReviewAuthModel.State
+    ) {
+        let message: String
+        if let error = error as? ReviewAuthError {
+            message = error.errorDescription ?? "Authentication failed."
+        } else {
+            message = error.localizedDescription
+        }
+
+        if priorState.isAuthenticated {
+            auth.updateState(
+                .failed(
+                    message,
+                    isAuthenticated: true,
+                    accountID: priorState.accountID
+                )
+            )
+        } else {
+            auth.updateState(.failed(message))
         }
     }
 
@@ -1769,6 +1796,15 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             }
             await self.refreshAuthState(auth: auth)
         }
+    }
+
+    private func restartSharedAppServerForAuthenticationRetry() async throws {
+        await appServerManager.shutdown()
+        let runtimeState = try await appServerManager.prepare()
+        writeRuntimeState(
+            endpointRecord: server?.currentEndpointRecord(),
+            appServerRuntimeState: runtimeState
+        )
     }
 
     private func recycleSharedAppServerAfterAuthChange() async {

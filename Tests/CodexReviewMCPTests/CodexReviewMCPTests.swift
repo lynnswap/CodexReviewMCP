@@ -974,11 +974,51 @@ struct CodexReviewMCPTests {
 
         #expect(
             store.auth.state == .failed(
-                "Native authentication is unavailable. Update the app-server and try again.",
+                "Authentication is unavailable. Update the app-server and try again.",
                 isAuthenticated: true,
                 accountID: "review@example.com"
             )
         )
+        #expect(await manager.shutdownCount() == 1)
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.authTransportCheckoutCount() == 2)
+    }
+
+    @Test func reviewMonitorStoreRestartsAppServerAndRetriesWhenAuthenticationIsUnavailable() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransports: [
+                AuthCapableAppServerSessionTransport(startLoginBehavior: .legacyBrowser),
+                AuthCapableAppServerSessionTransport(),
+            ]
+        )
+        let performer = FakeReviewMonitorWebAuthenticationPerformer(
+            result: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: performer
+        )
+
+        await store.auth.beginAuthentication()
+
+        let shutdownCount = await manager.shutdownCount()
+        let prepareCount = await manager.prepareCount()
+        let authTransportCheckoutCount = await manager.authTransportCheckoutCount()
+        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+        #expect(shutdownCount == 1)
+        #expect(prepareCount == 1)
+        #expect(authTransportCheckoutCount >= 2)
     }
 
     @Test func reviewMonitorStoreFailsNativeAuthenticationWhenCompleteEndpointIsUnsupported() async throws {
@@ -1045,7 +1085,7 @@ struct CodexReviewMCPTests {
         #expect(performer.lastAuthenticateRequest == nil)
         #expect(
             store.auth.state == .failed(
-                "Native authentication is unavailable. Update the app-server and try again."
+                "Authentication is unavailable. Update the app-server and try again."
             )
         )
     }
@@ -1080,7 +1120,7 @@ struct CodexReviewMCPTests {
         #expect(performer.lastAuthenticateRequest == nil)
         #expect(
             store.auth.state == .failed(
-                "Native authentication callback is misconfigured. Update the app-server and try again."
+                "Authentication callback is misconfigured. Update the app-server and try again."
             )
         )
     }
@@ -1223,7 +1263,7 @@ struct CodexReviewMCPTests {
                     NSError(
                         domain: "CodexReviewMCPTests",
                         code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "Native authentication failed."]
+                        userInfo: [NSLocalizedDescriptionKey: "Authentication failed."]
                     )
                 )
             )
@@ -1236,13 +1276,32 @@ struct CodexReviewMCPTests {
         let subscription = await session.notificationStream()
         defer { Task { await subscription.cancel() } }
 
-        await #expect(throws: ReviewAuthError.loginFailed("Native authentication failed.")) {
+        await #expect(throws: ReviewAuthError.loginFailed("Authentication failed.")) {
             try await withTestTimeout {
                 for try await _ in subscription.stream {
                     Issue.record("Expected late native-auth subscribers to fail before receiving notifications.")
                 }
             }
         }
+    }
+
+    @Test func nativeAuthSessionCloseCancelsActiveLogin() async throws {
+        let transport = AuthCapableAppServerSessionTransport()
+        let session = NativeWebAuthenticationReviewSession(
+            sharedSession: SharedAppServerReviewAuthSession(transport: transport),
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationPerformer: BlockingReviewMonitorWebAuthenticationPerformer()
+        )
+
+        _ = try await session.startLogin(.chatGPT)
+        await session.close()
+
+        #expect(await transport.cancelLoginIDs() == ["login-browser"])
+        #expect(await transport.isClosed())
     }
 
     @Test func forceRestartStopsServerAndRecordedAppServerGroup() async throws {
@@ -2280,14 +2339,19 @@ private actor AuthCapableAppServerManager: AppServerManaging {
         processGroupLeaderPID: 200,
         processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
     )
-    private let authTransport: any AppServerSessionTransport
+    private let authTransports: [any AppServerSessionTransport]
     private var authCheckoutCountStorage = 0
     private var reviewCheckoutCountStorage = 0
     private var shutdownCountStorage = 0
     private var prepareCountStorage = 0
 
     init(authTransport: any AppServerSessionTransport = AuthCapableAppServerSessionTransport()) {
-        self.authTransport = authTransport
+        authTransports = [authTransport]
+    }
+
+    init(authTransports: [any AppServerSessionTransport]) {
+        precondition(authTransports.isEmpty == false)
+        self.authTransports = authTransports
     }
 
     func prepare() async throws -> AppServerRuntimeState {
@@ -2301,8 +2365,9 @@ private actor AuthCapableAppServerManager: AppServerManaging {
     }
 
     func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        let transportIndex = min(authCheckoutCountStorage, authTransports.count - 1)
         authCheckoutCountStorage += 1
-        return authTransport
+        return authTransports[transportIndex]
     }
 
     func currentRuntimeState() async -> AppServerRuntimeState? {
@@ -2328,7 +2393,7 @@ private actor AuthCapableAppServerManager: AppServerManaging {
     }
 
     func authTransportForTesting() -> AuthCapableAppServerSessionTransport? {
-        authTransport as? AuthCapableAppServerSessionTransport
+        authTransports.first as? AuthCapableAppServerSessionTransport
     }
 
     func reviewTransportCheckoutCount() -> Int {
@@ -2470,6 +2535,7 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var isClosedStorage = false
     private var recordedCompleteParams: AppServerCompleteLoginAccountParams?
+    private var recordedCancelLoginIDs: [String] = []
     private var accountReadResponseObject: [String: Any] = [
         "account": NSNull(),
         "requiresOpenaiAuth": true,
@@ -2585,7 +2651,10 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
             }
             return try decode([:], as: responseType)
         case "account/login/cancel":
-            return try decode([:], as: responseType)
+            if let params = params as? AppServerCancelLoginAccountParams {
+                recordedCancelLoginIDs.append(params.loginID)
+            }
+            return try decode(["status": "canceled"], as: responseType)
         case "account/logout":
             return try decode([:], as: responseType)
         default:
@@ -2638,6 +2707,10 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     func completeParams() -> AppServerCompleteLoginAccountParams? {
         recordedCompleteParams
     }
+
+    func cancelLoginIDs() -> [String] {
+        recordedCancelLoginIDs
+    }
 }
 
 @MainActor
@@ -2678,6 +2751,43 @@ private final class FakeReviewMonitorWebAuthenticationPerformer: ReviewMonitorWe
 
     func cancel() {
         cancelCallCount += 1
+    }
+}
+
+@MainActor
+private final class BlockingReviewMonitorWebAuthenticationPerformer: ReviewMonitorWebAuthenticationPerforming, @unchecked Sendable {
+    private var continuation: CheckedContinuation<URL, Error>?
+
+    func authenticate(
+        using url: URL,
+        callbackScheme: String,
+        browserSessionPolicy: ReviewMonitorNativeAuthenticationConfiguration.BrowserSessionPolicy,
+        presentationAnchorProvider: @escaping @MainActor @Sendable () -> ASPresentationAnchor?
+    ) async throws -> URL {
+        _ = url
+        _ = callbackScheme
+        _ = browserSessionPolicy
+        _ = presentationAnchorProvider
+        if Task.isCancelled {
+            throw ReviewAuthError.cancelled
+        }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+            }
+        } onCancel: {
+            Task { @MainActor in
+                self.cancel()
+            }
+        }
+    }
+
+    func cancel() {
+        guard let continuation else {
+            return
+        }
+        self.continuation = nil
+        continuation.resume(throwing: ReviewAuthError.cancelled)
     }
 }
 
