@@ -270,6 +270,8 @@ struct CodexReviewUITests {
 
         #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
         #expect(window.toolbar != nil)
+        #expect(window.titleVisibility == .visible)
+        #expect(window.titlebarSeparatorStyle == .line)
         #expect(window.isMovableByWindowBackground == false)
     }
 

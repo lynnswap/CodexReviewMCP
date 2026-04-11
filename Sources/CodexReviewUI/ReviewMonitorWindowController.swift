@@ -16,6 +16,8 @@ private func configureReviewMonitorWindowForSplitPresentation(_ window: NSWindow
     window.isMovableByWindowBackground = false
     window.title = "Untitled"
     window.subtitle = ""
+    window.titleVisibility = .visible
+    window.titlebarSeparatorStyle = .line
 }
 
 @available(macOS 26.0, *)
