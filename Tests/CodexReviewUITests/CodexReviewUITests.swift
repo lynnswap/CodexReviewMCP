@@ -12,9 +12,6 @@ import ReviewRuntime
 @MainActor
 struct CodexReviewUITests {
     @Test func bindingStoreAppliesInitialState() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -26,9 +23,6 @@ struct CodexReviewUITests {
     }
 
     @Test func splitViewShowsEmptyStateWithoutJobs() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -41,9 +35,6 @@ struct CodexReviewUITests {
     }
 
     @Test func splitViewShowsUnavailableSidebarWhenServerFailedOnLoad() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.loadForTesting(
             serverState: .failed("Embedded server is unavailable in preview mode."),
@@ -58,9 +49,6 @@ struct CodexReviewUITests {
     }
 
     @Test func splitViewShowsJobSidebarWhenServerRunningOnLoad() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.loadForTesting(
             serverState: .running,
@@ -75,9 +63,6 @@ struct CodexReviewUITests {
     }
 
     @Test func contentPanePinsDisplayedContentToSafeArea() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -101,9 +86,6 @@ struct CodexReviewUITests {
     }
 
     @Test func splitViewSwitchesSidebarWhenServerAvailabilityChanges() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.loadForTesting(
             serverState: .running,
@@ -132,9 +114,6 @@ struct CodexReviewUITests {
     }
 
     @Test func splitViewInstallsToolbarWithSidebarTrackingSeparator() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(store: store)
         let viewController = harness.viewController
@@ -155,9 +134,6 @@ struct CodexReviewUITests {
     }
 
     @Test func previewContentViewControllerConfiguresAttachedWindowLikeSplitPresentation() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let viewController = makeReviewMonitorPreviewContentViewControllerForPreview()
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -176,9 +152,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerUsesSeededAuthenticatedStateOnFirstPresentation() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = AuthActionBackend(
             initialAuthState: .signedIn(accountID: "review@example.com")
         )
@@ -198,9 +171,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerShowsSignInViewWhenSignedOut() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -218,9 +188,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerDoesNotRefreshAuthStateBeforeStoreStart() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = AuthActionBackend()
         let store = CodexReviewStore(backend: backend)
         let windowController = ReviewMonitorWindowController(store: store)
@@ -231,9 +198,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerSwitchesToSignInViewAfterLogout() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -254,9 +218,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerCrossfadesBackToSplitViewAfterAuthentication() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -277,9 +238,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerRapidAuthFlipsKeepLatestContentEmbedded() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -302,9 +260,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerRapidAuthFlipsDoNotAccumulateEmbeddedConstraints() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -326,9 +281,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerPreservesWindowSizeWhenSwitchingToSignInView() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -351,9 +303,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerKeepsSplitViewAfterAuthFailure() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -370,9 +319,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerKeepsSignInViewPresentedWhileAuthenticating() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -395,9 +341,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerKeepsSplitViewPresentedWhileAuthenticatedRetryAuthenticates() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -431,9 +374,6 @@ struct CodexReviewUITests {
     }
 
     @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-safe-area",
             status: .running,
@@ -466,9 +406,6 @@ struct CodexReviewUITests {
     }
 
     @Test func shortDetailLogKeepsTextViewWithinDocumentBounds() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-short-log-layout",
             status: .running,
@@ -501,9 +438,6 @@ struct CodexReviewUITests {
     }
 
     @Test func detailLogExpandsAfterSidebarReopensFromCompactWidth() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-sidebar-width-regression",
             status: .running,
@@ -553,9 +487,6 @@ struct CodexReviewUITests {
     }
 
     @Test func detailLogShrinksAfterSidebarReopensIntoNarrowWidth() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-sidebar-width-shrink-regression",
             status: .running,
@@ -601,9 +532,6 @@ struct CodexReviewUITests {
     }
 
     @Test func detailLogTracksSimpleWindowResizeInBothDirections() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-window-resize-width-regression",
             status: .running,
@@ -658,9 +586,6 @@ struct CodexReviewUITests {
     }
 
     @Test func detailLogTextContainerExpandsAfterToolbarSidebarToggleAtCompactWidth() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-toolbar-sidebar-toggle-textkit-width-regression",
             status: .running,
@@ -723,9 +648,6 @@ struct CodexReviewUITests {
     }
 
     @Test func windowControllerDoesNotStartStoreWhenConstructed() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend()
         let store = CodexReviewStore(backend: backend)
         let harness = makeWindowHarness(store: store)
@@ -736,9 +658,6 @@ struct CodexReviewUITests {
     }
 
     @Test func splitViewAttachIsIdempotentForSameWindow() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend()
         let store = CodexReviewStore(backend: backend)
         let viewController = ReviewMonitorSplitViewController(store: store)
@@ -778,9 +697,6 @@ struct CodexReviewUITests {
     }
 
     @Test func splitViewSectionsByWorkspace() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let workspaceAlphaJob = makeJob(
             cwd: "/tmp/workspace-alpha",
             startedAt: Date(timeIntervalSince1970: 200),
@@ -813,9 +729,6 @@ struct CodexReviewUITests {
     }
 
     @Test func workspaceDropReordersDisplayedSectionsImmediately() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let workspaceAlphaJob = makeJob(
             id: "job-workspace-alpha",
             cwd: "/tmp/workspace-alpha",
@@ -850,9 +763,6 @@ struct CodexReviewUITests {
     }
 
     @Test func workspaceDropOnWorkspaceRowReordersDisplayedSections() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let workspaceAlphaJob = makeJob(
             id: "job-workspace-alpha-on-row",
             cwd: "/tmp/workspace-alpha",
@@ -889,9 +799,6 @@ struct CodexReviewUITests {
     }
 
     @Test func workspaceInsertionIndexFollowsCurrentHoverPosition() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let workspaceAlphaJob = makeJob(
             id: "job-workspace-alpha-blank",
             cwd: "/tmp/workspace-alpha",
@@ -922,9 +829,6 @@ struct CodexReviewUITests {
     }
 
     @Test func workspaceBlankAreaInsertionUsesPointerPosition() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let workspaceAlphaJob = makeJob(
             id: "job-workspace-alpha-blank-area",
             cwd: "/tmp/workspace-alpha",
@@ -951,9 +855,6 @@ struct CodexReviewUITests {
     }
 
     @Test func workspaceDropOnJobRowIsRejected() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let workspaceAlphaJob = makeJob(
             id: "job-workspace-alpha-reject",
             cwd: "/tmp/workspace-alpha",
@@ -987,9 +888,6 @@ struct CodexReviewUITests {
     }
 
     @Test func jobDropOnBlankAreaIsRejected() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let firstJob = makeJob(
             id: "job-blank-area-reject",
             cwd: "/tmp/workspace-alpha",
@@ -1019,9 +917,6 @@ struct CodexReviewUITests {
     }
 
     @Test func jobDropReordersWithinWorkspaceAndPreservesSelection() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let firstJob = makeJob(
             id: "job-1",
             cwd: "/tmp/workspace-alpha",
@@ -1054,9 +949,6 @@ struct CodexReviewUITests {
     }
 
     @Test func workspaceDropPreservesExpansionState() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let alphaJob = makeJob(
             id: "job-alpha",
             cwd: "/tmp/workspace-alpha",
@@ -1093,9 +985,6 @@ struct CodexReviewUITests {
     }
 
     @Test func crossWorkspaceJobDropIsRejected() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let alphaJob = makeJob(
             id: "job-alpha",
             cwd: "/tmp/workspace-alpha",
@@ -1131,9 +1020,6 @@ struct CodexReviewUITests {
     }
 
     @Test func sidebarWorkspaceRowsStayExpandedAndUseExpectedCellViews() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             cwd: "/tmp/workspace-alpha",
             status: .running,
@@ -1159,9 +1045,6 @@ struct CodexReviewUITests {
     }
 
     @Test func scrollingSidebarMakesWorkspaceHeaderFloat() throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let primaryJobs = (0..<8).map { index in
             makeJob(
                 id: "job-\(index)",
@@ -1196,9 +1079,6 @@ struct CodexReviewUITests {
     }
 
     @Test func togglingWorkspaceDisclosureKeepsDetailAndRestoresSelectionAfterReexpand() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-selected",
             cwd: "/tmp/workspace-alpha",
@@ -1246,9 +1126,6 @@ struct CodexReviewUITests {
     }
 
     @Test func collapsedWorkspaceStaysCollapsedAcrossStoreReload() throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-1",
             cwd: "/tmp/workspace-alpha",
@@ -1284,9 +1161,6 @@ struct CodexReviewUITests {
     }
 
     @Test func cancellingRunningJobFromSidebarMarksJobCancelled() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let startedAt = Date(timeIntervalSince1970: 200)
         let job = makeJob(
             id: "job-running",
@@ -1314,9 +1188,6 @@ struct CodexReviewUITests {
     }
 
     @Test func cancellationFailureUpdatesJobErrorState() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-running",
             cwd: "/tmp/workspace-alpha",
@@ -1341,9 +1212,6 @@ struct CodexReviewUITests {
     }
 
     @Test func sidebarContextMenuPresentationRestoresResponderStateAfterClosing() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-running",
             cwd: "/tmp/workspace-alpha",
@@ -1386,9 +1254,6 @@ struct CodexReviewUITests {
     }
 
     @Test func jobsPresentOnInitialLoadStayUnselected() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
         let recentJob = makeJob(status: .succeeded, targetSummary: "Commit: abc123")
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
@@ -1405,9 +1270,6 @@ struct CodexReviewUITests {
     }
 
     @Test func selectingJobUpdatesDetailPane() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes", logText: "Running review\n")
         let recentJob = makeJob(
             status: .succeeded,
@@ -1451,9 +1313,6 @@ struct CodexReviewUITests {
     }
 
     @Test func detailPaneHidesCommandOutputButKeepsCommandEntries() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = CodexReviewJob.makeForTesting(
             id: "job-command-output",
             cwd: "/tmp/workspace-alpha",
@@ -1499,9 +1358,6 @@ struct CodexReviewUITests {
     }
 
     @Test func switchingSelectedJobRebindsDetailPane() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let activeJob = makeJob(
             id: "job-active",
             status: .running,
@@ -1553,9 +1409,6 @@ struct CodexReviewUITests {
     }
 
     @Test func firstSelectionFromEmptyStatePinsUnvisitedJobToBottom() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
         let job = makeJob(
             id: "job-first-bottom",
@@ -1582,9 +1435,6 @@ struct CodexReviewUITests {
     }
 
     @Test func switchingSelectedJobStartsUnvisitedJobAtBottomAndRestoresPreviousOffset() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let longActiveLog = (0..<400).map { "active line \($0)" }.joined(separator: "\n")
         let longRecentLog = (0..<400).map { "recent line \($0)" }.joined(separator: "\n")
         let activeJob = makeJob(
@@ -1638,9 +1488,6 @@ struct CodexReviewUITests {
     }
 
     @Test func switchingSelectedJobRestoresPinnedBottomPosition() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let longActiveLog = (0..<400).map { "active line \($0)" }.joined(separator: "\n")
         let longRecentLog = (0..<400).map { "recent line \($0)" }.joined(separator: "\n")
         let activeJob = makeJob(
@@ -1694,9 +1541,6 @@ struct CodexReviewUITests {
     }
 
     @Test func rehydratingSameSelectedJobPreservesLogScrollPosition() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
         let job = makeJob(
             id: "job-rehydrated",
@@ -1740,9 +1584,6 @@ struct CodexReviewUITests {
     }
 
     @Test func switchingJobWithIdenticalLogTextStartsUnvisitedJobAtBottom() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let sharedLog = (0..<400).map { "shared line \($0)" }.joined(separator: "\n")
         let firstJob = makeJob(
             id: "job-identical-1",
@@ -1783,9 +1624,6 @@ struct CodexReviewUITests {
     }
 
     @Test func shortLogSelectionCacheRestoresTopAfterLaterGrowth() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let shortLog = (0..<3).map { "short line \($0)" }.joined(separator: "\n")
         let longLog = (0..<400).map { "long line \($0)" }.joined(separator: "\n")
         let shortJob = makeJob(
@@ -1831,9 +1669,6 @@ struct CodexReviewUITests {
     }
 
     @Test func previouslySelectedJobUpdatesDoNotRepaintCurrentDetailPane() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let activeJob = makeJob(
             id: "job-old-selection",
             status: .running,
@@ -1875,9 +1710,6 @@ struct CodexReviewUITests {
     }
 
     @Test func clickingSidebarBlankAreaKeepsSelectionAndDetailPane() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-selected",
             status: .running,
@@ -1913,9 +1745,6 @@ struct CodexReviewUITests {
     }
 
     @Test func clickingWorkspaceHeaderKeepsSelectionAndDetailPane() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-selected",
             cwd: "/tmp/workspace-alpha",
@@ -1956,9 +1785,6 @@ struct CodexReviewUITests {
     }
 
     @Test func newJobsArrivingWhileUnselectedDoNotAutoSelect() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.loadForTesting(serverState: .running, workspaces: [])
@@ -1979,9 +1805,6 @@ struct CodexReviewUITests {
     }
 
     @Test func removingSelectedJobClearsSelectionWithoutAutoSelectingReplacement() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let activeJob = makeJob(
             id: "job-active",
             status: .running,
@@ -2027,9 +1850,6 @@ struct CodexReviewUITests {
     }
 
     @Test func clearingSelectionShowsEmptyStateAndClearsDetailPane() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-1",
             status: .running,
@@ -2078,9 +1898,6 @@ struct CodexReviewUITests {
     }
 
     @Test func inPlaceJobUpdateKeepsSelectionAndRefreshesDetailPane() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-1",
             status: .running,
@@ -2116,9 +1933,6 @@ struct CodexReviewUITests {
     }
 
     @Test func selectedJobLogAppendUsesAppendPath() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = CodexReviewJob.makeForTesting(
             id: "job-append",
             cwd: "/tmp/workspace-alpha",
@@ -2154,9 +1968,6 @@ struct CodexReviewUITests {
     }
 
     @Test func coalescedLogTextUpdateUsesAppendPathWhenSuffixCanBeDerived() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = CodexReviewJob.makeForTesting(
             id: "job-coalesced",
             cwd: "/tmp/workspace-alpha",
@@ -2193,9 +2004,6 @@ struct CodexReviewUITests {
     }
 
     @Test func selectedJobGroupedReplacementUsesReloadPath() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = CodexReviewJob.makeForTesting(
             id: "job-reload",
             cwd: "/tmp/workspace-alpha",
@@ -2231,9 +2039,6 @@ struct CodexReviewUITests {
     }
 
     @Test func metadataOnlyUpdatesDoNotTouchLogView() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-metadata",
             status: .running,
@@ -2265,9 +2070,6 @@ struct CodexReviewUITests {
     }
 
     @Test func logAutoFollowRunsOnlyWhenPinnedToBottom() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
         let job = makeJob(
             id: "job-autofollow",
@@ -2316,9 +2118,6 @@ struct CodexReviewUITests {
     }
 
     @Test func logViewUsesTextKit1AndDisablesEditingFeatures() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-log-config",
             status: .running,
@@ -2343,9 +2142,6 @@ struct CodexReviewUITests {
     }
 
     @Test func authFailedJobShowsNormalFailureDetails() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-auth",
             status: .failed,
@@ -2372,9 +2168,6 @@ struct CodexReviewUITests {
     }
 
     @Test func authenticatedAuthFailedJobStillShowsNormalFailureDetails() async throws {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let job = makeJob(
             id: "job-auth-restored",
             status: .failed,
@@ -2401,9 +2194,6 @@ struct CodexReviewUITests {
     }
 
     @Test func signInViewShowsPrimaryActionLabelWhenSignedOut() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let view = SignInView(store: store)
 
@@ -2412,9 +2202,6 @@ struct CodexReviewUITests {
     }
 
     @Test func signInViewShowsPrimaryActionLabelWhenAuthenticating() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.auth.updateState(
             .signingIn(
@@ -2431,9 +2218,6 @@ struct CodexReviewUITests {
     }
 
     @Test func signInViewControllerStartsAuthenticationWhenSignedOutAndServerRunning() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
         let store = CodexReviewStore(backend: backend)
         store.loadForTesting(serverState: .running, authState: .signedOut, workspaces: [])
@@ -2448,9 +2232,6 @@ struct CodexReviewUITests {
     }
 
     @Test func signInViewControllerCancelsAuthenticationWhenAuthenticating() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
         let store = CodexReviewStore(backend: backend)
         store.loadForTesting(
@@ -2474,9 +2255,6 @@ struct CodexReviewUITests {
     }
 
     @Test func signInViewControllerRestartsFailedServerBeforeBeginningAuthentication() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
             restartResultingServerState: .running
@@ -2500,9 +2278,6 @@ struct CodexReviewUITests {
     }
 
     @Test func signInViewControllerRestartsStoppedServerBeforeBeginningAuthentication() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
             restartResultingServerState: .running
@@ -2522,9 +2297,6 @@ struct CodexReviewUITests {
     }
 
     @Test func signInViewControllerDoesNotBeginAuthenticationWhenRestartStillFails() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
             restartResultingServerState: .failed("Still unavailable.")
@@ -2548,9 +2320,6 @@ struct CodexReviewUITests {
     }
 
     @Test func signInViewControllerDoesNotActOnBrowserProgressUpdates() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
         let store = CodexReviewStore(backend: backend)
         let viewController = ReviewMonitorSignInViewController(store: store)
@@ -2572,9 +2341,6 @@ struct CodexReviewUITests {
     }
 
     @Test func statusViewDoesNotRetryAuthenticationWhileAuthenticated() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = AuthActionBackend()
         let store = CodexReviewStore(backend: backend)
         store.auth.updateState(
@@ -2596,9 +2362,6 @@ struct CodexReviewUITests {
     }
 
     @Test func statusViewCancelsAuthenticationWhileRetryAuthenticating() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = AuthActionBackend()
         let store = CodexReviewStore(backend: backend)
         store.auth.updateState(
@@ -2624,9 +2387,6 @@ struct CodexReviewUITests {
     }
 
     @Test func statusViewRestartsStoppedServer() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
             initialAuthState: .signedIn(accountID: "review@example.com"),
@@ -2649,9 +2409,6 @@ struct CodexReviewUITests {
     }
 
     @Test func statusViewShowsRestartActionWhileServerStarting() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.loadForTesting(
             serverState: .starting,
@@ -2664,9 +2421,6 @@ struct CodexReviewUITests {
     }
 
     @Test func signInViewDescriptionTextReflectsAuthState() {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
 
         store.auth.updateState(
@@ -2702,9 +2456,6 @@ struct CodexReviewUITests {
     }
 
     @Test func mcpServerUnavailableViewRestartServerUsesStoreRestartFlow() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
             initialAuthState: .signedIn(accountID: "review@example.com")
@@ -2727,9 +2478,6 @@ struct CodexReviewUITests {
     }
 
     @Test func mcpServerUnavailableViewRestartCancelsAuthenticationBeforeRestart() async {
-        guard #available(macOS 26.0, *) else {
-            return
-        }
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
             initialAuthState: .signedOut
@@ -2759,7 +2507,6 @@ struct CodexReviewUITests {
 
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private struct ReviewMonitorWindowHarness {
     let windowController: ReviewMonitorWindowController
@@ -2767,7 +2514,6 @@ private struct ReviewMonitorWindowHarness {
     let window: NSWindow
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private func makeWindowHarness(
     store: CodexReviewStore,
@@ -2794,7 +2540,6 @@ private func makeWindowHarness(
 }
 
 
-@available(macOS 26.0, *)
 @MainActor
 private func waitForDisplayedContentKind(
     _ windowController: ReviewMonitorWindowController,
@@ -2811,7 +2556,6 @@ private func waitForDisplayedContentKind(
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private func waitForSidebarPresentation(
     _ viewController: ReviewMonitorSplitViewController,
@@ -2828,7 +2572,6 @@ private func waitForSidebarPresentation(
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private func waitForEmbeddedContentSubviewCount(
     _ windowController: ReviewMonitorWindowController,
@@ -2878,7 +2621,6 @@ private func awaitTransportRender(
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private func expectLogTextContainerWidthTracksTextView(
     _ transport: ReviewMonitorTransportViewController
@@ -2891,7 +2633,6 @@ private func expectLogTextContainerWidthTracksTextView(
     #expect(abs(textContainerSize.width - expectedWidth) < 1)
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private func awaitContentPaneRender(
     _ contentPane: ReviewMonitorContentPaneViewController,

@@ -1,7 +1,6 @@
 import AppKit
 import CodexReviewModel
 
-@available(macOS 26.0, *)
 @MainActor
 private func configureReviewMonitorWindowBase(_ window: NSWindow) {
     window.isOpaque = false
@@ -10,7 +9,6 @@ private func configureReviewMonitorWindowBase(_ window: NSWindow) {
     window.toolbarStyle = .unified
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private func configureReviewMonitorWindowForSplitPresentation(_ window: NSWindow) {
     window.isMovableByWindowBackground = false
@@ -20,7 +18,6 @@ private func configureReviewMonitorWindowForSplitPresentation(_ window: NSWindow
     window.titlebarSeparatorStyle = .automatic
 }
 
-@available(macOS 26.0, *)
 @MainActor
 public final class ReviewMonitorWindowController: NSWindowController {
     enum DisplayedContentKind: Equatable, Sendable {
@@ -161,7 +158,6 @@ public final class ReviewMonitorWindowController: NSWindowController {
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private final class ReviewMonitorWindowHostView: NSVisualEffectView {
     var onWindowChanged: ((NSWindow?) -> Void)?
@@ -172,7 +168,6 @@ private final class ReviewMonitorWindowHostView: NSVisualEffectView {
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private final class ReviewMonitorWindowContentViewController: NSViewController {
     private weak var displayedContentViewController: NSViewController?
@@ -309,13 +304,11 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
 }
 
 #if DEBUG
-@available(macOS 26.0, *)
 @MainActor
 func makeReviewMonitorPreviewContentViewController() -> NSViewController {
     makeReviewMonitorPreviewContentViewControllerForPreview()
 }
 
-@available(macOS 26.0, *)
 @MainActor
 func makeReviewMonitorPreviewContentViewControllerForPreview(
     authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
@@ -350,7 +343,6 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
     return contentViewController
 }
 
-@available(macOS 26.0, *)
 @MainActor
 extension ReviewMonitorWindowController {
     var splitViewControllerForTesting: ReviewMonitorSplitViewController {

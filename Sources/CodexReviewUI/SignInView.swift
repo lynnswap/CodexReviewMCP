@@ -1,7 +1,6 @@
 import SwiftUI
 import CodexReviewModel
 
-@available(macOS 26.0, *)
 struct SignInView: View {
     let store: CodexReviewStore
     let onPrimaryAction: @MainActor () -> Void
@@ -71,7 +70,6 @@ struct SignInView: View {
     }
 }
 
-@available(macOS 26.0, *)
 struct AuthenticationButtonStyle: PrimitiveButtonStyle {
     let isAuthenticating: Bool
 
@@ -87,12 +85,10 @@ struct AuthenticationButtonStyle: PrimitiveButtonStyle {
     }
 }
 #if DEBUG
-@available(macOS 26.0, *)
 #Preview("Signed Out") {
     SignInView(store: makeSignInPreviewStore())
 }
 
-@available(macOS 26.0, *)
 #Preview("Authenticating") {
     SignInView(store: makeAuthenticatingSignInPreviewStore())
 }
