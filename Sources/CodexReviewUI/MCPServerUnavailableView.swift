@@ -8,7 +8,6 @@
 import SwiftUI
 import CodexReviewModel
 
-@available(macOS 26.0, *)
 struct MCPServerUnavailableView: View {
     let store: CodexReviewStore
 

@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import CodexReviewModel
 
-@available(macOS 26.0, *)
 @MainActor
 final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAccessoryViewController {
     init(store: CodexReviewStore) {
@@ -19,7 +18,6 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
 }
 
 
-@available(macOS 26.0, *)
 struct StatusView: View {
     let store: CodexReviewStore
 
@@ -121,14 +119,12 @@ struct StatusView: View {
 
 
 #if DEBUG
-@available(macOS 26.0, *)
 #Preview("Signed In") {
     let store = makeStatusPreviewStore()
     return StatusView(store: store)
         .padding()
 }
 
-@available(macOS 26.0, *)
 #Preview("Server Failed") {
     let store = makeStatusPreviewStore(
         serverState: .failed("The embedded server stopped responding.")

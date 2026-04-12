@@ -4,7 +4,6 @@ import ObservationBridge
 import ReviewRuntime
 import SwiftUI
 
-@available(macOS 26.0, *)
 @MainActor
 final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDelegate {
     private static let autosaveName = NSSplitView.AutosaveName("CodexReviewMCP.ReviewMonitorSplitView")
@@ -173,7 +172,6 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 final class ReviewMonitorSidebarPaneViewController: NSViewController {
     private let store: CodexReviewStore
@@ -266,7 +264,6 @@ final class ReviewMonitorSidebarPaneViewController: NSViewController {
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 final class ReviewMonitorContentPaneViewController: NSViewController {
     enum ContentPresentationForTesting: Equatable {
@@ -380,7 +377,6 @@ final class ReviewMonitorContentPaneViewController: NSViewController {
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private final class ReviewMonitorDetailEmptyStateViewController: NSViewController {
     override func loadView() {
@@ -407,7 +403,6 @@ private final class ReviewMonitorDetailEmptyStateViewController: NSViewControlle
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 private final class MCPServerUnavailableViewController: NSViewController {
     private let store: CodexReviewStore
@@ -428,7 +423,6 @@ private final class MCPServerUnavailableViewController: NSViewController {
 }
 
 #if DEBUG
-@available(macOS 26.0, *)
 @MainActor
 extension ReviewMonitorSplitViewController {
     enum SidebarPresentationForTesting: Equatable {
@@ -488,7 +482,6 @@ extension ReviewMonitorSplitViewController {
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 extension ReviewMonitorSidebarPaneViewController {
     enum SidebarPresentationForTesting: Equatable {
@@ -512,7 +505,6 @@ extension ReviewMonitorSidebarPaneViewController {
     }
 }
 
-@available(macOS 26.0, *)
 @MainActor
 extension ReviewMonitorContentPaneViewController {
     struct RenderSnapshotForTesting: Equatable {

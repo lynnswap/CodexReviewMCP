@@ -3,7 +3,6 @@ import CodexReviewModel
 import ObservationBridge
 import SwiftUI
 
-@available(macOS 26.0, *)
 @MainActor
 final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
     var onAuthenticationStateChanged: (@MainActor (CodexReviewAuthModel.State) -> Void)?

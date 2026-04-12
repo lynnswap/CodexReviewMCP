@@ -635,7 +635,6 @@ extension CodexReviewStore {
 
 }
 
-@available(macOS 15.0, *)
 @MainActor
 public struct ReviewMonitorNativeAuthenticationConfiguration: Sendable {
     public enum BrowserSessionPolicy: Sendable {
@@ -657,7 +656,6 @@ public struct ReviewMonitorNativeAuthenticationConfiguration: Sendable {
     }
 }
 
-@available(macOS 15.0, *)
 @MainActor
 extension CodexReviewStore {
     @MainActor
@@ -724,7 +722,6 @@ extension CodexReviewStore {
     }
 }
 
-@available(macOS 15.0, *)
 typealias ReviewMonitorWebAuthenticationSessionFactory = @MainActor @Sendable (
     URL,
     String,
@@ -732,7 +729,6 @@ typealias ReviewMonitorWebAuthenticationSessionFactory = @MainActor @Sendable (
     @escaping @MainActor @Sendable () -> ASPresentationAnchor?
 ) async throws -> ReviewMonitorWebAuthenticationSession
 
-@available(macOS 15.0, *)
 @MainActor
 final class ReviewMonitorWebAuthenticationSession: Sendable {
     private final class PresentationContextProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
@@ -860,7 +856,6 @@ final class ReviewMonitorWebAuthenticationSession: Sendable {
     }
 }
 
-@available(macOS 15.0, *)
 private func mapAuthenticationError(_ error: Error?) -> ReviewAuthError? {
     guard let error else {
         return nil
@@ -876,7 +871,6 @@ private func mapAuthenticationError(_ error: Error?) -> ReviewAuthError? {
     return .loginFailed(error.localizedDescription)
 }
 
-@available(macOS 15.0, *)
 private func makeReviewMonitorWebAuthenticationCompletionHandler(
     _ activeSession: ReviewMonitorWebAuthenticationSession
 ) -> @Sendable (URL?, Error?) -> Void {
@@ -888,7 +882,6 @@ private func makeReviewMonitorWebAuthenticationCompletionHandler(
     }
 }
 
-@available(macOS 15.0, *)
 actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
     private enum NotificationTerminalState {
         case finished
