@@ -175,6 +175,54 @@ struct AppServerSupervisorTests {
         #expect(response.platformOs == "Darwin")
     }
 
+    @Test func sharedTransportDecodesAccountRateLimitsUpdatedNotification() async throws {
+        let connection = AppServerSharedTransportConnection(
+            sendMessage: { _ in },
+            closeInput: {}
+        )
+        let subscription = await connection.notificationStream()
+        defer {
+            Task {
+                await subscription.cancel()
+            }
+        }
+
+        let payload = try JSONSerialization.data(
+            withJSONObject: [
+                "jsonrpc": "2.0",
+                "method": "account/rateLimits/updated",
+                "params": [
+                    "rateLimits": [
+                        "limitId": "codex",
+                        "primary": [
+                            "usedPercent": 72,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1_735_689_600,
+                        ],
+                        "secondary": NSNull(),
+                    ],
+                ],
+            ]
+        )
+        await connection.receive(payload + Data([0x0A]))
+
+        let receivedNotification = try await withTestTimeout {
+            var iterator = subscription.stream.makeAsyncIterator()
+            return try await iterator.next()
+        }
+        let notification = try #require(receivedNotification)
+
+        guard case .accountRateLimitsUpdated(let updated) = notification else {
+            Issue.record("Expected account/rateLimits/updated notification.")
+            return
+        }
+
+        #expect(updated.rateLimits.limitID == "codex")
+        #expect(updated.rateLimits.primary?.usedPercent == 72)
+        #expect(updated.rateLimits.primary?.windowDurationMins == 300)
+        #expect(updated.rateLimits.secondary == nil)
+    }
+
     @Test func supervisorStreamsLargeConfigResponseOverChunkedStdout() async throws {
         let environment = try makeSupervisorEnvironment()
         let commandURL = try makeFakeSupervisorCommand(

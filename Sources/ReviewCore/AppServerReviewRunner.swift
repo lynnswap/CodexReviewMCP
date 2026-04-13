@@ -64,7 +64,7 @@ private func codexNotificationDeliveryTier(
         .lossless
     case .commandExecutionOutputDelta:
         .bestEffort
-    case .threadStatusChanged, .threadClosed, .turnStarted, .itemStarted, .reasoningSummaryPartAdded, .mcpToolCallProgress, .error, .accountLoginCompleted, .accountUpdated, .ignored:
+    case .threadStatusChanged, .threadClosed, .turnStarted, .itemStarted, .reasoningSummaryPartAdded, .mcpToolCallProgress, .error, .accountLoginCompleted, .accountUpdated, .accountRateLimitsUpdated, .ignored:
         .auxiliary
     }
 }
@@ -1413,7 +1413,7 @@ private func handle(
         if payload.willRetry == false {
             await onEvent(.failed(message))
         }
-    case .accountLoginCompleted, .accountUpdated:
+    case .accountLoginCompleted, .accountUpdated, .accountRateLimitsUpdated:
         break
     case .ignored:
         break
@@ -1822,7 +1822,7 @@ private actor AppServerReviewState {
                 turnID: payload.turnID,
                 countsAsActivity: codexNotificationDeliveryTier(notification) != .bestEffort
             )
-        case .accountLoginCompleted, .accountUpdated, .ignored:
+        case .accountLoginCompleted, .accountUpdated, .accountRateLimitsUpdated, .ignored:
             return .init(shouldProcess: false, countsAsActivity: false)
         }
     }

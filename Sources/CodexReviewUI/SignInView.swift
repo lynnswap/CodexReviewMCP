@@ -101,7 +101,7 @@ func makeSignInPreviewStore() -> CodexReviewStore {
 @MainActor
 func makeAuthenticatingSignInPreviewStore() -> CodexReviewStore {
     let store = makeSignInPreviewStore()
-    store.auth.updateState(
+    store.auth.updatePhase(
         .signingIn(
             .init(
                 title: "Sign in with ChatGPT",

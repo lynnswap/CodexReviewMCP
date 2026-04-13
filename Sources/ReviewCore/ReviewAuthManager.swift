@@ -1,4 +1,3 @@
-import CodexReviewModel
 import Foundation
 
 package enum ReviewAuthError: LocalizedError, Sendable, Equatable {
@@ -26,9 +25,80 @@ package let reviewAuthPersistenceFailureMessage =
     "Authentication completed in browser, but credentials were not persisted to ReviewMCP's dedicated home."
 
 private enum DurableAuthCheckResult: Sendable {
-    case signedIn(CodexReviewAuthModel.State)
+    case signedIn(ReviewAuthState)
     case signedOut
     case unavailable
+}
+
+package struct ReviewAuthAccount: Sendable, Equatable {
+    package var email: String?
+    package var planType: String?
+
+    package init(
+        email: String?,
+        planType: String?
+    ) {
+        self.email = email
+        self.planType = planType
+    }
+}
+
+package struct ReviewAuthProgress: Sendable, Equatable {
+    package var title: String
+    package var detail: String
+    package var browserURL: String?
+
+    package init(
+        title: String,
+        detail: String,
+        browserURL: String? = nil
+    ) {
+        self.title = title
+        self.detail = detail
+        self.browserURL = browserURL
+    }
+}
+
+package enum ReviewAuthState: Sendable, Equatable {
+    case signedOut
+    case signingIn(ReviewAuthProgress)
+    case failed(String)
+    case signedIn(ReviewAuthAccount)
+
+    package var isAuthenticated: Bool {
+        if case .signedIn = self {
+            return true
+        }
+        return false
+    }
+
+    package var account: ReviewAuthAccount? {
+        guard case .signedIn(let account) = self else {
+            return nil
+        }
+        return account
+    }
+
+    package var progress: ReviewAuthProgress? {
+        guard case .signingIn(let progress) = self else {
+            return nil
+        }
+        return progress
+    }
+
+    package var errorMessage: String? {
+        guard case .failed(let message) = self else {
+            return nil
+        }
+        return message
+    }
+
+    package static func signedIn(
+        email: String?,
+        planType: String?
+    ) -> Self {
+        .signedIn(.init(email: email, planType: planType))
+    }
 }
 
 package protocol ReviewAuthSession: Sendable {
@@ -121,7 +191,7 @@ package actor ReviewAuthManager {
         self.sessionFactory = sessionFactory
     }
 
-    package func loadState() async throws -> CodexReviewAuthModel.State {
+    package func loadState() async throws -> ReviewAuthState {
         try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
         let state = try await withTimeout(accountReadTimeout, clock: configuration.clock) {
             try await self.withSession { session in
@@ -133,7 +203,7 @@ package actor ReviewAuthManager {
     }
 
     package func beginAuthentication(
-        onUpdate: @escaping @Sendable (CodexReviewAuthModel.State) async -> Void
+        onUpdate: @escaping @Sendable (ReviewAuthState) async -> Void
     ) async throws {
         guard activeAttemptID == nil else {
             throw ReviewAuthError.loginInProgress
@@ -157,7 +227,7 @@ package actor ReviewAuthManager {
             }
             await onUpdate(Self.progressState(for: response))
 
-            let finalState: CodexReviewAuthModel.State
+            let finalState: ReviewAuthState
             switch response {
             case .chatGPT(let loginID, _, _):
                 finalState = try await waitForAuthenticationCompletion(
@@ -167,7 +237,7 @@ package actor ReviewAuthManager {
                     onUpdate: onUpdate
                 )
             }
-            if CodexReviewAuthStateAccessors.isAuthenticated(finalState) == false {
+            if finalState.isAuthenticated == false {
                 throw ReviewAuthError.loginFailed("Authentication failed. Sign in again.")
             }
 
@@ -208,7 +278,7 @@ package actor ReviewAuthManager {
         }
     }
 
-    package func logout() async throws -> CodexReviewAuthModel.State {
+    package func logout() async throws -> ReviewAuthState {
         guard activeAttemptID == nil else {
             throw ReviewAuthError.loginInProgress
         }
@@ -247,8 +317,8 @@ package actor ReviewAuthManager {
         session: any ReviewAuthSession,
         attemptID: UUID,
         loginID: String,
-        onUpdate: @escaping @Sendable (CodexReviewAuthModel.State) async -> Void
-    ) async throws -> CodexReviewAuthModel.State {
+        onUpdate: @escaping @Sendable (ReviewAuthState) async -> Void
+    ) async throws -> ReviewAuthState {
         let subscription = await session.notificationStream()
         defer {
             Task {
@@ -357,8 +427,8 @@ package actor ReviewAuthManager {
 
     private func signedInStateAfterAuthentication(
         session: any ReviewAuthSession
-    ) async throws -> CodexReviewAuthModel.State {
-        let refreshedState: CodexReviewAuthModel.State
+    ) async throws -> ReviewAuthState {
+        let refreshedState: ReviewAuthState
         do {
             let account = try await withTimeout(postLoginAccountReadTimeout, clock: configuration.clock) {
                 try await session.readAccount(refreshToken: true)
@@ -386,7 +456,7 @@ package actor ReviewAuthManager {
         case .signedOut:
             throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
         case .unavailable:
-            guard CodexReviewAuthStateAccessors.isAuthenticated(refreshedState) else {
+            guard refreshedState.isAuthenticated else {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
             return refreshedState
@@ -420,7 +490,7 @@ package actor ReviewAuthManager {
                         return Self.authState(from: account)
                     }
                 }
-                if CodexReviewAuthStateAccessors.isAuthenticated(state) == false {
+                if state.isAuthenticated == false {
                     sawSignedOut = true
                 } else {
                     return .signedIn(state)
@@ -460,39 +530,41 @@ package actor ReviewAuthManager {
     }
 
     private static func confirmedSignedInState(
-        refreshedState: CodexReviewAuthModel.State,
-        durableState: CodexReviewAuthModel.State
-    ) -> CodexReviewAuthModel.State {
-        let refreshedAccountID = CodexReviewAuthStateAccessors.accountID(refreshedState)
-        let durableAccountID = CodexReviewAuthStateAccessors.accountID(durableState)
+        refreshedState: ReviewAuthState,
+        durableState: ReviewAuthState
+    ) -> ReviewAuthState {
+        let refreshedAccount = refreshedState.account
+        let durableAccount = durableState.account
+        let refreshedEmail = refreshedAccount?.email
+        let durableEmail = durableAccount?.email
 
-        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState),
-           CodexReviewAuthStateAccessors.isAuthenticated(durableState),
-           refreshedAccountID == "ChatGPT",
-           durableAccountID != "ChatGPT"
-        {
-            return .signedIn(accountID: durableAccountID)
-        }
-        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState),
-           CodexReviewAuthStateAccessors.isAuthenticated(durableState),
-           refreshedAccountID != "ChatGPT"
-        {
-            return .signedIn(accountID: refreshedAccountID)
-        }
-        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState) == false,
-           CodexReviewAuthStateAccessors.isAuthenticated(durableState)
+        if refreshedState.isAuthenticated,
+           durableState.isAuthenticated,
+           refreshedEmail == "ChatGPT",
+           durableEmail != "ChatGPT"
         {
             return durableState
         }
-        if CodexReviewAuthStateAccessors.isAuthenticated(refreshedState),
-           CodexReviewAuthStateAccessors.isAuthenticated(durableState)
+        if refreshedState.isAuthenticated,
+           durableState.isAuthenticated,
+           refreshedEmail != "ChatGPT"
+        {
+            return refreshedState
+        }
+        if refreshedState.isAuthenticated == false,
+           durableState.isAuthenticated
+        {
+            return durableState
+        }
+        if refreshedState.isAuthenticated,
+           durableState.isAuthenticated
         {
             return refreshedState
         }
         return durableState
     }
 
-    private static func initialProgressState() -> CodexReviewAuthModel.State {
+    private static func initialProgressState() -> ReviewAuthState {
         .signingIn(
             .init(
                 title: "Sign in with ChatGPT",
@@ -503,7 +575,7 @@ package actor ReviewAuthManager {
 
     private static func progressState(
         for response: AppServerLoginAccountResponse
-    ) -> CodexReviewAuthModel.State {
+    ) -> ReviewAuthState {
         switch response {
         case .chatGPT(_, let authURL, _):
             return .signingIn(
@@ -516,10 +588,13 @@ package actor ReviewAuthManager {
         }
     }
 
-    private static func authState(from response: AppServerAccountReadResponse) -> CodexReviewAuthModel.State {
+    private static func authState(from response: AppServerAccountReadResponse) -> ReviewAuthState {
         switch response.account {
-        case .chatGPT(let email, _):
-            return .signedIn(accountID: email.nilIfEmpty ?? "ChatGPT")
+        case .chatGPT(let email, let planType):
+            return .signedIn(
+                email: email.nilIfEmpty ?? "ChatGPT",
+                planType: planType.nilIfEmpty ?? "unknown"
+            )
         case .unsupported:
             return .signedOut
         case nil:
@@ -542,6 +617,15 @@ package actor SharedAppServerReviewAuthSession: ReviewAuthSession {
             method: "account/read",
             params: AppServerAccountReadParams(refreshToken: refreshToken),
             responseType: AppServerAccountReadResponse.self
+        )
+        return response
+    }
+
+    package func readRateLimits() async throws -> GetAccountRateLimitsResponse {
+        let response: GetAccountRateLimitsResponse = try await transport.request(
+            method: "account/rateLimits/read",
+            params: AppServerNullParams(),
+            responseType: GetAccountRateLimitsResponse.self
         )
         return response
     }
@@ -1034,10 +1118,13 @@ private struct StoredCLIAuthAccount: Equatable, Sendable {
 }
 
 private extension AppServerAccountReadResponse {
-    func authState() -> CodexReviewAuthModel.State {
+    func authState() -> ReviewAuthState {
         switch account {
-        case .chatGPT(let email, _):
-            return .signedIn(accountID: email.nilIfEmpty)
+        case .chatGPT(let email, let planType):
+            return .signedIn(
+                email: email.nilIfEmpty ?? "ChatGPT",
+                planType: planType.nilIfEmpty ?? "unknown"
+            )
         case .unsupported:
             return .signedOut
         case nil:
@@ -1165,13 +1252,16 @@ private func loadStoredCLIAuthAccount(
     return nil
 }
 
-package func loadStoredReviewAuthState(
+package func loadStoredReviewAuthAccount(
     environment: [String: String]
-) -> CodexReviewAuthModel.State? {
+) -> ReviewAuthAccount? {
     guard let account = loadStoredCLIAuthAccount(environment: environment) else {
         return nil
     }
-    return .signedIn(accountID: account.email?.nilIfEmpty ?? "ChatGPT")
+    return .init(
+        email: account.email?.nilIfEmpty ?? "ChatGPT",
+        planType: account.planType?.nilIfEmpty ?? "unknown"
+    )
 }
 
 private func decodeReviewAuthJWTClaims(_ token: String) -> [String: Any]? {

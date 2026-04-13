@@ -59,7 +59,7 @@ struct ReviewAuthManagerTests {
         let updates = await recorder.values()
         #expect(
             updates.contains {
-                guard let progress = CodexReviewAuthStateAccessors.progress($0) else {
+                guard let progress = $0.progress else {
                     return false
                 }
                 return progress.browserURL?.contains("/oauth/authorize") == true
@@ -320,7 +320,7 @@ struct ReviewAuthManagerTests {
 
         await factory.waitForRequest()
         await recorder.waitUntilContains { state in
-            guard let progress = CodexReviewAuthStateAccessors.progress(state) else {
+            guard let progress = state.progress else {
                 return false
             }
             return progress.browserURL == nil
@@ -530,21 +530,30 @@ struct ReviewAuthManagerTests {
     }
 }
 
+private extension ReviewAuthState {
+    static func signedIn(accountID: String?) -> Self {
+        .signedIn(
+            email: accountID,
+            planType: "plus"
+        )
+    }
+}
+
 private actor AuthUpdateRecorder {
-    private var updates: [CodexReviewAuthModel.State] = []
+    private var updates: [ReviewAuthState] = []
     private let updateSignal = AsyncSignal()
 
-    func append(_ state: CodexReviewAuthModel.State) async {
+    func append(_ state: ReviewAuthState) async {
         updates.append(state)
         await updateSignal.signal()
     }
 
-    func values() -> [CodexReviewAuthModel.State] {
+    func values() -> [ReviewAuthState] {
         updates
     }
 
     func waitUntilContains(
-        _ predicate: @escaping @Sendable (CodexReviewAuthModel.State) -> Bool
+        _ predicate: @escaping @Sendable (ReviewAuthState) -> Bool
     ) async {
         if updates.contains(where: predicate) {
             return

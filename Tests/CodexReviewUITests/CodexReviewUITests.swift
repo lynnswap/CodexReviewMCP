@@ -155,7 +155,7 @@ struct CodexReviewUITests {
         let backend = AuthActionBackend(
             initialAuthState: .signedIn(accountID: "review@example.com")
         )
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         let windowController = ReviewMonitorWindowController(
             store: store,
             performInitialAuthRefresh: false
@@ -189,7 +189,7 @@ struct CodexReviewUITests {
 
     @Test func windowControllerDoesNotRefreshAuthStateBeforeStoreStart() async {
         let backend = AuthActionBackend()
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         let windowController = ReviewMonitorWindowController(store: store)
         defer { windowController.window?.close() }
         await Task.yield()
@@ -206,7 +206,7 @@ struct CodexReviewUITests {
         let window = harness.window
         defer { window.close() }
 
-        store.auth.updateState(.signedOut)
+        applyTestAuthState(auth: store.auth, state: .signedOut)
         try await waitForDisplayedContentKind(harness.windowController, .signInView)
         try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
 
@@ -226,7 +226,7 @@ struct CodexReviewUITests {
         let window = harness.window
         defer { window.close() }
 
-        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         try await waitForDisplayedContentKind(harness.windowController, .splitView)
         try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
 
@@ -246,8 +246,8 @@ struct CodexReviewUITests {
         let window = harness.window
         defer { window.close() }
 
-        store.auth.updateState(.signedOut)
-        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        applyTestAuthState(auth: store.auth, state: .signedOut)
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         try await waitForDisplayedContentKind(harness.windowController, .splitView)
         try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
         try await Task.sleep(for: .milliseconds(300))
@@ -267,10 +267,10 @@ struct CodexReviewUITests {
         )
         defer { harness.window.close() }
 
-        store.auth.updateState(.signedOut)
-        store.auth.updateState(.signedIn(accountID: "review@example.com"))
-        store.auth.updateState(.signedOut)
-        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        applyTestAuthState(auth: store.auth, state: .signedOut)
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+        applyTestAuthState(auth: store.auth, state: .signedOut)
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         try await waitForDisplayedContentKind(harness.windowController, .splitView)
         try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
@@ -293,7 +293,7 @@ struct CodexReviewUITests {
         window.layoutIfNeeded()
         let beforeSize = window.frame.size
 
-        store.auth.updateState(.signedOut)
+        applyTestAuthState(auth: store.auth, state: .signedOut)
         try await waitForDisplayedContentKind(harness.windowController, .signInView)
         window.layoutIfNeeded()
         let afterSize = window.frame.size
@@ -311,7 +311,7 @@ struct CodexReviewUITests {
         let window = harness.window
         defer { window.close() }
 
-        store.auth.updateState(.failed("Authentication failed."))
+        applyTestAuthState(auth: store.auth, state: .failed("Authentication failed."))
         await Task.yield()
 
         #expect(harness.windowController.displayedContentKindForTesting == .splitView)
@@ -326,7 +326,7 @@ struct CodexReviewUITests {
         )
         defer { harness.window.close() }
 
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
@@ -348,7 +348,7 @@ struct CodexReviewUITests {
         )
         defer { harness.window.close() }
 
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
@@ -357,7 +357,7 @@ struct CodexReviewUITests {
         )
         await Task.yield()
 
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
@@ -649,7 +649,7 @@ struct CodexReviewUITests {
 
     @Test func windowControllerDoesNotStartStoreWhenConstructed() {
         let backend = CountingStartBackend()
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         let harness = makeWindowHarness(store: store)
         let window = harness.window
         defer { window.close() }
@@ -659,7 +659,7 @@ struct CodexReviewUITests {
 
     @Test func splitViewAttachIsIdempotentForSameWindow() {
         let backend = CountingStartBackend()
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2203,7 +2203,7 @@ struct CodexReviewUITests {
 
     @Test func signInViewShowsPrimaryActionLabelWhenAuthenticating() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
@@ -2219,7 +2219,7 @@ struct CodexReviewUITests {
 
     @Test func signInViewControllerStartsAuthenticationWhenSignedOutAndServerRunning() async {
         let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         store.loadForTesting(serverState: .running, authState: .signedOut, workspaces: [])
         let viewController = ReviewMonitorSignInViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -2233,7 +2233,7 @@ struct CodexReviewUITests {
 
     @Test func signInViewControllerCancelsAuthenticationWhenAuthenticating() async {
         let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         store.loadForTesting(
             serverState: .running,
             authState: .signingIn(
@@ -2259,7 +2259,7 @@ struct CodexReviewUITests {
             shouldAutoStartEmbeddedServer: false,
             restartResultingServerState: .running
         )
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         store.loadForTesting(
             serverState: .failed("The embedded server stopped responding."),
             authState: .signedOut,
@@ -2282,7 +2282,7 @@ struct CodexReviewUITests {
             shouldAutoStartEmbeddedServer: false,
             restartResultingServerState: .running
         )
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         store.loadForTesting(serverState: .stopped, authState: .signedOut, workspaces: [])
         let viewController = ReviewMonitorSignInViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -2301,7 +2301,7 @@ struct CodexReviewUITests {
             shouldAutoStartEmbeddedServer: false,
             restartResultingServerState: .failed("Still unavailable.")
         )
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         store.loadForTesting(
             serverState: .failed("The embedded server stopped responding."),
             authState: .signedOut,
@@ -2321,12 +2321,12 @@ struct CodexReviewUITests {
 
     @Test func signInViewControllerDoesNotActOnBrowserProgressUpdates() async {
         let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         let viewController = ReviewMonitorSignInViewController(store: store)
         viewController.loadViewIfNeeded()
         viewController.startObservingAuth()
 
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
@@ -2342,8 +2342,8 @@ struct CodexReviewUITests {
 
     @Test func statusViewDoesNotRetryAuthenticationWhileAuthenticated() async {
         let backend = AuthActionBackend()
-        let store = CodexReviewStore(backend: backend)
-        store.auth.updateState(
+        let store = makeStore(backend: backend)
+        applyTestAuthState(auth: store.auth, state: 
             .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
@@ -2363,8 +2363,8 @@ struct CodexReviewUITests {
 
     @Test func statusViewCancelsAuthenticationWhileRetryAuthenticating() async {
         let backend = AuthActionBackend()
-        let store = CodexReviewStore(backend: backend)
-        store.auth.updateState(
+        let store = makeStore(backend: backend)
+        applyTestAuthState(auth: store.auth, state: 
             .init(
                 isAuthenticated: true,
                 accountID: "review@example.com",
@@ -2392,7 +2392,7 @@ struct CodexReviewUITests {
             initialAuthState: .signedIn(accountID: "review@example.com"),
             restartResultingServerState: .running
         )
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         store.loadForTesting(
             serverState: .stopped,
             authState: .signedIn(accountID: "review@example.com"),
@@ -2423,7 +2423,7 @@ struct CodexReviewUITests {
     @Test func signInViewDescriptionTextReflectsAuthState() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
 
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .signingIn(
                 .init(
                     title: "Sign in with ChatGPT",
@@ -2434,10 +2434,10 @@ struct CodexReviewUITests {
         )
         #expect(SignInView(store: store).descriptionText == nil)
 
-        store.auth.updateState(.failed("Authentication failed."))
+        applyTestAuthState(auth: store.auth, state: .failed("Authentication failed."))
         #expect(SignInView(store: store).descriptionText == "Authentication failed.")
 
-        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         #expect(SignInView(store: store).descriptionText == nil)
 
         store.loadForTesting(
@@ -2460,7 +2460,7 @@ struct CodexReviewUITests {
             shouldAutoStartEmbeddedServer: false,
             initialAuthState: .signedIn(accountID: "review@example.com")
         )
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         store.loadForTesting(
             serverState: .failed("The embedded server stopped responding."),
             authState: .signedIn(accountID: "review@example.com"),
@@ -2482,7 +2482,7 @@ struct CodexReviewUITests {
             shouldAutoStartEmbeddedServer: false,
             initialAuthState: .signedOut
         )
-        let store = CodexReviewStore(backend: backend)
+        let store = makeStore(backend: backend)
         store.loadForTesting(
             serverState: .failed("The embedded server stopped responding."),
             authState: .init(
@@ -2517,11 +2517,11 @@ private struct ReviewMonitorWindowHarness {
 @MainActor
 private func makeWindowHarness(
     store: CodexReviewStore,
-    authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
+    authState: TestAuthState = .signedIn(accountID: "review@example.com"),
     contentSize: NSSize? = nil,
     performInitialAuthRefresh: Bool = false
 ) -> ReviewMonitorWindowHarness {
-    store.auth.updateState(authState)
+    applyTestAuthState(auth: store.auth, state: authState)
     let windowController = ReviewMonitorWindowController(
         store: store,
         performInitialAuthRefresh: performInitialAuthRefresh
@@ -2714,11 +2714,149 @@ private struct TestFailure: Error {
     }
 }
 
+private struct TestAuthState: Equatable {
+    var phase: CodexReviewAuthModel.Phase
+    var accountEmail: String?
+    var accountPlanType: String?
+
+    init(
+        isAuthenticated: Bool = false,
+        accountID: String? = nil,
+        progress: CodexReviewAuthModel.Progress? = nil,
+        errorMessage: String? = nil
+    ) {
+        if let progress {
+            phase = .signingIn(progress)
+        } else if let errorMessage {
+            phase = .failed(message: errorMessage)
+        } else {
+            phase = .signedOut
+        }
+        accountEmail = isAuthenticated ? accountID : nil
+        accountPlanType = isAuthenticated ? "pro" : nil
+    }
+
+    static let signedOut = Self()
+
+    static func signedIn(accountID: String?) -> Self {
+        .init(
+            isAuthenticated: true,
+            accountID: accountID
+        )
+    }
+
+    static func signingIn(_ progress: CodexReviewAuthModel.Progress) -> Self {
+        .init(progress: progress)
+    }
+
+    static func failed(
+        _ message: String,
+        isAuthenticated: Bool = false,
+        accountID: String? = nil
+    ) -> Self {
+        .init(
+            isAuthenticated: isAuthenticated,
+            accountID: accountID,
+            errorMessage: message
+        )
+    }
+
+    var progress: CodexReviewAuthModel.Progress? {
+        guard case .signingIn(let progress) = phase else {
+            return nil
+        }
+        return progress
+    }
+
+    var isAuthenticated: Bool {
+        accountEmail != nil
+    }
+
+    var errorMessage: String? {
+        guard case .failed(let message) = phase else {
+            return nil
+        }
+        return message
+    }
+}
+
+@MainActor
+private func applyTestAuthState(
+    auth: CodexReviewAuthModel,
+    state: TestAuthState
+) {
+    auth.updatePhase(state.phase)
+    if let accountEmail = state.accountEmail {
+        auth.updateAccount(
+            CodexAccount(
+                email: accountEmail,
+                planType: state.accountPlanType ?? "pro"
+            )
+        )
+    } else {
+        auth.updateAccount(nil)
+    }
+}
+
+@MainActor
+private func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
+    .init(
+        isAuthenticated: auth.isAuthenticated,
+        accountID: auth.account?.email,
+        progress: auth.progress,
+        errorMessage: auth.errorMessage
+    )
+}
+
+@MainActor
+private extension CodexReviewStore {
+    func loadForTesting(
+        serverState: CodexReviewServerState,
+        authState: TestAuthState = .signedOut,
+        serverURL: URL? = nil,
+        workspaces: [CodexReviewWorkspace]
+    ) {
+        loadForTesting(
+            serverState: serverState,
+            authPhase: authState.phase,
+            account: authState.accountEmail.map {
+                CodexAccount(
+                    email: $0,
+                    planType: authState.accountPlanType ?? "pro"
+                )
+            },
+            serverURL: serverURL,
+            workspaces: workspaces
+        )
+    }
+}
+
+@MainActor
+private func makeStore(backend: CountingStartBackend) -> CodexReviewStore {
+    CodexReviewStore(
+        backend: backend,
+        authController: CountingStartAuthController(backend: backend)
+    )
+}
+
+@MainActor
+private func makeStore(backend: AuthActionBackend) -> CodexReviewStore {
+    CodexReviewStore(
+        backend: backend,
+        authController: AuthActionController(backend: backend)
+    )
+}
+
 @MainActor
 private final class FailingCancellationBackend: CodexReviewStoreBackend {
     var isActive: Bool = false
     let shouldAutoStartEmbeddedServer = false
-    let initialAuthState: CodexReviewAuthModel.State = .signedOut
+    let initialAuthState: TestAuthState = .signedOut
+    var initialAccount: CodexAccount? {
+        initialAuthState.accountEmail.map {
+            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
+        }
+    }
 
     func start(
         store: CodexReviewStore,
@@ -2765,9 +2903,47 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
 }
 
 @MainActor
+private final class CountingStartAuthController: CodexReviewAuthControlling {
+    private unowned let backend: CountingStartBackend
+
+    init(backend: CountingStartBackend) {
+        self.backend = backend
+    }
+
+    func startStartupRefresh(auth _: CodexReviewAuthModel) {}
+
+    func cancelStartupRefresh() {}
+
+    func refresh(auth _: CodexReviewAuthModel) async {}
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async {
+        await backend.beginAuthentication(auth: auth)
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        await backend.cancelAuthentication(auth: auth)
+    }
+
+    func logout(auth: CodexReviewAuthModel) async {
+        await backend.logout(auth: auth)
+    }
+
+    func reconcileAuthenticatedSession(
+        auth _: CodexReviewAuthModel,
+        serverIsRunning _: Bool,
+        runtimeGeneration _: Int
+    ) async {}
+}
+
+@MainActor
 private final class CountingStartBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer: Bool
-    let initialAuthState: CodexReviewAuthModel.State
+    let initialAuthState: TestAuthState
+    var initialAccount: CodexAccount? {
+        initialAuthState.accountEmail.map {
+            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
+        }
+    }
     let restartResultingServerState: CodexReviewServerState
     private let startSignal = AsyncSignal()
     private let beginSignal = AsyncSignal()
@@ -2779,7 +2955,7 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
 
     init(
         shouldAutoStartEmbeddedServer: Bool = true,
-        initialAuthState: CodexReviewAuthModel.State = .signedOut,
+        initialAuthState: TestAuthState = .signedOut,
         restartResultingServerState: CodexReviewServerState = .starting
     ) {
         self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
@@ -2882,10 +3058,50 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
 }
 
 @MainActor
+private final class AuthActionController: CodexReviewAuthControlling {
+    private unowned let backend: AuthActionBackend
+
+    init(backend: AuthActionBackend) {
+        self.backend = backend
+    }
+
+    func startStartupRefresh(auth _: CodexReviewAuthModel) {}
+
+    func cancelStartupRefresh() {}
+
+    func refresh(auth: CodexReviewAuthModel) async {
+        await backend.refreshAuthState(auth: auth)
+    }
+
+    func beginAuthentication(auth: CodexReviewAuthModel) async {
+        await backend.beginAuthentication(auth: auth)
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        await backend.cancelAuthentication(auth: auth)
+    }
+
+    func logout(auth: CodexReviewAuthModel) async {
+        await backend.logout(auth: auth)
+    }
+
+    func reconcileAuthenticatedSession(
+        auth _: CodexReviewAuthModel,
+        serverIsRunning _: Bool,
+        runtimeGeneration _: Int
+    ) async {}
+}
+
+@MainActor
 private final class AuthActionBackend: CodexReviewStoreBackend {
     var isActive: Bool = false
     let shouldAutoStartEmbeddedServer = false
-    let initialAuthState: CodexReviewAuthModel.State
+    let initialAuthState: TestAuthState
+    var initialAccount: CodexAccount? {
+        initialAuthState.accountEmail.map {
+            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
+        }
+    }
 
     private let refreshSignal = AsyncSignal()
     private let beginSignal = AsyncSignal()
@@ -2894,7 +3110,7 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
     private var beginCalls = 0
     private var cancelCalls = 0
 
-    init(initialAuthState: CodexReviewAuthModel.State = .signedOut) {
+    init(initialAuthState: TestAuthState = .signedOut) {
         self.initialAuthState = initialAuthState
     }
 

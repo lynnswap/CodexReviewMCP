@@ -49,9 +49,8 @@ struct StatusView: View {
     }
 
     var accountDisplayName: String {
-        if let accountID = store.auth.accountID,
-           accountID.isEmpty == false {
-            return accountID
+        if let account = store.auth.account {
+            return account.displayName
         }
         return "Unknown"
     }
@@ -135,12 +134,14 @@ struct StatusView: View {
 
 @MainActor
 func makeStatusPreviewStore(
-    authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
+    authPhase: CodexReviewAuthModel.Phase = .signedOut,
+    account: CodexAccount? = CodexAccount(email: "review@example.com", planType: "pro"),
     serverState: CodexReviewServerState = .running
 ) -> CodexReviewStore {
     let store = ReviewMonitorPreviewContent.makeStore()
     let runningServerURL = store.serverURL
-    store.auth.updateState(authState)
+    store.auth.updatePhase(authPhase)
+    store.auth.updateAccount(account)
     store.serverState = serverState
     store.serverURL = serverState == .running ? runningServerURL : nil
     return store

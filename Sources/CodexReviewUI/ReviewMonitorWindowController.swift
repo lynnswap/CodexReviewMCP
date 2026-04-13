@@ -29,6 +29,7 @@ public final class ReviewMonitorWindowController: NSWindowController {
     private let splitViewController: ReviewMonitorSplitViewController
     private let signInViewController: ReviewMonitorSignInViewController
     private let rootContentViewController: ReviewMonitorWindowContentViewController
+    private let auth: CodexReviewAuthModel
     private var displayedContentKind: DisplayedContentKind?
     private var presentedContentUpdateTask: Task<Void, Never>?
 
@@ -54,20 +55,21 @@ public final class ReviewMonitorWindowController: NSWindowController {
         self.splitViewController = splitViewController
         self.signInViewController = signInViewController
         self.rootContentViewController = contentViewController
+        self.auth = store.auth
         super.init(window: window)
 
         window.isReleasedWhenClosed = false
         configureReviewMonitorWindowBase(window)
         window.setFrameAutosaveName(Self.frameAutosaveName)
 
-        signInViewController.onAuthenticationStateChanged = { [weak self] state in
+        signInViewController.onAuthenticationStateChanged = { [weak self] in
             guard let self else {
                 return
             }
             if self.displayedContentKind == nil {
-                self.updatePresentedContent(authState: state)
+                self.updatePresentedContent()
             } else {
-                self.schedulePresentedContentUpdate(authState: state)
+                self.schedulePresentedContentUpdate()
             }
         }
         signInViewController.startObservingAuth()
@@ -83,23 +85,23 @@ public final class ReviewMonitorWindowController: NSWindowController {
         presentedContentUpdateTask?.cancel()
     }
 
-    private func schedulePresentedContentUpdate(authState: CodexReviewAuthModel.State) {
+    private func schedulePresentedContentUpdate() {
         presentedContentUpdateTask?.cancel()
         presentedContentUpdateTask = Task { @MainActor [weak self] in
             await Task.yield()
             guard Task.isCancelled == false else {
                 return
             }
-            self?.updatePresentedContent(authState: authState)
+            self?.updatePresentedContent()
         }
     }
 
-    private func updatePresentedContent(authState: CodexReviewAuthModel.State) {
+    private func updatePresentedContent() {
         guard let window else {
             return
         }
 
-        switch desiredContentKind(for: authState) {
+        switch desiredContentKind() {
         case .splitView:
             guard displayedContentKind != .splitView else {
                 return
@@ -113,19 +115,17 @@ public final class ReviewMonitorWindowController: NSWindowController {
         }
     }
 
-    private func desiredContentKind(
-        for authState: CodexReviewAuthModel.State
-    ) -> DisplayedContentKind {
-        if CodexReviewAuthStateAccessors.isAuthenticated(authState) {
+    private func desiredContentKind() -> DisplayedContentKind {
+        if auth.account != nil {
             return .splitView
         }
-        if CodexReviewAuthStateAccessors.progress(authState) != nil {
+        if auth.isAuthenticating {
             if displayedContentKind == .splitView {
                 return .splitView
             }
             return .signInView
         }
-        if CodexReviewAuthStateAccessors.errorMessage(authState) != nil,
+        if auth.errorMessage != nil,
            displayedContentKind == .splitView {
             return .splitView
         }
@@ -311,7 +311,8 @@ func makeReviewMonitorPreviewContentViewController() -> NSViewController {
 
 @MainActor
 func makeReviewMonitorPreviewContentViewControllerForPreview(
-    authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com"),
+    authPhase: CodexReviewAuthModel.Phase = .signedOut,
+    account: CodexAccount? = CodexAccount(email: "review@example.com", planType: "pro"),
     serverState: CodexReviewServerState = .running
 ) -> NSViewController {
     let store: CodexReviewStore
@@ -323,7 +324,8 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
         store.serverState = serverState
         store.serverURL = nil
     }
-    store.auth.updateState(authState)
+    store.auth.updatePhase(authPhase)
+    store.auth.updateAccount(account)
     let splitViewController = ReviewMonitorSplitViewController(store: store)
     splitViewController.loadViewIfNeeded()
     let contentViewController = ReviewMonitorWindowContentViewController { window in

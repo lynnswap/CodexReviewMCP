@@ -31,12 +31,14 @@ extension CodexReviewStore {
         appServerManager: (any AppServerManaging)? = nil,
         authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil
     ) {
+        let backend = CodexReviewEmbeddedServerBackend(
+            configuration: configuration,
+            appServerManager: appServerManager,
+            authSessionFactory: authSessionFactory
+        )
         self.init(
-            backend: CodexReviewEmbeddedServerBackend(
-                configuration: configuration,
-                appServerManager: appServerManager,
-                authSessionFactory: authSessionFactory
-            ),
+            backend: backend,
+            authController: backend.authController,
             diagnosticsURL: diagnosticsURL
         )
     }
@@ -663,7 +665,7 @@ extension CodexReviewStore {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.serverState = .running
         store.serverURL = URL(string: "http://127.0.0.1:9417/mcp")
-        store.auth.updateState(.signedIn(accountID: "ui-test@example.com"))
+        store.auth.updateAccount(CodexAccount(email: "ui-test@example.com", planType: "unknown"))
         return store
     }
 
@@ -1313,7 +1315,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let appServerManager: any AppServerManaging
     let authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)?
     let shouldAutoStartEmbeddedServer: Bool
-    let initialAuthState: CodexReviewAuthModel.State
+    let initialAccount: CodexAccount?
     lazy var liveAuthSessionFactory: @Sendable () async throws -> any ReviewAuthSession = { [configuration] in
         CLIReviewAuthSession(
             configuration: .init(
@@ -1322,13 +1324,19 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             )
         )
     }
-    lazy var authManager = ReviewAuthManager(
-        configuration: .init(
-            codexCommand: configuration.codexCommand,
-            environment: configuration.environment
-        ),
-        sessionFactory: authSessionFactory ?? liveAuthSessionFactory
-    )
+    lazy var authController: CodexAuthController = {
+        CodexAuthController(
+            configuration: configuration,
+            appServerManager: appServerManager,
+            authSessionFactory: authSessionFactory ?? liveAuthSessionFactory,
+            runtimeState: { [weak self] in
+                self?.authRuntimeState ?? .stopped
+            },
+            recycleServerIfRunning: { [weak self] in
+                await self?.recycleSharedAppServerAfterAuthChange()
+            }
+        )
+    }()
     lazy var executionCoordinator: ReviewExecutionCoordinator = {
         ReviewExecutionCoordinator(
             configuration: .init(
@@ -1353,15 +1361,20 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     private var server: ReviewMCPHTTPServer?
     private var waitTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
-    private var authRefreshTask: Task<Void, Never>?
-    private var authenticationCancellationRestoreState: CodexReviewAuthModel.State?
     private var startupTaskID: UUID?
+    private var appServerRuntimeGeneration = 0
     var closedSessions: Set<String> = []
     private var discoveryFileURL: URL {
         ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
     }
     private var runtimeStateFileURL: URL {
         ReviewHomePaths.runtimeStateFileURL(environment: configuration.environment)
+    }
+    private var authRuntimeState: CodexAuthRuntimeState {
+        .init(
+            serverIsRunning: server != nil,
+            runtimeGeneration: appServerRuntimeGeneration
+        )
     }
 
     var isActive: Bool {
@@ -1382,7 +1395,12 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         )
         self.authSessionFactory = authSessionFactory
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
-        self.initialAuthState = loadStoredReviewAuthState(environment: configuration.environment) ?? .signedOut
+        self.initialAccount = loadStoredReviewAuthAccount(environment: configuration.environment).map {
+            CodexAccount(
+                email: $0.email,
+                planType: $0.planType
+            )
+        }
     }
 
     func start(
@@ -1390,6 +1408,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         forceRestartIfNeeded: Bool
     ) async {
         closedSessions = []
+        store.auth.startStartupRefresh()
         let startupID = UUID()
         let task = Task { @MainActor [weak self, weak store] in
             guard let self, let store else {
@@ -1415,8 +1434,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         self.startupTask = nil
         startupTaskID = nil
         startupTask?.cancel()
-        authRefreshTask?.cancel()
-        authRefreshTask = nil
+        store.auth.cancelStartupRefresh()
+        await store.auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: appServerRuntimeGeneration
+        )
         waitTask?.cancel()
         waitTask = nil
         await executionCoordinator.shutdown(reason: "Review server stopped.", store: store)
@@ -1453,166 +1475,6 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             selectedJobID: job.id,
             sessionID: sessionID,
             reason: reason
-        )
-    }
-
-    func refreshAuthState(auth: CodexReviewAuthModel) async {
-        do {
-            let state = try await authManager.loadState()
-            if auth.isAuthenticating {
-                return
-            }
-            auth.updateState(state)
-        } catch {
-            if auth.isAuthenticating == false {
-                if auth.isAuthenticated {
-                    auth.updateState(
-                        .failed(
-                            error.localizedDescription,
-                            isAuthenticated: true,
-                            accountID: auth.accountID
-                        )
-                    )
-                } else {
-                    auth.updateState(.signedOut)
-                }
-            }
-        }
-    }
-
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
-        authRefreshTask?.cancel()
-        authRefreshTask = nil
-        let priorState = auth.state
-        authenticationCancellationRestoreState = priorState
-        defer {
-            authenticationCancellationRestoreState = nil
-        }
-        do {
-            try await beginAuthenticationAttempt(auth: auth, priorState: priorState)
-        } catch ReviewAuthError.cancelled {
-            auth.updateState(authenticationRestoreState(from: priorState))
-        } catch {
-            updateAuthenticationFailureState(error, auth: auth, priorState: priorState)
-        }
-    }
-
-    private func beginAuthenticationAttempt(
-        auth: CodexReviewAuthModel,
-        priorState: CodexReviewAuthModel.State
-    ) async throws {
-        try await authManager.beginAuthentication { state in
-            await MainActor.run {
-                if let progress = CodexReviewAuthStateAccessors.progress(state),
-                   CodexReviewAuthStateAccessors.isAuthenticated(priorState) {
-                    auth.updateState(
-                        .init(
-                            isAuthenticated: true,
-                            accountID: CodexReviewAuthStateAccessors.accountID(priorState),
-                            progress: progress
-                        )
-                    )
-                } else {
-                    auth.updateState(state)
-                }
-            }
-        }
-        await recycleSharedAppServerAfterAuthChange()
-    }
-
-    private func updateAuthenticationFailureState(
-        _ error: Error,
-        auth: CodexReviewAuthModel,
-        priorState: CodexReviewAuthModel.State
-    ) {
-        let message: String
-        if let error = error as? ReviewAuthError {
-            message = error.errorDescription ?? "Authentication failed."
-        } else {
-            message = error.localizedDescription
-        }
-
-        if CodexReviewAuthStateAccessors.isAuthenticated(priorState) {
-            auth.updateState(
-                .failed(
-                    message,
-                    isAuthenticated: true,
-                    accountID: CodexReviewAuthStateAccessors.accountID(priorState)
-                )
-            )
-        } else {
-            auth.updateState(.failed(message))
-        }
-    }
-
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        let restoreState = authenticationRestoreState(
-            from: authenticationCancellationRestoreState ?? auth.state
-        )
-        await authManager.cancelAuthentication()
-        auth.updateState(restoreState)
-    }
-
-    private func authenticationRestoreState(
-        from state: CodexReviewAuthModel.State
-    ) -> CodexReviewAuthModel.State {
-        guard CodexReviewAuthStateAccessors.isAuthenticated(state) else {
-            return .signedOut
-        }
-        guard CodexReviewAuthStateAccessors.progress(state) == nil else {
-            return .signedIn(accountID: CodexReviewAuthStateAccessors.accountID(state))
-        }
-        return state
-    }
-
-    func logout(auth: CodexReviewAuthModel) async {
-        authRefreshTask?.cancel()
-        authRefreshTask = nil
-        do {
-            let state = try await authManager.logout()
-            await recycleSharedAppServerAfterAuthChange()
-            auth.updateState(state)
-        } catch let error as ReviewAuthError {
-            await resolveLogoutFailureState(
-                auth: auth,
-                message: error.errorDescription ?? "Failed to sign out."
-            )
-        } catch {
-            await resolveLogoutFailureState(
-                auth: auth,
-                message: error.localizedDescription
-            )
-        }
-    }
-
-    private func resolveLogoutFailureState(
-        auth: CodexReviewAuthModel,
-        message: String
-    ) async {
-        let priorAccountID = auth.accountID
-        let priorIsAuthenticated = auth.isAuthenticated
-        if let resolvedState = try? await authManager.loadState() {
-            if CodexReviewAuthStateAccessors.isAuthenticated(resolvedState) {
-                auth.updateState(
-                    .failed(
-                        message,
-                        isAuthenticated: true,
-                        accountID: CodexReviewAuthStateAccessors.accountID(resolvedState)
-                    )
-                )
-            } else {
-                auth.updateState(resolvedState)
-                await recycleSharedAppServerAfterAuthChange()
-            }
-            return
-        }
-
-        auth.updateState(
-            .failed(
-                message,
-                isAuthenticated: priorIsAuthenticated,
-                accountID: priorAccountID
-            )
         )
     }
 
@@ -1707,8 +1569,12 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 endpointRecord: server.currentEndpointRecord(),
                 appServerRuntimeState: appServerRuntimeState
             )
+            appServerRuntimeGeneration += 1
             store.transitionToRunning(serverURL: url)
-            startAuthRefreshTask(auth: store.auth)
+            await store.auth.reconcileAuthenticatedSession(
+                serverIsRunning: true,
+                runtimeGeneration: appServerRuntimeGeneration
+            )
             observeServerLifecycle(server: server, store: store)
         } catch is CancellationError {
             guard startupTaskID == startupID else {
@@ -1717,6 +1583,10 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             await server.stop()
             await appServerManager.shutdown()
             self.server = nil
+            await store.auth.reconcileAuthenticatedSession(
+                serverIsRunning: false,
+                runtimeGeneration: appServerRuntimeGeneration
+            )
         } catch {
             guard startupTaskID == startupID else {
                 return
@@ -1724,6 +1594,10 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             await server.stop()
             await appServerManager.shutdown()
             self.server = nil
+            await store.auth.reconcileAuthenticatedSession(
+                serverIsRunning: false,
+                runtimeGeneration: appServerRuntimeGeneration
+            )
             store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
         }
     }
@@ -1817,8 +1691,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
-                self.authRefreshTask?.cancel()
-                self.authRefreshTask = nil
+                store.auth.cancelStartupRefresh()
+                await store.auth.reconcileAuthenticatedSession(
+                    serverIsRunning: false,
+                    runtimeGeneration: self.appServerRuntimeGeneration
+                )
                 self.closedSessions = []
                 store.transitionToStopped()
             } catch is CancellationError {
@@ -1832,24 +1709,17 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
-                self.authRefreshTask?.cancel()
-                self.authRefreshTask = nil
+                store.auth.cancelStartupRefresh()
+                await store.auth.reconcileAuthenticatedSession(
+                    serverIsRunning: false,
+                    runtimeGeneration: self.appServerRuntimeGeneration
+                )
                 self.closedSessions = []
                 store.transitionToFailed(
                     CodexReviewStore.errorMessage(from: error),
                     resetJobs: true
                 )
             }
-        }
-    }
-
-    private func startAuthRefreshTask(auth: CodexReviewAuthModel) {
-        authRefreshTask?.cancel()
-        authRefreshTask = Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-            await self.refreshAuthState(auth: auth)
         }
     }
 
@@ -1865,6 +1735,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 endpointRecord: server.currentEndpointRecord(),
                 appServerRuntimeState: runtimeState
             )
+            appServerRuntimeGeneration += 1
         } catch {
         }
     }

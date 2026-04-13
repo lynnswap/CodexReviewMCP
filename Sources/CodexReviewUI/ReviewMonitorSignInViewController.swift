@@ -5,7 +5,7 @@ import SwiftUI
 
 @MainActor
 final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
-    var onAuthenticationStateChanged: (@MainActor (CodexReviewAuthModel.State) -> Void)?
+    var onAuthenticationStateChanged: (@MainActor () -> Void)?
 
     private let store: CodexReviewStore
     private let auth: CodexReviewAuthModel
@@ -33,11 +33,18 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
             return
         }
 
-        auth.observe(\.state) { [weak self] state in
+        auth.observe(\.phase) { [weak self] _ in
             guard let self else {
                 return
             }
-            self.onAuthenticationStateChanged?(state)
+            self.onAuthenticationStateChanged?()
+        }
+        .store(in: &observationHandles)
+        auth.observe(\.account) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.onAuthenticationStateChanged?()
         }
         .store(in: &observationHandles)
 
@@ -45,7 +52,7 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
     }
 
     private func emitCurrentState() {
-        onAuthenticationStateChanged?(auth.state)
+        onAuthenticationStateChanged?()
     }
 
     func performPrimaryAction() {

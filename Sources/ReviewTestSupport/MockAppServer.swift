@@ -243,6 +243,8 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                     as: responseType
                 )
             }
+        case "account/rateLimits/read":
+            throw AppServerResponseError(code: -32601, message: "Method not found")
         case "thread/start":
             switch mode {
             case .bootstrapFailure(let message):
