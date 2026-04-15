@@ -12,12 +12,11 @@ extension CodexReviewStore {
     public convenience init() {
         let environment = ProcessInfo.processInfo.environment
         let arguments = CommandLine.arguments
-        let configuration = Self.makeConfiguration(
-            environment: environment,
-            arguments: arguments
-        )
         self.init(
-            backend: CodexReviewEmbeddedServerBackend(configuration: configuration),
+            configuration: Self.makeConfiguration(
+                environment: environment,
+                arguments: arguments
+            ),
             diagnosticsURL: Self.makeDiagnosticsURL(
                 environment: environment,
                 arguments: arguments
@@ -29,12 +28,14 @@ extension CodexReviewStore {
         configuration: ReviewServerConfiguration,
         diagnosticsURL: URL? = nil,
         appServerManager: (any AppServerManaging)? = nil,
-        authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil
+        authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil,
+        deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
         let backend = CodexReviewEmbeddedServerBackend(
             configuration: configuration,
             appServerManager: appServerManager,
-            authSessionFactory: authSessionFactory
+            authSessionFactory: authSessionFactory,
+            deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
         )
         self.init(
             backend: backend,
@@ -719,7 +720,8 @@ extension CodexReviewStore {
             configuration: configuration,
             diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
-            authSessionFactory: authSessionFactory
+            authSessionFactory: authSessionFactory,
+            deferStartupAuthRefreshUntilPrepared: true
         )
     }
 }
@@ -1314,6 +1316,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
     let appServerManager: any AppServerManaging
     let authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)?
+    let deferStartupAuthRefreshUntilPrepared: Bool
     let shouldAutoStartEmbeddedServer: Bool
     let initialAccount: CodexAccount?
     lazy var liveAuthSessionFactory: @Sendable () async throws -> any ReviewAuthSession = { [configuration] in
@@ -1384,7 +1387,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     init(
         configuration: ReviewServerConfiguration,
         appServerManager: (any AppServerManaging)? = nil,
-        authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil
+        authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil,
+        deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
         self.configuration = configuration
         self.appServerManager = appServerManager ?? AppServerSupervisor(
@@ -1394,6 +1398,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             )
         )
         self.authSessionFactory = authSessionFactory
+        self.deferStartupAuthRefreshUntilPrepared = deferStartupAuthRefreshUntilPrepared
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
         self.initialAccount = loadStoredReviewAuthAccount(environment: configuration.environment).map {
             CodexAccount(
@@ -1408,7 +1413,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         forceRestartIfNeeded: Bool
     ) async {
         closedSessions = []
-        store.auth.startStartupRefresh()
+        if deferStartupAuthRefreshUntilPrepared == false {
+            store.auth.startStartupRefresh()
+        }
         let startupID = UUID()
         let task = Task { @MainActor [weak self, weak store] in
             guard let self, let store else {
@@ -1575,6 +1582,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 serverIsRunning: true,
                 runtimeGeneration: appServerRuntimeGeneration
             )
+            if deferStartupAuthRefreshUntilPrepared {
+                store.auth.startStartupRefresh()
+            }
             observeServerLifecycle(server: server, store: store)
         } catch is CancellationError {
             guard startupTaskID == startupID else {

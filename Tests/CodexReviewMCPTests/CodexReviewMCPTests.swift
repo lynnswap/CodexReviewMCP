@@ -118,6 +118,54 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func reviewMonitorStoreStartupRefreshWaitsForPreparedAuthTransport() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateAccountReadResponse(
+            account: [
+                "type": "chatgpt",
+                "email": "review@example.com",
+                "planType": "pro",
+            ],
+            requiresOpenAIAuth: false
+        )
+        let manager = AuthCapableAppServerManager(
+            authTransport: authTransport,
+            requirePrepareBeforeAuthCheckout: true
+        )
+        let recorder = TestWebAuthenticationSessionRecorder()
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .failure(.cancelled)
+            )
+        )
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
+        defer { authStateProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .signedIn(accountID: "review@example.com")
+        }
+
+        #expect(await manager.prepareCount() >= 1)
+        #expect(await manager.authTransportCheckoutCount() > 0)
+
+        await store.stop()
+    }
+
     @Test func startingStoreLoadsCodexRateLimitsForAuthenticatedAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
@@ -3680,18 +3728,27 @@ private actor AuthCapableAppServerManager: AppServerManaging {
         processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
     )
     private let authTransports: [any AppServerSessionTransport]
+    private let requirePrepareBeforeAuthCheckout: Bool
     private var authCheckoutCountStorage = 0
     private var reviewCheckoutCountStorage = 0
     private var shutdownCountStorage = 0
     private var prepareCountStorage = 0
 
-    init(authTransport: any AppServerSessionTransport = AuthCapableAppServerSessionTransport()) {
+    init(
+        authTransport: any AppServerSessionTransport = AuthCapableAppServerSessionTransport(),
+        requirePrepareBeforeAuthCheckout: Bool = false
+    ) {
         authTransports = [authTransport]
+        self.requirePrepareBeforeAuthCheckout = requirePrepareBeforeAuthCheckout
     }
 
-    init(authTransports: [any AppServerSessionTransport]) {
+    init(
+        authTransports: [any AppServerSessionTransport],
+        requirePrepareBeforeAuthCheckout: Bool = false
+    ) {
         precondition(authTransports.isEmpty == false)
         self.authTransports = authTransports
+        self.requirePrepareBeforeAuthCheckout = requirePrepareBeforeAuthCheckout
     }
 
     func prepare() async throws -> AppServerRuntimeState {
@@ -3705,6 +3762,13 @@ private actor AuthCapableAppServerManager: AppServerManaging {
     }
 
     func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        if requirePrepareBeforeAuthCheckout, prepareCountStorage == 0 {
+            throw NSError(
+                domain: "CodexReviewMCPTests.AuthCapableAppServerManager",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "auth transport requires prepare() first"]
+            )
+        }
         let transportIndex = min(authCheckoutCountStorage, authTransports.count - 1)
         authCheckoutCountStorage += 1
         return authTransports[transportIndex]
@@ -4111,6 +4175,16 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
             rateLimits,
             as: AppServerRateLimitSnapshotPayload.self
         )
+    }
+
+    func updateAccountReadResponse(
+        account: [String: Any]?,
+        requiresOpenAIAuth: Bool
+    ) {
+        accountReadResponseObject = [
+            "account": account ?? NSNull(),
+            "requiresOpenaiAuth": requiresOpenAIAuth,
+        ]
     }
 
     func updateRateLimitsResponse(
