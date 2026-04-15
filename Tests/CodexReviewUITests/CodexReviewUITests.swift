@@ -2220,6 +2220,226 @@ struct CodexReviewUITests {
         #expect(transport.isLogPinnedToBottomForTesting)
     }
 
+    @Test func programmaticLogAutoFollowRequestsOverlayScrollerHideWhenShown() async throws {
+        let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let job = makeJob(
+            id: "job-overlay-hide",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        transport.setLogScrollerStyleForTesting(.overlay)
+        transport.setLogOverlayScrollersShownForTesting(true)
+        transport.scrollLogToBottomForTesting()
+        let hideCountBeforeAppend = transport.logOverlayScrollerHideRequestCountForTesting
+
+        let updateRenderCount = transport.renderCountForTesting
+        job.appendLogEntry(.init(kind: .progress, text: "Newest line"))
+        _ = try await awaitTransportRender(transport, after: updateRenderCount)
+
+        #expect(transport.isLogPinnedToBottomForTesting)
+        #expect(transport.logOverlayScrollerHideRequestCountForTesting == hideCountBeforeAppend + 1)
+    }
+
+    @Test func legacyScrollerStyleDoesNotRequestOverlayScrollerHide() async throws {
+        let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let job = makeJob(
+            id: "job-legacy-hide",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        transport.setLogScrollerStyleForTesting(.legacy)
+        transport.setLogOverlayScrollersShownForTesting(true)
+        transport.scrollLogToBottomForTesting()
+        let hideCountBeforeAppend = transport.logOverlayScrollerHideRequestCountForTesting
+
+        let updateRenderCount = transport.renderCountForTesting
+        job.appendLogEntry(.init(kind: .progress, text: "Newest line"))
+        _ = try await awaitTransportRender(transport, after: updateRenderCount)
+
+        #expect(transport.logOverlayScrollerHideRequestCountForTesting == hideCountBeforeAppend)
+    }
+
+    @Test func shortLogDoesNotRequestOverlayScrollerHideWhenNoScrollRange() async throws {
+        let job = makeJob(
+            id: "job-overlay-short",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: "short log"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        transport.setLogScrollerStyleForTesting(.overlay)
+        transport.setLogOverlayScrollersShownForTesting(true)
+        let hideCountBeforeAppend = transport.logOverlayScrollerHideRequestCountForTesting
+
+        let updateRenderCount = transport.renderCountForTesting
+        job.appendLogEntry(.init(kind: .progress, text: "short update"))
+        _ = try await awaitTransportRender(transport, after: updateRenderCount)
+
+        #expect(transport.logOverlayScrollerHideRequestCountForTesting == hideCountBeforeAppend)
+    }
+
+    @Test func selectingJobRequestsOverlayScrollerHideWhenRestoringScrollPosition() async throws {
+        let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let firstJob = makeJob(
+            id: "job-restore-1",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+        let secondJob = makeJob(
+            id: "job-restore-2",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [firstJob, secondJob]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(firstJob)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        transport.setLogScrollerStyleForTesting(.overlay)
+        transport.setLogOverlayScrollersShownForTesting(true)
+        transport.scrollLogToOffsetForTesting(120)
+
+        let secondRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(secondJob)
+        _ = try await awaitTransportRender(transport, after: secondRenderCount)
+
+        let hideCountBeforeRestore = transport.logOverlayScrollerHideRequestCountForTesting
+        let thirdRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(firstJob)
+        _ = try await awaitTransportRender(transport, after: thirdRenderCount)
+
+        #expect(transport.logOverlayScrollerHideRequestCountForTesting > hideCountBeforeRestore)
+    }
+
+    @Test func privateOverlayBridgeNoOpsWhenScrollerImpPairIsUnavailable() async throws {
+        let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let job = makeJob(
+            id: "job-missing-pair",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        transport.setLogScrollerStyleForTesting(.overlay)
+        transport.setLogOverlayScrollersShownForTesting(true)
+        transport.setLogOverlayScrollerBridgeModeForTesting(.missingScrollerImpPair)
+
+        let updateRenderCount = transport.renderCountForTesting
+        let hideCountBeforeAppend = transport.logOverlayScrollerHideRequestCountForTesting
+        job.appendLogEntry(.init(kind: .progress, text: "Newest line"))
+        _ = try await awaitTransportRender(transport, after: updateRenderCount)
+
+        #expect(transport.logOverlayScrollerHideRequestCountForTesting == hideCountBeforeAppend)
+    }
+
+    @Test func privateOverlayBridgeNoOpsWhenHideSelectorsAreUnavailable() async throws {
+        let longLog = (0..<400).map { "line \($0)" }.joined(separator: "\n")
+        let job = makeJob(
+            id: "job-missing-hide",
+            status: .running,
+            targetSummary: "Uncommitted changes",
+            summary: "Running review.",
+            logText: longLog
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        transport.setLogScrollerStyleForTesting(.overlay)
+        transport.setLogOverlayScrollersShownForTesting(true)
+        transport.setLogOverlayScrollerBridgeModeForTesting(.missingHideMethods)
+
+        let updateRenderCount = transport.renderCountForTesting
+        let hideCountBeforeAppend = transport.logOverlayScrollerHideRequestCountForTesting
+        job.appendLogEntry(.init(kind: .progress, text: "Newest line"))
+        _ = try await awaitTransportRender(transport, after: updateRenderCount)
+
+        #expect(transport.logOverlayScrollerHideRequestCountForTesting == hideCountBeforeAppend)
+    }
+
     @Test func logViewUsesTextKit1AndDisablesEditingFeatures() async throws {
         let job = makeJob(
             id: "job-log-config",

@@ -257,6 +257,10 @@ extension ReviewMonitorTransportViewController {
         logScrollView.writingToolsDisabledForTesting
     }
 
+    var logOverlayScrollerHideRequestCountForTesting: Int {
+        logScrollView.overlayScrollerHideRequestCountForTesting
+    }
+
     var logFrameForTesting: NSRect {
         logScrollView.frame
     }
@@ -349,6 +353,20 @@ extension ReviewMonitorTransportViewController {
 
     var isLogPinnedToBottomForTesting: Bool {
         logScrollView.isPinnedToBottomForTesting
+    }
+
+    func setLogScrollerStyleForTesting(_ style: NSScroller.Style) {
+        logScrollView.setScrollerStyleForTesting(style)
+    }
+
+    func setLogOverlayScrollersShownForTesting(_ isShown: Bool?) {
+        logScrollView.setOverlayScrollersShownForTesting(isShown)
+    }
+
+    func setLogOverlayScrollerBridgeModeForTesting(
+        _ mode: ReviewMonitorLogScrollView.OverlayScrollerBridgeModeForTesting
+    ) {
+        logScrollView.setOverlayScrollerBridgeModeForTesting(mode)
     }
 }
 #endif
