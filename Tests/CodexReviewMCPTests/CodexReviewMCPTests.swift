@@ -376,6 +376,21 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func codexAccountSkipsInvalidRateLimitDurations() {
+        let account = CodexAccount(email: "review@example.com", planType: "pro")
+
+        account.updateRateLimits(
+            [
+                (windowDurationMinutes: 300, usedPercent: 40, resetsAt: nil),
+                (windowDurationMinutes: 0, usedPercent: 75, resetsAt: nil),
+                (windowDurationMinutes: -60, usedPercent: 10, resetsAt: nil),
+            ]
+        )
+
+        #expect(account.rateLimits.map(\.windowDurationMinutes) == [300])
+        #expect(account.rateLimits.map(\.usedPercent) == [40])
+    }
+
     @Test func rateLimitNotificationUpdatesCodexSnapshotAndPreservesOtherBuckets() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
