@@ -1058,7 +1058,7 @@ struct CodexReviewUITests {
         let sidebar = viewController.sidebarViewControllerForTesting
         #expect(sidebar.allWorkspaceRowsExpandedForTesting)
         #expect(sidebar.workspaceIsSelectableForTesting(workspace) == false)
-        #expect(sidebar.floatsGroupRowsEnabledForTesting == false)
+        #expect(sidebar.floatsGroupRowsEnabledForTesting)
         #expect(sidebar.jobRowUsesReviewMonitorJobRowViewForTesting(job))
     }
 
@@ -1093,7 +1093,7 @@ struct CodexReviewUITests {
         let sidebar = viewController.sidebarViewControllerForTesting
         sidebar.scrollSidebarToOffsetForTesting(80)
 
-        #expect(sidebar.workspaceRowIsFloatingForTesting(workspace) == false)
+        #expect(sidebar.workspaceRowIsFloatingForTesting(workspace))
     }
 
     @Test func sidebarDoesNotAddBlankScrollWhenRowsFitVisibleArea() {

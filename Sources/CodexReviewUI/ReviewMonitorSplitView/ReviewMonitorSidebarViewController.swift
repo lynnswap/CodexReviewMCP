@@ -129,7 +129,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         outlineView.indentationMarkerFollowsCell = false
         outlineView.rowSizeStyle = .default
         outlineView.style = .sourceList
-        outlineView.floatsGroupRows = false
+        outlineView.floatsGroupRows = true
         outlineView.backgroundColor = .clear
         outlineView.usesAlternatingRowBackgroundColors = false
         outlineView.intercellSpacing = NSSize(width: 0, height: 0)
