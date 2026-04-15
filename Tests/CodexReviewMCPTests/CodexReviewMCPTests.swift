@@ -151,6 +151,7 @@ struct CodexReviewMCPTests {
                 autoResult: .failure(.cancelled)
             )
         )
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
         defer { authStateProbe.cancel() }
 
@@ -164,6 +165,52 @@ struct CodexReviewMCPTests {
         #expect(await manager.authTransportCheckoutCount() > 0)
 
         await store.stop()
+    }
+
+    @Test func reviewMonitorStoreStartupFailureStillRefreshesAuthState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateAccountReadResponse(
+            account: nil,
+            requiresOpenAIAuth: true
+        )
+        let manager = AuthCapableAppServerManager(
+            authTransport: authTransport,
+            prepareError: NSError(
+                domain: "CodexReviewMCPTests.AuthCapableAppServerManager",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "prepare failed"]
+            )
+        )
+        let recorder = TestWebAuthenticationSessionRecorder()
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .failure(.cancelled)
+            )
+        )
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
+        defer { authStateProbe.cancel() }
+
+        await store.start()
+
+        #expect(store.serverState == .failed("prepare failed"))
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .signedOut
+        }
+        #expect(await manager.authTransportCheckoutCount() > 0)
     }
 
     @Test func startingStoreLoadsCodexRateLimitsForAuthenticatedAccount() async throws {
@@ -3780,6 +3827,7 @@ private actor AuthCapableAppServerManager: AppServerManaging {
     )
     private let authTransports: [any AppServerSessionTransport]
     private let requirePrepareBeforeAuthCheckout: Bool
+    private let prepareError: Error?
     private var authCheckoutCountStorage = 0
     private var reviewCheckoutCountStorage = 0
     private var shutdownCountStorage = 0
@@ -3787,22 +3835,29 @@ private actor AuthCapableAppServerManager: AppServerManaging {
 
     init(
         authTransport: any AppServerSessionTransport = AuthCapableAppServerSessionTransport(),
-        requirePrepareBeforeAuthCheckout: Bool = false
+        requirePrepareBeforeAuthCheckout: Bool = false,
+        prepareError: Error? = nil
     ) {
         authTransports = [authTransport]
         self.requirePrepareBeforeAuthCheckout = requirePrepareBeforeAuthCheckout
+        self.prepareError = prepareError
     }
 
     init(
         authTransports: [any AppServerSessionTransport],
-        requirePrepareBeforeAuthCheckout: Bool = false
+        requirePrepareBeforeAuthCheckout: Bool = false,
+        prepareError: Error? = nil
     ) {
         precondition(authTransports.isEmpty == false)
         self.authTransports = authTransports
         self.requirePrepareBeforeAuthCheckout = requirePrepareBeforeAuthCheckout
+        self.prepareError = prepareError
     }
 
     func prepare() async throws -> AppServerRuntimeState {
+        if let prepareError {
+            throw prepareError
+        }
         prepareCountStorage += 1
         return runtimeState
     }

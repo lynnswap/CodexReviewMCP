@@ -1609,6 +1609,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 runtimeGeneration: appServerRuntimeGeneration
             )
             store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
+            if deferStartupAuthRefreshUntilPrepared {
+                store.auth.startStartupRefresh()
+            }
         }
     }
 
