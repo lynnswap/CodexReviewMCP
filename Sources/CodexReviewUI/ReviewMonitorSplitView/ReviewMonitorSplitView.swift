@@ -2,7 +2,6 @@ import AppKit
 import CodexReviewModel
 import ObservationBridge
 import ReviewRuntime
-import SwiftUI
 
 @MainActor
 final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDelegate {
@@ -10,9 +9,8 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
 
     private let store: CodexReviewStore
     private let uiState: ReviewMonitorUIState
-    private var sidebarPaneViewController: ReviewMonitorSidebarPaneViewController?
-    private var contentPaneViewController: ReviewMonitorContentPaneViewController?
-    private var statusAccessoryViewController: ReviewMonitorServerStatusAccessoryViewController?
+    private var sidebarViewController: ReviewMonitorSidebarViewController?
+    private var transportViewController: ReviewMonitorTransportViewController?
     private var sidebarItem: NSSplitViewItem?
     private var contentItem: NSSplitViewItem?
     private var toolbar: NSToolbar?
@@ -33,34 +31,33 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        let sidebarPaneViewController = ReviewMonitorSidebarPaneViewController(
+        let sidebarViewController = ReviewMonitorSidebarViewController(
             store: store,
             uiState: uiState
         )
-        let contentPaneViewController = ReviewMonitorContentPaneViewController(uiState: uiState)
+        let transportViewController = ReviewMonitorTransportViewController(uiState: uiState)
         let statusAccessoryViewController = ReviewMonitorServerStatusAccessoryViewController(store: store)
         if #available(macOS 26.1, *) {
             statusAccessoryViewController.preferredScrollEdgeEffectStyle = .soft
         }
-        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarPaneViewController)
+        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
         sidebarItem.allowsFullHeightLayout = true
         sidebarItem.minimumThickness = 220
         sidebarItem.preferredThicknessFraction = 0.22
         sidebarItem.titlebarSeparatorStyle = .none
         sidebarItem.addBottomAlignedAccessoryViewController(statusAccessoryViewController)
 
-        let contentItem = NSSplitViewItem(viewController: contentPaneViewController)
+        let contentItem = NSSplitViewItem(viewController: transportViewController)
         contentItem.minimumThickness = 300
         contentItem.automaticallyAdjustsSafeAreaInsets = true
 
-        self.sidebarPaneViewController = sidebarPaneViewController
-        self.contentPaneViewController = contentPaneViewController
-        self.statusAccessoryViewController = statusAccessoryViewController
+        self.sidebarViewController = sidebarViewController
+        self.transportViewController = transportViewController
         self.sidebarItem = sidebarItem
         self.contentItem = contentItem
 
-        sidebarPaneViewController.loadViewIfNeeded()
-        contentPaneViewController.loadViewIfNeeded()
+        sidebarViewController.loadViewIfNeeded()
+        transportViewController.loadViewIfNeeded()
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
     }
@@ -172,255 +169,6 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     }
 }
 
-@MainActor
-final class ReviewMonitorSidebarPaneViewController: NSViewController {
-    private let store: CodexReviewStore
-    private let sidebarViewController: ReviewMonitorSidebarViewController
-    private let unavailableViewController: MCPServerUnavailableViewController
-    private var observationHandles: Set<ObservationHandle> = []
-    private var displayedViewConstraints: [NSLayoutConstraint] = []
-    private(set) weak var displayedViewController: NSViewController?
-
-    init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
-        self.store = store
-        self.sidebarViewController = ReviewMonitorSidebarViewController(uiState: uiState)
-        self.unavailableViewController = MCPServerUnavailableViewController(store: store)
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func loadView() {
-        view = NSView(frame: .zero)
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        sidebarViewController.loadViewIfNeeded()
-        unavailableViewController.loadViewIfNeeded()
-        sidebarViewController.bind(store: store)
-        bindObservation()
-        updatePresentation()
-    }
-
-    private func bindObservation() {
-        observationHandles.removeAll()
-        store.observe(\.serverState) { [weak self] _ in
-            guard let self else {
-                return
-            }
-            self.updatePresentation()
-        }
-        .store(in: &observationHandles)
-    }
-
-    private func updatePresentation() {
-        let desiredViewController: NSViewController
-        switch store.serverState {
-        case .failed:
-            desiredViewController = unavailableViewController
-        case .running, .starting, .stopped:
-            desiredViewController = sidebarViewController
-        }
-        setDisplayedViewController(desiredViewController)
-    }
-
-    private func setDisplayedViewController(_ viewController: NSViewController) {
-        loadViewIfNeeded()
-        guard displayedViewController !== viewController else {
-            return
-        }
-
-        if let displayedViewController {
-            NSLayoutConstraint.deactivate(displayedViewConstraints)
-            displayedViewConstraints.removeAll()
-            displayedViewController.view.removeFromSuperview()
-            displayedViewController.removeFromParent()
-        }
-
-        addChild(viewController)
-        displayedViewController = viewController
-        displayedViewConstraints = embed(viewController)
-    }
-
-    @discardableResult
-    private func embed(_ viewController: NSViewController) -> [NSLayoutConstraint] {
-        let contentView = viewController.view
-        contentView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(contentView)
-
-        let constraints = [
-            contentView.topAnchor.constraint(equalTo: view.topAnchor),
-            contentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            contentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ]
-        NSLayoutConstraint.activate(constraints)
-        return constraints
-    }
-}
-
-@MainActor
-final class ReviewMonitorContentPaneViewController: NSViewController {
-    enum ContentPresentationForTesting: Equatable {
-        case empty
-        case detail
-    }
-
-    private let uiState: ReviewMonitorUIState
-    private let transportViewController = ReviewMonitorTransportViewController()
-    private let emptyStateViewController = ReviewMonitorDetailEmptyStateViewController()
-    private var observationHandles: Set<ObservationHandle> = []
-    private var displayedViewConstraints: [NSLayoutConstraint] = []
-    private(set) weak var displayedViewController: NSViewController?
-#if DEBUG
-    private var renderCountForTestingStorage = 0
-    private var renderWaitersForTesting: [Int: [CheckedContinuation<Void, Never>]] = [:]
-#endif
-
-    init(uiState: ReviewMonitorUIState) {
-        self.uiState = uiState
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func loadView() {
-        view = NSView(frame: .zero)
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        transportViewController.loadViewIfNeeded()
-        emptyStateViewController.loadViewIfNeeded()
-        bindObservation()
-        updatePresentation(selectedJob: uiState.selectedJobEntry)
-    }
-
-    private func bindObservation() {
-        observationHandles.removeAll()
-        uiState.observe(\.selectedJobEntry) { [weak self] selectedJob in
-            guard let self else {
-                return
-            }
-            self.updatePresentation(selectedJob: selectedJob)
-        }
-        .store(in: &observationHandles)
-    }
-
-    private func updatePresentation(selectedJob: CodexReviewJob?) {
-        let desiredViewController: NSViewController
-        if let selectedJob {
-            transportViewController.displayJob(selectedJob)
-            desiredViewController = transportViewController
-        } else {
-            transportViewController.clearDisplayedJob()
-            desiredViewController = emptyStateViewController
-        }
-        setDisplayedViewController(desiredViewController)
-    }
-
-    private func setDisplayedViewController(_ viewController: NSViewController) {
-        loadViewIfNeeded()
-        guard displayedViewController !== viewController else {
-            return
-        }
-
-        if let displayedViewController {
-            NSLayoutConstraint.deactivate(displayedViewConstraints)
-            displayedViewConstraints.removeAll()
-            displayedViewController.view.removeFromSuperview()
-            displayedViewController.removeFromParent()
-        }
-
-        addChild(viewController)
-        displayedViewController = viewController
-        displayedViewConstraints = embed(viewController)
-        noteRenderForTesting()
-    }
-
-    @discardableResult
-    private func embed(_ viewController: NSViewController) -> [NSLayoutConstraint] {
-        let contentView = viewController.view
-        let safeArea = view.safeAreaLayoutGuide
-        contentView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(contentView)
-
-        let constraints = [
-            contentView.topAnchor.constraint(equalTo: safeArea.topAnchor),
-            contentView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
-            contentView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
-        ]
-        NSLayoutConstraint.activate(constraints)
-        return constraints
-    }
-
-    private func noteRenderForTesting() {
-#if DEBUG
-        renderCountForTestingStorage += 1
-        let readyCounts = renderWaitersForTesting.keys.filter { $0 <= renderCountForTestingStorage }
-        for count in readyCounts {
-            let continuations = renderWaitersForTesting.removeValue(forKey: count) ?? []
-            for continuation in continuations {
-                continuation.resume()
-            }
-        }
-#endif
-    }
-}
-
-@MainActor
-private final class ReviewMonitorDetailEmptyStateViewController: NSViewController {
-    override func loadView() {
-        view = NSView(frame: .zero)
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
-            title: "Select a job",
-            description: "Choose a review from the list.",
-            titleAccessibilityIdentifier: "review-monitor.detail-empty.title",
-            descriptionAccessibilityIdentifier: "review-monitor.detail-empty.description"
-        )
-        let safeArea = view.safeAreaLayoutGuide
-        view.addSubview(emptyStateView)
-
-        NSLayoutConstraint.activate([
-            emptyStateView.centerXAnchor.constraint(equalTo: safeArea.centerXAnchor),
-            emptyStateView.centerYAnchor.constraint(equalTo: safeArea.centerYAnchor),
-            emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: safeArea.leadingAnchor, constant: 24),
-            emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: safeArea.trailingAnchor, constant: -24),
-        ])
-    }
-}
-
-@MainActor
-private final class MCPServerUnavailableViewController: NSViewController {
-    private let store: CodexReviewStore
-
-    init(store: CodexReviewStore) {
-        self.store = store
-        super.init(nibName: nil, bundle: nil)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func loadView() {
-        view = NSHostingView(rootView: MCPServerUnavailableView(store: store))
-    }
-}
-
 #if DEBUG
 @MainActor
 extension ReviewMonitorSplitViewController {
@@ -430,18 +178,16 @@ extension ReviewMonitorSplitViewController {
     }
 
     var sidebarViewControllerForTesting: ReviewMonitorSidebarViewController {
-        guard let sidebarPaneViewController else {
+        guard let sidebarViewController else {
             fatalError("Sidebar pane view controller is not configured yet.")
         }
-        return sidebarPaneViewController.sidebarViewControllerForTesting
+        sidebarViewController.loadViewIfNeeded()
+        return sidebarViewController
     }
 
     var sidebarPresentationForTesting: SidebarPresentationForTesting {
-        guard let sidebarPaneViewController else {
-            fatalError("Sidebar pane view controller is not configured yet.")
-        }
-        switch sidebarPaneViewController.presentationForTesting {
-        case .jobList:
+        switch sidebarViewControllerForTesting.presentationForTesting {
+        case .jobList, .empty:
             return .jobList
         case .unavailable:
             return .unavailable
@@ -456,16 +202,16 @@ extension ReviewMonitorSplitViewController {
         contentItem?.bottomAlignedAccessoryViewControllers.count ?? 0
     }
 
-    var contentPaneViewControllerForTesting: ReviewMonitorContentPaneViewController {
-        guard let contentPaneViewController else {
-            fatalError("Content pane view controller is not configured yet.")
-        }
-        contentPaneViewController.loadViewIfNeeded()
-        return contentPaneViewController
+    var contentPaneViewControllerForTesting: ReviewMonitorTransportViewController {
+        transportViewControllerForTesting
     }
 
     var transportViewControllerForTesting: ReviewMonitorTransportViewController {
-        contentPaneViewControllerForTesting.transportViewControllerForTesting
+        guard let transportViewController else {
+            fatalError("Transport view controller is not configured yet.")
+        }
+        transportViewController.loadViewIfNeeded()
+        return transportViewController
     }
 
     var toolbarIdentifiersForTesting: [NSToolbarItem.Identifier] {
@@ -478,107 +224,6 @@ extension ReviewMonitorSplitViewController {
 
     var contentAutomaticallyAdjustsSafeAreaInsetsForTesting: Bool {
         contentItem?.automaticallyAdjustsSafeAreaInsets ?? false
-    }
-}
-
-@MainActor
-extension ReviewMonitorSidebarPaneViewController {
-    enum SidebarPresentationForTesting: Equatable {
-        case jobList
-        case unavailable
-    }
-
-    var sidebarViewControllerForTesting: ReviewMonitorSidebarViewController {
-        sidebarViewController.loadViewIfNeeded()
-        return sidebarViewController
-    }
-
-    var presentationForTesting: SidebarPresentationForTesting {
-        if displayedViewController === sidebarViewController {
-            return .jobList
-        }
-        if displayedViewController === unavailableViewController {
-            return .unavailable
-        }
-        fatalError("Unknown sidebar presentation.")
-    }
-}
-
-@MainActor
-extension ReviewMonitorContentPaneViewController {
-    struct RenderSnapshotForTesting: Equatable {
-        let title: String?
-        let summary: String?
-        let log: String
-        let isShowingEmptyState: Bool
-    }
-
-    var transportViewControllerForTesting: ReviewMonitorTransportViewController {
-        transportViewController.loadViewIfNeeded()
-        return transportViewController
-    }
-
-    var isShowingEmptyStateForTesting: Bool {
-        displayedViewController === emptyStateViewController
-    }
-
-    var displayedTitleForTesting: String? {
-        renderSnapshotForTesting.title
-    }
-
-    var viewFrameForTesting: NSRect {
-        view.frame
-    }
-
-    var safeAreaFrameForTesting: NSRect {
-        view.safeAreaRect
-    }
-
-    var displayedViewFrameForTesting: NSRect {
-        displayedViewController?.view.frame ?? .zero
-    }
-
-    var activeDisplayedViewConstraintCountForTesting: Int {
-        displayedViewConstraints.filter(\.isActive).count
-    }
-
-    var displayedSummaryForTesting: String? {
-        renderSnapshotForTesting.summary
-    }
-
-    var renderCountForTesting: Int {
-        renderCountForTestingStorage
-    }
-
-    var renderSnapshotForTesting: RenderSnapshotForTesting {
-        if isShowingEmptyStateForTesting {
-            return .init(
-                title: nil,
-                summary: nil,
-                log: "",
-                isShowingEmptyState: true
-            )
-        }
-        let transportSnapshot = transportViewController.renderSnapshotForTesting
-        return .init(
-            title: transportSnapshot.title,
-            summary: transportSnapshot.summary,
-            log: transportSnapshot.log,
-            isShowingEmptyState: false
-        )
-    }
-
-    func waitForRenderCountForTesting(_ targetCount: Int) async {
-        if renderCountForTestingStorage >= targetCount {
-            return
-        }
-        await withCheckedContinuation { continuation in
-            if renderCountForTestingStorage >= targetCount {
-                continuation.resume()
-                return
-            }
-            renderWaitersForTesting[targetCount, default: []].append(continuation)
-        }
     }
 }
 #endif

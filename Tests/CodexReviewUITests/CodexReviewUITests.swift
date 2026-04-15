@@ -1058,7 +1058,7 @@ struct CodexReviewUITests {
         let sidebar = viewController.sidebarViewControllerForTesting
         #expect(sidebar.allWorkspaceRowsExpandedForTesting)
         #expect(sidebar.workspaceIsSelectableForTesting(workspace) == false)
-        #expect(sidebar.floatsGroupRowsEnabledForTesting)
+        #expect(sidebar.floatsGroupRowsEnabledForTesting == false)
         #expect(sidebar.jobRowUsesReviewMonitorJobRowViewForTesting(job))
     }
 
@@ -1093,7 +1093,7 @@ struct CodexReviewUITests {
         let sidebar = viewController.sidebarViewControllerForTesting
         sidebar.scrollSidebarToOffsetForTesting(80)
 
-        #expect(sidebar.workspaceRowIsFloatingForTesting(workspace))
+        #expect(sidebar.workspaceRowIsFloatingForTesting(workspace) == false)
     }
 
     @Test func sidebarDoesNotAddBlankScrollWhenRowsFitVisibleArea() {
@@ -1122,6 +1122,35 @@ struct CodexReviewUITests {
 
         #expect(sidebar.sidebarOutlineContentHeightForTesting < sidebar.sidebarVisibleHeightForTesting)
         #expect(sidebar.sidebarMaximumVerticalScrollOffsetForTesting < 0.5)
+    }
+
+    @Test func sidebarTopRowIsFullyVisibleAtMinimumScrollOffset() {
+        let jobs = (0..<12).map { index in
+            makeJob(
+                id: "job-\(index)",
+                cwd: "/tmp/workspace-alpha",
+                status: .running,
+                targetSummary: "Review \(index)"
+            )
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: jobs)
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 360, height: 220))
+        viewController.loadViewIfNeeded()
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        sidebar.scrollSidebarToOffsetForTesting(0)
+
+        #expect(sidebar.sidebarFirstRowRectForTesting.minY >= sidebar.sidebarVisibleRectForTesting.minY - 0.5)
+        #expect(sidebar.sidebarFirstRowRectForTesting.maxY <= sidebar.sidebarVisibleRectForTesting.maxY + 0.5)
     }
 
     @Test func sidebarBottomRowRemainsVisibleAtMaximumScrollOffset() {
@@ -2665,10 +2694,10 @@ private func expectLogTextContainerWidthTracksTextView(
 
 @MainActor
 private func awaitContentPaneRender(
-    _ contentPane: ReviewMonitorContentPaneViewController,
+    _ contentPane: ReviewMonitorTransportViewController,
     after renderCount: Int,
     timeout: Duration = .seconds(2)
-) async throws -> ReviewMonitorContentPaneViewController.RenderSnapshotForTesting {
+) async throws -> ReviewMonitorTransportViewController.RenderSnapshotForTesting {
     let contentPaneBox = UncheckedSendableBox(contentPane)
     return try await withTestTimeout(timeout) {
         await contentPaneBox.value.waitForRenderCountForTesting(renderCount + 1)

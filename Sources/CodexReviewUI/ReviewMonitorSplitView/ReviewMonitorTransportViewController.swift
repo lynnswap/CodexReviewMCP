@@ -5,7 +5,16 @@ import ReviewRuntime
 
 @MainActor
 final class ReviewMonitorTransportViewController: NSViewController {
+    private let uiState: ReviewMonitorUIState
     private let logScrollView = ReviewMonitorLogScrollView()
+    private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
+        title: "Select a job",
+        description: "Choose a review from the list.",
+        titleAccessibilityIdentifier: "review-monitor.detail-empty.title",
+        descriptionAccessibilityIdentifier: "review-monitor.detail-empty.description"
+    )
+    private var displayedContentConstraints: [NSLayoutConstraint] = []
+    private var uiStateObservationHandles: Set<ObservationHandle> = []
     private var selectedJobObservationHandles: Set<ObservationHandle> = []
     private var boundJob: CodexReviewJob?
     private var logScrollTargetsByJobID: [String: ReviewMonitorLogScrollView.ScrollRestorationTarget] = [:]
@@ -14,7 +23,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private var renderWaitersForTesting: [Int: [CheckedContinuation<Void, Never>]] = [:]
 #endif
 
-    init() {
+    init(uiState: ReviewMonitorUIState) {
+        self.uiState = uiState
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -30,20 +40,67 @@ final class ReviewMonitorTransportViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         configureHierarchy()
+        bindObservation()
+        updatePresentation(selectedJob: uiState.selectedJobEntry)
     }
 
     private func configureHierarchy() {
-        view.addSubview(logScrollView)
+        let safeArea = view.safeAreaLayoutGuide
+        emptyStateView.translatesAutoresizingMaskIntoConstraints = false
 
-        NSLayoutConstraint.activate([
-            logScrollView.topAnchor.constraint(equalTo: view.topAnchor),
-            logScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            logScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            logScrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-        ])
+        view.addSubview(logScrollView)
+        view.addSubview(emptyStateView)
+
+        displayedContentConstraints = [
+            logScrollView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+            logScrollView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
+            logScrollView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
+            logScrollView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
+        ]
+
+        NSLayoutConstraint.activate(
+            displayedContentConstraints
+            + [
+                emptyStateView.centerXAnchor.constraint(equalTo: safeArea.centerXAnchor),
+                emptyStateView.centerYAnchor.constraint(equalTo: safeArea.centerYAnchor),
+                emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: safeArea.leadingAnchor, constant: 24),
+                emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: safeArea.trailingAnchor, constant: -24),
+            ]
+        )
     }
 
-    func displayJob(_ selectedJob: CodexReviewJob) {
+    private func bindObservation() {
+        uiStateObservationHandles.removeAll()
+        uiState.observe(\.selectedJobEntry) { [weak self] selectedJob in
+            guard let self else {
+                return
+            }
+            self.updatePresentation(selectedJob: selectedJob)
+        }
+        .store(in: &uiStateObservationHandles)
+    }
+
+    private func updatePresentation(selectedJob: CodexReviewJob?) {
+        let previousJobID = boundJob?.id
+        let wasShowingEmptyState = emptyStateView.isHidden == false
+        if let selectedJob {
+            displayJob(selectedJob)
+            emptyStateView.isHidden = true
+            logScrollView.isHidden = false
+        } else {
+            clearDisplayedJob()
+            emptyStateView.isHidden = false
+            logScrollView.isHidden = true
+        }
+
+        let nextJobID = selectedJob?.id
+        let isShowingEmptyState = selectedJob == nil
+        if previousJobID != nextJobID || wasShowingEmptyState != isShowingEmptyState {
+            noteRenderForTesting()
+        }
+    }
+
+    private func displayJob(_ selectedJob: CodexReviewJob) {
         cacheBoundJobScrollTarget()
         selectedJobObservationHandles.removeAll()
         boundJob = selectedJob
@@ -66,7 +123,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
         .store(in: &selectedJobObservationHandles)
     }
 
-    func clearDisplayedJob() {
+    private func clearDisplayedJob() {
         cacheBoundJobScrollTarget()
         selectedJobObservationHandles.removeAll()
         boundJob = nil
@@ -165,7 +222,7 @@ extension ReviewMonitorTransportViewController {
     }
 
     var isShowingEmptyStateForTesting: Bool {
-        false
+        emptyStateView.isHidden == false
     }
 
     var renderCountForTesting: Int {
@@ -204,16 +261,36 @@ extension ReviewMonitorTransportViewController {
         logScrollView.frame
     }
 
+    var viewFrameForTesting: NSRect {
+        view.frame
+    }
+
     var safeAreaFrameForTesting: NSRect {
         view.safeAreaRect
     }
 
+    var displayedViewFrameForTesting: NSRect {
+        view.safeAreaRect
+    }
+
+    var activeDisplayedViewConstraintCountForTesting: Int {
+        displayedContentConstraints.filter(\.isActive).count
+    }
+
     var renderSnapshotForTesting: RenderSnapshotForTesting {
-        .init(
+        if isShowingEmptyStateForTesting {
+            return .init(
+                title: nil,
+                summary: nil,
+                log: "",
+                isShowingEmptyState: true
+            )
+        }
+        return .init(
             title: displayedTitleForTesting,
             summary: displayedSummaryForTesting,
             log: displayedLogForTesting,
-            isShowingEmptyState: isShowingEmptyStateForTesting
+            isShowingEmptyState: false
         )
     }
 
