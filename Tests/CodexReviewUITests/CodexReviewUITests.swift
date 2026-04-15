@@ -1096,6 +1096,62 @@ struct CodexReviewUITests {
         #expect(sidebar.workspaceRowIsFloatingForTesting(workspace))
     }
 
+    @Test func sidebarDoesNotAddBlankScrollWhenRowsFitVisibleArea() {
+        let jobs = (0..<2).map { index in
+            makeJob(
+                id: "job-\(index)",
+                cwd: "/tmp/workspace-alpha",
+                status: .running,
+                targetSummary: "Review \(index)"
+            )
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: jobs)
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 360, height: 320))
+        viewController.loadViewIfNeeded()
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+
+        #expect(sidebar.sidebarOutlineContentHeightForTesting < sidebar.sidebarVisibleHeightForTesting)
+        #expect(sidebar.sidebarMaximumVerticalScrollOffsetForTesting < 0.5)
+    }
+
+    @Test func sidebarBottomRowRemainsVisibleAtMaximumScrollOffset() {
+        let jobs = (0..<12).map { index in
+            makeJob(
+                id: "job-\(index)",
+                cwd: "/tmp/workspace-alpha",
+                status: .running,
+                targetSummary: "Review \(index)"
+            )
+        }
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: makeWorkspaces(from: jobs)
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 360, height: 220))
+        viewController.loadViewIfNeeded()
+        window.layoutIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        sidebar.scrollSidebarToOffsetForTesting(10_000)
+
+        #expect(sidebar.sidebarLastRowRectForTesting.maxY <= sidebar.sidebarVisibleRectForTesting.maxY + 0.5)
+    }
+
     @Test func togglingWorkspaceDisclosureKeepsDetailAndRestoresSelectionAfterReexpand() async throws {
         let job = makeJob(
             id: "job-selected",

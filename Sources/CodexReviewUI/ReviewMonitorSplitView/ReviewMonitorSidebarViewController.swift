@@ -386,8 +386,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
     private func updateOutlineViewFrame() {
         let contentSize = scrollView.contentSize
+        let visibleHeight = max(0, scrollView.documentVisibleRect.height)
         let width = max(1, contentSize.width)
-        let height = max(contentSize.height, outlineContentHeight)
+        let height = max(visibleHeight, outlineContentHeight)
         let size = NSSize(width: width, height: height)
         guard outlineView.frame.size != size else {
             return
@@ -1056,6 +1057,33 @@ extension ReviewMonitorSidebarViewController {
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: clampedOffset))
         scrollView.reflectScrolledClipView(scrollView.contentView)
         view.layoutSubtreeIfNeeded()
+    }
+
+    var sidebarVisibleHeightForTesting: CGFloat {
+        scrollView.documentVisibleRect.height
+    }
+
+    var sidebarDocumentHeightForTesting: CGFloat {
+        outlineView.frame.height
+    }
+
+    var sidebarOutlineContentHeightForTesting: CGFloat {
+        outlineContentHeight
+    }
+
+    var sidebarMaximumVerticalScrollOffsetForTesting: CGFloat {
+        max(0, sidebarDocumentHeightForTesting - sidebarVisibleHeightForTesting)
+    }
+
+    var sidebarVisibleRectForTesting: NSRect {
+        outlineView.visibleRect
+    }
+
+    var sidebarLastRowRectForTesting: NSRect {
+        guard outlineView.numberOfRows > 0 else {
+            return .zero
+        }
+        return outlineView.rect(ofRow: outlineView.numberOfRows - 1)
     }
 
     @discardableResult
