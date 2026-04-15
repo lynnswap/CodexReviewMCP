@@ -30,19 +30,25 @@ public final class ReviewMonitorWindowController: NSWindowController {
     private let signInViewController: ReviewMonitorSignInViewController
     private let rootContentViewController: ReviewMonitorWindowContentViewController
     private let auth: CodexReviewAuthModel
+    private let forceSplitView: Bool
     private var displayedContentKind: DisplayedContentKind?
     private var presentedContentUpdateTask: Task<Void, Never>?
 
-    public convenience init(store: CodexReviewStore) {
+    public convenience init(
+        store: CodexReviewStore,
+        forceSplitView: Bool = false
+    ) {
         self.init(
             store: store,
-            performInitialAuthRefresh: true
+            performInitialAuthRefresh: true,
+            forceSplitView: forceSplitView
         )
     }
 
     package init(
         store: CodexReviewStore,
-        performInitialAuthRefresh: Bool
+        performInitialAuthRefresh: Bool,
+        forceSplitView: Bool = false
     ) {
         let splitViewController = ReviewMonitorSplitViewController(store: store)
         splitViewController.loadViewIfNeeded()
@@ -56,6 +62,7 @@ public final class ReviewMonitorWindowController: NSWindowController {
         self.signInViewController = signInViewController
         self.rootContentViewController = contentViewController
         self.auth = store.auth
+        self.forceSplitView = forceSplitView
         super.init(window: window)
 
         window.isReleasedWhenClosed = false
@@ -116,6 +123,9 @@ public final class ReviewMonitorWindowController: NSWindowController {
     }
 
     private func desiredContentKind() -> DisplayedContentKind {
+        if forceSplitView {
+            return .splitView
+        }
         if auth.account != nil {
             return .splitView
         }

@@ -187,6 +187,24 @@ struct CodexReviewUITests {
         #expect(window.isMovableByWindowBackground)
     }
 
+    @Test func windowControllerForceSplitViewShowsSplitViewWhenSignedOut() {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let harness = makeWindowHarness(
+            store: store,
+            authState: .signedOut,
+            forceSplitView: true
+        )
+        let window = harness.window
+        defer { window.close() }
+
+        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
+        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
+        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
+        #expect(window.toolbar != nil)
+        #expect(window.titleVisibility == .visible)
+        #expect(window.isMovableByWindowBackground == false)
+    }
+
     @Test func windowControllerDoesNotRefreshAuthStateBeforeStoreStart() async {
         let backend = AuthActionBackend()
         let store = makeStore(backend: backend)
@@ -2473,12 +2491,14 @@ private func makeWindowHarness(
     store: CodexReviewStore,
     authState: TestAuthState = .signedIn(accountID: "review@example.com"),
     contentSize: NSSize? = nil,
-    performInitialAuthRefresh: Bool = false
+    performInitialAuthRefresh: Bool = false,
+    forceSplitView: Bool = false
 ) -> ReviewMonitorWindowHarness {
     applyTestAuthState(auth: store.auth, state: authState)
     let windowController = ReviewMonitorWindowController(
         store: store,
-        performInitialAuthRefresh: performInitialAuthRefresh
+        performInitialAuthRefresh: performInitialAuthRefresh,
+        forceSplitView: forceSplitView
     )
     guard let window = windowController.window else {
         fatalError("ReviewMonitorWindowController did not create a window.")
