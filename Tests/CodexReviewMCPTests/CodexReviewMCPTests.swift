@@ -1864,6 +1864,47 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func logoutDuringAuthenticatedRetryStaysSignedOutAfterDelayedCancellationCompletion() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = DeferredCloseLoginReviewAuthSession()
+        let manager = AuthCapableAppServerManager()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        await store.start()
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        await authSession.waitForLoginStart()
+
+        let logoutTask = Task {
+            await store.auth.logout()
+        }
+        await authSession.waitForCloseRequest()
+        _ = await logoutTask.value
+
+        await authSession.finishPendingClose()
+        _ = await beginTask.value
+
+        #expect(testAuthState(from: store.auth) == .signedOut)
+        #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
+
+        await store.stop()
+    }
+
     @Test func beginAuthenticationUsesInjectedAuthSessionWithoutAuthTransportCheckout() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
@@ -3378,6 +3419,82 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
         _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
     ) {
         self.continuation = continuation
+    }
+}
+
+private actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
+    private var loginParams: [AppServerLoginAccountParams] = []
+    private var cancelledIDs: [String] = []
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private let loginStartedSignal = AsyncSignal()
+    private let closeRequestedSignal = AsyncSignal()
+    private let closeResumeGate = OneShotGate()
+    private var closeRequested = false
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        loginParams.append(params)
+        await loginStartedSignal.signal()
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID: String) async throws {
+        cancelledIDs.append(loginID)
+    }
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        self.continuation = continuation
+        return .init(
+            stream: stream,
+            cancel: { [self] in
+                await close()
+            }
+        )
+    }
+
+    func close() async {
+        closeRequested = true
+        await closeRequestedSignal.signal()
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await self.closeResumeGate.wait()
+            await self.finishContinuation()
+        }
+    }
+
+    func waitForLoginStart() async {
+        await loginStartedSignal.wait()
+    }
+
+    func waitForCloseRequest() async {
+        if closeRequested {
+            return
+        }
+        await closeRequestedSignal.wait()
+    }
+
+    func finishPendingClose() async {
+        await closeResumeGate.open()
+    }
+
+    func cancelledLoginIDs() -> [String] {
+        cancelledIDs
+    }
+
+    private func finishContinuation() {
+        continuation?.finish()
+        continuation = nil
     }
 }
 

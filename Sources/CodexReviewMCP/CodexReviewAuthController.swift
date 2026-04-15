@@ -94,7 +94,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 forceRecycleServer: auth.isAuthenticated
             )
         } catch ReviewAuthError.cancelled {
-            restore(auth: auth, from: priorSnapshot)
+            if let restoreState = authenticationCancellationRestoreState {
+                restore(auth: auth, from: restoreState)
+            }
             await reconcileAfterResolvedAuthState(
                 auth: auth,
                 identityChanged: false
@@ -121,7 +123,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     package func logout(auth: CodexReviewAuthModel) async {
         cancelStartupRefresh()
         if auth.isAuthenticating {
-            await cancelAuthentication(auth: auth)
+            authenticationCancellationRestoreState = nil
+            await authManager.cancelAuthentication()
         }
         do {
             let state = try await authManager.logout()

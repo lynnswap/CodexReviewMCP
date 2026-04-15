@@ -129,7 +129,8 @@ struct StatusView: View {
     private func gaugeView(
         _ window: CodexRateLimitWindow
     ) -> some View {
-        Gauge(value: Double(window.usedPercent), in: 0...100) {
+        let remainingPercent = remainingPercent(for: window)
+        Gauge(value: Double(remainingPercent), in: 0...100) {
             HStack {
                 durationText(for: window)
                 Spacer(minLength: 0)
@@ -138,14 +139,14 @@ struct StatusView: View {
                         .foregroundStyle(.secondary)
                 }else{
                     Text(
-                        Double(window.usedPercent) / 100,
+                        Double(remainingPercent) / 100,
                         format: .percent.precision(.fractionLength(0))
                     )
-                    .contentTransition(.numericText(value: Double(window.usedPercent)))
+                    .contentTransition(.numericText(value: Double(remainingPercent)))
                 }
             }
         }
-        .animation(.default,value:window.usedPercent)
+        .animation(.default, value: remainingPercent)
     }
     @ViewBuilder
     private var ratelimitsSection: some View {
@@ -171,12 +172,7 @@ struct StatusView: View {
     @ViewBuilder
     private func durationText(for window: CodexRateLimitWindow) -> some View {
         Text(
-            duration(for: window),
-            format: .units(
-                allowed: [.days,.hours,.weeks],
-                width: .wide,
-                maximumUnitCount: 2
-            )
+            formattedDuration(for: window)
         )
     }
 
@@ -187,8 +183,22 @@ struct StatusView: View {
         return window.resetsAt
     }
 
+    private func remainingPercent(for window: CodexRateLimitWindow) -> Int {
+        max(0, 100 - window.usedPercent)
+    }
+
     private func duration(for window: CodexRateLimitWindow) -> Duration {
         .seconds(window.windowDurationMinutes * 60)
+    }
+
+    private func formattedDuration(for window: CodexRateLimitWindow) -> String {
+        duration(for: window).formatted(
+            .units(
+                allowed: [.minutes, .hours, .days, .weeks],
+                width: .wide,
+                maximumUnitCount: 2
+            )
+        )
     }
 
     private func rateLimitDetailsText(for window: CodexRateLimitWindow) -> AttributedString? {
