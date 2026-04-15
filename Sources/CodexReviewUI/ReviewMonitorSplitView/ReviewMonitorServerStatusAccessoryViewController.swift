@@ -22,30 +22,33 @@ struct StatusView: View {
     let store: CodexReviewStore
 
     var body: some View {
-        Menu {
-            Label(accountDisplayName, systemImage: "person.circle.fill")
-            if showsAuthenticationAction {
-                Button(authenticationActionTitle, systemImage: authenticationActionSystemImage) {
-                    performAuthenticationAction()
+        VStack{
+            AccountStatusView(account: store.auth.account)
+            Menu {
+                Label(accountDisplayName, systemImage: "person.circle.fill")
+                if showsAuthenticationAction {
+                    Button(authenticationActionTitle, systemImage: authenticationActionSystemImage) {
+                        performAuthenticationAction()
+                    }
                 }
-            }
-            if showsServerRestartAction {
-                Button("Reset Server", systemImage: "arrow.clockwise") {
-                    restartServer()
+                if showsServerRestartAction {
+                    Button("Reset Server", systemImage: "arrow.clockwise") {
+                        restartServer()
+                    }
                 }
+                Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+                    performLogout()
+                }
+                .disabled(canSignOut == false)
+            } label: {
+                Label("Settings", systemImage: "gear")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
             }
-            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
-                performLogout()
-            }
-            .disabled(canSignOut == false)
-        } label: {
-            Label("Settings", systemImage: "gear")
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 8)
-                .contentShape(.rect)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
+        .padding(8)
     }
 
     var accountDisplayName: String {
