@@ -29,12 +29,16 @@ extension CodexReviewStore {
         diagnosticsURL: URL? = nil,
         appServerManager: (any AppServerManaging)? = nil,
         authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil,
+        rateLimitObservationClock: any ReviewClock = ContinuousClock(),
+        rateLimitStaleRefreshInterval: Duration = .seconds(60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
         let backend = CodexReviewEmbeddedServerBackend(
             configuration: configuration,
             appServerManager: appServerManager,
             authSessionFactory: authSessionFactory,
+            rateLimitObservationClock: rateLimitObservationClock,
+            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
         )
         self.init(
@@ -1319,6 +1323,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let deferStartupAuthRefreshUntilPrepared: Bool
     let shouldAutoStartEmbeddedServer: Bool
     let initialAccount: CodexAccount?
+    let rateLimitObservationClock: any ReviewClock
+    let rateLimitStaleRefreshInterval: Duration
     lazy var liveAuthSessionFactory: @Sendable () async throws -> any ReviewAuthSession = { [configuration] in
         CLIReviewAuthSession(
             configuration: .init(
@@ -1337,7 +1343,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             },
             recycleServerIfRunning: { [weak self] in
                 await self?.recycleSharedAppServerAfterAuthChange()
-            }
+            },
+            rateLimitObservationClock: rateLimitObservationClock,
+            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval
         )
     }()
     lazy var executionCoordinator: ReviewExecutionCoordinator = {
@@ -1388,6 +1396,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         configuration: ReviewServerConfiguration,
         appServerManager: (any AppServerManaging)? = nil,
         authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil,
+        rateLimitObservationClock: any ReviewClock = ContinuousClock(),
+        rateLimitStaleRefreshInterval: Duration = .seconds(60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
         self.configuration = configuration
@@ -1398,6 +1408,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             )
         )
         self.authSessionFactory = authSessionFactory
+        self.rateLimitObservationClock = rateLimitObservationClock
+        self.rateLimitStaleRefreshInterval = rateLimitStaleRefreshInterval
         self.deferStartupAuthRefreshUntilPrepared = deferStartupAuthRefreshUntilPrepared
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
         self.initialAccount = loadStoredReviewAuthAccount(environment: configuration.environment).map {

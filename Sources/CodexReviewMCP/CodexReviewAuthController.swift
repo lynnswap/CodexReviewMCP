@@ -29,7 +29,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         appServerManager: any AppServerManaging,
         authSessionFactory: @escaping @Sendable () async throws -> any ReviewAuthSession,
         runtimeState: @escaping @MainActor @Sendable () -> CodexAuthRuntimeState,
-        recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void
+        recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void,
+        rateLimitObservationClock: any ReviewClock = ContinuousClock(),
+        rateLimitStaleRefreshInterval: Duration = .seconds(60)
     ) {
         authManager = ReviewAuthManager(
             configuration: .init(
@@ -39,7 +41,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             sessionFactory: authSessionFactory
         )
         accountSessionController = CodexAccountSessionController(
-            appServerManager: appServerManager
+            appServerManager: appServerManager,
+            clock: rateLimitObservationClock,
+            staleRefreshInterval: rateLimitStaleRefreshInterval
         )
         self.runtimeState = runtimeState
         self.recycleServerIfRunning = recycleServerIfRunning
@@ -261,14 +265,31 @@ private final class CodexAccountSessionController {
         var runtimeGeneration: Int
     }
 
+    private enum RateLimitsReadCapability {
+        case unknown
+        case supported
+        case unsupported
+    }
+
     private let appServerManager: any AppServerManaging
+    private let clock: any ReviewClock
+    private let staleRefreshInterval: Duration
     private var activeTarget: AttachmentTarget?
     private var observerTask: Task<Void, Never>?
     private var observerTransport: (any AppServerSessionTransport)?
     private var retryTask: Task<Void, Never>?
+    private var staleRefreshTask: Task<Void, Never>?
+    private var staleRefreshTaskID: UUID?
+    private var rateLimitsReadCapability: RateLimitsReadCapability = .unknown
 
-    init(appServerManager: any AppServerManaging) {
+    init(
+        appServerManager: any AppServerManaging,
+        clock: any ReviewClock = ContinuousClock(),
+        staleRefreshInterval: Duration = .seconds(60)
+    ) {
         self.appServerManager = appServerManager
+        self.clock = clock
+        self.staleRefreshInterval = staleRefreshInterval
     }
 
     func reconcile(
@@ -305,6 +326,10 @@ private final class CodexAccountSessionController {
     private func detach() async {
         retryTask?.cancel()
         retryTask = nil
+        staleRefreshTask?.cancel()
+        staleRefreshTask = nil
+        staleRefreshTaskID = nil
+        rateLimitsReadCapability = .unknown
         let task = observerTask
         observerTask = nil
         let transport = observerTransport
@@ -370,11 +395,18 @@ private final class CodexAccountSessionController {
             guard isCurrent(target: target, account: account) else {
                 return
             }
+            rateLimitsReadCapability = .supported
             applyRateLimits(from: response, to: account)
+            scheduleStaleRefresh(
+                account: account,
+                target: target,
+                session: session
+            )
         } catch let error as AppServerResponseError where error.isUnsupportedMethod {
             guard isCurrent(target: target, account: account) else {
                 return
             }
+            rateLimitsReadCapability = .unsupported
             account.clearRateLimits()
         } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
             guard isCurrent(target: target, account: account) else {
@@ -408,6 +440,13 @@ private final class CodexAccountSessionController {
                     continue
                 }
                 applyRateLimits(from: payload.rateLimits, to: account)
+                if rateLimitsReadCapability != .unsupported {
+                    scheduleStaleRefresh(
+                        account: account,
+                        target: target,
+                        session: session
+                    )
+                }
             }
             guard isCurrent(target: target, account: account) else {
                 return
@@ -429,8 +468,95 @@ private final class CodexAccountSessionController {
         guard activeTarget == target else {
             return
         }
+        staleRefreshTask?.cancel()
+        staleRefreshTask = nil
+        staleRefreshTaskID = nil
+        rateLimitsReadCapability = .unknown
         observerTask = nil
         observerTransport = nil
+    }
+
+    private func scheduleStaleRefresh(
+        account: CodexAccount,
+        target: AttachmentTarget,
+        session: SharedAppServerReviewAuthSession
+    ) {
+        guard rateLimitsReadCapability != .unsupported else {
+            return
+        }
+        staleRefreshTask?.cancel()
+        let taskID = UUID()
+        staleRefreshTaskID = taskID
+        staleRefreshTask = Task { @MainActor [weak self, weak account] in
+            guard let self else {
+                return
+            }
+            do {
+                try await self.clock.sleep(for: self.staleRefreshInterval)
+            } catch {
+                return
+            }
+            guard let account else {
+                return
+            }
+
+            guard self.staleRefreshTaskID == taskID,
+                  self.isCurrent(target: target, account: account)
+            else {
+                return
+            }
+
+            do {
+                let response = try await session.readRateLimits()
+                guard self.staleRefreshTaskID == taskID,
+                      self.isCurrent(target: target, account: account)
+                else {
+                    return
+                }
+                self.rateLimitsReadCapability = .supported
+                applyRateLimits(from: response, to: account)
+                self.staleRefreshTask = nil
+                self.staleRefreshTaskID = nil
+                self.scheduleStaleRefresh(
+                    account: account,
+                    target: target,
+                    session: session
+                )
+            } catch let error as AppServerResponseError where error.isUnsupportedMethod {
+                guard self.staleRefreshTaskID == taskID,
+                      self.isCurrent(target: target, account: account)
+                else {
+                    return
+                }
+                self.rateLimitsReadCapability = .unsupported
+                self.staleRefreshTask = nil
+                self.staleRefreshTaskID = nil
+            } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
+                guard self.staleRefreshTaskID == taskID,
+                      self.isCurrent(target: target, account: account)
+                else {
+                    return
+                }
+                self.staleRefreshTask = nil
+                self.staleRefreshTaskID = nil
+                account.clearRateLimits()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.staleRefreshTaskID == taskID,
+                      self.isCurrent(target: target, account: account)
+                else {
+                    return
+                }
+                self.staleRefreshTask = nil
+                self.staleRefreshTaskID = nil
+                self.scheduleStaleRefresh(
+                    account: account,
+                    target: target,
+                    session: session
+                )
+            }
+        }
     }
 
     private func scheduleRetry(
