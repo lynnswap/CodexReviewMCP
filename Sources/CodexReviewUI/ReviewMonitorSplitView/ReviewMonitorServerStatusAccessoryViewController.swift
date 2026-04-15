@@ -20,13 +20,32 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
 
 struct StatusView: View {
     let store: CodexReviewStore
+
+    private static let placeholderRateLimits: [CodexRateLimitWindow] = [
+        CodexRateLimitWindow(
+            windowDurationMinutes: 80,
+            usedPercent: 0
+        ),
+        CodexRateLimitWindow(
+            windowDurationMinutes: 80,
+            usedPercent: 0
+        ),
+    ]
     
-    private var account: CodexAccount?{
+    private var account: CodexAccount? {
         store.auth.account
     }
     
-    private var ratelimits: [CodexRateLimitWindow]{
+    private var ratelimits: [CodexRateLimitWindow] {
         account?.rateLimits ?? []
+    }
+
+    private var displayedRateLimits: [CodexRateLimitWindow] {
+        ratelimits.isEmpty ? Self.placeholderRateLimits : ratelimits
+    }
+
+    private var showsRedactedRateLimits: Bool {
+        return account?.rateLimits.isEmpty == true
     }
 
     var body: some View {
@@ -37,10 +56,6 @@ struct StatusView: View {
                 }
             }
             Divider()
-            Button{
-            }label:{
-                Label(accountDisplayName, systemImage: "person.circle.fill")
-            }
             
             if showsAuthenticationAction {
                 Button(authenticationActionTitle, systemImage: authenticationActionSystemImage) {
@@ -52,17 +67,22 @@ struct StatusView: View {
                     restartServer()
                 }
             }
-            
-            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+            Button(role:.destructive){
                 performLogout()
+            }label:{
+                Label("Sign Out",systemImage:"rectangle.portrait.and.arrow.right")
+                if let account = store.auth.account{
+                    Text(account.email)
+                }
+                
             }
             .disabled(canSignOut == false)
+           
         } label: {
             labelView
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(.rect)
         }
-        .animation(.default, value: ratelimits.isEmpty)
         .menuStyle(.button)
         .buttonStyle(.plain)
         .padding(8)
@@ -70,24 +90,21 @@ struct StatusView: View {
     
     @ViewBuilder
     private var labelView: some View{
-        Group{
-            if !ratelimits.isEmpty{
-                VStack {
-                    ForEach(ratelimits) { window in
-                        gaugeView(window)
-                    }
+        Group {
+            VStack {
+                ForEach(displayedRateLimits) { window in
+                    gaugeView(window)
+                        .transaction(value: account?.id) { transaction in
+                            transaction.disablesAnimations = true
+                        }
                 }
-                .gaugeStyle(.accessoryLinearCapacity)
-                .transition(.blurReplace)
-                .animation(.default, value: ratelimits)
-                .transaction(value: account?.id) { transaction in
-                    transaction.disablesAnimations = true
-                }
-            }else{
-                Label("Settings", systemImage: "gear")
-                    .transition(.blurReplace)
             }
+            .redacted(reason: showsRedactedRateLimits ? .placeholder : [])
+            .animation(.easeInOut, value: showsRedactedRateLimits)
         }
+        .gaugeStyle(.accessoryLinearCapacity)
+        .transition(.blurReplace)
+        .animation(.default, value: account)
     }
     
     @ViewBuilder
@@ -106,9 +123,11 @@ struct StatusView: View {
                         Double(window.usedPercent) / 100,
                         format: .percent.precision(.fractionLength(0))
                     )
+                    .contentTransition(.numericText(value: Double(window.usedPercent)))
                 }
             }
         }
+        .animation(.default,value:window.usedPercent)
     }
     @ViewBuilder
     private func ratelimitsSection(
@@ -144,12 +163,6 @@ struct StatusView: View {
 
     private func duration(for window: CodexRateLimitWindow) -> Duration {
         .seconds(window.windowDurationMinutes * 60)
-    }
-    var accountDisplayName: String {
-        if let account = store.auth.account {
-            return account.email
-        }
-        return "Unknown"
     }
 
     var isSignedIn: Bool {
