@@ -4,12 +4,14 @@ import CodexReviewModel
 #if DEBUG
 @MainActor
 private struct ReviewMonitorPreviewView: NSViewControllerRepresentable {
-    var authState: CodexReviewAuthModel.State = .signedIn(accountID: "review@example.com")
+    var authPhase: CodexReviewAuthModel.Phase = .signedOut
+    var account: CodexAccount? = makeStatusPreviewAccount()
     var serverState: CodexReviewServerState = .running
 
     func makeNSViewController(context: Context) -> NSViewController {
         makeReviewMonitorPreviewContentViewControllerForPreview(
-            authState: authState,
+            authPhase: authPhase,
+            account: account,
             serverState: serverState
         )
     }

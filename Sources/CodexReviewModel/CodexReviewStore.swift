@@ -18,12 +18,15 @@ public final class CodexReviewStore {
 
     package init(
         backend: any CodexReviewStoreBackend,
+        authController: (any CodexReviewAuthControlling)? = nil,
         diagnosticsURL: URL? = nil
     ) {
         self.backend = backend
         self.diagnosticsURL = diagnosticsURL
-        self.auth = CodexReviewAuthModel(backend: backend)
-        self.auth.updateState(backend.initialAuthState)
+        self.auth = CodexReviewAuthModel(
+            controller: authController ?? CodexReviewPreviewAuthController()
+        )
+        self.auth.updateAccount(backend.initialAccount)
     }
 
     public func start(forceRestartIfNeeded: Bool = false) async {

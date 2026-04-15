@@ -6,8 +6,9 @@
 //
 
 import AppKit
+import CodexReviewModel
 import CodexReviewMCP
-import CodexReviewUI
+@_spi(PreviewSupport) import CodexReviewUI
 
 enum CodexReviewMonitorNativeAuthentication {
     static let callbackScheme = "lynnpd.codexreviewmonitor.auth"
@@ -19,20 +20,28 @@ enum CodexReviewMonitorLaunchMode {
     case preview
 }
 
+enum CodexReviewMonitorStoreMode {
+    case uiTest
+    case mockJobs
+    case live
+}
+
 enum CodexReviewMonitorLaunchEnvironment {
     static let uiTestModeKey = CodexReviewStoreTestEnvironment.uiTestModeKey
+    static let mockJobsKey = CodexReviewStoreTestEnvironment.mockJobsKey
     static let xctestConfigurationKey = "XCTestConfigurationFilePath"
     static let xctestBundlePathKey = "XCTestBundlePath"
     static let xcInjectBundleIntoKey = "XCInjectBundleInto"
     static let xctestSessionIdentifierKey = "XCTestSessionIdentifier"
     static let xcodeRunningForPlaygroundsKey = "XCODE_RUNNING_FOR_PLAYGROUNDS"
     static let xcodeRunningForPreviewsKey = "XCODE_RUNNING_FOR_PREVIEWS"
-    static let testPortKey = "CODEX_REVIEW_MONITOR_TEST_PORT"
-    static let testCodexCommandKey = "CODEX_REVIEW_MONITOR_TEST_CODEX_COMMAND"
-    static let testDiagnosticsPathKey = "CODEX_REVIEW_MONITOR_TEST_DIAGNOSTICS_PATH"
-    static let testPortArgument = "--codex-review-monitor-test-port"
-    static let testCodexCommandArgument = "--codex-review-monitor-test-codex-command"
-    static let testDiagnosticsPathArgument = "--codex-review-monitor-test-diagnostics-path"
+    static let testPortKey = CodexReviewStoreTestEnvironment.portKey
+    static let testCodexCommandKey = CodexReviewStoreTestEnvironment.codexCommandKey
+    static let testDiagnosticsPathKey = CodexReviewStoreTestEnvironment.diagnosticsPathKey
+    static let mockJobsArgument = CodexReviewStoreTestEnvironment.mockJobsArgument
+    static let testPortArgument = CodexReviewStoreTestEnvironment.portArgument
+    static let testCodexCommandArgument = CodexReviewStoreTestEnvironment.codexCommandArgument
+    static let testDiagnosticsPathArgument = CodexReviewStoreTestEnvironment.diagnosticsPathArgument
 
     static func launchMode(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -57,7 +66,7 @@ enum CodexReviewMonitorLaunchEnvironment {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         arguments: [String] = CommandLine.arguments
     ) -> Bool {
-        if isEnabledFlag(environment[uiTestModeKey]) {
+        guard storeMode(environment: environment, arguments: arguments) == .live else {
             return false
         }
         return launchMode(environment: environment, arguments: arguments) == .application
@@ -72,6 +81,29 @@ enum CodexReviewMonitorLaunchEnvironment {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {
         isEnabledFlag(environment[uiTestModeKey])
+    }
+
+    static func shouldUseMockJobsStore(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        arguments: [String] = CommandLine.arguments
+    ) -> Bool {
+        guard shouldUseUITestStore(environment: environment) == false else {
+            return false
+        }
+        return isEnabledFlag(environment[mockJobsKey]) || arguments.contains(mockJobsArgument)
+    }
+
+    static func storeMode(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        arguments: [String] = CommandLine.arguments
+    ) -> CodexReviewMonitorStoreMode {
+        if shouldUseUITestStore(environment: environment) {
+            return .uiTest
+        }
+        if shouldUseMockJobsStore(environment: environment, arguments: arguments) {
+            return .mockJobs
+        }
+        return .live
     }
 
     static func isRunningUnderXCTest(
@@ -131,15 +163,22 @@ extension NSApplication: CodexReviewMonitorTerminationReplying {
 @MainActor
 final class CodexReviewMonitorLifecycleController {
     private let store: any CodexReviewMonitorLifecycleStore
+    private let managesEmbeddedServerOnApplicationLaunch: Bool
     private var shouldManageEmbeddedServer = true
     private var terminationTask: Task<Void, Never>?
 
-    init(store: any CodexReviewMonitorLifecycleStore) {
+    init(
+        store: any CodexReviewMonitorLifecycleStore,
+        shouldManageEmbeddedServer: Bool = true
+    ) {
         self.store = store
+        managesEmbeddedServerOnApplicationLaunch = shouldManageEmbeddedServer
     }
 
     func applicationDidFinishLaunching(launchMode: CodexReviewMonitorLaunchMode) {
-        shouldManageEmbeddedServer = launchMode == .application
+        shouldManageEmbeddedServer =
+            managesEmbeddedServerOnApplicationLaunch &&
+            launchMode == .application
         guard shouldManageEmbeddedServer else {
             return
         }
@@ -176,31 +215,46 @@ private final class ReviewMonitorPresentationAnchorSource {
 final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
     private let launchModeProvider: () -> CodexReviewMonitorLaunchMode
     private let customStoreFactory: (() -> CodexReviewStore)?
-    private let windowControllerFactory: (CodexReviewStore) -> NSWindowController
+    private let windowControllerFactory: (CodexReviewStore, Bool) -> NSWindowController
     private let presentationAnchorSource = ReviewMonitorPresentationAnchorSource()
 
+    private lazy var launchEnvironment = ProcessInfo.processInfo.environment
+    private lazy var launchArguments = CommandLine.arguments
     private lazy var launchMode = launchModeProvider()
+    private lazy var storeMode = CodexReviewMonitorLaunchEnvironment.storeMode(
+        environment: launchEnvironment,
+        arguments: launchArguments
+    )
     lazy var store: CodexReviewStore = {
         if let customStoreFactory {
             return customStoreFactory()
         }
-        let environment = ProcessInfo.processInfo.environment
-        if CodexReviewMonitorLaunchEnvironment.shouldUseUITestStore(environment: environment) {
+        switch storeMode {
+        case .uiTest:
             return CodexReviewStore.makeReviewMonitorUITestStore()
-        }
-        return CodexReviewStore.makeReviewMonitorStore(
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: CodexReviewMonitorNativeAuthentication.callbackScheme,
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { [weak presentationAnchorSource] in
-                    presentationAnchorSource?.window
-                }
+        case .mockJobs:
+            return ReviewMonitorPreviewContent.makeStore()
+        case .live:
+            return CodexReviewStore.makeReviewMonitorStore(
+                nativeAuthenticationConfiguration: .init(
+                    callbackScheme: CodexReviewMonitorNativeAuthentication.callbackScheme,
+                    browserSessionPolicy: .ephemeral,
+                    presentationAnchorProvider: { [weak presentationAnchorSource] in
+                        presentationAnchorSource?.window
+                    }
+                )
             )
-        )
+        }
     }()
-    lazy var lifecycle = CodexReviewMonitorLifecycleController(store: store)
+    lazy var lifecycle = CodexReviewMonitorLifecycleController(
+        store: store,
+        shouldManageEmbeddedServer: CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer(
+            environment: launchEnvironment,
+            arguments: launchArguments
+        )
+    )
     lazy var windowController: NSWindowController = {
-        let windowController = windowControllerFactory(store)
+        let windowController = windowControllerFactory(store, storeMode == .mockJobs)
         presentationAnchorSource.window = windowController.window
         return windowController
     }()
@@ -210,8 +264,11 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
             CodexReviewMonitorLaunchEnvironment.launchMode()
         }
         customStoreFactory = nil
-        windowControllerFactory = { store in
-            ReviewMonitorWindowController(store: store)
+        windowControllerFactory = { store, forceSplitView in
+            ReviewMonitorWindowController(
+                store: store,
+                forceSplitView: forceSplitView
+            )
         }
         super.init()
     }
@@ -219,7 +276,7 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
     init(
         launchModeProvider: @escaping () -> CodexReviewMonitorLaunchMode,
         storeFactory: (() -> CodexReviewStore)? = nil,
-        windowControllerFactory: @escaping (CodexReviewStore) -> NSWindowController
+        windowControllerFactory: @escaping (CodexReviewStore, Bool) -> NSWindowController
     ) {
         self.launchModeProvider = launchModeProvider
         self.customStoreFactory = storeFactory

@@ -6,6 +6,12 @@ import SwiftUI
 
 @MainActor
 final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
+    enum PresentationForTesting: Equatable {
+        case unavailable
+        case empty
+        case jobList
+    }
+
     private enum Identifier {
         static let tableColumn = NSUserInterfaceItemIdentifier("ReviewMonitorJobs.Column")
         static let jobCell = NSUserInterfaceItemIdentifier("ReviewMonitorJobs.JobCell")
@@ -33,7 +39,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         let dropChildIndex: Int
     }
 
-    private weak var store: CodexReviewStore?
+    private let store: CodexReviewStore
     private let uiState: ReviewMonitorUIState
     private let scrollView = NSScrollView()
     private let outlineView = ReviewMonitorSidebarOutlineView()
@@ -43,13 +49,16 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         titleAccessibilityIdentifier: "review-monitor.sidebar-empty.title",
         descriptionAccessibilityIdentifier: "review-monitor.sidebar-empty.description"
     )
+    private let unavailableView: NSHostingView<MCPServerUnavailableView>
 
     private var storeObservationHandles: Set<ObservationHandle> = []
     private var workspaceObservationHandles: Set<ObservationHandle> = []
     private var isReconcilingSelection = false
 
-    init(uiState: ReviewMonitorUIState) {
+    init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
+        self.store = store
         self.uiState = uiState
+        self.unavailableView = NSHostingView(rootView: MCPServerUnavailableView(store: store))
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -66,17 +75,14 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         super.viewDidLoad()
         configureHierarchy()
         configureOutlineView()
+        bindObservation()
+        reloadOutline(workspaces: store.workspaces)
+        updatePresentation()
     }
 
     override func viewDidLayout() {
         super.viewDidLayout()
         updateOutlineViewFrame()
-    }
-
-    func bind(store: CodexReviewStore) {
-        self.store = store
-        bindObservation(store: store)
-        reloadOutline(workspaces: store.workspaces)
     }
 
     private func configureHierarchy() {
@@ -88,6 +94,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
         view.addSubview(scrollView)
         view.addSubview(emptyStateView)
+        unavailableView.translatesAutoresizingMaskIntoConstraints = false
+        unavailableView.isHidden = true
+        view.addSubview(unavailableView)
 
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -98,7 +107,12 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             emptyStateView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
-            emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24)
+            emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
+
+            unavailableView.topAnchor.constraint(equalTo: view.topAnchor),
+            unavailableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            unavailableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            unavailableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
 
@@ -141,11 +155,18 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         scrollView.documentView = outlineView
     }
 
-    private func bindObservation(store: CodexReviewStore) {
+    private func bindObservation() {
         storeObservationHandles.removeAll()
         rebindWorkspaceObservations(workspaces: store.workspaces)
-        store.observe([\.workspaces]) { [weak self, weak store] in
-            guard let self, let store else {
+        store.observe(\.serverState) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.updatePresentation()
+        }
+        .store(in: &storeObservationHandles)
+        store.observe([\.workspaces]) { [weak self] in
+            guard let self else {
                 return
             }
             self.rebindWorkspaceObservations(workspaces: store.workspaces)
@@ -158,8 +179,8 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         workspaceObservationHandles.removeAll()
 
         for workspace in workspaces {
-            workspace.observe([\.jobs, \.isExpanded]) { [weak self, weak store, weak workspace] in
-                guard let self, let store else {
+            workspace.observe([\.jobs, \.isExpanded]) { [weak self, weak workspace] in
+                guard let self else {
                     return
                 }
                 guard let workspace else {
@@ -181,7 +202,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         reconcileSelectionAfterReload()
         isReconcilingSelection = false
         updateOutlineViewFrame()
-        updateEmptyState(itemCount: totalJobCount(in: workspaces))
+        updatePresentation()
     }
 
     private func applyWorkspaceExpansionState(for workspaces: [CodexReviewWorkspace]) {
@@ -211,7 +232,31 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         reconcileSelectionAfterReload()
         isReconcilingSelection = false
         updateOutlineViewFrame()
-        updateEmptyState(itemCount: totalJobCount(in: allWorkspaces))
+        updatePresentation()
+    }
+
+    private func updatePresentation() {
+        switch presentationForCurrentState {
+        case .unavailable:
+            unavailableView.isHidden = false
+            scrollView.isHidden = true
+            emptyStateView.isHidden = true
+        case .empty:
+            unavailableView.isHidden = true
+            scrollView.isHidden = true
+            emptyStateView.isHidden = false
+        case .jobList:
+            unavailableView.isHidden = true
+            scrollView.isHidden = false
+            emptyStateView.isHidden = true
+        }
+    }
+
+    private var presentationForCurrentState: PresentationForTesting {
+        if case .failed = store.serverState {
+            return .unavailable
+        }
+        return totalJobCount(in: store.workspaces) > 0 ? .jobList : .empty
     }
 
     private func reconcileSelectionAfterReload() {
@@ -300,8 +345,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
     private func requestCancellation(for job: CodexReviewJob) async throws {
         guard job.isTerminal == false,
-              job.cancellationRequested == false,
-              let store
+              job.cancellationRequested == false
         else {
             return
         }
@@ -322,17 +366,13 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     private func handleCancellationFailure(_ error: Error, for job: CodexReviewJob) {
         let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let message = description.isEmpty ? "Failed to cancel review." : description
-        if let store {
-            do {
-                try store.recordCancellationFailure(
-                    jobID: job.id,
-                    sessionID: job.sessionID,
-                    message: message
-                )
-            } catch {
-                applyCancellationFailure(message: message, to: job)
-            }
-        } else {
+        do {
+            try store.recordCancellationFailure(
+                jobID: job.id,
+                sessionID: job.sessionID,
+                message: message
+            )
+        } catch {
             applyCancellationFailure(message: message, to: job)
         }
 
@@ -362,12 +402,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         job.errorMessage = message
     }
 
-    private func updateEmptyState(itemCount: Int) {
-        let hasJobs = itemCount > 0
-        scrollView.isHidden = hasJobs == false
-        emptyStateView.isHidden = hasJobs
-    }
-
     private func clearSelectionIfNeeded(for workspaces: [CodexReviewWorkspace]) {
         guard let selectedJob = uiState.selectedJobEntry,
               containsJob(id: selectedJob.id, in: workspaces) == false
@@ -387,7 +421,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     private func updateOutlineViewFrame() {
         let contentSize = scrollView.contentSize
         let width = max(1, contentSize.width)
-        let height = max(contentSize.height, outlineContentHeight)
+        let height = outlineContentHeight
         let size = NSSize(width: width, height: height)
         guard outlineView.frame.size != size else {
             return
@@ -415,7 +449,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     private func workspaces() -> [CodexReviewWorkspace] {
-        store?.workspaces ?? []
+        store.workspaces
     }
 
     private func job(atRow row: Int) -> CodexReviewJob? {
@@ -716,10 +750,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
     @discardableResult
     private func applyResolvedDrop(_ resolvedDrop: SidebarResolvedDrop) -> Bool {
-        guard let store else {
-            return false
-        }
-
         switch resolvedDrop.operation {
         case .none:
             return true
@@ -905,6 +935,10 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 #if DEBUG
 @MainActor
 extension ReviewMonitorSidebarViewController {
+    var presentationForTesting: PresentationForTesting {
+        presentationForCurrentState
+    }
+
     var displayedSectionTitlesForTesting: [String] {
         var titles: [String] = []
         for row in 0..<outlineView.numberOfRows {
@@ -1056,6 +1090,40 @@ extension ReviewMonitorSidebarViewController {
         scrollView.contentView.scroll(to: NSPoint(x: 0, y: clampedOffset))
         scrollView.reflectScrolledClipView(scrollView.contentView)
         view.layoutSubtreeIfNeeded()
+    }
+
+    var sidebarVisibleHeightForTesting: CGFloat {
+        scrollView.documentVisibleRect.height
+    }
+
+    var sidebarDocumentHeightForTesting: CGFloat {
+        outlineView.frame.height
+    }
+
+    var sidebarOutlineContentHeightForTesting: CGFloat {
+        outlineContentHeight
+    }
+
+    var sidebarMaximumVerticalScrollOffsetForTesting: CGFloat {
+        max(0, sidebarDocumentHeightForTesting - sidebarVisibleHeightForTesting)
+    }
+
+    var sidebarVisibleRectForTesting: NSRect {
+        outlineView.visibleRect
+    }
+
+    var sidebarFirstRowRectForTesting: NSRect {
+        guard outlineView.numberOfRows > 0 else {
+            return .zero
+        }
+        return outlineView.rect(ofRow: 0)
+    }
+
+    var sidebarLastRowRectForTesting: NSRect {
+        guard outlineView.numberOfRows > 0 else {
+            return .zero
+        }
+        return outlineView.rect(ofRow: outlineView.numberOfRows - 1)
     }
 
     @discardableResult

@@ -39,6 +39,46 @@ struct CodexReviewMonitorTests {
         )
     }
 
+    @Test func mockJobsStoreTreatsEnvironmentFlagAsEnabled() {
+        let environment = [
+            CodexReviewMonitorLaunchEnvironment.mockJobsKey: "1",
+        ]
+
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldUseMockJobsStore(
+                environment: environment,
+                arguments: []
+            )
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.storeMode(
+                environment: environment,
+                arguments: []
+            ) == .mockJobs
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldStartEmbeddedServer(
+                environment: environment,
+                arguments: []
+            ) == false
+        )
+    }
+
+    @Test func mockJobsStoreTreatsArgumentFlagAsEnabled() {
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldUseMockJobsStore(
+                environment: [:],
+                arguments: [CodexReviewMonitorLaunchEnvironment.mockJobsArgument]
+            )
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.storeMode(
+                environment: [:],
+                arguments: [CodexReviewMonitorLaunchEnvironment.mockJobsArgument]
+            ) == .mockJobs
+        )
+    }
+
     @Test func launchModeTreatsPlainXCTestLaunchAsTest() {
         let environment = [
             CodexReviewMonitorLaunchEnvironment.xctestConfigurationKey: "/tmp/test.xctestconfiguration",
@@ -109,6 +149,26 @@ struct CodexReviewMonitorTests {
         )
     }
 
+    @Test func storeModePrefersUITestOverMockJobs() {
+        let environment = [
+            CodexReviewMonitorLaunchEnvironment.uiTestModeKey: "1",
+            CodexReviewMonitorLaunchEnvironment.mockJobsKey: "1",
+        ]
+
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.shouldUseMockJobsStore(
+                environment: environment,
+                arguments: [CodexReviewMonitorLaunchEnvironment.mockJobsArgument]
+            ) == false
+        )
+        #expect(
+            CodexReviewMonitorLaunchEnvironment.storeMode(
+                environment: environment,
+                arguments: [CodexReviewMonitorLaunchEnvironment.mockJobsArgument]
+            ) == .uiTest
+        )
+    }
+
     @Test func launchModeKeepsExplicitTestOverrideLaunchable() {
         let environment = [
             CodexReviewMonitorLaunchEnvironment.xctestConfigurationKey: "/tmp/test.xctestconfiguration",
@@ -152,6 +212,19 @@ struct CodexReviewMonitorTests {
 
         await store.startSignal.wait()
         #expect(store.startArguments == [true])
+        #expect(store.stopCallCount == 0)
+    }
+
+    @Test func lifecycleSkipsStoreStartWhenEmbeddedServerManagementIsDisabled() {
+        let store = FakeLifecycleStore()
+        let lifecycle = CodexReviewMonitorLifecycleController(
+            store: store,
+            shouldManageEmbeddedServer: false
+        )
+
+        lifecycle.applicationDidFinishLaunching(launchMode: .application)
+
+        #expect(store.startArguments.isEmpty)
         #expect(store.stopCallCount == 0)
     }
 
@@ -212,7 +285,7 @@ struct CodexReviewMonitorTests {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
             launchModeProvider: { .application },
-            windowControllerFactory: { _ in
+            windowControllerFactory: { _, _ in
                 recorder.makeWindowController()
             }
         )
@@ -230,7 +303,7 @@ struct CodexReviewMonitorTests {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
             launchModeProvider: { .xctest },
-            windowControllerFactory: { _ in
+            windowControllerFactory: { _, _ in
                 recorder.makeWindowController()
             }
         )
@@ -248,7 +321,7 @@ struct CodexReviewMonitorTests {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
             launchModeProvider: { .application },
-            windowControllerFactory: { _ in
+            windowControllerFactory: { _, _ in
                 recorder.makeWindowController()
             }
         )

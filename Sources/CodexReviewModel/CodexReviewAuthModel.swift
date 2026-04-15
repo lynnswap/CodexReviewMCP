@@ -1,24 +1,6 @@
 import Foundation
 import Observation
 
-public enum CodexReviewAuthStateAccessors {
-    public static func isAuthenticated(_ state: CodexReviewAuthModel.State) -> Bool {
-        state.isAuthenticated
-    }
-
-    public static func accountID(_ state: CodexReviewAuthModel.State) -> String? {
-        state.accountID
-    }
-
-    public static func progress(_ state: CodexReviewAuthModel.State) -> CodexReviewAuthModel.Progress? {
-        state.progress
-    }
-
-    public static func errorMessage(_ state: CodexReviewAuthModel.State) -> String? {
-        state.errorMessage
-    }
-}
-
 @MainActor
 @Observable
 public final class CodexReviewAuthModel {
@@ -38,96 +20,83 @@ public final class CodexReviewAuthModel {
         }
     }
 
-    public struct State: Sendable, Equatable {
-        public var isAuthenticated: Bool
-        public var accountID: String?
-        public var progress: Progress?
-        public var errorMessage: String?
-
-        public init(
-            isAuthenticated: Bool = false,
-            accountID: String? = nil,
-            progress: Progress? = nil,
-            errorMessage: String? = nil
-        ) {
-            self.isAuthenticated = isAuthenticated
-            self.accountID = isAuthenticated ? accountID : nil
-            self.progress = progress
-            self.errorMessage = progress == nil ? errorMessage : nil
-        }
-
-        public static let signedOut = State()
-
-        public static func signedIn(accountID: String?) -> State {
-            State(
-                isAuthenticated: true,
-                accountID: accountID
-            )
-        }
-
-        public static func signingIn(_ progress: Progress) -> State {
-            State(progress: progress)
-        }
-
-        public static func failed(
-            _ message: String,
-            isAuthenticated: Bool = false,
-            accountID: String? = nil
-        ) -> State {
-            State(
-                isAuthenticated: isAuthenticated,
-                accountID: accountID,
-                errorMessage: message
-            )
-        }
-
+    public enum Phase: Sendable, Equatable {
+        case signedOut
+        case signingIn(Progress)
+        case failed(message: String)
     }
 
-    public package(set) var state: State = .signedOut
+    public package(set) var phase: Phase = .signedOut
+    public package(set) var account: CodexAccount?
 
-    @ObservationIgnored private let backend: any CodexReviewStoreBackend
+    @ObservationIgnored private let controller: any CodexReviewAuthControlling
 
     public var progress: Progress? {
-        state.progress
+        guard case .signingIn(let progress) = phase else {
+            return nil
+        }
+        return progress
     }
 
     public var isAuthenticating: Bool {
-        state.progress != nil
+        progress != nil
     }
 
     public var isAuthenticated: Bool {
-        state.isAuthenticated
-    }
-
-    public var accountID: String? {
-        state.accountID
+        account != nil
     }
 
     public var errorMessage: String? {
-        state.errorMessage
+        guard case .failed(let message) = phase else {
+            return nil
+        }
+        return message
     }
 
-    package init(backend: any CodexReviewStoreBackend) {
-        self.backend = backend
+    package init(controller: any CodexReviewAuthControlling) {
+        self.controller = controller
     }
 
     public func refresh() async {
-        await backend.refreshAuthState(auth: self)
+        await controller.refresh(auth: self)
     }
 
     public func beginAuthentication() async {
-        await backend.beginAuthentication(auth: self)
+        await controller.beginAuthentication(auth: self)
     }
 
     public func cancelAuthentication() async {
-        await backend.cancelAuthentication(auth: self)
+        await controller.cancelAuthentication(auth: self)
     }
 
     public func logout() async {
-        await backend.logout(auth: self)
+        await controller.logout(auth: self)
     }
 
-    package func updateState(_ state: State) {
-        self.state = state
+    package func startStartupRefresh() {
+        controller.startStartupRefresh(auth: self)
+    }
+
+    package func cancelStartupRefresh() {
+        controller.cancelStartupRefresh()
+    }
+
+    package func reconcileAuthenticatedSession(
+        serverIsRunning: Bool,
+        runtimeGeneration: Int
+    ) async {
+        await controller.reconcileAuthenticatedSession(
+            auth: self,
+            serverIsRunning: serverIsRunning,
+            runtimeGeneration: runtimeGeneration
+        )
+    }
+
+    package func updatePhase(_ phase: Phase) {
+        self.phase = phase
+    }
+
+    package func updateAccount(_ account: CodexAccount?) {
+        self.account = account
     }
 }

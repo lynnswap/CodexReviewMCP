@@ -106,7 +106,7 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let authStateProbe = ObservableValueProbe { store.auth.state }
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
         defer { authStateProbe.cancel() }
 
         await store.start()
@@ -114,6 +114,1188 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
         }
+
+        await store.stop()
+    }
+
+    @Test func reviewMonitorStoreStartupRefreshWaitsForPreparedAuthTransport() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateAccountReadResponse(
+            account: [
+                "type": "chatgpt",
+                "email": "review@example.com",
+                "planType": "pro",
+            ],
+            requiresOpenAIAuth: false
+        )
+        let manager = AuthCapableAppServerManager(
+            authTransport: authTransport,
+            requirePrepareBeforeAuthCheckout: true
+        )
+        let recorder = TestWebAuthenticationSessionRecorder()
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .failure(.cancelled)
+            )
+        )
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
+        defer { authStateProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .signedIn(accountID: "review@example.com")
+        }
+
+        #expect(await manager.prepareCount() >= 1)
+        #expect(await manager.authTransportCheckoutCount() > 0)
+
+        await store.stop()
+    }
+
+    @Test func reviewMonitorStoreStartupFailureStillRefreshesAuthState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateAccountReadResponse(
+            account: nil,
+            requiresOpenAIAuth: true
+        )
+        let manager = AuthCapableAppServerManager(
+            authTransport: authTransport,
+            prepareError: NSError(
+                domain: "CodexReviewMCPTests.AuthCapableAppServerManager",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "prepare failed"]
+            )
+        )
+        let recorder = TestWebAuthenticationSessionRecorder()
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .failure(.cancelled)
+            )
+        )
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
+        defer { authStateProbe.cancel() }
+
+        await store.start()
+
+        #expect(store.serverState == .failed("prepare failed"))
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .signedOut
+        }
+        #expect(await manager.authTransportCheckoutCount() > 0)
+    }
+
+    @Test func startingStoreLoadsCodexRateLimitsForAuthenticatedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+        await store.stop()
+    }
+
+    @Test func startingStorePrefersCurrentCodexSnapshotOverStaleCodexMapEntry() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 85,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 55,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ],
+            byLimitID: [
+                "codex": [
+                    "limitId": "codex",
+                    "primary": [
+                        "usedPercent": 40,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": [
+                        "usedPercent": 20,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1_736_380_800,
+                    ],
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 85
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 55)
+
+        await store.stop()
+    }
+
+    @Test func startingStoreKeepsCodexQuotaNilWhenOnlyOtherBucketIsCurrent() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex_other",
+                "limitName": "codex_other",
+                "primary": [
+                    "usedPercent": 64,
+                    "windowDurationMins": 60,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": NSNull(),
+            ],
+            byLimitID: [
+                "codex_other": [
+                    "limitId": "codex_other",
+                    "limitName": "codex_other",
+                    "primary": [
+                        "usedPercent": 64,
+                        "windowDurationMins": 60,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": NSNull(),
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
+        defer { authStateProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .signedIn(accountID: "review@example.com")
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+
+        await store.stop()
+    }
+
+    @Test func startingStoreSkipsRateLimitWindowWhenDurationIsMissing() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 40,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 20,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let weeklyProbe = ObservableValueProbe { rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent }
+        defer { weeklyProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(weeklyProbe) {
+            $0 == 20
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+
+        await store.stop()
+    }
+
+    @Test func codexAccountSkipsInvalidRateLimitDurations() {
+        let account = CodexAccount(email: "review@example.com", planType: "pro")
+
+        account.updateRateLimits(
+            [
+                (windowDurationMinutes: 300, usedPercent: 40, resetsAt: nil),
+                (windowDurationMinutes: 300, usedPercent: 55, resetsAt: nil),
+                (windowDurationMinutes: 0, usedPercent: 75, resetsAt: nil),
+                (windowDurationMinutes: -60, usedPercent: 10, resetsAt: nil),
+            ]
+        )
+
+        #expect(account.rateLimits.map(\.windowDurationMinutes) == [300])
+        #expect(account.rateLimits.map(\.usedPercent) == [55])
+    }
+
+    @Test func rateLimitNotificationUpdatesCodexSnapshotAndPreservesOtherBuckets() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        let initialSessionWindow = try #require(
+            rateLimitWindow(duration: 300, in: store.auth.account)
+        )
+        let initialWeeklyWindow = try #require(
+            rateLimitWindow(duration: 10_080, in: store.auth.account)
+        )
+
+        let authTransport = try #require(await manager.authTransportForTesting())
+        try await authTransport.sendRateLimitsUpdated(
+            [
+                "limitId": "codex",
+                "limitName": NSNull(),
+                "primary": [
+                    "usedPercent": 85,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 55,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 85
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) === initialSessionWindow)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) === initialWeeklyWindow)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 55)
+        await store.stop()
+    }
+
+    @Test func startingStoreCapturesRateLimitUpdateDeliveredDuringInitialRead() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 40,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 20,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        try await authTransport.sendRateLimitsUpdatedDuringNextRead(
+            [
+                "primary": [
+                    "usedPercent": 85,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 55,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 85
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 55)
+
+        await store.stop()
+    }
+
+    @Test func nonCodexRateLimitUpdateDoesNotReplaceCurrentSnapshot() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        let authTransport = try #require(await manager.authTransportForTesting())
+        try await authTransport.sendRateLimitsUpdated(
+            [
+                "limitId": "codex_other",
+                "limitName": "codex_other",
+                "primary": [
+                    "usedPercent": 77,
+                    "windowDurationMins": 60,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": NSNull(),
+            ]
+        )
+
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
+
+        await store.stop()
+    }
+
+    @Test func nonCodexRateLimitUpdateDoesNotReplaceImplicitCodexCurrentSnapshot() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateRateLimitsResponse(
+            current: [
+                "primary": [
+                    "usedPercent": 40,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 20,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        try await authTransport.sendRateLimitsUpdated(
+            [
+                "limitId": "codex_other",
+                "limitName": "codex_other",
+                "primary": [
+                    "usedPercent": 77,
+                    "windowDurationMins": 60,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": NSNull(),
+            ]
+        )
+
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+
+        await store.stop()
+    }
+
+    @Test func implicitCodexUpdateDoesNotReplaceNonCodexCurrentSnapshot() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex_other",
+                "limitName": "codex_other",
+                "primary": [
+                    "usedPercent": 64,
+                    "windowDurationMins": 60,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": NSNull(),
+            ],
+            byLimitID: [
+                "codex_other": [
+                    "limitId": "codex_other",
+                    "limitName": "codex_other",
+                    "primary": [
+                        "usedPercent": 64,
+                        "windowDurationMins": 60,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": NSNull(),
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let codexProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { codexProbe.cancel() }
+
+        await store.start()
+        await authTransport.waitForNotificationStream()
+
+        try await authTransport.sendRateLimitsUpdated(
+            [
+                "primary": [
+                    "usedPercent": 77,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 21,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+
+        try await waitForObservedValue(codexProbe) {
+            $0 == 77
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 77)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 21)
+
+        await store.stop()
+    }
+
+    @Test func rateLimitObserverReconnectsAfterCleanNotificationStreamFinish() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let firstTransport = AuthCapableAppServerSessionTransport()
+        let secondTransport = AuthCapableAppServerSessionTransport()
+        await secondTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 65,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 42,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(
+            authTransports: [firstTransport, secondTransport]
+        )
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        await firstTransport.finishNotificationStream()
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 65
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 65)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 42)
+
+        await store.stop()
+    }
+
+    @Test func authRefreshRestartsRateLimitObserverWhenAccountChanges() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = SequencedReadAccountReviewAuthSession(
+            responses: [
+                .init(
+                    account: .chatGPT(email: "old@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+                .init(
+                    account: .chatGPT(email: "new@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+            ]
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        let authTransport = try #require(await manager.authTransportForTesting())
+        await authTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "limitName": NSNull(),
+                "primary": [
+                    "usedPercent": 12,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 8,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ],
+            byLimitID: [
+                "codex": [
+                    "limitId": "codex",
+                    "limitName": NSNull(),
+                    "primary": [
+                        "usedPercent": 12,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": [
+                        "usedPercent": 8,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1_736_380_800,
+                    ],
+                ],
+            ]
+        )
+
+        await store.auth.refresh()
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 12
+        }
+
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "new@example.com"))
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 12)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 8)
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
+
+        await store.stop()
+    }
+
+    @Test func authRefreshRereadsRateLimitsForSameAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = SequencedReadAccountReviewAuthSession(
+            responses: [
+                .init(
+                    account: .chatGPT(email: "review@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+                .init(
+                    account: .chatGPT(email: "review@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+            ]
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        let initialSessionWindow = try #require(
+            rateLimitWindow(duration: 300, in: store.auth.account)
+        )
+        let initialWeeklyWindow = try #require(
+            rateLimitWindow(duration: 10_080, in: store.auth.account)
+        )
+
+        let authTransport = try #require(await manager.authTransportForTesting())
+        await authTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "limitName": NSNull(),
+                "primary": [
+                    "usedPercent": 18,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 14,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ],
+            byLimitID: [
+                "codex": [
+                    "limitId": "codex",
+                    "limitName": NSNull(),
+                    "primary": [
+                        "usedPercent": 18,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": [
+                        "usedPercent": 14,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1_736_380_800,
+                    ],
+                ],
+            ]
+        )
+
+        await store.auth.refresh()
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 18
+        }
+
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) === initialSessionWindow)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) === initialWeeklyWindow)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 14)
+
+        await store.stop()
+    }
+
+    @Test func authRefreshClearsRateLimitsWhenAccountChangesAndReloadIsUnsupported() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransports: [
+                AuthCapableAppServerSessionTransport(),
+                MockAppServerSessionTransport(mode: .success()),
+            ]
+        )
+        let authSession = SequencedReadAccountReviewAuthSession(
+            responses: [
+                .init(
+                    account: .chatGPT(email: "old@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+                .init(
+                    account: .chatGPT(email: "new@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+            ]
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        await store.auth.refresh()
+
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "new@example.com"))
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        await store.stop()
+    }
+
+    @Test func rateLimitObserverReconnectsAfterTransportDisconnect() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let firstTransport = AuthCapableAppServerSessionTransport()
+        let secondTransport = AuthCapableAppServerSessionTransport()
+        await secondTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "limitName": NSNull(),
+                "primary": [
+                    "usedPercent": 27,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 9,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ],
+            byLimitID: [
+                "codex": [
+                    "limitId": "codex",
+                    "limitName": NSNull(),
+                    "primary": [
+                        "usedPercent": 27,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": [
+                        "usedPercent": 9,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1_736_380_800,
+                    ],
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(
+            authTransports: [firstTransport, secondTransport]
+        )
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        await firstTransport.failNotificationStream(message: "transport disconnected")
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 27
+        }
+
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 9)
+
+        await store.stop()
+    }
+
+    @Test func rateLimitObserverRetriesAfterInitialReadDisconnect() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(
+            authTransports: [
+                DisconnectingRateLimitReadTransport(),
+                AuthCapableAppServerSessionTransport(),
+            ]
+        )
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        await store.stop()
+    }
+
+    @Test func logoutClearsRateLimitModel() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        await store.auth.logout()
+
+        #expect(testAuthState(from: store.auth) == .signedOut)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        await store.stop()
+    }
+
+    @Test func unsupportedRateLimitReadDoesNotBreakAuthenticatedStartup() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = MockAppServerManager { _ in .success() }
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
+        defer { authStateProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .signedIn(accountID: "review@example.com")
+        }
+
+        #expect(store.serverState == .running)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        await store.stop()
+    }
+
+    @Test func authRequiredRateLimitReadDoesNotRetryUntilAuthChanges() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let firstTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .authenticationRequired
+        )
+        let secondTransport = AuthCapableAppServerSessionTransport()
+        let manager = AuthCapableAppServerManager(
+            authTransports: [firstTransport, secondTransport]
+        )
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        try await Task.sleep(for: .milliseconds(400))
+
+        #expect(await manager.authTransportCheckoutCount() == 1)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+
+        await store.stop()
+    }
+
+    @Test func unsupportedRateLimitReadDoesNotPromoteFirstNonCurrentNotificationToCurrentSnapshot() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        await store.start()
+        await authTransport.waitForNotificationStream()
+
+        try await authTransport.sendRateLimitsUpdated(
+            [
+                "limitId": "codex_other",
+                "limitName": "codex_other",
+                "primary": [
+                    "usedPercent": 77,
+                    "windowDurationMins": 60,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": NSNull(),
+            ]
+        )
+
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
 
         await store.stop()
     }
@@ -133,10 +1315,10 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let authStateProbe = ObservableValueProbe { store.auth.state }
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
         defer { authStateProbe.cancel() }
 
-        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.start()
 
         try await waitForObservedValue(authStateProbe) {
@@ -146,6 +1328,46 @@ struct CodexReviewMCPTests {
                 accountID: "review@example.com"
             )
         }
+
+        await store.stop()
+    }
+
+    @Test func startingStoreReconcilesRateLimitObservationWhenSeededAuthRefreshFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = FailingReadAccountReviewAuthSession(message: "refresh failed")
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { authStateProbe.cancel() }
+        defer { fiveHourProbe.cancel() }
+
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+        await store.start()
+
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .failed(
+                "refresh failed",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        }
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
 
         await store.stop()
     }
@@ -558,7 +1780,7 @@ struct CodexReviewMCPTests {
         await store.auth.cancelAuthentication()
         _ = await beginTask.value
 
-        #expect(store.auth.state == .signedOut)
+        #expect(testAuthState(from: store.auth) == .signedOut)
         #expect(await authFactory.creationCount() == 1)
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
     }
@@ -578,7 +1800,7 @@ struct CodexReviewMCPTests {
                 try await authFactory.makeSession()
             }
         )
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
@@ -596,7 +1818,7 @@ struct CodexReviewMCPTests {
         _ = await beginTask.value
 
         #expect(
-            store.auth.state == .failed(
+            testAuthState(from: store.auth) == .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
                 accountID: "review@example.com"
@@ -604,6 +1826,83 @@ struct CodexReviewMCPTests {
         )
         #expect(await authFactory.creationCount() == 1)
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
+    }
+
+    @Test func logoutDuringAuthenticatedRetryCancelsLoginAndSignsOut() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = BlockingLoginReviewAuthSession()
+        let authFactory = CountingReviewAuthSessionFactory(session: authSession)
+        let manager = AuthCapableAppServerManager()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                try await authFactory.makeSession()
+            }
+        )
+        await store.start()
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        await authSession.waitForLoginStart()
+
+        await store.auth.logout()
+        _ = await beginTask.value
+
+        #expect(testAuthState(from: store.auth) == .signedOut)
+        #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
+
+        await store.stop()
+    }
+
+    @Test func logoutDuringAuthenticatedRetryStaysSignedOutAfterDelayedCancellationCompletion() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = DeferredCloseLoginReviewAuthSession()
+        let manager = AuthCapableAppServerManager()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        await store.start()
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        await authSession.waitForLoginStart()
+
+        let logoutTask = Task {
+            await store.auth.logout()
+        }
+        await authSession.waitForCloseRequest()
+        _ = await logoutTask.value
+
+        await authSession.finishPendingClose()
+        _ = await beginTask.value
+
+        #expect(testAuthState(from: store.auth) == .signedOut)
+        #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
+
+        await store.stop()
     }
 
     @Test func beginAuthenticationUsesInjectedAuthSessionWithoutAuthTransportCheckout() async throws {
@@ -625,12 +1924,12 @@ struct CodexReviewMCPTests {
         let beginTask = Task {
             await store.auth.beginAuthentication()
         }
-        let authStateProbe = ObservableValueProbe { store.auth.state }
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
         defer { authStateProbe.cancel() }
 
         await authSession.waitForLoginStart()
         try await waitForObservedValue(authStateProbe) { authState in
-            guard let progress = CodexReviewAuthStateAccessors.progress(authState) else {
+            guard let progress = authState.progress else {
                 return false
             }
             return progress.browserURL?.contains("/oauth/authorize") == true
@@ -642,7 +1941,7 @@ struct CodexReviewMCPTests {
         #expect(await manager.authTransportCheckoutCount() == 0)
         #expect(await manager.reviewTransportCheckoutCount() == 0)
         #expect(await manager.shutdownCount() == 0)
-        #expect(store.auth.state == .signedOut)
+        #expect(testAuthState(from: store.auth) == .signedOut)
     }
 
     @Test func successfulAuthenticationRecyclesSharedAppServer() async throws {
@@ -664,7 +1963,33 @@ struct CodexReviewMCPTests {
         await store.start()
         await store.auth.beginAuthentication()
 
-        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
+
+        await store.stop()
+    }
+
+    @Test func sameAccountReauthenticationRecyclesSharedAppServer() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        await store.auth.beginAuthentication()
+
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
         #expect(await manager.prepareCount() == 2)
         #expect(await manager.shutdownCount() == 1)
 
@@ -690,7 +2015,7 @@ struct CodexReviewMCPTests {
         await store.start()
         await store.auth.beginAuthentication()
 
-        #expect(store.auth.state == .failed(reviewAuthPersistenceFailureMessage))
+        #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
         #expect(await manager.prepareCount() == 1)
         #expect(await manager.shutdownCount() == 0)
 
@@ -714,10 +2039,10 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.auth.logout()
 
-        #expect(store.auth.state == .signedOut)
+        #expect(testAuthState(from: store.auth) == .signedOut)
         #expect(await manager.prepareCount() == 2)
         #expect(await manager.shutdownCount() == 1)
 
@@ -741,10 +2066,10 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.auth.logout()
 
-        #expect(store.auth.state == .signedOut)
+        #expect(testAuthState(from: store.auth) == .signedOut)
         #expect(await manager.prepareCount() == 2)
         #expect(await manager.shutdownCount() == 1)
 
@@ -768,11 +2093,11 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        store.auth.updateState(.signedIn(accountID: "review@example.com"))
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.auth.logout()
 
         #expect(
-            store.auth.state == .failed(
+            testAuthState(from: store.auth) == .failed(
                 "Failed to sign out.",
                 isAuthenticated: true,
                 accountID: "review@example.com"
@@ -780,6 +2105,85 @@ struct CodexReviewMCPTests {
         )
         #expect(await manager.prepareCount() == 1)
         #expect(await manager.shutdownCount() == 0)
+
+        await store.stop()
+    }
+
+    @Test func logoutFailureRefreshesRateLimitsWhenResolvedAccountChanges() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let firstTransport = AuthCapableAppServerSessionTransport()
+        let secondTransport = AuthCapableAppServerSessionTransport()
+        await secondTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "limitName": NSNull(),
+                "primary": [
+                    "usedPercent": 22,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 11,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ],
+            byLimitID: [
+                "codex": [
+                    "limitId": "codex",
+                    "limitName": NSNull(),
+                    "primary": [
+                        "usedPercent": 22,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": [
+                        "usedPercent": 11,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1_736_380_800,
+                    ],
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(
+            authTransports: [firstTransport, secondTransport]
+        )
+        let authSession = LogoutFailureWithChangedAccountReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 40
+        }
+
+        await store.auth.logout()
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 22
+        }
+
+        #expect(
+            testAuthState(from: store.auth) == .failed(
+                "Failed to sign out.",
+                isAuthenticated: true,
+                accountID: "new@example.com"
+            )
+        )
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 11)
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
 
         await store.stop()
     }
@@ -806,18 +2210,18 @@ struct CodexReviewMCPTests {
             )
         )
 
-        let updates = ObservableValueProbe { store.auth.state }
+        let updates = ObservableValueProbe { testAuthState(from: store.auth) }
 
         await store.auth.beginAuthentication()
 
-        try await waitForObservedValue(updates) { CodexReviewAuthStateAccessors.isAuthenticated($0) }
+        try await waitForObservedValue(updates) { $0.isAuthenticated }
 
         #expect(await manager.authTransportCheckoutCount() > 0)
         #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
         #expect(await recorder.lastAuthenticateRequest()?.prefersEphemeral == true)
         let authTransport = try #require(await manager.authTransportForTesting())
         #expect(await authTransport.completeParams()?.callbackURL == "lynnpd.codexreviewmonitor.auth://callback?code=123")
-        #expect(store.auth.state == CodexReviewAuthModel.State.signedIn(accountID: "review@example.com"))
+        #expect(testAuthState(from: store.auth) == TestAuthState.signedIn(accountID: "review@example.com"))
     }
 
     @Test func reviewMonitorStoreCancelsNativeAuthenticationFlow() async throws {
@@ -847,7 +2251,7 @@ struct CodexReviewMCPTests {
         let authTransport = try #require(await manager.authTransportForTesting())
         #expect(await authTransport.completeParams() == nil)
         #expect(await recorder.cancelCallCount() == 0)
-        #expect(store.auth.state == CodexReviewAuthModel.State.signedOut)
+        #expect(testAuthState(from: store.auth) == TestAuthState.signedOut)
     }
 
     @Test func reviewMonitorStorePreservesAuthenticatedStateWhenRetryAuthenticationIsCancelled() async throws {
@@ -871,7 +2275,7 @@ struct CodexReviewMCPTests {
                 autoResult: .failure(.cancelled)
             )
         )
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
@@ -882,7 +2286,7 @@ struct CodexReviewMCPTests {
         await store.auth.beginAuthentication()
 
         #expect(
-            store.auth.state == .failed(
+            testAuthState(from: store.auth) == .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
                 accountID: "review@example.com"
@@ -905,7 +2309,7 @@ struct CodexReviewMCPTests {
                 try await authFactory.makeSession()
             }
         )
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
@@ -921,11 +2325,11 @@ struct CodexReviewMCPTests {
 
         #expect(store.auth.isAuthenticating)
         #expect(store.auth.isAuthenticated)
-        #expect(store.auth.accountID == "review@example.com")
+        #expect(store.auth.account?.email == "review@example.com")
 
         await store.auth.cancelAuthentication()
         #expect(
-            store.auth.state == .failed(
+            testAuthState(from: store.auth) == .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
                 accountID: "review@example.com"
@@ -933,7 +2337,7 @@ struct CodexReviewMCPTests {
         )
         _ = await beginTask.value
         #expect(
-            store.auth.state == .failed(
+            testAuthState(from: store.auth) == .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
                 accountID: "review@example.com"
@@ -966,7 +2370,7 @@ struct CodexReviewMCPTests {
                 autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
             )
         )
-        store.auth.updateState(
+        applyTestAuthState(auth: store.auth, state: 
             .failed(
                 "Authentication failed.",
                 isAuthenticated: true,
@@ -977,7 +2381,7 @@ struct CodexReviewMCPTests {
         await store.auth.beginAuthentication()
 
         #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
-        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
         #expect(await manager.shutdownCount() == 0)
         #expect(await manager.prepareCount() == 0)
     }
@@ -1011,7 +2415,7 @@ struct CodexReviewMCPTests {
         await store.auth.beginAuthentication()
 
         #expect(
-            store.auth.state == .failed(
+            testAuthState(from: store.auth) == .failed(
                 "Authentication completion is unavailable. Update the app-server and try again."
             )
         )
@@ -1047,7 +2451,7 @@ struct CodexReviewMCPTests {
 
         #expect(await recorder.lastAuthenticateRequest()?.url.absoluteString == "https://auth.openai.com/oauth/authorize?foo=bar")
         #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
-        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
 
     @Test func reviewMonitorStoreFailsNativeAuthenticationWhenCallbackSchemeDoesNotMatch() async throws {
@@ -1080,7 +2484,7 @@ struct CodexReviewMCPTests {
 
         #expect(await recorder.lastAuthenticateRequest() == nil)
         #expect(
-            store.auth.state == .failed(
+            testAuthState(from: store.auth) == .failed(
                 "Authentication callback is misconfigured. Update the app-server and try again."
             )
         )
@@ -1114,7 +2518,7 @@ struct CodexReviewMCPTests {
 
         await store.auth.beginAuthentication()
 
-        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
 
     @Test func reviewMonitorStoreCompletesNativeAuthenticationWhenServerOnlyPublishesAccountUpdated() async throws {
@@ -1145,7 +2549,7 @@ struct CodexReviewMCPTests {
 
         await store.auth.beginAuthentication()
 
-        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
 
     @Test func reviewMonitorStoreWaitsOutDelayedPersistenceAfterNativeAuthenticationCompletion() async throws {
@@ -1182,7 +2586,7 @@ struct CodexReviewMCPTests {
 
         await store.auth.beginAuthentication()
 
-        #expect(store.auth.state == .signedIn(accountID: "review@example.com"))
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
 
     @Test func nativeAuthSessionFinishesLateSubscribersAfterCancellation() async throws {
@@ -2018,6 +3422,82 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
+private actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
+    private var loginParams: [AppServerLoginAccountParams] = []
+    private var cancelledIDs: [String] = []
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private let loginStartedSignal = AsyncSignal()
+    private let closeRequestedSignal = AsyncSignal()
+    private let closeResumeGate = OneShotGate()
+    private var closeRequested = false
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        loginParams.append(params)
+        await loginStartedSignal.signal()
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID: String) async throws {
+        cancelledIDs.append(loginID)
+    }
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        self.continuation = continuation
+        return .init(
+            stream: stream,
+            cancel: { [self] in
+                await close()
+            }
+        )
+    }
+
+    func close() async {
+        closeRequested = true
+        await closeRequestedSignal.signal()
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await self.closeResumeGate.wait()
+            await self.finishContinuation()
+        }
+    }
+
+    func waitForLoginStart() async {
+        await loginStartedSignal.wait()
+    }
+
+    func waitForCloseRequest() async {
+        if closeRequested {
+            return
+        }
+        await closeRequestedSignal.wait()
+    }
+
+    func finishPendingClose() async {
+        await closeResumeGate.open()
+    }
+
+    func cancelledLoginIDs() -> [String] {
+        cancelledIDs
+    }
+
+    private func finishContinuation() {
+        continuation?.finish()
+        continuation = nil
+    }
+}
+
 private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
     private var readAccountCallCountStorage = 0
     private let readStartedSignal = AsyncSignal()
@@ -2126,19 +3606,58 @@ private actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
-private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
-    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
-    private var bufferedNotifications: [AppServerServerNotification] = []
+private actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
+    private var responses: [AppServerAccountReadResponse]
+
+    init(responses: [AppServerAccountReadResponse]) {
+        precondition(responses.isEmpty == false)
+        self.responses = responses
+    }
 
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
-        .init(
-            account: .chatGPT(email: "review@example.com", planType: "pro"),
-            requiresOpenAIAuth: false
-        )
+        if responses.count == 1 {
+            return responses[0]
+        }
+        return responses.removeFirst()
     }
 
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
         _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+}
+
+private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var bufferedNotifications: [AppServerServerNotification] = []
+    private var didLogin = false
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        if didLogin {
+            return .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        }
+        return .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        didLogin = true
         buffer(.accountUpdated(.init(authMode: .chatGPT, planType: "pro")))
         buffer(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
         return .chatGPT(
@@ -2206,6 +3725,62 @@ private actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
+private actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var bufferedNotifications: [AppServerServerNotification] = []
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        .init(
+            account: .chatGPT(email: "review@example.com", planType: "pro"),
+            requiresOpenAIAuth: false
+        )
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        buffer(.accountUpdated(.init(authMode: .chatGPT, planType: "pro")))
+        buffer(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
+        return .init(stream: stream, cancel: {})
+    }
+
+    func close() async {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    private func setContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
+    ) {
+        self.continuation = continuation
+        let bufferedNotifications = self.bufferedNotifications
+        self.bufferedNotifications.removeAll(keepingCapacity: false)
+        for notification in bufferedNotifications {
+            continuation.yield(notification)
+        }
+    }
+
+    private func buffer(_ notification: AppServerServerNotification) {
+        if let continuation {
+            continuation.yield(notification)
+        } else {
+            bufferedNotifications.append(notification)
+        }
+    }
+}
+
 private actor FailingLogoutReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
@@ -2236,6 +3811,44 @@ private actor LogoutFailureWithPersistedAuthReviewAuthSession: ReviewAuthSession
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(
             account: .chatGPT(email: "review@example.com", planType: "pro"),
+            requiresOpenAIAuth: false
+        )
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {
+        throw ReviewAuthError.logoutFailed("Failed to sign out.")
+    }
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+}
+
+private actor LogoutFailureWithChangedAccountReviewAuthSession: ReviewAuthSession {
+    private var readCount = 0
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        defer { readCount += 1 }
+        if readCount == 0 {
+            return .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        }
+        return .init(
+            account: .chatGPT(email: "new@example.com", planType: "pro"),
             requiresOpenAIAuth: false
         )
     }
@@ -2331,21 +3944,38 @@ private actor AuthCapableAppServerManager: AppServerManaging {
         processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
     )
     private let authTransports: [any AppServerSessionTransport]
+    private let requirePrepareBeforeAuthCheckout: Bool
+    private let prepareError: Error?
     private var authCheckoutCountStorage = 0
     private var reviewCheckoutCountStorage = 0
     private var shutdownCountStorage = 0
     private var prepareCountStorage = 0
 
-    init(authTransport: any AppServerSessionTransport = AuthCapableAppServerSessionTransport()) {
+    init(
+        authTransport: any AppServerSessionTransport = AuthCapableAppServerSessionTransport(),
+        requirePrepareBeforeAuthCheckout: Bool = false,
+        prepareError: Error? = nil
+    ) {
         authTransports = [authTransport]
+        self.requirePrepareBeforeAuthCheckout = requirePrepareBeforeAuthCheckout
+        self.prepareError = prepareError
     }
 
-    init(authTransports: [any AppServerSessionTransport]) {
+    init(
+        authTransports: [any AppServerSessionTransport],
+        requirePrepareBeforeAuthCheckout: Bool = false,
+        prepareError: Error? = nil
+    ) {
         precondition(authTransports.isEmpty == false)
         self.authTransports = authTransports
+        self.requirePrepareBeforeAuthCheckout = requirePrepareBeforeAuthCheckout
+        self.prepareError = prepareError
     }
 
     func prepare() async throws -> AppServerRuntimeState {
+        if let prepareError {
+            throw prepareError
+        }
         prepareCountStorage += 1
         return runtimeState
     }
@@ -2356,6 +3986,13 @@ private actor AuthCapableAppServerManager: AppServerManaging {
     }
 
     func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        if requirePrepareBeforeAuthCheckout, prepareCountStorage == 0 {
+            throw NSError(
+                domain: "CodexReviewMCPTests.AuthCapableAppServerManager",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "auth transport requires prepare() first"]
+            )
+        }
         let transportIndex = min(authCheckoutCountStorage, authTransports.count - 1)
         authCheckoutCountStorage += 1
         return authTransports[transportIndex]
@@ -2524,26 +4161,39 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         case unsupported
     }
 
+    enum RateLimitsReadBehavior {
+        case supported
+        case unsupported
+        case authenticationRequired
+    }
+
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var isClosedStorage = false
     private var recordedCompleteParams: AppServerCompleteLoginAccountParams?
     private var recordedCancelLoginIDs: [String] = []
+    private var notificationStreamWaiters: [CheckedContinuation<Void, Never>] = []
+    private var notificationDuringNextRateLimitRead: AppServerRateLimitSnapshotPayload?
     private var accountReadResponseObject: [String: Any] = [
         "account": NSNull(),
         "requiresOpenaiAuth": true,
     ]
+    private var accountRateLimitsResponseObject: [String: Any]
     private var postCompleteAccountReadResponseQueue: [[String: Any]]
     private var didCompleteLogin = false
     private let startLoginBehavior: StartLoginBehavior
     private let completeLoginBehavior: CompleteLoginBehavior
+    private let rateLimitsReadBehavior: RateLimitsReadBehavior
 
     init(
         startLoginBehavior: StartLoginBehavior = .nativeCallback,
         completeLoginBehavior: CompleteLoginBehavior = .succeed,
+        rateLimitsReadBehavior: RateLimitsReadBehavior = .supported,
         postCompleteAccountReadResponses: [[String: Any]] = []
     ) {
         self.startLoginBehavior = startLoginBehavior
         self.completeLoginBehavior = completeLoginBehavior
+        self.rateLimitsReadBehavior = rateLimitsReadBehavior
+        accountRateLimitsResponseObject = Self.defaultRateLimitsResponseObject()
         postCompleteAccountReadResponseQueue = postCompleteAccountReadResponses
     }
 
@@ -2570,6 +4220,25 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
                 return try decode(response, as: responseType)
             }
             return try decode(accountReadResponseObject, as: responseType)
+        case "account/rateLimits/read":
+            if let notificationDuringNextRateLimitRead {
+                continuation?.yield(
+                    .accountRateLimitsUpdated(
+                        .init(rateLimits: notificationDuringNextRateLimitRead)
+                    )
+                )
+                self.notificationDuringNextRateLimitRead = nil
+            }
+            if rateLimitsReadBehavior == .unsupported {
+                throw AppServerResponseError(code: -32601, message: "method not found")
+            }
+            if rateLimitsReadBehavior == .authenticationRequired {
+                throw AppServerResponseError(
+                    code: -32001,
+                    message: "authentication required to read rate limits"
+                )
+            }
+            return try decode(accountRateLimitsResponseObject, as: responseType)
         case "account/login/start":
             switch startLoginBehavior {
             case .nativeCallback:
@@ -2673,6 +4342,19 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         )
     }
 
+    func waitForNotificationStream() async {
+        if continuation != nil {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if self.continuation != nil {
+                continuation.resume()
+            } else {
+                notificationStreamWaiters.append(continuation)
+            }
+        }
+    }
+
     func isClosed() async -> Bool {
         isClosedStorage
     }
@@ -2683,10 +4365,135 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
         continuation = nil
     }
 
+    func failNotificationStream(message: String) async {
+        continuation?.finish(
+            throwing: NSError(
+                domain: "CodexReviewMCPTests.AuthCapableAppServerSessionTransport",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        )
+        continuation = nil
+    }
+
+    func finishNotificationStream() async {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    func sendRateLimitsUpdated(
+        _ rateLimits: [String: Any]
+    ) async throws {
+        let snapshot: AppServerRateLimitSnapshotPayload = try decode(rateLimits, as: AppServerRateLimitSnapshotPayload.self)
+        continuation?.yield(
+            .accountRateLimitsUpdated(
+                .init(rateLimits: snapshot)
+            )
+        )
+    }
+
+    func sendRateLimitsUpdatedDuringNextRead(
+        _ rateLimits: [String: Any]
+    ) async throws {
+        notificationDuringNextRateLimitRead = try decode(
+            rateLimits,
+            as: AppServerRateLimitSnapshotPayload.self
+        )
+    }
+
+    func updateAccountReadResponse(
+        account: [String: Any]?,
+        requiresOpenAIAuth: Bool
+    ) {
+        accountReadResponseObject = [
+            "account": account ?? NSNull(),
+            "requiresOpenaiAuth": requiresOpenAIAuth,
+        ]
+    }
+
+    func updateRateLimitsResponse(
+        current: [String: Any],
+        byLimitID: [String: [String: Any]]? = nil
+    ) {
+        var response: [String: Any] = [
+            "rateLimits": current,
+        ]
+        if let byLimitID {
+            response["rateLimitsByLimitId"] = byLimitID
+        }
+        accountRateLimitsResponseObject = response
+    }
+
+    private static func defaultRateLimitsResponseObject() -> [String: Any] {
+        [
+            "rateLimits": defaultRateLimitSnapshotObject(
+                limitID: "codex",
+                limitName: nil,
+                primaryUsedPercent: 40,
+                primaryWindowMinutes: 300,
+                secondaryUsedPercent: 20,
+                secondaryWindowMinutes: 10080
+            ),
+            "rateLimitsByLimitId": [
+                "codex": defaultRateLimitSnapshotObject(
+                    limitID: "codex",
+                    limitName: nil,
+                    primaryUsedPercent: 40,
+                    primaryWindowMinutes: 300,
+                    secondaryUsedPercent: 20,
+                    secondaryWindowMinutes: 10080
+                ),
+                "codex_other": defaultRateLimitSnapshotObject(
+                    limitID: "codex_other",
+                    limitName: "codex_other",
+                    primaryUsedPercent: 10,
+                    primaryWindowMinutes: 60,
+                    secondaryUsedPercent: nil,
+                    secondaryWindowMinutes: nil
+                ),
+            ],
+        ]
+    }
+
+    private static func defaultRateLimitSnapshotObject(
+        limitID: String,
+        limitName: String?,
+        primaryUsedPercent: Int,
+        primaryWindowMinutes: Int,
+        secondaryUsedPercent: Int?,
+        secondaryWindowMinutes: Int?
+    ) -> [String: Any] {
+        var snapshot: [String: Any] = [
+            "limitId": limitID,
+            "primary": [
+                "usedPercent": primaryUsedPercent,
+                "windowDurationMins": primaryWindowMinutes,
+                "resetsAt": 1_735_689_600,
+            ],
+        ]
+        snapshot["limitName"] = limitName ?? NSNull()
+        if let secondaryUsedPercent,
+           let secondaryWindowMinutes {
+            snapshot["secondary"] = [
+                "usedPercent": secondaryUsedPercent,
+                "windowDurationMins": secondaryWindowMinutes,
+                "resetsAt": 1_736_035_200,
+            ]
+        } else {
+            snapshot["secondary"] = NSNull()
+        }
+        return snapshot
+    }
+
     private func setContinuation(
         _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
     ) {
         self.continuation = continuation
+        let waiters = notificationStreamWaiters
+        notificationStreamWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
     }
 
     private func decode<Response: Decodable & Sendable>(
@@ -2705,6 +4512,48 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     func cancelLoginIDs() -> [String] {
         recordedCancelLoginIDs
     }
+}
+
+private actor DisconnectingRateLimitReadTransport: AppServerSessionTransport {
+    func initializeResponse() async -> AppServerInitializeResponse {
+        .init(
+            userAgent: nil,
+            codexHome: nil,
+            platformFamily: "macOS",
+            platformOs: "Darwin"
+        )
+    }
+
+    func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
+        method: String,
+        params _: Params,
+        responseType _: Response.Type
+    ) async throws -> Response {
+        if method == "account/rateLimits/read" {
+            throw NSError(
+                domain: "CodexReviewMCPTests.DisconnectingRateLimitReadTransport",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "app-server stdio disconnected"]
+            )
+        }
+        throw NSError(
+            domain: "CodexReviewMCPTests.DisconnectingRateLimitReadTransport",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "unsupported request: \(method)"]
+        )
+    }
+
+    func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func isClosed() async -> Bool {
+        false
+    }
+
+    func close() async {}
 }
 
 private struct TestWebAuthenticationRequest: Equatable {
@@ -3112,4 +4961,106 @@ private struct TestFailure: Error {
     init(_ message: String) {
         self.message = message
     }
+}
+
+private struct TestAuthState: Equatable {
+    var phase: CodexReviewAuthModel.Phase
+    var accountEmail: String?
+    var accountPlanType: String?
+
+    init(
+        isAuthenticated: Bool = false,
+        accountID: String? = nil,
+        progress: CodexReviewAuthModel.Progress? = nil,
+        errorMessage: String? = nil
+    ) {
+        if let progress {
+            phase = .signingIn(progress)
+        } else if let errorMessage {
+            phase = .failed(message: errorMessage)
+        } else {
+            phase = .signedOut
+        }
+        accountEmail = isAuthenticated ? accountID : nil
+        accountPlanType = isAuthenticated ? "pro" : nil
+    }
+
+    static let signedOut = Self()
+
+    static func signedIn(accountID: String?) -> Self {
+        .init(
+            isAuthenticated: true,
+            accountID: accountID
+        )
+    }
+
+    static func signingIn(_ progress: CodexReviewAuthModel.Progress) -> Self {
+        .init(progress: progress)
+    }
+
+    static func failed(
+        _ message: String,
+        isAuthenticated: Bool = false,
+        accountID: String? = nil
+    ) -> Self {
+        .init(
+            isAuthenticated: isAuthenticated,
+            accountID: accountID,
+            errorMessage: message
+        )
+    }
+
+    var progress: CodexReviewAuthModel.Progress? {
+        guard case .signingIn(let progress) = phase else {
+            return nil
+        }
+        return progress
+    }
+
+    var isAuthenticated: Bool {
+        accountEmail != nil
+    }
+
+    var errorMessage: String? {
+        guard case .failed(let message) = phase else {
+            return nil
+        }
+        return message
+    }
+}
+
+@MainActor
+private func applyTestAuthState(
+    auth: CodexReviewAuthModel,
+    state: TestAuthState
+) {
+    auth.updatePhase(state.phase)
+    if let accountEmail = state.accountEmail {
+        auth.updateAccount(
+            CodexAccount(
+                email: accountEmail,
+                planType: state.accountPlanType ?? "pro"
+            )
+        )
+    } else {
+        auth.updateAccount(nil)
+    }
+}
+
+@MainActor
+private func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
+    .init(
+        isAuthenticated: auth.isAuthenticated,
+        accountID: auth.account?.email,
+        progress: auth.progress,
+        errorMessage: auth.errorMessage
+    )
+}
+
+@MainActor
+private func rateLimitWindow(
+    duration: Int,
+    in account: CodexAccount?
+) -> CodexRateLimitWindow? {
+    account?.rateLimits.first { $0.windowDurationMinutes == duration }
 }

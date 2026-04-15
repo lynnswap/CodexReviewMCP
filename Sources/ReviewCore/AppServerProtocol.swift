@@ -323,6 +323,66 @@ package struct AppServerAccountReadResponse: Decodable, Sendable, Equatable {
     }
 }
 
+package struct AppServerAccountRateLimitsResponse: Decodable, Sendable, Equatable {
+    package var rateLimits: AppServerRateLimitSnapshotPayload
+    package var rateLimitsByLimitID: [String: AppServerRateLimitSnapshotPayload]?
+
+    package enum CodingKeys: String, CodingKey {
+        case rateLimits
+        case rateLimitsByLimitID = "rateLimitsByLimitId"
+    }
+
+    package init(
+        rateLimits: AppServerRateLimitSnapshotPayload,
+        rateLimitsByLimitID: [String: AppServerRateLimitSnapshotPayload]? = nil
+    ) {
+        self.rateLimits = rateLimits
+        self.rateLimitsByLimitID = rateLimitsByLimitID
+    }
+}
+
+package struct AppServerRateLimitWindowPayload: Decodable, Sendable, Equatable {
+    package var usedPercent: Int
+    package var windowDurationMins: Int?
+    package var resetsAt: Int64?
+
+    package init(
+        usedPercent: Int,
+        windowDurationMins: Int? = nil,
+        resetsAt: Int64? = nil
+    ) {
+        self.usedPercent = usedPercent
+        self.windowDurationMins = windowDurationMins
+        self.resetsAt = resetsAt
+    }
+}
+
+package struct AppServerRateLimitSnapshotPayload: Decodable, Sendable, Equatable {
+    package var limitID: String?
+    package var limitName: String?
+    package var primary: AppServerRateLimitWindowPayload?
+    package var secondary: AppServerRateLimitWindowPayload?
+
+    package enum CodingKeys: String, CodingKey {
+        case limitID = "limitId"
+        case limitName
+        case primary
+        case secondary
+    }
+
+    package init(
+        limitID: String? = nil,
+        limitName: String? = nil,
+        primary: AppServerRateLimitWindowPayload? = nil,
+        secondary: AppServerRateLimitWindowPayload? = nil
+    ) {
+        self.limitID = limitID
+        self.limitName = limitName
+        self.primary = primary
+        self.secondary = secondary
+    }
+}
+
 package struct AppServerNativeWebAuthenticationRequest: Codable, Sendable, Equatable {
     package var callbackURLScheme: String
 
@@ -984,6 +1044,14 @@ public struct AppServerAccountUpdatedNotification: Decodable, Sendable, Equatabl
     }
 }
 
+package struct AppServerAccountRateLimitsUpdatedPayload: Decodable, Sendable, Equatable {
+    package var rateLimits: AppServerRateLimitSnapshotPayload
+
+    package init(rateLimits: AppServerRateLimitSnapshotPayload) {
+        self.rateLimits = rateLimits
+    }
+}
+
 package struct AppServerResponseError: Decodable, Error, LocalizedError, Sendable {
     package var code: Int?
     package var message: String
@@ -1022,6 +1090,7 @@ package enum AppServerServerNotification: Sendable {
     case error(AppServerErrorNotification)
     case accountLoginCompleted(AppServerAccountLoginCompletedNotification)
     case accountUpdated(AppServerAccountUpdatedNotification)
+    case accountRateLimitsUpdated(AppServerAccountRateLimitsUpdatedPayload)
     case ignored
 }
 
