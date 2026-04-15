@@ -53,12 +53,6 @@ struct StatusView: View {
             ratelimitsSection
             
             Divider()
-            
-            if showsAuthenticationAction {
-                Button(authenticationActionTitle, systemImage: authenticationActionSystemImage) {
-                    performAuthenticationAction()
-                }
-            }
             if showsServerRestartAction {
                 Button("Reset Server", systemImage: "arrow.clockwise") {
                     restartServer()
@@ -184,22 +178,8 @@ struct StatusView: View {
         return details
     }
 
-    var isSignedIn: Bool {
-        store.auth.isAuthenticated
-    }
-
     var canSignOut: Bool {
-        store.auth.isAuthenticated && store.auth.isAuthenticating == false
-    }
-
-    var canRetryAuthentication: Bool {
-        store.auth.errorMessage != nil &&
-        store.auth.isAuthenticated == false &&
-        store.auth.isAuthenticating == false
-    }
-
-    var showsAuthenticationAction: Bool {
-        canRetryAuthentication || store.auth.isAuthenticating
+        store.auth.isAuthenticated
     }
 
     var showsServerRestartAction: Bool {
@@ -211,29 +191,8 @@ struct StatusView: View {
         }
     }
 
-    var authenticationActionTitle: String {
-        store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT"
-    }
-
-    var authenticationActionSystemImage: String {
-        store.auth.isAuthenticating ? "xmark.circle" : "person.badge.key"
-    }
-
-    func performAuthenticationAction() {
-        Task {
-            if store.auth.isAuthenticating {
-                await store.auth.cancelAuthentication()
-            } else if canRetryAuthentication {
-                await store.auth.beginAuthentication()
-            }
-        }
-    }
-
     func restartServer() {
         Task {
-            if store.auth.isAuthenticating {
-                await store.auth.cancelAuthentication()
-            }
             await store.restart()
         }
     }

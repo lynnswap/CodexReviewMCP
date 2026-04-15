@@ -2340,52 +2340,6 @@ struct CodexReviewUITests {
         #expect(backend.recordedActions().isEmpty)
     }
 
-    @Test func statusViewDoesNotRetryAuthenticationWhileAuthenticated() async {
-        let backend = AuthActionBackend()
-        let store = makeStore(backend: backend)
-        applyTestAuthState(auth: store.auth, state: 
-            .failed(
-                "Authentication failed.",
-                isAuthenticated: true,
-                accountID: "review@example.com"
-            )
-        )
-        let view = StatusView(store: store)
-
-        #expect(view.canRetryAuthentication == false)
-        #expect(view.showsAuthenticationAction == false)
-        #expect(view.canSignOut)
-
-        view.performAuthenticationAction()
-
-        #expect(backend.beginAuthenticationCallCount() == 0)
-    }
-
-    @Test func statusViewCancelsAuthenticationWhileRetryAuthenticating() async {
-        let backend = AuthActionBackend()
-        let store = makeStore(backend: backend)
-        applyTestAuthState(auth: store.auth, state: 
-            .init(
-                isAuthenticated: true,
-                accountID: "review@example.com",
-                progress: .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue."
-                )
-            )
-        )
-        let view = StatusView(store: store)
-
-        #expect(view.showsAuthenticationAction)
-        #expect(view.authenticationActionTitle == "Cancel")
-        #expect(view.canSignOut == false)
-
-        view.performAuthenticationAction()
-        await backend.waitForCancelAuthenticationCallCount(1)
-
-        #expect(backend.cancelAuthenticationCallCount() == 1)
-    }
-
     @Test func statusViewRestartsStoppedServer() async {
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
