@@ -1721,6 +1721,67 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func unsupportedRateLimitReadKeepsNotificationSnapshotAfterStaleInterval() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let clock = ManualTestClock()
+        let authTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            },
+            rateLimitObservationClock: clock
+        )
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { fiveHourProbe.cancel() }
+
+        await store.start()
+        await authTransport.waitForNotificationStream()
+
+        try await authTransport.sendRateLimitsUpdated(
+            [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 73,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 41,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+
+        try await waitForObservedValue(fiveHourProbe) {
+            $0 == 73
+        }
+
+        clock.advance(by: .seconds(60))
+        await Task.yield()
+
+        #expect(await authTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 73)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 41)
+
+        await store.stop()
+    }
+
     @Test func startingStoreKeepsSeededAuthWhenBackgroundRefreshFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = MockAppServerManager { _ in .success() }

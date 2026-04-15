@@ -265,6 +265,12 @@ private final class CodexAccountSessionController {
         var runtimeGeneration: Int
     }
 
+    private enum RateLimitsReadCapability {
+        case unknown
+        case supported
+        case unsupported
+    }
+
     private let appServerManager: any AppServerManaging
     private let clock: any ReviewClock
     private let staleRefreshInterval: Duration
@@ -274,6 +280,7 @@ private final class CodexAccountSessionController {
     private var retryTask: Task<Void, Never>?
     private var staleRefreshTask: Task<Void, Never>?
     private var staleRefreshTaskID: UUID?
+    private var rateLimitsReadCapability: RateLimitsReadCapability = .unknown
 
     init(
         appServerManager: any AppServerManaging,
@@ -322,6 +329,7 @@ private final class CodexAccountSessionController {
         staleRefreshTask?.cancel()
         staleRefreshTask = nil
         staleRefreshTaskID = nil
+        rateLimitsReadCapability = .unknown
         let task = observerTask
         observerTask = nil
         let transport = observerTransport
@@ -387,6 +395,7 @@ private final class CodexAccountSessionController {
             guard isCurrent(target: target, account: account) else {
                 return
             }
+            rateLimitsReadCapability = .supported
             applyRateLimits(from: response, to: account)
             scheduleStaleRefresh(
                 account: account,
@@ -397,6 +406,7 @@ private final class CodexAccountSessionController {
             guard isCurrent(target: target, account: account) else {
                 return
             }
+            rateLimitsReadCapability = .unsupported
             account.clearRateLimits()
         } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
             guard isCurrent(target: target, account: account) else {
@@ -430,11 +440,13 @@ private final class CodexAccountSessionController {
                     continue
                 }
                 applyRateLimits(from: payload.rateLimits, to: account)
-                scheduleStaleRefresh(
-                    account: account,
-                    target: target,
-                    session: session
-                )
+                if rateLimitsReadCapability != .unsupported {
+                    scheduleStaleRefresh(
+                        account: account,
+                        target: target,
+                        session: session
+                    )
+                }
             }
             guard isCurrent(target: target, account: account) else {
                 return
@@ -459,6 +471,7 @@ private final class CodexAccountSessionController {
         staleRefreshTask?.cancel()
         staleRefreshTask = nil
         staleRefreshTaskID = nil
+        rateLimitsReadCapability = .unknown
         observerTask = nil
         observerTransport = nil
     }
@@ -468,6 +481,9 @@ private final class CodexAccountSessionController {
         target: AttachmentTarget,
         session: SharedAppServerReviewAuthSession
     ) {
+        guard rateLimitsReadCapability != .unsupported else {
+            return
+        }
         staleRefreshTask?.cancel()
         let taskID = UUID()
         staleRefreshTaskID = taskID
@@ -497,6 +513,7 @@ private final class CodexAccountSessionController {
                 else {
                     return
                 }
+                self.rateLimitsReadCapability = .supported
                 applyRateLimits(from: response, to: account)
                 self.staleRefreshTask = nil
                 self.staleRefreshTaskID = nil
@@ -511,9 +528,9 @@ private final class CodexAccountSessionController {
                 else {
                     return
                 }
+                self.rateLimitsReadCapability = .unsupported
                 self.staleRefreshTask = nil
                 self.staleRefreshTaskID = nil
-                account.clearRateLimits()
             } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
                 guard self.staleRefreshTaskID == taskID,
                       self.isCurrent(target: target, account: account)
