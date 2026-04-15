@@ -137,7 +137,7 @@ struct StatusView: View {
     @ViewBuilder
     private var ratelimitsSection: some View {
         Section("Rate limits"){
-            ForEach(displayedRateLimits) { window in
+            ForEach(ratelimits) { window in
                 ratelimitsRow(window)
             }
         }
@@ -150,7 +150,7 @@ struct StatusView: View {
         }label:{
             durationText(for: window)
             let resetsAt = window.resetsAt ?? .distantFuture
-            Text("\(resetsAt, format: .dateTime)\n\(.currentDate, format: .offset(to: resetsAt, sign: .never))")
+            Text(rateLimitDetailsText(for: resetsAt))
         }
     }
 
@@ -175,6 +175,13 @@ struct StatusView: View {
 
     private func duration(for window: CodexRateLimitWindow) -> Duration {
         .seconds(window.windowDurationMinutes * 60)
+    }
+
+    private func rateLimitDetailsText(for resetsAt: Date) -> AttributedString {
+        var details = AttributedString(resetsAt.formatted(.dateTime))
+        details.append(AttributedString("\n"))
+        details.append(Date.now.formatted(.offset(to: resetsAt, sign: .never)))
+        return details
     }
 
     var isSignedIn: Bool {
