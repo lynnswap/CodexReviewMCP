@@ -1,8 +1,18 @@
 import AppKit
+import ObjectiveC.runtime
 import ReviewRuntime
 
 @MainActor
 final class ReviewMonitorLogScrollView: NSScrollView {
+    private static let scrollerImpPairSelector = NSSelectorFromString("scrollerImpPair")
+    private static let overlayScrollersShownSelector = NSSelectorFromString("overlayScrollersShown")
+    private static let hideOverlayScrollersSelector = NSSelectorFromString("hideOverlayScrollers")
+    private static let beginHideOverlayScrollersSelector = NSSelectorFromString("_beginHideOverlayScrollers")
+
+    private typealias ObjectGetter = @convention(c) (AnyObject, Selector) -> Unmanaged<AnyObject>?
+    private typealias BoolGetter = @convention(c) (AnyObject, Selector) -> Bool
+    private typealias VoidMethod = @convention(c) (AnyObject, Selector) -> Void
+
     private final class DocumentContainerView: NSView {
         var measuredTextHeight: @MainActor () -> CGFloat = { 0 }
 
@@ -23,6 +33,15 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         case offset(CGFloat)
         case bottom
     }
+
+#if DEBUG
+    enum OverlayScrollerBridgeModeForTesting {
+        case live
+        case missingScrollerImpPair
+        case missingOverlayScrollersShown
+        case missingHideMethods
+    }
+#endif
 
     private let documentContainerView = DocumentContainerView()
     let textView: NSTextView
@@ -45,6 +64,9 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     private(set) var appendCount = 0
     private(set) var reloadCount = 0
     private(set) var autoFollowCount = 0
+    private(set) var overlayScrollerHideRequestCount = 0
+    private var overlayScrollersShownOverrideForTesting: Bool?
+    private var overlayScrollerBridgeModeForTesting: OverlayScrollerBridgeModeForTesting = .live
 #endif
 
     init() {
@@ -282,6 +304,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         )
         contentView.scroll(to: clampedOrigin)
         reflectScrolledClipView(contentView)
+        hideOverlayScrollerAfterProgrammaticScrollIfNeeded()
     }
 
     private func restoreScrollPosition(
@@ -321,6 +344,89 @@ final class ReviewMonitorLogScrollView: NSScrollView {
             return 0
         }
         return max(0, documentView.frame.height - contentView.bounds.height)
+    }
+
+    private func hideOverlayScrollerAfterProgrammaticScrollIfNeeded() {
+        guard scrollerStyle == .overlay,
+              maximumVerticalScrollOffset() > 0.5,
+              let scrollerImpPair = scrollerImpPairForOverlayControl(),
+              overlayScrollersShown(on: scrollerImpPair) == true,
+              requestOverlayScrollersHide(on: scrollerImpPair)
+        else {
+            return
+        }
+
+#if DEBUG
+        overlayScrollerHideRequestCount += 1
+#endif
+    }
+
+    private func scrollerImpPairForOverlayControl() -> NSObject? {
+#if DEBUG
+        if overlayScrollerBridgeModeForTesting == .missingScrollerImpPair {
+            return nil
+        }
+#endif
+        return objectValue(for: Self.scrollerImpPairSelector, on: self)
+    }
+
+    private func overlayScrollersShown(on scrollerImpPair: NSObject) -> Bool? {
+#if DEBUG
+        if let overlayScrollersShownOverrideForTesting {
+            return overlayScrollersShownOverrideForTesting
+        }
+        if overlayScrollerBridgeModeForTesting == .missingOverlayScrollersShown {
+            return nil
+        }
+#endif
+        return boolValue(for: Self.overlayScrollersShownSelector, on: scrollerImpPair)
+    }
+
+    private func requestOverlayScrollersHide(on scrollerImpPair: NSObject) -> Bool {
+#if DEBUG
+        if overlayScrollerBridgeModeForTesting == .missingHideMethods {
+            return false
+        }
+#endif
+        if invokeVoidSelector(Self.hideOverlayScrollersSelector, on: scrollerImpPair) {
+            return true
+        }
+        return invokeVoidSelector(Self.beginHideOverlayScrollersSelector, on: scrollerImpPair)
+    }
+
+    private func objectValue(for selector: Selector, on object: NSObject) -> NSObject? {
+        guard let method = resolvedMethod(for: selector, on: object) else {
+            return nil
+        }
+        let implementation = method_getImplementation(method)
+        let function = unsafeBitCast(implementation, to: ObjectGetter.self)
+        return function(object, selector)?.takeUnretainedValue() as? NSObject
+    }
+
+    private func boolValue(for selector: Selector, on object: NSObject) -> Bool? {
+        guard let method = resolvedMethod(for: selector, on: object) else {
+            return nil
+        }
+        let implementation = method_getImplementation(method)
+        let function = unsafeBitCast(implementation, to: BoolGetter.self)
+        return function(object, selector)
+    }
+
+    private func invokeVoidSelector(_ selector: Selector, on object: NSObject) -> Bool {
+        guard let method = resolvedMethod(for: selector, on: object) else {
+            return false
+        }
+        let implementation = method_getImplementation(method)
+        let function = unsafeBitCast(implementation, to: VoidMethod.self)
+        function(object, selector)
+        return true
+    }
+
+    private func resolvedMethod(for selector: Selector, on object: NSObject) -> Method? {
+        guard object.responds(to: selector) else {
+            return nil
+        }
+        return class_getInstanceMethod(type(of: object), selector)
     }
 
     private func isPinnedToBottom() -> Bool {
@@ -390,6 +496,22 @@ extension ReviewMonitorLogScrollView {
 
     func scrollToBottomForTesting() {
         scrollToBottom(countAsAutoFollow: false)
+    }
+
+    var overlayScrollerHideRequestCountForTesting: Int {
+        overlayScrollerHideRequestCount
+    }
+
+    func setScrollerStyleForTesting(_ style: NSScroller.Style) {
+        scrollerStyle = style
+    }
+
+    func setOverlayScrollersShownForTesting(_ isShown: Bool?) {
+        overlayScrollersShownOverrideForTesting = isShown
+    }
+
+    func setOverlayScrollerBridgeModeForTesting(_ mode: OverlayScrollerBridgeModeForTesting) {
+        overlayScrollerBridgeModeForTesting = mode
     }
 }
 #endif
