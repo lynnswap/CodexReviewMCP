@@ -249,15 +249,14 @@ final class ReviewMonitorSidebarPaneViewController: NSViewController {
     @discardableResult
     private func embed(_ viewController: NSViewController) -> [NSLayoutConstraint] {
         let contentView = viewController.view
-        let safeArea = view.safeAreaLayoutGuide
         contentView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentView)
 
         let constraints = [
-            contentView.topAnchor.constraint(equalTo: safeArea.topAnchor),
-            contentView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
-            contentView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
+            contentView.topAnchor.constraint(equalTo: view.topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ]
         NSLayoutConstraint.activate(constraints)
         return constraints

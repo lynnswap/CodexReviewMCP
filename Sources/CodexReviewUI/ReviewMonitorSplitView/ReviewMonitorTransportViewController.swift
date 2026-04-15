@@ -33,15 +33,13 @@ final class ReviewMonitorTransportViewController: NSViewController {
     }
 
     private func configureHierarchy() {
-        let safeArea = view.safeAreaLayoutGuide
-
         view.addSubview(logScrollView)
 
         NSLayoutConstraint.activate([
-            logScrollView.topAnchor.constraint(equalTo: safeArea.topAnchor),
-            logScrollView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
-            logScrollView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
-            logScrollView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
+            logScrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            logScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            logScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            logScrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
 
