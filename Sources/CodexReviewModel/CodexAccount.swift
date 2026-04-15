@@ -70,12 +70,19 @@ public final class CodexAccount {
     package func updateRateLimits(
         _ rateLimits: [(windowDurationMinutes: Int, usedPercent: Int, resetsAt: Date?)]
     ) {
-        let validRateLimits = rateLimits.filter { $0.windowDurationMinutes > 0 }
-        let existingRateLimitsByDuration = Dictionary(
-            uniqueKeysWithValues: self.rateLimits.map { ($0.windowDurationMinutes, $0) }
-        )
+        let validRateLimitsByDuration = rateLimits.reduce(
+            into: [Int: (windowDurationMinutes: Int, usedPercent: Int, resetsAt: Date?)]()
+        ) { result, rateLimit in
+            guard rateLimit.windowDurationMinutes > 0 else {
+                return
+            }
+            result[rateLimit.windowDurationMinutes] = rateLimit
+        }
+        let existingRateLimitsByDuration = self.rateLimits.reduce(into: [Int: CodexRateLimitWindow]()) { result, window in
+            result[window.windowDurationMinutes] = window
+        }
 
-        self.rateLimits = validRateLimits
+        self.rateLimits = validRateLimitsByDuration.values
             .sorted { $0.windowDurationMinutes < $1.windowDurationMinutes }
             .map { rateLimit in
                 if let existingRateLimit = existingRateLimitsByDuration[rateLimit.windowDurationMinutes] {

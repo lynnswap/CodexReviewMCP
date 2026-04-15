@@ -429,13 +429,14 @@ struct CodexReviewMCPTests {
         account.updateRateLimits(
             [
                 (windowDurationMinutes: 300, usedPercent: 40, resetsAt: nil),
+                (windowDurationMinutes: 300, usedPercent: 55, resetsAt: nil),
                 (windowDurationMinutes: 0, usedPercent: 75, resetsAt: nil),
                 (windowDurationMinutes: -60, usedPercent: 10, resetsAt: nil),
             ]
         )
 
         #expect(account.rateLimits.map(\.windowDurationMinutes) == [300])
-        #expect(account.rateLimits.map(\.usedPercent) == [40])
+        #expect(account.rateLimits.map(\.usedPercent) == [55])
     }
 
     @Test func rateLimitNotificationUpdatesCodexSnapshotAndPreservesOtherBuckets() async throws {
