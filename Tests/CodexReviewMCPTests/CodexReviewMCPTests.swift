@@ -1765,6 +1765,42 @@ struct CodexReviewMCPTests {
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
     }
 
+    @Test func logoutDuringAuthenticatedRetryCancelsLoginAndSignsOut() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = BlockingLoginReviewAuthSession()
+        let authFactory = CountingReviewAuthSessionFactory(session: authSession)
+        let manager = AuthCapableAppServerManager()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                try await authFactory.makeSession()
+            }
+        )
+        await store.start()
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        await authSession.waitForLoginStart()
+
+        await store.auth.logout()
+        _ = await beginTask.value
+
+        #expect(testAuthState(from: store.auth) == .signedOut)
+        #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
+
+        await store.stop()
+    }
+
     @Test func beginAuthenticationUsesInjectedAuthSessionWithoutAuthTransportCheckout() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()

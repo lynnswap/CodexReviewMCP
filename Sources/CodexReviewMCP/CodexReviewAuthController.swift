@@ -120,6 +120,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     package func logout(auth: CodexReviewAuthModel) async {
         cancelStartupRefresh()
+        if auth.isAuthenticating {
+            await cancelAuthentication(auth: auth)
+        }
         do {
             let state = try await authManager.logout()
             let identityChanged = applyReviewAuthState(state, to: auth)

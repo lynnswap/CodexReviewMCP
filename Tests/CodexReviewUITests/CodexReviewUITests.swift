@@ -2477,6 +2477,57 @@ struct CodexReviewUITests {
         #expect(view.showsServerRestartAction)
     }
 
+    @Test func statusViewRedactsPlaceholderRateLimitsWithoutAccount() {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.loadForTesting(
+            serverState: .running,
+            authState: .signedOut,
+            workspaces: []
+        )
+        let view = StatusView(store: store)
+
+        #expect(view.showsRedactedRateLimitsForTesting)
+    }
+
+    @Test func statusViewUsesSignOutActionWhileSignedInAccountAuthenticates() async {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "review@example.com"))
+        let store = makeStore(backend: backend)
+        applyTestAuthState(
+            auth: store.auth,
+            state: .init(
+                isAuthenticated: true,
+                accountID: "review@example.com",
+                progress: .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue.",
+                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+                )
+            )
+        )
+        let view = StatusView(store: store)
+
+        #expect(view.primaryAccountActionForTesting == .signOut)
+
+        view.performPrimaryAccountActionForTesting()
+        await backend.waitForLogoutCallCount(1)
+
+        #expect(backend.logoutCallCount() == 1)
+        #expect(backend.beginAuthenticationCallCount() == 0)
+        #expect(backend.cancelAuthenticationCallCount() == 0)
+    }
+
+    @Test func statusViewOmitsRateLimitResetDetailsWhenResetDateIsUnknown() {
+        let store = makeStatusPreviewStore()
+        let view = StatusView(store: store)
+        let window = CodexRateLimitWindow(
+            windowDurationMinutes: 300,
+            usedPercent: 34,
+            resetsAt: nil
+        )
+
+        #expect(view.rateLimitDetailsTextForTesting(window) == nil)
+    }
+
     @Test func signInViewDescriptionTextReflectsAuthState() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
 
@@ -3165,9 +3216,11 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
     private let refreshSignal = AsyncSignal()
     private let beginSignal = AsyncSignal()
     private let cancelSignal = AsyncSignal()
+    private let logoutSignal = AsyncSignal()
     private var refreshCalls = 0
     private var beginCalls = 0
     private var cancelCalls = 0
+    private var logoutCalls = 0
 
     init(initialAuthState: TestAuthState = .signedOut) {
         self.initialAuthState = initialAuthState
@@ -3219,6 +3272,8 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
 
     func logout(auth: CodexReviewAuthModel) async {
         _ = auth
+        logoutCalls += 1
+        await logoutSignal.signal()
     }
 
     func beginAuthenticationCallCount() -> Int {
@@ -3252,5 +3307,16 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
             return
         }
         await cancelSignal.wait(untilCount: count)
+    }
+
+    func logoutCallCount() -> Int {
+        logoutCalls
+    }
+
+    func waitForLogoutCallCount(_ count: Int) async {
+        if logoutCalls >= count {
+            return
+        }
+        await logoutSignal.wait(untilCount: count)
     }
 }

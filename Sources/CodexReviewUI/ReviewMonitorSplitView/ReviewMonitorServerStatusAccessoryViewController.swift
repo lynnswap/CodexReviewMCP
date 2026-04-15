@@ -19,6 +19,11 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
 
 
 struct StatusView: View {
+    private enum PrimaryAccountAction {
+        case none
+        case signOut
+    }
+
     let store: CodexReviewStore
 
     private static let placeholderRateLimits: [CodexRateLimitWindow] = [
@@ -45,21 +50,34 @@ struct StatusView: View {
     }
 
     private var showsRedactedRateLimits: Bool {
-        return account?.rateLimits.isEmpty == true
+        ratelimits.isEmpty
+    }
+
+    private var primaryAccountAction: PrimaryAccountAction {
+        if canSignOut {
+            return .signOut
+        }
+        return .none
+    }
+
+    private var showsManagementSection: Bool {
+        showsServerRestartAction || primaryAccountAction == .signOut
     }
 
     var body: some View {
         Menu {
             ratelimitsSection
-            
-            Divider()
-            if showsServerRestartAction {
-                Button("Reset Server", systemImage: "arrow.clockwise") {
-                    restartServer()
+
+            if showsManagementSection {
+                Divider()
+                if showsServerRestartAction {
+                    Button("Reset Server", systemImage: "arrow.clockwise") {
+                        restartServer()
+                    }
                 }
+
+                accountMenu
             }
-            
-            accountMenu
         } label: {
             labelView
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -72,18 +90,19 @@ struct StatusView: View {
     
     @ViewBuilder
     private var accountMenu: some View{
-        Menu{
-            Button{
-                performLogout()
-            }label:{
-                Label("Sign Out",systemImage:"rectangle.portrait.and.arrow.right")
-                if let account{
-                    Text(account.email)
+        if primaryAccountAction == .signOut {
+            Menu{
+                Button{
+                    performLogout()
+                }label:{
+                    Label("Sign Out",systemImage:"rectangle.portrait.and.arrow.right")
+                    if let account{
+                        Text(account.email)
+                    }
                 }
+            }label:{
+                Text("Account")
             }
-            .disabled(canSignOut == false)
-        }label:{
-            Text("Account")
         }
     }
     
@@ -143,8 +162,9 @@ struct StatusView: View {
         Button{
         }label:{
             durationText(for: window)
-            let resetsAt = window.resetsAt ?? .distantFuture
-            Text(rateLimitDetailsText(for: resetsAt))
+            if let details = rateLimitDetailsText(for: window) {
+                Text(details)
+            }
         }
     }
 
@@ -171,7 +191,10 @@ struct StatusView: View {
         .seconds(window.windowDurationMinutes * 60)
     }
 
-    private func rateLimitDetailsText(for resetsAt: Date) -> AttributedString {
+    private func rateLimitDetailsText(for window: CodexRateLimitWindow) -> AttributedString? {
+        guard let resetsAt = window.resetsAt else {
+            return nil
+        }
         var details = AttributedString(resetsAt.formatted(.dateTime))
         details.append(AttributedString("\n"))
         details.append(Date.now.formatted(.offset(to: resetsAt, sign: .never)))
@@ -202,7 +225,46 @@ struct StatusView: View {
             await store.auth.logout()
         }
     }
+
 }
+
+#if DEBUG
+@MainActor
+extension StatusView {
+    enum PrimaryAccountActionForTesting: Equatable {
+        case none
+        case signOut
+    }
+
+    var showsRedactedRateLimitsForTesting: Bool {
+        showsRedactedRateLimits
+    }
+
+    var primaryAccountActionForTesting: PrimaryAccountActionForTesting {
+        switch primaryAccountAction {
+        case .none:
+            .none
+        case .signOut:
+            .signOut
+        }
+    }
+
+    func rateLimitDetailsTextForTesting(
+        _ window: CodexRateLimitWindow
+    ) -> AttributedString? {
+        rateLimitDetailsText(for: window)
+    }
+
+    func performPrimaryAccountActionForTesting() {
+        switch primaryAccountAction {
+        case .none:
+            break
+        case .signOut:
+            performLogout()
+        }
+    }
+}
+#endif
 
 #if DEBUG
 #Preview("Signed In") {
