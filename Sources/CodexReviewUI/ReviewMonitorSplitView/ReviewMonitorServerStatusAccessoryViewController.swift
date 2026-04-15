@@ -135,7 +135,7 @@ struct StatusView: View {
 @MainActor
 func makeStatusPreviewStore(
     authPhase: CodexReviewAuthModel.Phase = .signedOut,
-    account: CodexAccount? = CodexAccount(email: "review@example.com", planType: "pro"),
+    account: CodexAccount? = makeStatusPreviewAccount(),
     serverState: CodexReviewServerState = .running
 ) -> CodexReviewStore {
     let store = ReviewMonitorPreviewContent.makeStore()
@@ -145,5 +145,22 @@ func makeStatusPreviewStore(
     store.serverState = serverState
     store.serverURL = serverState == .running ? runningServerURL : nil
     return store
+}
+@MainActor
+private func makeStatusPreviewAccount() -> CodexAccount {
+    let account = CodexAccount(email: "review@example.com", planType: "pro")
+    account.updateRateLimits(
+        sessionLimits: .init(
+            usedFraction: 0.34,
+            windowDurationMinutes: 300,
+            resetsAt: Date(timeIntervalSince1970: 1_735_776_000)
+        ),
+        weeklyLimits: .init(
+            usedFraction: 0.61,
+            windowDurationMinutes: 10080,
+            resetsAt: Date(timeIntervalSince1970: 1_736_380_800)
+        )
+    )
+    return account
 }
 #endif

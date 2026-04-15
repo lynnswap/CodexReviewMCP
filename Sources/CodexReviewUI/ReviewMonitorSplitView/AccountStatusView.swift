@@ -69,21 +69,4 @@ struct AccountStatusView: View {
         .padding()
 }
 
-@MainActor
-private func makeStatusPreviewAccount() -> CodexAccount {
-    let account = CodexAccount(email: "review@example.com", planType: "pro")
-    account.updateRateLimits(
-        sessionLimits: .init(
-            usedFraction: 0.34,
-            windowDurationMinutes: 300,
-            resetsAt: Date(timeIntervalSince1970: 1_735_776_000)
-        ),
-        weeklyLimits: .init(
-            usedFraction: 0.61,
-            windowDurationMinutes: 10080,
-            resetsAt: Date(timeIntervalSince1970: 1_736_380_800)
-        )
-    )
-    return account
-}
 #endif
