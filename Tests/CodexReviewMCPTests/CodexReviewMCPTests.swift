@@ -138,20 +138,17 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 40)
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 20)
-        #expect(store.auth.account?.currentRateLimitSnapshot?.limitID == "codex")
-        #expect(store.auth.account?.rateLimitSnapshotsByLimitID["codex_other"]?.primary?.usedPercent == 10)
-
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
         await store.stop()
     }
 
@@ -206,19 +203,17 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 85
+            $0 == 85
         }
 
-        #expect(store.auth.account?.currentRateLimitSnapshot?.primary?.usedPercent == 85)
-        #expect(store.auth.account?.rateLimitSnapshotsByLimitID["codex"]?.primary?.usedPercent == 85)
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 85)
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 55)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 55)
 
         await store.stop()
     }
@@ -268,19 +263,67 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let currentSnapshotProbe = ObservableValueProbe { store.auth.account?.currentRateLimitSnapshot }
-        defer { currentSnapshotProbe.cancel() }
+        let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
+        defer { authStateProbe.cancel() }
 
         await store.start()
 
-        try await waitForObservedValue(currentSnapshotProbe) {
-            $0?.limitID == "codex_other"
+        try await waitForObservedValue(authStateProbe) {
+            $0 == .signedIn(accountID: "review@example.com")
         }
 
-        #expect(store.auth.account?.currentRateLimitSnapshot?.limitID == "codex_other")
-        #expect(store.auth.account?.codexRateLimitSnapshot == nil)
-        #expect(store.auth.account?.codexFiveHourRateLimit == nil)
-        #expect(store.auth.account?.codexWeeklyRateLimit == nil)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+
+        await store.stop()
+    }
+
+    @Test func startingStoreSkipsRateLimitWindowWhenDurationIsMissing() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authTransport = AuthCapableAppServerSessionTransport()
+        await authTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 40,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 20,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let weeklyProbe = ObservableValueProbe { rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent }
+        defer { weeklyProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(weeklyProbe) {
+            $0 == 20
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
 
         await store.stop()
     }
@@ -305,14 +348,21 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
+
+        let initialSessionWindow = try #require(
+            rateLimitWindow(duration: 300, in: store.auth.account)
+        )
+        let initialWeeklyWindow = try #require(
+            rateLimitWindow(duration: 10_080, in: store.auth.account)
+        )
 
         let authTransport = try #require(await manager.authTransportForTesting())
         try await authTransport.sendRateLimitsUpdated(
@@ -333,14 +383,13 @@ struct CodexReviewMCPTests {
         )
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 85
+            $0 == 85
         }
 
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 85)
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 55)
-        #expect(store.auth.account?.currentRateLimitSnapshot?.primary?.usedPercent == 85)
-        #expect(store.auth.account?.rateLimitSnapshotsByLimitID["codex_other"]?.primary?.usedPercent == 10)
-
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) === initialSessionWindow)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) === initialWeeklyWindow)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 55)
         await store.stop()
     }
 
@@ -394,17 +443,17 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 85
+            $0 == 85
         }
 
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 85)
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 55)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 55)
 
         await store.stop()
     }
@@ -429,16 +478,12 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
-        let otherBucketProbe = ObservableValueProbe {
-            store.auth.account?.rateLimitSnapshotsByLimitID["codex_other"]?.primary?.usedPercent
-        }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
-        defer { otherBucketProbe.cancel() }
 
         await store.start()
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
         let authTransport = try #require(await manager.authTransportForTesting())
@@ -455,13 +500,8 @@ struct CodexReviewMCPTests {
             ]
         )
 
-        try await waitForObservedValue(otherBucketProbe) {
-            $0 == 77
-        }
-
-        #expect(store.auth.account?.currentRateLimitSnapshot?.limitID == "codex")
-        #expect(store.auth.account?.rateLimitSnapshotsByLimitID["codex_other"]?.primary?.usedPercent == 77)
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 40)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
 
         await store.stop()
     }
@@ -501,16 +541,12 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
-        let otherBucketProbe = ObservableValueProbe {
-            store.auth.account?.rateLimitSnapshotsByLimitID["codex_other"]?.primary?.usedPercent
-        }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
-        defer { otherBucketProbe.cancel() }
 
         await store.start()
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
         try await authTransport.sendRateLimitsUpdated(
@@ -526,13 +562,9 @@ struct CodexReviewMCPTests {
             ]
         )
 
-        try await waitForObservedValue(otherBucketProbe) {
-            $0 == 77
-        }
-
-        #expect(store.auth.account?.currentRateLimitSnapshot?.limitID == nil)
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 40)
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 20)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
 
         await store.stop()
     }
@@ -582,7 +614,7 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let codexProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let codexProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { codexProbe.cancel() }
 
         await store.start()
@@ -604,13 +636,11 @@ struct CodexReviewMCPTests {
         )
 
         try await waitForObservedValue(codexProbe) {
-            $0?.usedPercent == 77
+            $0 == 77
         }
 
-        #expect(store.auth.account?.currentRateLimitSnapshot?.limitID == "codex_other")
-        #expect(store.auth.account?.currentRateLimitSnapshot?.primary?.usedPercent == 64)
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 77)
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 21)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 77)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 21)
 
         await store.stop()
     }
@@ -654,22 +684,22 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
         await firstTransport.finishNotificationStream()
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 65
+            $0 == 65
         }
 
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 65)
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 42)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 65)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 42)
 
         await store.stop()
     }
@@ -700,12 +730,12 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
         let authTransport = try #require(await manager.authTransportForTesting())
@@ -745,12 +775,12 @@ struct CodexReviewMCPTests {
         await store.auth.refresh()
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 12
+            $0 == 12
         }
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "new@example.com"))
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 12)
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 8)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 12)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 8)
         #expect(await manager.prepareCount() == 2)
         #expect(await manager.shutdownCount() == 1)
 
@@ -783,13 +813,20 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
+
+        let initialSessionWindow = try #require(
+            rateLimitWindow(duration: 300, in: store.auth.account)
+        )
+        let initialWeeklyWindow = try #require(
+            rateLimitWindow(duration: 10_080, in: store.auth.account)
+        )
 
         let authTransport = try #require(await manager.authTransportForTesting())
         await authTransport.updateRateLimitsResponse(
@@ -828,11 +865,13 @@ struct CodexReviewMCPTests {
         await store.auth.refresh()
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 18
+            $0 == 18
         }
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 14)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) === initialSessionWindow)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) === initialWeeklyWindow)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 14)
 
         await store.stop()
     }
@@ -868,21 +907,19 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
         await store.auth.refresh()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "new@example.com"))
-        #expect(store.auth.account?.codexFiveHourRateLimit == nil)
-        #expect(store.auth.account?.codexWeeklyRateLimit == nil)
-        #expect(store.auth.account?.rateLimitSnapshotsByLimitID.isEmpty ?? true)
-
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
         await store.stop()
     }
 
@@ -942,21 +979,21 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
         await firstTransport.failNotificationStream(message: "transport disconnected")
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 27
+            $0 == 27
         }
 
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 9)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 9)
 
         await store.stop()
     }
@@ -986,13 +1023,13 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
         await store.stop()
@@ -1018,23 +1055,19 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
         await store.auth.logout()
 
         #expect(testAuthState(from: store.auth) == .signedOut)
-        #expect(store.auth.account?.codexFiveHourRateLimit == nil)
-        #expect(store.auth.account?.codexWeeklyRateLimit == nil)
-        #expect(store.auth.account?.rateLimitSnapshotsByLimitID.isEmpty ?? true)
-        #expect(store.auth.account?.currentRateLimitSnapshot == nil)
-        #expect(store.auth.account?.codexRateLimitSnapshot == nil)
-
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
         await store.stop()
     }
 
@@ -1068,10 +1101,8 @@ struct CodexReviewMCPTests {
         }
 
         #expect(store.serverState == .running)
-        #expect(store.auth.account?.codexFiveHourRateLimit == nil)
-        #expect(store.auth.account?.codexWeeklyRateLimit == nil)
-        #expect(store.auth.account?.rateLimitSnapshotsByLimitID.isEmpty ?? true)
-
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
         await store.stop()
     }
 
@@ -1106,8 +1137,8 @@ struct CodexReviewMCPTests {
         try await Task.sleep(for: .milliseconds(400))
 
         #expect(await manager.authTransportCheckoutCount() == 1)
-        #expect(store.auth.account?.codexFiveHourRateLimit == nil)
-        #expect(store.auth.account?.codexWeeklyRateLimit == nil)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
 
         await store.stop()
     }
@@ -1135,11 +1166,6 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let otherBucketProbe = ObservableValueProbe {
-            store.auth.account?.rateLimitSnapshotsByLimitID["codex_other"]?.primary?.usedPercent
-        }
-        defer { otherBucketProbe.cancel() }
-
         await store.start()
         await authTransport.waitForNotificationStream()
 
@@ -1156,13 +1182,9 @@ struct CodexReviewMCPTests {
             ]
         )
 
-        try await waitForObservedValue(otherBucketProbe) {
-            $0 == 77
-        }
-
-        #expect(store.auth.account?.currentRateLimitSnapshot == nil)
-        #expect(store.auth.account?.codexRateLimitSnapshot == nil)
-        #expect(store.auth.account?.rateLimitSnapshotsByLimitID["codex_other"]?.primary?.usedPercent == 77)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
 
         await store.stop()
     }
@@ -1215,7 +1237,7 @@ struct CodexReviewMCPTests {
             }
         )
         let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { authStateProbe.cancel() }
         defer { fiveHourProbe.cancel() }
 
@@ -1230,11 +1252,11 @@ struct CodexReviewMCPTests {
             )
         }
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
-        #expect(store.auth.account?.codexFiveHourRateLimit?.usedPercent == 40)
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 20)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
 
         await store.stop()
     }
@@ -1950,18 +1972,18 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { store.auth.account?.codexFiveHourRateLimit }
+        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
         await store.start()
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 40
+            $0 == 40
         }
 
         await store.auth.logout()
 
         try await waitForObservedValue(fiveHourProbe) {
-            $0?.usedPercent == 22
+            $0 == 22
         }
 
         #expect(
@@ -1971,7 +1993,7 @@ struct CodexReviewMCPTests {
                 accountID: "new@example.com"
             )
         )
-        #expect(store.auth.account?.codexWeeklyRateLimit?.usedPercent == 11)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 11)
         #expect(await manager.prepareCount() == 2)
         #expect(await manager.shutdownCount() == 1)
 
@@ -3862,7 +3884,7 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     private var recordedCompleteParams: AppServerCompleteLoginAccountParams?
     private var recordedCancelLoginIDs: [String] = []
     private var notificationStreamWaiters: [CheckedContinuation<Void, Never>] = []
-    private var notificationDuringNextRateLimitRead: AppServerRateLimitSnapshot?
+    private var notificationDuringNextRateLimitRead: AppServerRateLimitSnapshotPayload?
     private var accountReadResponseObject: [String: Any] = [
         "account": NSNull(),
         "requiresOpenaiAuth": true,
@@ -4074,7 +4096,7 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     func sendRateLimitsUpdated(
         _ rateLimits: [String: Any]
     ) async throws {
-        let snapshot: AppServerRateLimitSnapshot = try decode(rateLimits, as: AppServerRateLimitSnapshot.self)
+        let snapshot: AppServerRateLimitSnapshotPayload = try decode(rateLimits, as: AppServerRateLimitSnapshotPayload.self)
         continuation?.yield(
             .accountRateLimitsUpdated(
                 .init(rateLimits: snapshot)
@@ -4087,7 +4109,7 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     ) async throws {
         notificationDuringNextRateLimitRead = try decode(
             rateLimits,
-            as: AppServerRateLimitSnapshot.self
+            as: AppServerRateLimitSnapshotPayload.self
         )
     }
 
@@ -4735,4 +4757,12 @@ private func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
         progress: auth.progress,
         errorMessage: auth.errorMessage
     )
+}
+
+@MainActor
+private func rateLimitWindow(
+    duration: Int,
+    in account: CodexAccount?
+) -> CodexRateLimitWindow? {
+    account?.rateLimits.first { $0.windowDurationMinutes == duration }
 }

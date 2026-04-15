@@ -20,40 +20,134 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
 
 struct StatusView: View {
     let store: CodexReviewStore
-
-    var body: some View {
-        VStack{
-            AccountStatusView(account: store.auth.account)
-            Menu {
-                Label(accountDisplayName, systemImage: "person.circle.fill")
-                if showsAuthenticationAction {
-                    Button(authenticationActionTitle, systemImage: authenticationActionSystemImage) {
-                        performAuthenticationAction()
-                    }
-                }
-                if showsServerRestartAction {
-                    Button("Reset Server", systemImage: "arrow.clockwise") {
-                        restartServer()
-                    }
-                }
-                Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
-                    performLogout()
-                }
-                .disabled(canSignOut == false)
-            } label: {
-                Label("Settings", systemImage: "gear")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
-            }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-        }
-        .padding(8)
+    
+    private var account: CodexAccount?{
+        store.auth.account
+    }
+    
+    private var ratelimits: [CodexRateLimitWindow]{
+        account?.rateLimits ?? []
     }
 
+    var body: some View {
+        Menu {
+            Section("Rate limits"){
+                ForEach(ratelimits) { window in
+                    ratelimitsSection(window)
+                }
+            }
+            Divider()
+            Button{
+            }label:{
+                Label(accountDisplayName, systemImage: "person.circle.fill")
+            }
+            
+            if showsAuthenticationAction {
+                Button(authenticationActionTitle, systemImage: authenticationActionSystemImage) {
+                    performAuthenticationAction()
+                }
+            }
+            if showsServerRestartAction {
+                Button("Reset Server", systemImage: "arrow.clockwise") {
+                    restartServer()
+                }
+            }
+            
+            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+                performLogout()
+            }
+            .disabled(canSignOut == false)
+        } label: {
+            labelView
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
+        }
+        .animation(.default, value: ratelimits.isEmpty)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .padding(8)
+    }
+    
+    @ViewBuilder
+    private var labelView: some View{
+        Group{
+            if !ratelimits.isEmpty{
+                VStack {
+                    ForEach(ratelimits) { window in
+                        gaugeView(window)
+                    }
+                }
+                .gaugeStyle(.accessoryLinearCapacity)
+                .transition(.blurReplace)
+                .animation(.default, value: ratelimits)
+                .transaction(value: account?.id) { transaction in
+                    transaction.disablesAnimations = true
+                }
+            }else{
+                Label("Settings", systemImage: "gear")
+                    .transition(.blurReplace)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private func gaugeView(
+        _ window: CodexRateLimitWindow
+    ) -> some View {
+        Gauge(value: Double(window.usedPercent), in: 0...100) {
+            HStack {
+                durationText(for: window)
+                Spacer(minLength: 0)
+                if let resetsAt = limitResetDate(for: window) {
+                    Text(resetsAt, style: .offset)
+                        .foregroundStyle(.secondary)
+                }else{
+                    Text(
+                        Double(window.usedPercent) / 100,
+                        format: .percent.precision(.fractionLength(0))
+                    )
+                }
+            }
+        }
+    }
+    @ViewBuilder
+    private func ratelimitsSection(
+        _ window: CodexRateLimitWindow
+    ) -> some View {
+        if let resetsAt = window.resetsAt {
+            Button{
+            }label:{
+                durationText(for: window)
+                Text(resetsAt, format: .dateTime)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func durationText(for window: CodexRateLimitWindow) -> some View {
+        Text(
+            duration(for: window),
+            format: .units(
+                allowed: [.days,.hours,.weeks],
+                width: .wide,
+                maximumUnitCount: 2
+            )
+        )
+    }
+
+    private func limitResetDate(for window: CodexRateLimitWindow) -> Date? {
+        guard window.usedPercent >= 100 else {
+            return nil
+        }
+        return window.resetsAt
+    }
+
+    private func duration(for window: CodexRateLimitWindow) -> Duration {
+        .seconds(window.windowDurationMinutes * 60)
+    }
     var accountDisplayName: String {
         if let account = store.auth.account {
-            return account.displayName
+            return account.email
         }
         return "Unknown"
     }
@@ -119,7 +213,6 @@ struct StatusView: View {
     }
 }
 
-
 #if DEBUG
 #Preview("Signed In") {
     let store = makeStatusPreviewStore()
@@ -150,19 +243,21 @@ func makeStatusPreviewStore(
     return store
 }
 @MainActor
-private func makeStatusPreviewAccount() -> CodexAccount {
+func makeStatusPreviewAccount() -> CodexAccount {
     let account = CodexAccount(email: "review@example.com", planType: "pro")
     account.updateRateLimits(
-        sessionLimits: .init(
-            usedFraction: 0.34,
-            windowDurationMinutes: 300,
-            resetsAt: Date(timeIntervalSince1970: 1_735_776_000)
-        ),
-        weeklyLimits: .init(
-            usedFraction: 0.61,
-            windowDurationMinutes: 10080,
-            resetsAt: Date(timeIntervalSince1970: 1_736_380_800)
-        )
+        [
+            (
+                windowDurationMinutes: 300,
+                usedPercent: 34,
+                resetsAt: Date(timeIntervalSince1970: 1_735_776_000)
+            ),
+            (
+                windowDurationMinutes: 10_080,
+                usedPercent: 61,
+                resetsAt: Date(timeIntervalSince1970: 1_736_380_800)
+            ),
+        ]
     )
     return account
 }

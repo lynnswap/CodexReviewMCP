@@ -1,135 +1,113 @@
 import Foundation
 import Observation
 
-public struct CodexRateLimitWindow: Sendable, Equatable {
+@MainActor
+@Observable
+public final class CodexRateLimitWindow {
+    nonisolated public let id: Int
     public var usedPercent: Int
-    public var windowDurationMinutes: Int?
     public var resetsAt: Date?
 
+    nonisolated public var windowDurationMinutes: Int {
+        id
+    }
+
     public init(
+        windowDurationMinutes: Int,
         usedPercent: Int,
-        windowDurationMinutes: Int? = nil,
         resetsAt: Date? = nil
     ) {
-        self.usedPercent = usedPercent
-        self.windowDurationMinutes = windowDurationMinutes
+        precondition(windowDurationMinutes > 0, "CodexRateLimitWindow duration must be positive.")
+        self.id = windowDurationMinutes
+        self.usedPercent = min(max(usedPercent, 0), 100)
+        self.resetsAt = resetsAt
+    }
+
+    package func update(
+        usedPercent: Int,
+        resetsAt: Date?
+    ) {
+        self.usedPercent = min(max(usedPercent, 0), 100)
         self.resetsAt = resetsAt
     }
 }
 
-public struct CodexRateLimitSnapshot: Sendable, Equatable {
-    public var limitID: String?
-    public var limitName: String?
-    public var primary: CodexRateLimitWindow?
-    public var secondary: CodexRateLimitWindow?
+extension CodexRateLimitWindow: Identifiable, Hashable {
+    public static nonisolated func == (lhs: CodexRateLimitWindow, rhs: CodexRateLimitWindow) -> Bool {
+        lhs.id == rhs.id
+    }
 
-    public init(
-        limitID: String? = nil,
-        limitName: String? = nil,
-        primary: CodexRateLimitWindow? = nil,
-        secondary: CodexRateLimitWindow? = nil
-    ) {
-        self.limitID = limitID
-        self.limitName = limitName
-        self.primary = primary
-        self.secondary = secondary
+    public nonisolated func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 }
 
 @MainActor
 @Observable
 public final class CodexAccount {
-    public var email: String?
+    nonisolated public let id: String
     public var planType: String?
-    public package(set) var rateLimitSnapshotsByLimitID: [String: CodexRateLimitSnapshot] = [:]
-    public package(set) var currentRateLimitSnapshot: CodexRateLimitSnapshot?
-    public package(set) var codexRateLimitSnapshot: CodexRateLimitSnapshot?
-    public package(set) var codexFiveHourRateLimit: CodexRateLimitWindow?
-    public package(set) var codexWeeklyRateLimit: CodexRateLimitWindow?
+    public package(set) var rateLimits: [CodexRateLimitWindow] = []
+
+    nonisolated public var email: String {
+        id
+    }
 
     public var displayName: String {
-        let trimmedEmail = email?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmedEmail, trimmedEmail.isEmpty == false {
-            return trimmedEmail
-        }
-        return "ChatGPT"
+        email
     }
 
     public init(
-        email: String? = nil,
+        email: String,
         planType: String? = nil
     ) {
-        self.email = email
+        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        precondition(normalizedEmail.isEmpty == false, "CodexAccount email must not be empty.")
+        self.id = normalizedEmail
         self.planType = planType
     }
 
-    package func updateIdentity(
-        email: String?,
-        planType: String?
-    ) {
-        self.email = email
+    package func updatePlanType(_ planType: String?) {
         self.planType = planType
     }
 
     package func updateRateLimits(
-        currentSnapshot: CodexRateLimitSnapshot?,
-        snapshotsByLimitID: [String: CodexRateLimitSnapshot]
+        _ rateLimits: [(windowDurationMinutes: Int, usedPercent: Int, resetsAt: Date?)]
     ) {
-        currentRateLimitSnapshot = currentSnapshot
-        rateLimitSnapshotsByLimitID = snapshotsByLimitID
-        let resolvedCodexSnapshot = currentSnapshot.flatMap { snapshot in
-                let normalizedLimitID = normalizedRateLimitID(snapshot.limitID)
-                guard normalizedLimitID == nil || normalizedLimitID == "codex" else {
-                    return nil
-                }
-                return snapshot
-            }
-            ?? snapshotsByLimitID["codex"]
-        codexRateLimitSnapshot = resolvedCodexSnapshot
-        codexFiveHourRateLimit = resolvedCodexSnapshot?.primary
-        codexWeeklyRateLimit = resolvedCodexSnapshot?.secondary
-    }
-
-    package func mergeRateLimitSnapshot(
-        _ snapshot: CodexRateLimitSnapshot,
-        defaultLimitID: String = "codex"
-    ) {
-        let normalizedLimitID = normalizedRateLimitID(snapshot.limitID)
-        let limitID = normalizedLimitID ?? defaultLimitID
-        var snapshots = rateLimitSnapshotsByLimitID
-        snapshots[limitID] = snapshot
-        let currentBucketID = currentRateLimitSnapshot.flatMap { snapshot in
-            normalizedRateLimitID(snapshot.limitID) ?? "codex"
-        }
-        let updatedCurrentSnapshot: CodexRateLimitSnapshot?
-        if normalizedLimitID == nil {
-            if currentRateLimitSnapshot == nil || currentBucketID == "codex" {
-                updatedCurrentSnapshot = snapshot
-            } else {
-                updatedCurrentSnapshot = currentRateLimitSnapshot
-            }
-        } else if currentBucketID == limitID {
-            updatedCurrentSnapshot = snapshot
-        } else {
-            updatedCurrentSnapshot = currentRateLimitSnapshot
-        }
-        updateRateLimits(
-            currentSnapshot: updatedCurrentSnapshot,
-            snapshotsByLimitID: snapshots
+        let existingRateLimitsByDuration = Dictionary(
+            uniqueKeysWithValues: self.rateLimits.map { ($0.windowDurationMinutes, $0) }
         )
+
+        self.rateLimits = rateLimits
+            .sorted { $0.windowDurationMinutes < $1.windowDurationMinutes }
+            .map { rateLimit in
+                if let existingRateLimit = existingRateLimitsByDuration[rateLimit.windowDurationMinutes] {
+                    existingRateLimit.update(
+                        usedPercent: rateLimit.usedPercent,
+                        resetsAt: rateLimit.resetsAt
+                    )
+                    return existingRateLimit
+                }
+
+                return CodexRateLimitWindow(
+                    windowDurationMinutes: rateLimit.windowDurationMinutes,
+                    usedPercent: rateLimit.usedPercent,
+                    resetsAt: rateLimit.resetsAt
+                )
+            }
     }
 
     package func clearRateLimits() {
-        updateRateLimits(
-            currentSnapshot: nil,
-            snapshotsByLimitID: [:]
-        )
+        rateLimits.removeAll()
+    }
+}
+
+extension CodexAccount: Identifiable, Hashable {
+    public static nonisolated func == (lhs: CodexAccount, rhs: CodexAccount) -> Bool {
+        lhs.id == rhs.id
     }
 
-    private func normalizedRateLimitID(_ limitID: String?) -> String? {
-        guard let limitID, limitID.isEmpty == false else {
-            return nil
-        }
-        return limitID
+    public nonisolated func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 }

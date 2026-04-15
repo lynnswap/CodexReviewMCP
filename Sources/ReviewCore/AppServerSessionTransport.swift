@@ -657,7 +657,7 @@ private func decodeNotification(method: String, data: Data) -> AppServerServerNo
         }
     case "account/rateLimits/updated":
         if let notification = try? decoder.decode(
-            AppServerIncomingNotificationEnvelope<AppServerAccountRateLimitsUpdatedNotification>.self,
+            AppServerIncomingNotificationEnvelope<AppServerAccountRateLimitsUpdatedPayload>.self,
             from: data
         ) {
             return .accountRateLimitsUpdated(notification.params)

@@ -323,9 +323,9 @@ package struct AppServerAccountReadResponse: Decodable, Sendable, Equatable {
     }
 }
 
-package struct GetAccountRateLimitsResponse: Decodable, Sendable, Equatable {
-    package var rateLimits: AppServerRateLimitSnapshot
-    package var rateLimitsByLimitID: [String: AppServerRateLimitSnapshot]?
+package struct AppServerAccountRateLimitsResponse: Decodable, Sendable, Equatable {
+    package var rateLimits: AppServerRateLimitSnapshotPayload
+    package var rateLimitsByLimitID: [String: AppServerRateLimitSnapshotPayload]?
 
     package enum CodingKeys: String, CodingKey {
         case rateLimits
@@ -333,20 +333,20 @@ package struct GetAccountRateLimitsResponse: Decodable, Sendable, Equatable {
     }
 
     package init(
-        rateLimits: AppServerRateLimitSnapshot,
-        rateLimitsByLimitID: [String: AppServerRateLimitSnapshot]? = nil
+        rateLimits: AppServerRateLimitSnapshotPayload,
+        rateLimitsByLimitID: [String: AppServerRateLimitSnapshotPayload]? = nil
     ) {
         self.rateLimits = rateLimits
         self.rateLimitsByLimitID = rateLimitsByLimitID
     }
 }
 
-public struct AppServerRateLimitWindow: Decodable, Sendable, Equatable {
+package struct AppServerRateLimitWindowPayload: Decodable, Sendable, Equatable {
     package var usedPercent: Int
     package var windowDurationMins: Int?
     package var resetsAt: Int64?
 
-    public init(
+    package init(
         usedPercent: Int,
         windowDurationMins: Int? = nil,
         resetsAt: Int64? = nil
@@ -357,11 +357,11 @@ public struct AppServerRateLimitWindow: Decodable, Sendable, Equatable {
     }
 }
 
-public struct AppServerRateLimitSnapshot: Decodable, Sendable, Equatable {
+package struct AppServerRateLimitSnapshotPayload: Decodable, Sendable, Equatable {
     package var limitID: String?
     package var limitName: String?
-    package var primary: AppServerRateLimitWindow?
-    package var secondary: AppServerRateLimitWindow?
+    package var primary: AppServerRateLimitWindowPayload?
+    package var secondary: AppServerRateLimitWindowPayload?
 
     package enum CodingKeys: String, CodingKey {
         case limitID = "limitId"
@@ -370,11 +370,11 @@ public struct AppServerRateLimitSnapshot: Decodable, Sendable, Equatable {
         case secondary
     }
 
-    public init(
+    package init(
         limitID: String? = nil,
         limitName: String? = nil,
-        primary: AppServerRateLimitWindow? = nil,
-        secondary: AppServerRateLimitWindow? = nil
+        primary: AppServerRateLimitWindowPayload? = nil,
+        secondary: AppServerRateLimitWindowPayload? = nil
     ) {
         self.limitID = limitID
         self.limitName = limitName
@@ -1044,10 +1044,10 @@ public struct AppServerAccountUpdatedNotification: Decodable, Sendable, Equatabl
     }
 }
 
-public struct AppServerAccountRateLimitsUpdatedNotification: Decodable, Sendable, Equatable {
-    package var rateLimits: AppServerRateLimitSnapshot
+package struct AppServerAccountRateLimitsUpdatedPayload: Decodable, Sendable, Equatable {
+    package var rateLimits: AppServerRateLimitSnapshotPayload
 
-    public init(rateLimits: AppServerRateLimitSnapshot) {
+    package init(rateLimits: AppServerRateLimitSnapshotPayload) {
         self.rateLimits = rateLimits
     }
 }
@@ -1090,7 +1090,7 @@ package enum AppServerServerNotification: Sendable {
     case error(AppServerErrorNotification)
     case accountLoginCompleted(AppServerAccountLoginCompletedNotification)
     case accountUpdated(AppServerAccountUpdatedNotification)
-    case accountRateLimitsUpdated(AppServerAccountRateLimitsUpdatedNotification)
+    case accountRateLimitsUpdated(AppServerAccountRateLimitsUpdatedPayload)
     case ignored
 }
 

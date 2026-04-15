@@ -5,7 +5,7 @@ import CodexReviewModel
 @MainActor
 private struct ReviewMonitorPreviewView: NSViewControllerRepresentable {
     var authPhase: CodexReviewAuthModel.Phase = .signedOut
-    var account: CodexAccount? = CodexAccount(email: "review@example.com", planType: "pro")
+    var account: CodexAccount? = makeStatusPreviewAccount()
     var serverState: CodexReviewServerState = .running
 
     func makeNSViewController(context: Context) -> NSViewController {

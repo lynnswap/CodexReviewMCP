@@ -31,11 +31,11 @@ private enum DurableAuthCheckResult: Sendable {
 }
 
 package struct ReviewAuthAccount: Sendable, Equatable {
-    package var email: String?
+    package var email: String
     package var planType: String?
 
     package init(
-        email: String?,
+        email: String,
         planType: String?
     ) {
         self.email = email
@@ -94,7 +94,7 @@ package enum ReviewAuthState: Sendable, Equatable {
     }
 
     package static func signedIn(
-        email: String?,
+        email: String,
         planType: String?
     ) -> Self {
         .signedIn(.init(email: email, planType: planType))
@@ -196,7 +196,7 @@ package actor ReviewAuthManager {
         let state = try await withTimeout(accountReadTimeout, clock: configuration.clock) {
             try await self.withSession { session in
                 let account = try await session.readAccount(refreshToken: false)
-                return Self.authState(from: account)
+                return try Self.authState(from: account)
             }
         }
         return state
@@ -433,7 +433,7 @@ package actor ReviewAuthManager {
             let account = try await withTimeout(postLoginAccountReadTimeout, clock: configuration.clock) {
                 try await session.readAccount(refreshToken: true)
             }
-            refreshedState = Self.authState(from: account)
+            refreshedState = try Self.authState(from: account)
         } catch {
             let durableResult = try await durableAuthCheckResult(timeout: refreshedStateDurableVerificationTimeout)
             try ensureAuthenticationAttemptActive()
@@ -487,7 +487,7 @@ package actor ReviewAuthManager {
                 let state = try await withTimeout(accountReadTimeout, clock: configuration.clock) {
                     try await self.withSession { session in
                         let account = try await session.readAccount(refreshToken: false)
-                        return Self.authState(from: account)
+                        return try Self.authState(from: account)
                     }
                 }
                 if state.isAuthenticated == false {
@@ -533,32 +533,7 @@ package actor ReviewAuthManager {
         refreshedState: ReviewAuthState,
         durableState: ReviewAuthState
     ) -> ReviewAuthState {
-        let refreshedAccount = refreshedState.account
-        let durableAccount = durableState.account
-        let refreshedEmail = refreshedAccount?.email
-        let durableEmail = durableAccount?.email
-
-        if refreshedState.isAuthenticated,
-           durableState.isAuthenticated,
-           refreshedEmail == "ChatGPT",
-           durableEmail != "ChatGPT"
-        {
-            return durableState
-        }
-        if refreshedState.isAuthenticated,
-           durableState.isAuthenticated,
-           refreshedEmail != "ChatGPT"
-        {
-            return refreshedState
-        }
-        if refreshedState.isAuthenticated == false,
-           durableState.isAuthenticated
-        {
-            return durableState
-        }
-        if refreshedState.isAuthenticated,
-           durableState.isAuthenticated
-        {
+        if refreshedState.isAuthenticated {
             return refreshedState
         }
         return durableState
@@ -588,12 +563,17 @@ package actor ReviewAuthManager {
         }
     }
 
-    private static func authState(from response: AppServerAccountReadResponse) -> ReviewAuthState {
+    private static func authState(from response: AppServerAccountReadResponse) throws -> ReviewAuthState {
         switch response.account {
         case .chatGPT(let email, let planType):
+            guard let email = email.nilIfEmpty else {
+                throw ReviewAuthError.authenticationRequired(
+                    "Authenticated account is missing email."
+                )
+            }
             return .signedIn(
-                email: email.nilIfEmpty ?? "ChatGPT",
-                planType: planType.nilIfEmpty ?? "unknown"
+                email: email,
+                planType: planType.nilIfEmpty
             )
         case .unsupported:
             return .signedOut
@@ -621,11 +601,11 @@ package actor SharedAppServerReviewAuthSession: ReviewAuthSession {
         return response
     }
 
-    package func readRateLimits() async throws -> GetAccountRateLimitsResponse {
-        let response: GetAccountRateLimitsResponse = try await transport.request(
+    package func readRateLimits() async throws -> AppServerAccountRateLimitsResponse {
+        let response: AppServerAccountRateLimitsResponse = try await transport.request(
             method: "account/rateLimits/read",
             params: AppServerNullParams(),
-            responseType: GetAccountRateLimitsResponse.self
+            responseType: AppServerAccountRateLimitsResponse.self
         )
         return response
     }
@@ -1117,22 +1097,6 @@ private struct StoredCLIAuthAccount: Equatable, Sendable {
     let planType: String?
 }
 
-private extension AppServerAccountReadResponse {
-    func authState() -> ReviewAuthState {
-        switch account {
-        case .chatGPT(let email, let planType):
-            return .signedIn(
-                email: email.nilIfEmpty ?? "ChatGPT",
-                planType: planType.nilIfEmpty ?? "unknown"
-            )
-        case .unsupported:
-            return .signedOut
-        case nil:
-            return .signedOut
-        }
-    }
-}
-
 package func makeCLIAccountReadResponse(
     exitCode: Int32,
     combinedOutput: String,
@@ -1143,9 +1107,14 @@ package func makeCLIAccountReadResponse(
         return .init(account: nil, requiresOpenAIAuth: true)
     }
     if exitCode == 0, combinedOutput.localizedCaseInsensitiveContains("Logged in") {
+        guard let storedEmail = storedEmail?.nilIfEmpty else {
+            throw ReviewAuthError.authenticationRequired(
+                "Authenticated account is missing email."
+            )
+        }
         return .init(
             account: .chatGPT(
-                email: storedEmail?.nilIfEmpty ?? "ChatGPT",
+                email: storedEmail,
                 planType: storedPlanType?.nilIfEmpty ?? "unknown"
             ),
             requiresOpenAIAuth: false
@@ -1255,12 +1224,14 @@ private func loadStoredCLIAuthAccount(
 package func loadStoredReviewAuthAccount(
     environment: [String: String]
 ) -> ReviewAuthAccount? {
-    guard let account = loadStoredCLIAuthAccount(environment: environment) else {
+    guard let account = loadStoredCLIAuthAccount(environment: environment),
+          let email = account.email?.nilIfEmpty
+    else {
         return nil
     }
     return .init(
-        email: account.email?.nilIfEmpty ?? "ChatGPT",
-        planType: account.planType?.nilIfEmpty ?? "unknown"
+        email: email,
+        planType: account.planType?.nilIfEmpty
     )
 }
 

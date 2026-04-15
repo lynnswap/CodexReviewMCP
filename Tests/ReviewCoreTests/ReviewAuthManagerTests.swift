@@ -100,14 +100,45 @@ struct ReviewAuthManagerTests {
         #expect(await session.recordedRefreshRequests() == [true, false])
     }
 
-    @Test func authManagerPrefersRefreshedIdentityWhenDurableCheckIsGeneric() async throws {
+    @Test func authManagerUsesRefreshedIdentityWhenDurableCheckReturnsInvalidAccountData() async throws {
         let session = PostLoginDurableCheckReviewAuthSession(
             durableResponse: .init(
-                account: .chatGPT(email: "ChatGPT", planType: "unknown"),
+                account: .chatGPT(email: "", planType: "unknown"),
                 requiresOpenAIAuth: false
             ),
             refreshedResponse: .init(
                 account: .chatGPT(email: "review@example.com", planType: "plus"),
+                requiresOpenAIAuth: false
+            ),
+            postLoginRefreshError: nil
+        )
+        let manager = ReviewAuthManager(
+            configuration: .init(
+                environment: ["HOME": makeTemporaryRoot().path],
+                durableAuthMaxAttempts: 1,
+                durableAuthRetryDelay: .zero
+            ),
+            sessionFactory: { session }
+        )
+        let recorder = AuthUpdateRecorder()
+
+        try await manager.beginAuthentication { state in
+            await recorder.append(state)
+        }
+
+        let updates = await recorder.values()
+        #expect(updates.last == .signedIn(accountID: "review@example.com"))
+        #expect(await session.recordedRefreshRequests() == [true, false])
+    }
+
+    @Test func authManagerFallsBackToDurableIdentityWhenRefreshedAccountDataIsInvalid() async throws {
+        let session = PostLoginDurableCheckReviewAuthSession(
+            durableResponse: .init(
+                account: .chatGPT(email: "review@example.com", planType: "plus"),
+                requiresOpenAIAuth: false
+            ),
+            refreshedResponse: .init(
+                account: .chatGPT(email: "", planType: "unknown"),
                 requiresOpenAIAuth: false
             ),
             postLoginRefreshError: nil
@@ -127,31 +158,18 @@ struct ReviewAuthManagerTests {
         #expect(await session.recordedRefreshRequests() == [true, false])
     }
 
-    @Test func authManagerPrefersDurableIdentityWhenRefreshIsGeneric() async throws {
-        let session = PostLoginDurableCheckReviewAuthSession(
-            durableResponse: .init(
-                account: .chatGPT(email: "review@example.com", planType: "plus"),
-                requiresOpenAIAuth: false
-            ),
-            refreshedResponse: .init(
-                account: .chatGPT(email: "ChatGPT", planType: "unknown"),
-                requiresOpenAIAuth: false
-            ),
-            postLoginRefreshError: nil
+    @Test func authManagerLoadStateFailsWhenAuthenticatedAccountIsMissingEmail() async {
+        let session = FakeReviewAuthSession(
+            readResponses: [.init(account: .chatGPT(email: "", planType: "plus"), requiresOpenAIAuth: false)]
         )
         let manager = ReviewAuthManager(
             configuration: .init(environment: ["HOME": makeTemporaryRoot().path]),
             sessionFactory: { session }
         )
-        let recorder = AuthUpdateRecorder()
 
-        try await manager.beginAuthentication { state in
-            await recorder.append(state)
+        await #expect(throws: ReviewAuthError.authenticationRequired("Authenticated account is missing email.")) {
+            try await manager.loadState()
         }
-
-        let updates = await recorder.values()
-        #expect(updates.last == .signedIn(accountID: "review@example.com"))
-        #expect(await session.recordedRefreshRequests() == [true, false])
     }
 
     @Test func authManagerKeepsRefreshedIdentityWhenDurableProbeIsUnavailable() async throws {
@@ -531,7 +549,7 @@ struct ReviewAuthManagerTests {
 }
 
 private extension ReviewAuthState {
-    static func signedIn(accountID: String?) -> Self {
+    static func signedIn(accountID: String) -> Self {
         .signedIn(
             email: accountID,
             planType: "plus"

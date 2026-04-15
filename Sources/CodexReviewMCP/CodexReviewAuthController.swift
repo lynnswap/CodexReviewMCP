@@ -364,13 +364,7 @@ private final class CodexAccountSessionController {
             guard isCurrent(target: target, account: account) else {
                 return
             }
-            account.updateRateLimits(
-                currentSnapshot: makeRateLimitSnapshot(from: response.rateLimits),
-                snapshotsByLimitID: makeRateLimitSnapshotMap(
-                    response.rateLimitsByLimitID,
-                    currentSnapshot: response.rateLimits
-                )
-            )
+            applyRateLimits(from: response, to: account)
         } catch let error as AppServerResponseError where error.isUnsupportedMethod {
             guard isCurrent(target: target, account: account) else {
                 return
@@ -404,10 +398,10 @@ private final class CodexAccountSessionController {
                 guard isCurrent(target: target, account: account) else {
                     return
                 }
-                account.mergeRateLimitSnapshot(
-                    makeRateLimitSnapshot(from: payload.rateLimits),
-                    defaultLimitID: normalizedRateLimitID(payload.rateLimits.limitID)
-                )
+                guard isCodexRateLimit(payload.rateLimits.limitID) else {
+                    continue
+                }
+                applyRateLimits(from: payload.rateLimits, to: account)
             }
             guard isCurrent(target: target, account: account) else {
                 return
@@ -529,10 +523,7 @@ private func applyReviewAuthAccount(
     if let existingAccount = auth.account,
        existingAccount.email == account.email
     {
-        existingAccount.updateIdentity(
-            email: account.email,
-            planType: account.planType
-        )
+        existingAccount.updatePlanType(account.planType)
     } else {
         auth.updateAccount(makeCodexAccount(account))
     }
@@ -570,44 +561,78 @@ private func normalizedRateLimitID(_ limitID: String?) -> String {
     return limitID
 }
 
-private func makeRateLimitSnapshot(
-    from snapshot: AppServerRateLimitSnapshot
-) -> CodexRateLimitSnapshot {
-    .init(
-        limitID: snapshot.limitID,
-        limitName: snapshot.limitName,
-        primary: makeRateLimitWindow(from: snapshot.primary),
-        secondary: makeRateLimitWindow(from: snapshot.secondary)
+private func isCodexRateLimit(_ limitID: String?) -> Bool {
+    normalizedRateLimitID(limitID) == "codex"
+}
+
+@MainActor
+private func applyRateLimits(
+    from response: AppServerAccountRateLimitsResponse,
+    to account: CodexAccount
+) {
+    applyRateLimits(
+        from: resolvedCodexSnapshot(from: response),
+        to: account
     )
 }
 
-private func makeRateLimitWindow(
-    from window: AppServerRateLimitWindow?
-) -> CodexRateLimitWindow? {
-    guard let window else {
+@MainActor
+private func applyRateLimits(
+    from snapshot: AppServerRateLimitSnapshotPayload?,
+    to account: CodexAccount
+) {
+    account.updateRateLimits(rateLimits(from: snapshot))
+}
+
+private func resolvedCodexSnapshot(
+    from response: AppServerAccountRateLimitsResponse
+) -> AppServerRateLimitSnapshotPayload? {
+    if isCodexRateLimit(response.rateLimits.limitID) {
+        return response.rateLimits
+    }
+
+    guard let rateLimitsByLimitID = response.rateLimitsByLimitID else {
         return nil
     }
-    return .init(
-        usedPercent: window.usedPercent,
-        windowDurationMinutes: window.windowDurationMins,
-        resetsAt: window.resetsAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
-    )
-}
 
-private func makeRateLimitSnapshotMap(
-    _ snapshotsByLimitID: [String: AppServerRateLimitSnapshot]?,
-    currentSnapshot: AppServerRateLimitSnapshot
-) -> [String: CodexRateLimitSnapshot] {
-    var resolved: [String: CodexRateLimitSnapshot] = [:]
-    if let snapshotsByLimitID {
-        resolved.reserveCapacity(snapshotsByLimitID.count)
-        for (limitID, snapshot) in snapshotsByLimitID {
-            resolved[normalizedRateLimitID(limitID)] = makeRateLimitSnapshot(from: snapshot)
+    if let codexSnapshot = rateLimitsByLimitID["codex"] {
+        return codexSnapshot
+    }
+
+    for (limitID, snapshot) in rateLimitsByLimitID {
+        if isCodexRateLimit(limitID) || isCodexRateLimit(snapshot.limitID) {
+            return snapshot
         }
     }
 
-    let currentBucketID = normalizedRateLimitID(currentSnapshot.limitID)
-    resolved[currentBucketID] = makeRateLimitSnapshot(from: currentSnapshot)
+    return nil
+}
+
+private func rateLimits(
+    from snapshot: AppServerRateLimitSnapshotPayload?
+) -> [(windowDurationMinutes: Int, usedPercent: Int, resetsAt: Date?)] {
+    var resolved: [(windowDurationMinutes: Int, usedPercent: Int, resetsAt: Date?)] = []
+
+    if let primary = snapshot?.primary,
+       let duration = primary.windowDurationMins
+    {
+        resolved.append((
+            windowDurationMinutes: duration,
+            usedPercent: primary.usedPercent,
+            resetsAt: primary.resetsAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        ))
+    }
+
+    if let secondary = snapshot?.secondary,
+       let duration = secondary.windowDurationMins
+    {
+        resolved.append((
+            windowDurationMinutes: duration,
+            usedPercent: secondary.usedPercent,
+            resetsAt: secondary.resetsAt.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        ))
+    }
+
     return resolved
 }
 
