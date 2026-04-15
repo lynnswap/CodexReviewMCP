@@ -23,11 +23,11 @@ struct StatusView: View {
 
     private static let placeholderRateLimits: [CodexRateLimitWindow] = [
         CodexRateLimitWindow(
-            windowDurationMinutes: 80,
+            windowDurationMinutes: 1,
             usedPercent: 0
         ),
         CodexRateLimitWindow(
-            windowDurationMinutes: 80,
+            windowDurationMinutes: 2,
             usedPercent: 0
         ),
     ]
@@ -50,11 +50,8 @@ struct StatusView: View {
 
     var body: some View {
         Menu {
-            Section("Rate limits"){
-                ForEach(ratelimits) { window in
-                    ratelimitsSection(window)
-                }
-            }
+            ratelimitsSection
+            
             Divider()
             
             if showsAuthenticationAction {
@@ -67,17 +64,8 @@ struct StatusView: View {
                     restartServer()
                 }
             }
-            Button(role:.destructive){
-                performLogout()
-            }label:{
-                Label("Sign Out",systemImage:"rectangle.portrait.and.arrow.right")
-                if let account = store.auth.account{
-                    Text(account.email)
-                }
-                
-            }
-            .disabled(canSignOut == false)
-           
+            
+            accountMenu
         } label: {
             labelView
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -86,6 +74,23 @@ struct StatusView: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .padding(8)
+    }
+    
+    @ViewBuilder
+    private var accountMenu: some View{
+        Menu{
+            Button{
+                performLogout()
+            }label:{
+                Label("Sign Out",systemImage:"rectangle.portrait.and.arrow.right")
+                if let account{
+                    Text(account.email)
+                }
+            }
+            .disabled(canSignOut == false)
+        }label:{
+            Text("Account")
+        }
     }
     
     @ViewBuilder
@@ -130,15 +135,22 @@ struct StatusView: View {
         .animation(.default,value:window.usedPercent)
     }
     @ViewBuilder
-    private func ratelimitsSection(
+    private var ratelimitsSection: some View {
+        Section("Rate limits"){
+            ForEach(displayedRateLimits) { window in
+                ratelimitsRow(window)
+            }
+        }
+    }
+    @ViewBuilder
+    private func ratelimitsRow(
         _ window: CodexRateLimitWindow
     ) -> some View {
-        if let resetsAt = window.resetsAt {
-            Button{
-            }label:{
-                durationText(for: window)
-                Text(resetsAt, format: .dateTime)
-            }
+        Button{
+        }label:{
+            durationText(for: window)
+            let resetsAt = window.resetsAt ?? .distantFuture
+            Text("\(resetsAt, format: .dateTime)\n\(.currentDate, format: .offset(to: resetsAt, sign: .never))")
         }
     }
 

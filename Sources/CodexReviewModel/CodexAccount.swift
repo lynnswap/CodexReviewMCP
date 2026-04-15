@@ -53,10 +53,6 @@ public final class CodexAccount {
         id
     }
 
-    public var displayName: String {
-        email
-    }
-
     public init(
         email: String,
         planType: String? = nil
