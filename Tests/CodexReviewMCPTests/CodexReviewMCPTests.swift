@@ -5734,8 +5734,12 @@ private func makeInjectedAuthSessionStore(
     rateLimitStaleRefreshInterval: Duration = .seconds(60),
     deferStartupAuthRefreshUntilPrepared: Bool = false
 ) -> CodexReviewStore {
-    let sessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { _ in
-        try await authSessionFactory()
+    let sessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { environment in
+        let baseSession = try await authSessionFactory()
+        return PersistingReviewAuthSession(
+            base: baseSession,
+            environment: environment
+        )
     }
     return CodexReviewStore(
         configuration: configuration,
@@ -5747,6 +5751,102 @@ private func makeInjectedAuthSessionStore(
         rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
         deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
     )
+}
+
+private actor PersistingReviewAuthSession: ReviewAuthSession {
+    private let base: any ReviewAuthSession
+    private let environment: [String: String]
+
+    init(
+        base: any ReviewAuthSession,
+        environment: [String: String]
+    ) {
+        self.base = base
+        self.environment = environment
+    }
+
+    func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
+        let response = try await base.readAccount(refreshToken: refreshToken)
+        if case .chatGPT(let email, let planType)? = response.account {
+            try? writeReviewAuthSnapshot(
+                email: email,
+                planType: planType,
+                environment: environment
+            )
+        } else {
+            try? FileManager.default.removeItem(
+                at: ReviewHomePaths.reviewAuthURL(environment: environment)
+            )
+        }
+        return response
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        try await base.startLogin(params)
+    }
+
+    func cancelLogin(loginID: String) async throws {
+        try await base.cancelLogin(loginID: loginID)
+    }
+
+    func logout() async throws {
+        try await base.logout()
+        try? FileManager.default.removeItem(
+            at: ReviewHomePaths.reviewAuthURL(environment: environment)
+        )
+    }
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        await base.notificationStream()
+    }
+
+    func close() async {
+        await base.close()
+    }
+}
+
+private func writeReviewAuthSnapshot(
+    email: String,
+    planType: String?,
+    environment: [String: String]
+) throws {
+    let authURL = ReviewHomePaths.reviewAuthURL(environment: environment)
+    try FileManager.default.createDirectory(
+        at: authURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    var authPayload: [String: Any] = [:]
+    if let planType {
+        authPayload["chatgpt_plan_type"] = planType
+    }
+    let payload: [String: Any] = [
+        "email": email,
+        "https://api.openai.com/auth": authPayload,
+    ]
+    let object: [String: Any] = [
+        "auth_mode": "chatgpt",
+        "tokens": [
+            "id_token": makeReviewAuthTestJWT(payload: payload)
+        ],
+    ]
+    let data = try JSONSerialization.data(withJSONObject: object)
+    try data.write(to: authURL, options: .atomic)
+}
+
+private func makeReviewAuthTestJWT(payload: [String: Any]) -> String {
+    let header = ["alg": "none", "typ": "JWT"]
+    let headerData = try? JSONSerialization.data(withJSONObject: header)
+    let payloadData = try? JSONSerialization.data(withJSONObject: payload)
+    let headerComponent = makeReviewAuthJWTComponent(headerData ?? Data())
+    let payloadComponent = makeReviewAuthJWTComponent(payloadData ?? Data())
+    return "\(headerComponent).\(payloadComponent)."
+}
+
+private func makeReviewAuthJWTComponent(_ data: Data) -> String {
+    data.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
 }
 
 private struct StoreDiagnosticsSnapshot: Decodable {

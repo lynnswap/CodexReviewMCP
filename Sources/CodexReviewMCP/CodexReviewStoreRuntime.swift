@@ -1401,7 +1401,18 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let initialActiveAccountKey: String?
     let rateLimitObservationClock: any ReviewClock
     let rateLimitStaleRefreshInterval: Duration
-    lazy var liveSharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [appServerManager] _ in
+    lazy var liveSharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [weak self, appServerManager, configuration] environment in
+        let shouldUseSharedRuntime = await MainActor.run {
+            self?.isActive ?? false
+        }
+        guard shouldUseSharedRuntime else {
+            return CLIReviewAuthSession(
+                configuration: .init(
+                    codexCommand: configuration.codexCommand,
+                    environment: environment
+                )
+            )
+        }
         let transport = try await appServerManager.checkoutAuthTransport()
         return SharedAppServerReviewAuthSession(transport: transport)
     }

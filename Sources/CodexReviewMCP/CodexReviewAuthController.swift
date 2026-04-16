@@ -129,19 +129,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 )
                 persistedSavedAccount = true
             } catch {
-                guard let completedAccount else {
-                    throw error
-                }
-                savedAccount = CodexAccount(
-                    email: completedAccount.email,
-                    planType: completedAccount.planType
-                )
-                let existing = auth.savedAccounts.filter { $0.accountKey != savedAccount.accountKey }
-                auth.updateSavedAccounts(existing + [savedAccount])
-                if auth.account == nil || auth.account?.accountKey == savedAccount.accountKey {
-                    auth.updateAccount(savedAccount)
-                }
-                persistedSavedAccount = false
+                _ = completedAccount
+                throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
             if persistedSavedAccount, auth.account?.accountKey == savedAccount.accountKey {
                 try await accountRegistryStore.activateAccount(savedAccount.accountKey)
@@ -265,7 +254,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     package func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
-        guard let activeAccountKey = auth.account?.accountKey else {
+        guard auth.account != nil else {
             return
         }
         cancelStartupRefresh()
@@ -444,7 +433,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             if state.account != nil {
                 _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
             } else {
-                try? accountRegistryStore.clearActiveAccount()
+                try? await accountRegistryStore.clearActiveAccount()
             }
             await refreshSavedAccounts(
                 auth: auth,
