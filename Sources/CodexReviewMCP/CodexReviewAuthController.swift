@@ -211,6 +211,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         accountKey: String
     ) async throws {
         cancelStartupRefresh()
+        if auth.isAuthenticating {
+            await cancelAuthentication(auth: auth)
+        }
         guard auth.account?.accountKey != accountKey else {
             return
         }
@@ -228,6 +231,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         accountKey: String
     ) async throws {
         cancelStartupRefresh()
+        if auth.isAuthenticating {
+            await cancelAuthentication(auth: auth)
+        }
         let removedActive = auth.account?.accountKey == accountKey
         _ = try await accountRegistryStore.removeAccount(accountKey)
         if let loaded = try? accountRegistryStore.loadAccounts() {
@@ -318,7 +324,33 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     ) async {
         if auth.account?.accountKey == accountKey {
             if let activeAccount = auth.account {
-                try? accountRegistryStore.updateCachedRateLimits(from: activeAccount)
+                do {
+                    let transport = try await accountSessionController.checkoutActiveRateLimitTransport()
+                    let sharedSession = SharedAppServerReviewAuthSession(transport: transport)
+                    defer {
+                        Task {
+                            await sharedSession.close()
+                        }
+                    }
+                    let response = try await sharedSession.readRateLimits()
+                    applyRateLimits(from: response, to: activeAccount)
+                    try? accountRegistryStore.updateCachedRateLimits(from: activeAccount)
+                } catch let error as AppServerResponseError where error.isUnsupportedMethod || error.isRateLimitAuthenticationRequired {
+                    activeAccount.updateRateLimitFetchMetadata(
+                        fetchedAt: Date(),
+                        error: error.message
+                    )
+                    if error.isRateLimitAuthenticationRequired {
+                        activeAccount.clearRateLimits()
+                    }
+                    try? accountRegistryStore.updateCachedRateLimits(from: activeAccount)
+                } catch {
+                    activeAccount.updateRateLimitFetchMetadata(
+                        fetchedAt: Date(),
+                        error: error.localizedDescription
+                    )
+                    try? accountRegistryStore.updateCachedRateLimits(from: activeAccount)
+                }
                 await refreshSavedAccounts(auth: auth)
             }
             return
@@ -967,6 +999,10 @@ private final class CodexAccountSessionController {
     ) -> Bool {
         activeTarget == target && ObjectIdentifier(account) == target.accountID
     }
+
+    func checkoutActiveRateLimitTransport() async throws -> any AppServerSessionTransport {
+        try await appServerManager.checkoutAuthTransport()
+    }
 }
 
 private struct AuthPresentationSnapshot {
@@ -1009,13 +1045,6 @@ private func applyResolvedReviewAuthState(
     switch state {
     case .signedOut:
         auth.updatePhase(.signedOut)
-        if let activeAccountKey,
-           let activeAccount = auth.savedAccounts.first(where: { $0.accountKey == activeAccountKey })
-        {
-            let priorAccountKey = auth.account?.accountKey
-            auth.updateAccount(activeAccount)
-            return priorAccountKey != activeAccount.accountKey
-        }
         let hadAccount = auth.account != nil
         auth.updateAccount(nil)
         return hadAccount
