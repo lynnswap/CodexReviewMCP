@@ -148,6 +148,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 preserveCurrentWhenEmpty: persistedSavedAccount == false
             )
             if auth.account == nil || auth.account?.accountKey == savedAccount.accountKey {
+                try await cancelRunningJobs("Account change requested.")
                 await refreshResolvedState(
                     auth: auth,
                     forceRestartSession: true,
