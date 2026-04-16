@@ -266,7 +266,11 @@ struct StatusView: View {
 
     func performLogout() {
         Task {
-            try? await store.auth.signOutActiveAccount()
+            await performAccountMutation(
+                errorTitle: "Failed to Sign Out"
+            ) {
+                try await store.auth.signOutActiveAccount()
+            }
         }
     }
 
@@ -290,7 +294,11 @@ struct StatusView: View {
             ) else {
                 return
             }
-            try? await store.auth.switchAccount(accountKey: account.accountKey)
+            await performAccountMutation(
+                errorTitle: "Failed to Switch Account"
+            ) {
+                try await store.auth.switchAccount(accountKey: account.accountKey)
+            }
         }
     }
 
@@ -302,7 +310,11 @@ struct StatusView: View {
             ) else {
                 return
             }
-            try? await store.auth.removeAccount(accountKey: account.accountKey)
+            await performAccountMutation(
+                errorTitle: "Failed to Remove Account"
+            ) {
+                try await store.auth.removeAccount(accountKey: account.accountKey)
+            }
         }
     }
 
@@ -314,7 +326,41 @@ struct StatusView: View {
             ) else {
                 return
             }
-            try? await store.auth.signOutActiveAccount()
+            await performAccountMutation(
+                errorTitle: "Failed to Sign Out"
+            ) {
+                try await store.auth.signOutActiveAccount()
+            }
+        }
+    }
+
+    func performAccountMutation(
+        errorTitle: String,
+        operation: @escaping @Sendable () async throws -> Void
+    ) async {
+        do {
+            try await operation()
+        } catch {
+            await presentAccountActionFailure(
+                title: errorTitle,
+                error: error
+            )
+        }
+    }
+
+    func presentAccountActionFailure(
+        title: String,
+        error: Error
+    ) async {
+        let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = description.isEmpty ? "Request failed." : description
+        await MainActor.run {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = title
+            alert.informativeText = message
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
     }
 
