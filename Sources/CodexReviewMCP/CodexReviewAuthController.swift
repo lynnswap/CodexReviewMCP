@@ -443,6 +443,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
             if state.account != nil {
                 _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+            } else {
+                try? accountRegistryStore.clearActiveAccount()
             }
             await refreshSavedAccounts(
                 auth: auth,
@@ -487,7 +489,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
             await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
             if auth.account == nil,
-               let preservedAccount = auth.savedAccounts.first(where: \.isActive) ?? auth.savedAccounts.first
+               let preservedAccount = auth.savedAccounts.first(where: \.isActive)
             {
                 auth.updateAccount(preservedAccount)
             }

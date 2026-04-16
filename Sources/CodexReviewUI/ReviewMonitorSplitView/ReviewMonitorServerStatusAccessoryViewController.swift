@@ -313,11 +313,13 @@ struct StatusView: View {
 
     func confirmAndRemove(_ account: CodexAccount) {
         Task {
-            guard await confirmJobCancellationIfNeeded(
-                title: "Remove Account?",
-                message: "Running review jobs will be cancelled before removing this account."
-            ) else {
-                return
+            if account.isActive {
+                guard await confirmJobCancellationIfNeeded(
+                    title: "Remove Account?",
+                    message: "Running review jobs will be cancelled before removing this account."
+                ) else {
+                    return
+                }
             }
             await performAccountMutation(
                 errorTitle: "Failed to Remove Account"
