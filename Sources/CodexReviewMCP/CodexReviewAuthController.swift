@@ -126,29 +126,27 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 }
             }
             let savedAccount: CodexAccount
-            let persistedSavedAccount: Bool
             do {
                 savedAccount = try accountRegistryStore.saveAuthSnapshot(
                     sourceAuthURL: ReviewHomePaths.reviewAuthURL(environment: loginProbe.environment),
-                    makeActive: hasResolvedAuthenticatedAccount == false
-                        && (auth.account == nil || auth.errorMessage != nil)
+                    makeActive: false
                 )
-                persistedSavedAccount = true
             } catch {
                 _ = completedAccount
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
-            if persistedSavedAccount, auth.account?.accountKey == savedAccount.accountKey {
-                try await accountRegistryStore.activateAccount(savedAccount.accountKey)
-            }
             let priorAccountKey = priorSnapshot.account.map { normalizedReviewAccountKey(email: $0.email) }
             let identityChanged = priorAccountKey != auth.account?.accountKey
+            let shouldRecycleToSavedAccount = auth.account == nil || auth.account?.accountKey == savedAccount.accountKey
+            if shouldRecycleToSavedAccount {
+                try await cancelRunningJobs("Account change requested.")
+                try await accountRegistryStore.activateAccount(savedAccount.accountKey)
+            }
             await refreshSavedAccounts(
                 auth: auth,
-                preserveCurrentWhenEmpty: persistedSavedAccount == false
+                preserveCurrentWhenEmpty: false
             )
-            if auth.account == nil || auth.account?.accountKey == savedAccount.accountKey {
-                try await cancelRunningJobs("Account change requested.")
+            if shouldRecycleToSavedAccount {
                 await refreshResolvedState(
                     auth: auth,
                     forceRestartSession: true,
