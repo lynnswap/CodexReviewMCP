@@ -332,7 +332,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                         fetchedAt: Date(),
                         error: error.message
                     )
-                    if error.isRateLimitAuthenticationRequired {
+                    if error.isUnsupportedMethod || error.isRateLimitAuthenticationRequired {
                         activeAccount.clearRateLimits()
                     }
                     try? accountRegistryStore.updateCachedRateLimits(from: activeAccount)

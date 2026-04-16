@@ -34,19 +34,29 @@ extension CodexReviewStore {
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
         let sharedFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)?
+        let loginFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)?
         if let authSessionFactory {
             sharedFactory = { (_: [String: String]) async throws -> any ReviewAuthSession in
                 try await authSessionFactory()
             }
+            loginFactory = { environment in
+                let baseSession = try await authSessionFactory()
+                return try await LegacyProbeScopedReviewAuthSession(
+                    base: baseSession,
+                    sharedEnvironment: configuration.environment,
+                    probeEnvironment: environment
+                )
+            }
         } else {
             sharedFactory = nil
+            loginFactory = nil
         }
         self.init(
             configuration: configuration,
             diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
             sharedAuthSessionFactory: sharedFactory,
-            loginAuthSessionFactory: nil,
+            loginAuthSessionFactory: loginFactory,
             rateLimitObservationClock: rateLimitObservationClock,
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
@@ -792,6 +802,89 @@ extension CodexReviewStore {
                 await runtimeManager.shutdown()
                 throw error
             }
+        }
+    }
+}
+
+private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
+    private let base: any ReviewAuthSession
+    private let sharedAuthURL: URL
+    private let probeAuthURL: URL
+    private let originalSharedAuthData: Data?
+    private var restoredSharedAuth = false
+
+    init(
+        base: any ReviewAuthSession,
+        sharedEnvironment: [String: String],
+        probeEnvironment: [String: String]
+    ) async throws {
+        self.base = base
+        sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: sharedEnvironment)
+        probeAuthURL = ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
+        originalSharedAuthData = try? Data(contentsOf: sharedAuthURL)
+    }
+
+    func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
+        let response = try await base.readAccount(refreshToken: refreshToken)
+        if response.account != nil {
+            copySharedAuthToProbe()
+        } else if response.requiresOpenAIAuth {
+            removeProbeAuth()
+        }
+        return response
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        try await base.startLogin(params)
+    }
+
+    func cancelLogin(loginID: String) async throws {
+        try await base.cancelLogin(loginID: loginID)
+    }
+
+    func logout() async throws {
+        try await base.logout()
+        removeProbeAuth()
+        restoreSharedAuthIfNeeded()
+    }
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        await base.notificationStream()
+    }
+
+    func close() async {
+        await base.close()
+        restoreSharedAuthIfNeeded()
+    }
+
+    private func copySharedAuthToProbe() {
+        guard let data = try? Data(contentsOf: sharedAuthURL) else {
+            return
+        }
+        try? FileManager.default.createDirectory(
+            at: probeAuthURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? data.write(to: probeAuthURL, options: .atomic)
+    }
+
+    private func removeProbeAuth() {
+        try? FileManager.default.removeItem(at: probeAuthURL)
+    }
+
+    private func restoreSharedAuthIfNeeded() {
+        guard restoredSharedAuth == false else {
+            return
+        }
+        restoredSharedAuth = true
+        if let originalSharedAuthData {
+            try? FileManager.default.createDirectory(
+                at: sharedAuthURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? originalSharedAuthData.write(to: sharedAuthURL, options: .atomic)
+        } else {
+            try? FileManager.default.removeItem(at: sharedAuthURL)
         }
     }
 }
