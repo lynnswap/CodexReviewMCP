@@ -465,7 +465,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 auth: auth,
                 identityChanged: identityChanged,
                 forceRestartSession: forceRestartSession || state.isAuthenticated,
-                forceRecycleServer: forceRecycleServer
+                forceRecycleServer: forceRecycleServer,
+                skipFinalAttach: forceRecycleServer
             )
             if forceRecycleServer {
                 let postRecycleState = try await authManager.loadState()
@@ -516,7 +517,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         auth: CodexReviewAuthModel,
         identityChanged: Bool,
         forceRestartSession: Bool = false,
-        forceRecycleServer: Bool = false
+        forceRecycleServer: Bool = false,
+        skipFinalAttach: Bool = false
     ) async {
         let currentRuntimeState = runtimeState()
         if currentRuntimeState.serverIsRunning,
@@ -530,6 +532,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             if identityChanged || forceRecycleServer {
                 await recycleServerIfRunning()
             }
+        }
+
+        if skipFinalAttach {
+            return
         }
 
         let resolvedRuntimeState = runtimeState()
