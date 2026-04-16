@@ -88,6 +88,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     package func beginAuthentication(auth: CodexReviewAuthModel) async {
         cancelStartupRefresh()
+        guard auth.isAuthenticating == false else {
+            return
+        }
         let priorSnapshot = snapshot(
             from: auth,
             isResolvedAuthenticated: hasResolvedAuthenticatedAccount

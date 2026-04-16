@@ -2346,6 +2346,40 @@ struct CodexReviewMCPTests {
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
     }
 
+    @Test func beginAuthenticationIgnoresConcurrentRetryWhileLoginIsInProgress() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = BlockingLoginReviewAuthSession()
+        let authFactory = CountingReviewAuthSessionFactory(session: authSession)
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                try await authFactory.makeSession()
+            }
+        )
+
+        let firstBeginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        await authSession.waitForLoginStart()
+
+        let secondBeginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+        _ = await secondBeginTask.value
+
+        #expect(await authFactory.creationCount() == 1)
+
+        await store.auth.cancelAuthentication()
+        _ = await firstBeginTask.value
+        #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
+    }
+
     @Test func cancelAuthenticationPreservesAuthenticatedRetryState() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
