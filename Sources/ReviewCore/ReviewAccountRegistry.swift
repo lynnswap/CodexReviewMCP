@@ -137,7 +137,9 @@ package actor ReviewAccountRegistryStore {
             accountKey: accountKey,
             environment: environment
         )
-        try? FileManager.default.removeItem(at: savedAccountDirectoryURL)
+        if FileManager.default.fileExists(atPath: savedAccountDirectoryURL.path) {
+            try FileManager.default.removeItem(at: savedAccountDirectoryURL)
+        }
 
         if registry.activeAccountKey == accountKey {
             registry.activeAccountKey = registry.accounts.first?.accountKey

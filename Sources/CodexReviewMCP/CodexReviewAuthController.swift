@@ -262,6 +262,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             authenticationCancellationRestoreState = nil
             await activeAuthenticationManager?.cancelAuthentication()
             activeAuthenticationManager = nil
+            if let activeAuthenticationProbe {
+                await accountRegistryStore.cleanupProbeHome(activeAuthenticationProbe)
+                self.activeAuthenticationProbe = nil
+            }
             auth.updatePhase(.signedOut)
         }
         do {
