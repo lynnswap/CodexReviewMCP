@@ -447,7 +447,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
             if state.account != nil {
                 _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
-            } else if forceRecycleServer == false {
+            } else if forceRecycleServer == false || forceRestartSession == false {
                 try? await accountRegistryStore.clearActiveAccount()
             }
             await refreshSavedAccounts(

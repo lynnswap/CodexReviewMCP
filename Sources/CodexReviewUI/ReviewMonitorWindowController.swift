@@ -126,14 +126,14 @@ public final class ReviewMonitorWindowController: NSWindowController {
         if forceSplitView {
             return .splitView
         }
-        if auth.hasSavedAccounts {
-            return .splitView
-        }
         if auth.isAuthenticating {
-            if displayedContentKind == .splitView {
+            if auth.account != nil {
                 return .splitView
             }
             return .signInView
+        }
+        if auth.hasSavedAccounts {
+            return .splitView
         }
         if auth.errorMessage != nil,
            displayedContentKind == .splitView {
