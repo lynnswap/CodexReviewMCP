@@ -74,10 +74,11 @@ extension CodexReviewStore {
 
     public func cancelAllRunningJobs(
         reason: String = "Cancellation requested."
-    ) async {
+    ) async throws {
         let jobs = workspaces
             .flatMap(\.jobs)
             .filter { $0.isTerminal == false }
+        var firstError: (any Error)?
         for job in jobs {
             do {
                 try await cancelReview(
@@ -86,7 +87,19 @@ extension CodexReviewStore {
                     reason: reason
                 )
             } catch {
+                let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                try? recordCancellationFailure(
+                    jobID: job.id,
+                    sessionID: job.sessionID,
+                    message: message.isEmpty ? "Failed to cancel review." : message
+                )
+                if firstError == nil {
+                    firstError = error
+                }
             }
+        }
+        if let firstError {
+            throw firstError
         }
     }
 }

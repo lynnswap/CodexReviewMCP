@@ -747,25 +747,11 @@ extension CodexReviewStore {
             let transport = try await appServerManager.checkoutAuthTransport()
             return SharedAppServerReviewAuthSession(transport: transport)
         }
-        let loginAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { environment in
-            let runtimeManager: any AppServerManaging = AppServerSupervisor(
-                configuration: .init(
-                    codexCommand: configuration.codexCommand,
-                    environment: environment
-                )
-            )
-            let transport = try await runtimeManager.checkoutAuthTransport()
-            return await MainActor.run {
-                NativeWebAuthenticationReviewSession(
-                    sharedSession: SharedAppServerReviewAuthSession(transport: transport),
-                    nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
-                    webAuthenticationSessionFactory: webAuthenticationSessionFactory,
-                    onClose: { [runtimeManager] in
-                        await runtimeManager.shutdown()
-                    }
-                )
-            }
-        }
+        let loginAuthSessionFactory = makeReviewMonitorLoginAuthSessionFactory(
+            configuration: configuration,
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory
+        )
 
         return CodexReviewStore(
             configuration: configuration,
@@ -775,6 +761,38 @@ extension CodexReviewStore {
             loginAuthSessionFactory: loginAuthSessionFactoryOverride ?? loginAuthSessionFactory,
             deferStartupAuthRefreshUntilPrepared: true
         )
+    }
+
+    static func makeReviewMonitorLoginAuthSessionFactory(
+        configuration: ReviewServerConfiguration,
+        nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
+        webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory,
+        runtimeManagerFactory: (@Sendable ([String: String]) -> any AppServerManaging)? = nil
+    ) -> @Sendable ([String: String]) async throws -> any ReviewAuthSession {
+        { environment in
+            let runtimeManager = runtimeManagerFactory?(environment) ?? AppServerSupervisor(
+                configuration: .init(
+                    codexCommand: configuration.codexCommand,
+                    environment: environment
+                )
+            )
+            do {
+                let transport = try await runtimeManager.checkoutAuthTransport()
+                return await MainActor.run {
+                    NativeWebAuthenticationReviewSession(
+                        sharedSession: SharedAppServerReviewAuthSession(transport: transport),
+                        nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                        webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+                        onClose: { [runtimeManager] in
+                            await runtimeManager.shutdown()
+                        }
+                    )
+                }
+            } catch {
+                await runtimeManager.shutdown()
+                throw error
+            }
+        }
     }
 }
 

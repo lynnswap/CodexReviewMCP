@@ -2237,6 +2237,48 @@ struct CodexReviewMCPTests {
         #expect(await transport.isClosed())
     }
 
+    @Test func cancelAllRunningJobsThrowsWhenAnyReviewCancellationFails() async throws {
+        let store = CodexReviewStore(
+            backend: CancellationFailureStoreBackend(
+                failingSessionIDs: ["session-a"],
+                error: NSError(
+                    domain: "CodexReviewMCPTests.CancellationFailureStoreBackend",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Cancellation failed."]
+                )
+            )
+        )
+        let failedJob = CodexReviewJob.makeForTesting(
+            id: "job-a",
+            sessionID: "session-a",
+            targetSummary: "target-a",
+            status: .running,
+            summary: "Running"
+        )
+        let cancelledJob = CodexReviewJob.makeForTesting(
+            id: "job-b",
+            sessionID: "session-b",
+            targetSummary: "target-b",
+            status: .running,
+            summary: "Running"
+        )
+        store.workspaces = [
+            CodexReviewWorkspace(
+                cwd: "/tmp/repo",
+                jobs: [failedJob, cancelledJob]
+            )
+        ]
+
+        await #expect(throws: Error.self) {
+            try await store.cancelAllRunningJobs(reason: "Account change requested.")
+        }
+
+        #expect(failedJob.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(failedJob.errorMessage == "Cancellation failed.")
+        #expect(cancelledJob.status == .cancelled)
+        #expect(cancelledJob.errorMessage == "Account change requested.")
+    }
+
     @Test func cancelAuthenticationClosesStateWithoutStartingAnotherAuthSession() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
@@ -2795,6 +2837,37 @@ struct CodexReviewMCPTests {
                 accountID: "review@example.com"
             )
         )
+    }
+
+    @Test func reviewMonitorLoginAuthSessionFactoryShutsDownManagerWhenStartupFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(requirePrepareBeforeAuthCheckout: true)
+        let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder
+        )
+        let factory = CodexReviewStore.makeReviewMonitorLoginAuthSessionFactory(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            runtimeManagerFactory: { _ in manager }
+        )
+
+        await #expect(throws: Error.self) {
+            _ = try await factory(environment)
+        }
+
+        #expect(await manager.shutdownCount() == 1)
+        #expect(await recorder.lastAuthenticateRequest() == nil)
     }
 
     @Test func reviewMonitorStorePreservesAccountMetadataWhileAuthenticatedRetryIsInProgress() async throws {
@@ -4586,6 +4659,51 @@ private actor AuthCapableAppServerManager: AppServerManaging {
 
     func prepareCount() -> Int {
         prepareCountStorage
+    }
+}
+
+@MainActor
+private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
+    let isActive = true
+    let shouldAutoStartEmbeddedServer = false
+    let initialAccount: CodexAccount? = nil
+    let initialAccounts: [CodexAccount] = []
+    let initialActiveAccountKey: String? = nil
+
+    private let failingSessionIDs: Set<String>
+    private let error: any Error
+
+    init(
+        failingSessionIDs: Set<String>,
+        error: any Error
+    ) {
+        self.failingSessionIDs = failingSessionIDs
+        self.error = error
+    }
+
+    func start(
+        store _: CodexReviewStore,
+        forceRestartIfNeeded _: Bool
+    ) async {}
+
+    func stop(store _: CodexReviewStore) async {}
+
+    func waitUntilStopped() async {}
+
+    func cancelReview(
+        jobID: String,
+        sessionID: String,
+        reason: String,
+        store: CodexReviewStore
+    ) async throws {
+        if failingSessionIDs.contains(sessionID) {
+            throw error
+        }
+        try store.completeCancellationLocally(
+            jobID: jobID,
+            sessionID: sessionID,
+            reason: reason
+        )
     }
 }
 

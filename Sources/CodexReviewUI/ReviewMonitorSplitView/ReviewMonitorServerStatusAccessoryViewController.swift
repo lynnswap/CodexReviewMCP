@@ -338,8 +338,22 @@ struct StatusView: View {
         guard confirmed else {
             return false
         }
-        await store.cancelAllRunningJobs(reason: "Account change requested.")
-        return true
+        do {
+            try await store.cancelAllRunningJobs(reason: "Account change requested.")
+            return true
+        } catch {
+            let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            let alertMessage = description.isEmpty ? "Failed to cancel review." : description
+            await MainActor.run {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "Failed to Cancel Running Reviews"
+                alert.informativeText = alertMessage
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+            return false
+        }
     }
 
 }

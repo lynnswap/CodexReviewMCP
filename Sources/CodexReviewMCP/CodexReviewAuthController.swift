@@ -389,9 +389,16 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 fetchedAt: fetchedAt,
                 error: nil
             )
-        } catch let error as AppServerResponseError where error.isUnsupportedMethod || error.isRateLimitAuthenticationRequired {
+        } catch let error as AppServerResponseError where error.isUnsupportedMethod {
             try? await accountRegistryStore.updateRateLimitFetchStatus(
                 accountKey: accountKey,
+                fetchedAt: fetchedAt,
+                error: error.message
+            )
+        } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
+            try? await accountRegistryStore.updateCachedRateLimits(
+                accountKey: accountKey,
+                rateLimits: [],
                 fetchedAt: fetchedAt,
                 error: error.message
             )
