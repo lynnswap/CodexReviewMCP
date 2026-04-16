@@ -125,6 +125,9 @@ package actor ReviewAccountRegistryStore {
 
     package func clearActiveAccount(accountKey: String? = nil) throws {
         var registry = try loadRegistry()
+        if let accountKey {
+            registry.accounts.removeAll { $0.accountKey == accountKey }
+        }
         registry.activeAccountKey = nil
         try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
         if let accountKey {

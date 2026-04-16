@@ -47,6 +47,13 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
             self.onAuthenticationStateChanged?()
         }
         .store(in: &observationHandles)
+        auth.observe(\.savedAccounts) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.onAuthenticationStateChanged?()
+        }
+        .store(in: &observationHandles)
 
         emitCurrentState()
     }
