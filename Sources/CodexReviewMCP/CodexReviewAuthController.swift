@@ -303,6 +303,11 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 auth: auth,
                 message: message
             )
+            if auth.isAuthenticated == false,
+               auth.errorMessage == nil
+            {
+                return
+            }
             throw error
         } catch {
             let message = error.localizedDescription
@@ -310,6 +315,11 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 auth: auth,
                 message: message
             )
+            if auth.isAuthenticated == false,
+               auth.errorMessage == nil
+            {
+                return
+            }
             throw error
         }
     }
@@ -540,7 +550,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         } else {
             message = error.localizedDescription
         }
-        auth.updatePhase(.failed(message: message))
+        auth.recordAuthenticationFailure(message: message)
     }
 
     private func resolveLogoutFailureState(

@@ -276,8 +276,11 @@ struct StatusView: View {
 
     func addAccount() {
         Task {
+            let previousFailureCount = store.auth.authenticationFailureCount
             await store.auth.beginAuthentication()
-            if let message = store.auth.errorMessage {
+            if store.auth.authenticationFailureCount != previousFailureCount,
+               let message = store.auth.errorMessage
+            {
                 await presentAccountActionFailure(
                     title: "Failed to Add Account",
                     message: message

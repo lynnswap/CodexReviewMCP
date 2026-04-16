@@ -29,6 +29,7 @@ public final class CodexReviewAuthModel {
     public package(set) var phase: Phase = .signedOut
     public package(set) var account: CodexAccount?
     public package(set) var savedAccounts: [CodexAccount] = []
+    public package(set) var authenticationFailureCount = 0
 
     @ObservationIgnored private let controller: any CodexReviewAuthControlling
 
@@ -115,6 +116,11 @@ public final class CodexReviewAuthModel {
 
     package func updatePhase(_ phase: Phase) {
         self.phase = phase
+    }
+
+    package func recordAuthenticationFailure(message: String) {
+        authenticationFailureCount += 1
+        phase = .failed(message: message)
     }
 
     package func updateAccount(_ account: CodexAccount?) {
