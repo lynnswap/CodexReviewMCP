@@ -740,24 +740,20 @@ extension CodexReviewStore {
         diagnosticsURL: URL? = nil,
         appServerManager: any AppServerManaging,
         nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
-        webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
+        webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory,
+        loginAuthSessionFactoryOverride: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil
     ) -> CodexReviewStore {
         let sharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { _ in
             let transport = try await appServerManager.checkoutAuthTransport()
             return SharedAppServerReviewAuthSession(transport: transport)
         }
         let loginAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { environment in
-            let runtimeManager: any AppServerManaging
-            if appServerManager is AppServerSupervisor {
-                runtimeManager = AppServerSupervisor(
-                    configuration: .init(
-                        codexCommand: configuration.codexCommand,
-                        environment: environment
-                    )
+            let runtimeManager: any AppServerManaging = AppServerSupervisor(
+                configuration: .init(
+                    codexCommand: configuration.codexCommand,
+                    environment: environment
                 )
-            } else {
-                runtimeManager = appServerManager
-            }
+            )
             let transport = try await runtimeManager.checkoutAuthTransport()
             return await MainActor.run {
                 NativeWebAuthenticationReviewSession(
@@ -765,9 +761,7 @@ extension CodexReviewStore {
                     nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
                     webAuthenticationSessionFactory: webAuthenticationSessionFactory,
                     onClose: { [runtimeManager] in
-                        if appServerManager is AppServerSupervisor {
-                            await runtimeManager.shutdown()
-                        }
+                        await runtimeManager.shutdown()
                     }
                 )
             }
@@ -778,7 +772,7 @@ extension CodexReviewStore {
             diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
             sharedAuthSessionFactory: sharedAuthSessionFactory,
-            loginAuthSessionFactory: loginAuthSessionFactory,
+            loginAuthSessionFactory: loginAuthSessionFactoryOverride ?? loginAuthSessionFactory,
             deferStartupAuthRefreshUntilPrepared: true
         )
     }

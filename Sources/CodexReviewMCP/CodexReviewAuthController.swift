@@ -449,6 +449,24 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 forceRestartSession: forceRestartSession || state.isAuthenticated,
                 forceRecycleServer: forceRecycleServer
             )
+            if forceRecycleServer {
+                let postRecycleState = try await authManager.loadState()
+                await refreshSavedAccounts(
+                    auth: auth,
+                    preserveCurrentWhenEmpty: postRecycleState.isAuthenticated
+                )
+                _ = applyResolvedReviewAuthState(
+                    postRecycleState,
+                    activeAccountKey: auth.savedAccounts.first(where: \.isActive)?.accountKey,
+                    to: auth
+                )
+                let resolvedRuntimeState = runtimeState()
+                await accountSessionController.reconcile(
+                    serverIsRunning: resolvedRuntimeState.serverIsRunning,
+                    account: auth.account,
+                    runtimeGeneration: resolvedRuntimeState.runtimeGeneration
+                )
+            }
         } catch {
             guard auth.isAuthenticating == false else {
                 return
@@ -934,6 +952,7 @@ private final class CodexAccountSessionController {
                 else {
                     return
                 }
+                account.clearRateLimits()
                 account.updateRateLimitFetchMetadata(
                     fetchedAt: Date(),
                     error: error.message
@@ -941,7 +960,6 @@ private final class CodexAccountSessionController {
                 try? self.accountRegistryStore.updateCachedRateLimits(from: account)
                 self.staleRefreshTask = nil
                 self.staleRefreshTaskID = nil
-                account.clearRateLimits()
             } catch is CancellationError {
                 return
             } catch {

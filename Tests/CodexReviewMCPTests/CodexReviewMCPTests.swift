@@ -2674,6 +2674,15 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2681,14 +2690,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2710,6 +2717,15 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .failure(.cancelled)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2717,14 +2733,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .failure(.cancelled)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2740,6 +2754,15 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .failure(.cancelled)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2747,14 +2770,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .failure(.cancelled)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
         applyTestAuthState(auth: store.auth, state: 
@@ -2835,6 +2856,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2842,14 +2872,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
         applyTestAuthState(auth: store.auth, state: 
@@ -2876,6 +2904,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2883,14 +2920,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2911,6 +2946,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2918,14 +2962,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2944,6 +2986,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2951,14 +3002,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2980,6 +3029,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2987,14 +3045,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -3011,6 +3067,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -3018,14 +3083,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -3048,6 +3111,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -3055,14 +3127,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -5186,6 +5256,23 @@ private func makeWebAuthenticationSessionFactory(
             }
         }
         return session
+    }
+}
+
+private func makeInjectedNativeLoginAuthSessionFactory(
+    manager: any AppServerManaging,
+    nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
+    webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
+) -> @Sendable ([String: String]) async throws -> any ReviewAuthSession {
+    { _ in
+        let transport = try await manager.checkoutAuthTransport()
+        return await MainActor.run {
+            NativeWebAuthenticationReviewSession(
+                sharedSession: SharedAppServerReviewAuthSession(transport: transport),
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
+            )
+        }
     }
 }
 
