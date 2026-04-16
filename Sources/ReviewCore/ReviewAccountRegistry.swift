@@ -123,10 +123,18 @@ package actor ReviewAccountRegistryStore {
         try saveRegistry(registry)
     }
 
-    package func clearActiveAccount() throws {
+    package func clearActiveAccount(accountKey: String? = nil) throws {
         var registry = try loadRegistry()
         registry.activeAccountKey = nil
         try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+        if let accountKey {
+            try? FileManager.default.removeItem(
+                at: ReviewHomePaths.savedAccountAuthURL(
+                    accountKey: accountKey,
+                    environment: environment
+                )
+            )
+        }
         try saveRegistry(registry)
     }
 

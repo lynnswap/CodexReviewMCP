@@ -254,7 +254,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     package func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
-        guard auth.account != nil else {
+        guard let activeAccountKey = auth.account?.accountKey else {
             return
         }
         cancelStartupRefresh()
@@ -274,7 +274,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 sessionFactory: sharedAuthSessionFactory
             )
             _ = try await authManager.logout()
-            try await accountRegistryStore.clearActiveAccount()
+            try await accountRegistryStore.clearActiveAccount(accountKey: activeAccountKey)
             if let loaded = try? accountRegistryStore.loadAccounts() {
                 auth.updateSavedAccounts(loaded.accounts)
                 auth.updateAccount(nil)
