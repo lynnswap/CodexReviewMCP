@@ -276,6 +276,12 @@ struct StatusView: View {
 
     func addAccount() {
         Task {
+            guard await confirmJobCancellationIfNeeded(
+                title: "Add Account?",
+                message: "If this sign-in becomes the active session, running review jobs may stop after the account change is applied."
+            ) else {
+                return
+            }
             let previousFailureCount = store.auth.authenticationFailureCount
             await store.auth.beginAuthentication()
             if store.auth.authenticationFailureCount != previousFailureCount,
@@ -284,6 +290,11 @@ struct StatusView: View {
                 await presentAccountActionFailure(
                     title: "Failed to Add Account",
                     message: message
+                )
+            } else if let warningMessage = store.auth.warningMessage {
+                await presentAccountActionFailure(
+                    title: "Account Updated With Warning",
+                    message: warningMessage
                 )
             }
         }
@@ -299,7 +310,7 @@ struct StatusView: View {
         Task {
             guard await confirmJobCancellationIfNeeded(
                 title: "Switch Account?",
-                message: "Running review jobs will be cancelled before switching accounts."
+                message: "Running review jobs may stop after the account change is applied."
             ) else {
                 return
             }
@@ -316,7 +327,7 @@ struct StatusView: View {
             if account.isActive {
                 guard await confirmJobCancellationIfNeeded(
                     title: "Remove Account?",
-                    message: "Running review jobs will be cancelled before removing this account."
+                    message: "Running review jobs may stop after the account change is applied."
                 ) else {
                     return
                 }
@@ -333,7 +344,7 @@ struct StatusView: View {
         Task {
             guard await confirmJobCancellationIfNeeded(
                 title: "Sign Out?",
-                message: "Running review jobs will be cancelled before signing out."
+                message: "Running review jobs may stop after the account change is applied."
             ) else {
                 return
             }
@@ -351,6 +362,12 @@ struct StatusView: View {
     ) async {
         do {
             try await operation()
+            if let warningMessage = store.auth.warningMessage {
+                await presentAccountActionFailure(
+                    title: "Account Updated With Warning",
+                    message: warningMessage
+                )
+            }
         } catch {
             await presentAccountActionFailure(
                 title: errorTitle,
@@ -405,22 +422,7 @@ struct StatusView: View {
         guard confirmed else {
             return false
         }
-        do {
-            try await store.cancelAllRunningJobs(reason: "Account change requested.")
-            return true
-        } catch {
-            let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-            let alertMessage = description.isEmpty ? "Failed to cancel review." : description
-            await MainActor.run {
-                let alert = NSAlert()
-                alert.alertStyle = .warning
-                alert.messageText = "Failed to Cancel Running Reviews"
-                alert.informativeText = alertMessage
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
-            }
-            return false
-        }
+        return true
     }
 
 }

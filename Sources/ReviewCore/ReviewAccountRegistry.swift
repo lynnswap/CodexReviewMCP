@@ -51,13 +51,24 @@ package func loadRegisteredReviewAccounts(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> (activeAccountKey: String?, accounts: [CodexAccount]) {
     let registry = (try? loadRegistryRecord(environment: environment)) ?? .init()
-    let accounts = registry.accounts.map { makeCodexAccount($0) }
-    if let activeAccountKey = registry.activeAccountKey {
+    let records = registry.accounts.filter {
+        FileManager.default.fileExists(
+            atPath: ReviewHomePaths.savedAccountAuthURL(
+                accountKey: $0.accountKey,
+                environment: environment
+            ).path
+        )
+    }
+    let accounts = records.map { makeCodexAccount($0) }
+    let activeAccountKey = records.contains(where: { $0.accountKey == registry.activeAccountKey })
+        ? registry.activeAccountKey
+        : nil
+    if let activeAccountKey {
         for account in accounts {
             account.updateIsActive(account.accountKey == activeAccountKey)
         }
     }
-    return (registry.activeAccountKey, accounts)
+    return (activeAccountKey, accounts)
 }
 
 @MainActor
@@ -117,14 +128,11 @@ package actor ReviewAccountRegistryStore {
     }
 
     package func activateAccount(_ accountKey: String) throws {
-        var registry = try loadRegistry()
+        let originalRegistry = try loadRegistry()
+        var registry = originalRegistry
         guard let record = registry.accounts.first(where: { $0.accountKey == accountKey }) else {
             throw ReviewAuthError.authenticationRequired("Saved account was not found.")
         }
-        try persistAuthSnapshot(
-            from: ReviewHomePaths.savedAccountAuthURL(accountKey: accountKey, environment: environment),
-            to: ReviewHomePaths.reviewAuthURL(environment: environment)
-        )
         registry.activeAccountKey = record.accountKey
         registry.accounts = registry.accounts.map { account in
             var updated = account
@@ -134,50 +142,86 @@ package actor ReviewAccountRegistryStore {
             return updated
         }.sorted(by: sortAccounts)
         try saveRegistry(registry)
+        let sharedAuthBackup = loadSharedAuthData()
+        do {
+            try persistAuthSnapshot(
+                from: ReviewHomePaths.savedAccountAuthURL(accountKey: accountKey, environment: environment),
+                to: ReviewHomePaths.reviewAuthURL(environment: environment)
+            )
+        } catch {
+            rollbackRegistryMutation(
+                originalRegistry: originalRegistry,
+                sharedAuthBackup: sharedAuthBackup
+            )
+            throw error
+        }
     }
 
     package func clearActiveAccount(accountKey: String? = nil) throws {
-        var registry = try loadRegistry()
+        let originalRegistry = try loadRegistry()
+        var registry = originalRegistry
         if let accountKey {
             registry.accounts.removeAll { $0.accountKey == accountKey }
         }
         registry.activeAccountKey = nil
-        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
-        if let accountKey {
-            try? FileManager.default.removeItem(
-                at: ReviewHomePaths.savedAccountAuthURL(
-                    accountKey: accountKey,
-                    environment: environment
-                )
-            )
-        }
         try saveRegistry(registry)
+        let sharedAuthBackup = loadSharedAuthData()
+        do {
+            try removeItemIfExists(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+            if let accountKey {
+                try removeItemIfExists(
+                    at: ReviewHomePaths.savedAccountAuthURL(
+                        accountKey: accountKey,
+                        environment: environment
+                    )
+                )
+            }
+        } catch {
+            rollbackRegistryMutation(
+                originalRegistry: originalRegistry,
+                sharedAuthBackup: sharedAuthBackup
+            )
+            throw error
+        }
+    }
+
+    package func invalidateSavedAccountAuth(_ accountKey: String) throws {
+        try removeItemIfExists(
+            at: ReviewHomePaths.savedAccountAuthURL(
+                accountKey: accountKey,
+                environment: environment
+            )
+        )
     }
 
     package func removeAccount(_ accountKey: String) throws -> String? {
-        var registry = try loadRegistry()
+        let originalRegistry = try loadRegistry()
+        var registry = originalRegistry
         registry.accounts.removeAll { $0.accountKey == accountKey }
         let savedAccountDirectoryURL = ReviewHomePaths.savedAccountDirectoryURL(
             accountKey: accountKey,
             environment: environment
         )
-        if FileManager.default.fileExists(atPath: savedAccountDirectoryURL.path) {
-            try FileManager.default.removeItem(at: savedAccountDirectoryURL)
-        }
-
-        if registry.activeAccountKey == accountKey {
-            registry.activeAccountKey = registry.accounts.first?.accountKey
-            if let replacementKey = registry.activeAccountKey {
-                try persistAuthSnapshot(
-                    from: ReviewHomePaths.savedAccountAuthURL(accountKey: replacementKey, environment: environment),
-                    to: ReviewHomePaths.reviewAuthURL(environment: environment)
-                )
-            } else {
-                try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
-            }
+        if originalRegistry.activeAccountKey == accountKey {
+            registry.activeAccountKey = nil
         }
 
         try saveRegistry(registry)
+        let sharedAuthBackup = loadSharedAuthData()
+        do {
+            if originalRegistry.activeAccountKey == accountKey {
+                try removeItemIfExists(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+            }
+            if FileManager.default.fileExists(atPath: savedAccountDirectoryURL.path) {
+                try FileManager.default.removeItem(at: savedAccountDirectoryURL)
+            }
+        } catch {
+            rollbackRegistryMutation(
+                originalRegistry: originalRegistry,
+                sharedAuthBackup: sharedAuthBackup
+            )
+            throw error
+        }
         return registry.activeAccountKey
     }
 
@@ -255,26 +299,48 @@ package actor ReviewAccountRegistryStore {
         )
     }
 
+    package func prepareSharedAuthProbe() throws -> PreparedInactiveAccountProbe {
+        let probeRoot = try makePreparedProbeRoot(
+            copySharedAuthFromAccountKey: nil,
+            copySharedAuthFromSharedHome: true
+        )
+        return .init(
+            environment: makeProbeEnvironment(homeRootURL: probeRoot),
+            homeRootURL: probeRoot
+        )
+    }
+
     package func cleanupProbeHome(_ probe: PreparedInactiveAccountProbe) {
         try? FileManager.default.removeItem(at: probe.homeRootURL)
     }
 
     private func makePreparedProbeRoot(
-        copySharedAuthFromAccountKey accountKey: String?
+        copySharedAuthFromAccountKey accountKey: String?,
+        copySharedAuthFromSharedHome: Bool = false
     ) throws -> URL {
         let probeRoot = ReviewHomePaths.makeProbeRootURL(environment: environment)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let probeEnvironment = makeProbeEnvironment(homeRootURL: probeRoot)
-        let probeReviewHome = ReviewHomePaths.reviewHomeURL(environment: probeEnvironment)
-        try ReviewHomePaths.ensureReviewHomeScaffold(at: probeReviewHome)
-        try copySharedConfigurationIfPresent(into: probeReviewHome)
-        if let accountKey {
-            try persistAuthSnapshot(
-                from: ReviewHomePaths.savedAccountAuthURL(accountKey: accountKey, environment: environment),
-                to: ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
-            )
+        do {
+            let probeEnvironment = makeProbeEnvironment(homeRootURL: probeRoot)
+            let probeReviewHome = ReviewHomePaths.reviewHomeURL(environment: probeEnvironment)
+            try ReviewHomePaths.ensureReviewHomeScaffold(at: probeReviewHome)
+            try copySharedConfigurationIfPresent(into: probeReviewHome)
+            if let accountKey {
+                try persistAuthSnapshot(
+                    from: ReviewHomePaths.savedAccountAuthURL(accountKey: accountKey, environment: environment),
+                    to: ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
+                )
+            } else if copySharedAuthFromSharedHome {
+                try persistAuthSnapshot(
+                    from: ReviewHomePaths.reviewAuthURL(environment: environment),
+                    to: ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
+                )
+            }
+            return probeRoot
+        } catch {
+            try? FileManager.default.removeItem(at: probeRoot)
+            throw error
         }
-        return probeRoot
     }
 
     private func loadRegistry() throws -> ReviewAccountRegistryRecord {
@@ -332,6 +398,37 @@ package actor ReviewAccountRegistryStore {
         }
         try saveRegistryRecord(registry, environment: environment)
         return makeCodexAccount(record, isActive: registry.activeAccountKey == record.accountKey)
+    }
+
+    private func loadSharedAuthData() -> Data? {
+        try? Data(contentsOf: ReviewHomePaths.reviewAuthURL(environment: environment))
+    }
+
+    private func rollbackRegistryMutation(
+        originalRegistry: ReviewAccountRegistryRecord,
+        sharedAuthBackup: Data?
+    ) {
+        try? saveRegistry(originalRegistry)
+        try? restoreSharedAuth(from: sharedAuthBackup)
+    }
+
+    private func restoreSharedAuth(from backup: Data?) throws {
+        let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: environment)
+        if let backup {
+            try FileManager.default.createDirectory(
+                at: sharedAuthURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try backup.write(to: sharedAuthURL, options: .atomic)
+            return
+        }
+        try removeItemIfExists(at: sharedAuthURL)
+    }
+
+    private func removeItemIfExists(at url: URL) throws {
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
     }
 }
 

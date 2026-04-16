@@ -30,6 +30,7 @@ public final class CodexReviewAuthModel {
     public package(set) var account: CodexAccount?
     public package(set) var savedAccounts: [CodexAccount] = []
     public package(set) var authenticationFailureCount = 0
+    public package(set) var warningMessage: String?
 
     @ObservationIgnored private let controller: any CodexReviewAuthControlling
 
@@ -130,7 +131,12 @@ public final class CodexReviewAuthModel {
 
     package func recordAuthenticationFailure(message: String) {
         authenticationFailureCount += 1
+        warningMessage = nil
         phase = .failed(message: message)
+    }
+
+    package func updateWarning(message: String?) {
+        warningMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
     package func updateAccount(_ account: CodexAccount?) {

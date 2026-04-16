@@ -102,4 +102,24 @@ extension CodexReviewStore {
             throw firstError
         }
     }
+
+    package func terminateAllRunningJobsLocally(
+        reason: String = "Cancellation requested.",
+        failureMessage: String
+    ) {
+        let resolvedError = failureMessage.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        for job in workspaces.flatMap(\.jobs) where job.isTerminal == false {
+            job.cancellationRequested = false
+            job.status = .failed
+            if let resolvedError {
+                job.summary = "Failed to cancel review: \(resolvedError)"
+            } else {
+                job.summary = "Failed to cancel review."
+            }
+            job.hasFinalReview = false
+            job.errorMessage = resolvedError ?? reason.nilIfEmpty ?? job.errorMessage
+            job.endedAt = Date()
+        }
+        writeDiagnosticsIfNeeded()
+    }
 }

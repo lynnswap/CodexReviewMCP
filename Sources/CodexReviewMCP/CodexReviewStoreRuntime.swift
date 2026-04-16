@@ -753,10 +753,6 @@ extension CodexReviewStore {
         webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory,
         loginAuthSessionFactoryOverride: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil
     ) -> CodexReviewStore {
-        let sharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { _ in
-            let transport = try await appServerManager.checkoutAuthTransport()
-            return SharedAppServerReviewAuthSession(transport: transport)
-        }
         let loginAuthSessionFactory = makeReviewMonitorLoginAuthSessionFactory(
             configuration: configuration,
             nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
@@ -767,7 +763,6 @@ extension CodexReviewStore {
             configuration: configuration,
             diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
-            sharedAuthSessionFactory: sharedAuthSessionFactory,
             loginAuthSessionFactory: loginAuthSessionFactoryOverride ?? loginAuthSessionFactory,
             deferStartupAuthRefreshUntilPrepared: true
         )
@@ -811,6 +806,7 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
     private let sharedAuthURL: URL
     private let probeAuthURL: URL
     private let originalSharedAuthData: Data?
+    private let originalSharedAuthEmail: String?
     private var restoredSharedAuth = false
 
     init(
@@ -822,12 +818,23 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
         sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: sharedEnvironment)
         probeAuthURL = ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
         originalSharedAuthData = try? Data(contentsOf: sharedAuthURL)
+        originalSharedAuthEmail = extractedAuthSnapshotEmail(from: originalSharedAuthData)
     }
 
     func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
         let response = try await base.readAccount(refreshToken: refreshToken)
-        if response.account != nil {
-            copySharedAuthToProbe()
+        if case .chatGPT(let email, _)? = response.account,
+           let email = email.nilIfEmpty
+        {
+            let currentSharedAuthData = try? Data(contentsOf: sharedAuthURL)
+            if currentSharedAuthData != nil,
+               (
+                   currentSharedAuthData != originalSharedAuthData
+                       || originalSharedAuthEmail == email
+               )
+            {
+                copySharedAuthToProbe()
+            }
         } else if response.requiresOpenAIAuth {
             removeProbeAuth()
         }
@@ -872,6 +879,36 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
         try? FileManager.default.removeItem(at: probeAuthURL)
     }
 
+    private func writeProbeAuthSnapshot(
+        email: String,
+        planType: String?
+    ) {
+        let authPayload: [String: Any] = {
+            guard let planType else {
+                return [:]
+            }
+            return ["chatgpt_plan_type": planType]
+        }()
+        let payload: [String: Any] = [
+            "email": email,
+            "https://api.openai.com/auth": authPayload,
+        ]
+        let object: [String: Any] = [
+            "auth_mode": "chatgpt",
+            "tokens": [
+                "id_token": makeReviewAuthToken(payload: payload)
+            ],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else {
+            return
+        }
+        try? FileManager.default.createDirectory(
+            at: probeAuthURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? data.write(to: probeAuthURL, options: .atomic)
+    }
+
     private func restoreSharedAuthIfNeeded() {
         guard restoredSharedAuth == false else {
             return
@@ -887,6 +924,50 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
             try? FileManager.default.removeItem(at: sharedAuthURL)
         }
     }
+}
+
+private func makeReviewAuthToken(payload: [String: Any]) -> String {
+    let header = ["alg": "none", "typ": "JWT"]
+    let headerData = try? JSONSerialization.data(withJSONObject: header)
+    let payloadData = try? JSONSerialization.data(withJSONObject: payload)
+    return "\(makeReviewAuthTokenComponent(headerData ?? Data())).\(makeReviewAuthTokenComponent(payloadData ?? Data()))."
+}
+
+private func makeReviewAuthTokenComponent(_ data: Data) -> String {
+    data.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}
+
+private func extractedAuthSnapshotEmail(from authData: Data?) -> String? {
+    guard let authData,
+          let object = try? JSONSerialization.jsonObject(with: authData) as? [String: Any],
+          let tokens = object["tokens"] as? [String: Any],
+          let idToken = tokens["id_token"] as? String
+    else {
+        return nil
+    }
+    let components = idToken.split(separator: ".", omittingEmptySubsequences: false)
+    guard components.count >= 2,
+          let payloadData = decodeBase64URL(String(components[1])),
+          let payloadObject = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
+          let email = payloadObject["email"] as? String
+    else {
+        return nil
+    }
+    return email.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+}
+
+private func decodeBase64URL(_ value: String) -> Data? {
+    var normalized = value
+        .replacingOccurrences(of: "-", with: "+")
+        .replacingOccurrences(of: "_", with: "/")
+    let remainder = normalized.count % 4
+    if remainder != 0 {
+        normalized.append(String(repeating: "=", count: 4 - remainder))
+    }
+    return Data(base64Encoded: normalized)
 }
 
 typealias ReviewMonitorWebAuthenticationSessionFactory = @MainActor @Sendable (
@@ -1495,19 +1576,30 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let rateLimitObservationClock: any ReviewClock
     let rateLimitStaleRefreshInterval: Duration
     lazy var liveSharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [weak self, appServerManager, configuration] environment in
-        let shouldUseSharedRuntime = await MainActor.run {
-            self?.isActive ?? false
-        }
-        guard shouldUseSharedRuntime else {
-            return CLIReviewAuthSession(
+        let makeCLISession = {
+            CLIReviewAuthSession(
                 configuration: .init(
                     codexCommand: configuration.codexCommand,
                     environment: environment
                 )
             )
         }
-        let transport = try await appServerManager.checkoutAuthTransport()
-        return SharedAppServerReviewAuthSession(transport: transport)
+        let shouldUseSharedRuntime = await MainActor.run {
+            self?.authRuntimeState.serverIsRunning ?? false
+        }
+        let shouldProbeInjectedManager = (appServerManager is AppServerSupervisor) == false
+        guard shouldUseSharedRuntime || shouldProbeInjectedManager else {
+            return makeCLISession()
+        }
+        do {
+            let transport = try await appServerManager.checkoutAuthTransport()
+            return SharedAppServerReviewAuthSession(transport: transport)
+        } catch {
+            guard shouldUseSharedRuntime else {
+                return makeCLISession()
+            }
+            throw error
+        }
     }
     lazy var liveCLIAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [configuration] environment in
         CLIReviewAuthSession(
@@ -1534,7 +1626,15 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 guard let store = self?.attachedStore else {
                     return
                 }
-                try await store.cancelAllRunningJobs(reason: reason)
+                do {
+                    try await store.cancelAllRunningJobs(reason: reason)
+                } catch {
+                    store.terminateAllRunningJobsLocally(
+                        reason: reason,
+                        failureMessage: error.localizedDescription
+                    )
+                    throw error
+                }
             },
             rateLimitObservationClock: rateLimitObservationClock,
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval
@@ -1608,22 +1708,26 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         self.rateLimitStaleRefreshInterval = rateLimitStaleRefreshInterval
         self.deferStartupAuthRefreshUntilPrepared = deferStartupAuthRefreshUntilPrepared
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
-        let seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
+        var seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
         let sharedInitialAccount = loadSharedReviewAccount(environment: configuration.environment)
-        let resolvedInitialAccountKey = sharedInitialAccount?.accountKey
+        if let sharedInitialAccount,
+           seededAccounts.activeAccountKey != sharedInitialAccount.accountKey
+        {
+            _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+            seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
+        }
+        let resolvedInitialAccountKey = sharedInitialAccount?.accountKey ?? seededAccounts.activeAccountKey
         let initialAccounts = {
-            let mergedAccounts: [CodexAccount]
+            var accounts = seededAccounts.accounts
             if let sharedInitialAccount,
-               seededAccounts.accounts.contains(where: { $0.accountKey == sharedInitialAccount.accountKey }) == false
+               accounts.contains(where: { $0.accountKey == sharedInitialAccount.accountKey }) == false
             {
-                mergedAccounts = seededAccounts.accounts + [sharedInitialAccount]
-            } else {
-                mergedAccounts = seededAccounts.accounts
+                accounts.insert(sharedInitialAccount, at: 0)
             }
-            for account in mergedAccounts {
+            for account in accounts {
                 account.updateIsActive(account.accountKey == resolvedInitialAccountKey)
             }
-            return mergedAccounts
+            return accounts
         }()
         self.initialAccounts = initialAccounts
         self.initialActiveAccountKey = resolvedInitialAccountKey
@@ -1670,6 +1774,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         startupTaskID = nil
         startupTask?.cancel()
         store.auth.cancelStartupRefresh()
+        if store.auth.isAuthenticating {
+            await store.auth.cancelAuthentication()
+        }
         await store.auth.reconcileAuthenticatedSession(
             serverIsRunning: false,
             runtimeGeneration: appServerRuntimeGeneration
