@@ -1500,9 +1500,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         let seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
         self.initialAccounts = seededAccounts.accounts
         self.initialActiveAccountKey = seededAccounts.activeAccountKey
-        self.initialAccount = seededAccounts.accounts.first(where: {
-            $0.accountKey == seededAccounts.activeAccountKey
-        }) ?? seededAccounts.accounts.first
+        self.initialAccount = seededAccounts.activeAccountKey.flatMap { activeAccountKey in
+            seededAccounts.accounts.first(where: { $0.accountKey == activeAccountKey })
+        }
     }
 
     func start(

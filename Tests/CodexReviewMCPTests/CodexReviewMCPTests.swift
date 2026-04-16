@@ -53,6 +53,43 @@ struct CodexReviewMCPTests {
         #expect(FileManager.default.fileExists(atPath: reviewAgentsURL.path))
     }
 
+    @Test func storeDoesNotSeedInitialAccountWhenRegistryHasNoActiveAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: registryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let registry = ReviewAccountRegistryRecord(
+            activeAccountKey: nil,
+            accounts: [
+                .init(
+                    accountKey: "saved@example.com",
+                    email: "saved@example.com",
+                    planType: "pro",
+                    lastActivatedAt: nil,
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                )
+            ]
+        )
+        let registryData = try JSONEncoder().encode(registry)
+        try registryData.write(to: registryURL, options: .atomic)
+
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() }
+        )
+
+        #expect(store.auth.account == nil)
+        #expect(store.auth.savedAccounts.map(\.email) == ["saved@example.com"])
+    }
+
     @Test func startingStoreRefreshesAuthStateInBackgroundWithoutBlockingStartup() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = MockAppServerManager { _ in .success() }

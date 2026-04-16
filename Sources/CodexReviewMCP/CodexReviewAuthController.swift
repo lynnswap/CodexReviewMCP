@@ -125,6 +125,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 savedAccount = try accountRegistryStore.saveAuthSnapshot(
                     sourceAuthURL: ReviewHomePaths.reviewAuthURL(environment: loginProbe.environment),
                     makeActive: hasResolvedAuthenticatedAccount == false
+                        && (auth.account == nil || auth.errorMessage != nil)
                 )
                 persistedSavedAccount = true
             } catch {
