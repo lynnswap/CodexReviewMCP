@@ -28,6 +28,7 @@ public final class CodexReviewStore {
         )
         self.auth.updateSavedAccounts(backend.initialAccounts)
         self.auth.updateAccount(backend.initialAccount)
+        backend.attachStore(self)
     }
 
     public func start(forceRestartIfNeeded: Bool = false) async {

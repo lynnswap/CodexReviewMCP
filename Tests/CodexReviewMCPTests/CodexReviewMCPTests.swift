@@ -5419,15 +5419,19 @@ private func makeInjectedNativeLoginAuthSessionFactory(
     nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
     webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
 ) -> @Sendable ([String: String]) async throws -> any ReviewAuthSession {
-    { _ in
+    { environment in
         let transport = try await manager.checkoutAuthTransport()
-        return await MainActor.run {
+        let session = await MainActor.run {
             NativeWebAuthenticationReviewSession(
                 sharedSession: SharedAppServerReviewAuthSession(transport: transport),
                 nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
                 webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         }
+        return PersistingReviewAuthSession(
+            base: session,
+            environment: environment
+        )
     }
 }
 

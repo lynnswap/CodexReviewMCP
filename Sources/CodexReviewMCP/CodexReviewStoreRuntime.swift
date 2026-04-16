@@ -1530,6 +1530,12 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             recycleServerIfRunning: { [weak self] in
                 await self?.recycleSharedAppServerAfterAuthChange()
             },
+            cancelRunningJobs: { [weak self] reason in
+                guard let store = self?.attachedStore else {
+                    return
+                }
+                try await store.cancelAllRunningJobs(reason: reason)
+            },
             rateLimitObservationClock: rateLimitObservationClock,
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval
         )
@@ -1560,6 +1566,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     private var startupTask: Task<Void, Never>?
     private var startupTaskID: UUID?
     private var appServerRuntimeGeneration = 0
+    private weak var attachedStore: CodexReviewStore?
     var closedSessions: Set<String> = []
     private var discoveryFileURL: URL {
         ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
@@ -1623,6 +1630,10 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         self.initialAccount = resolvedInitialAccountKey.flatMap { activeAccountKey in
             initialAccounts.first(where: { $0.accountKey == activeAccountKey })
         }
+    }
+
+    func attachStore(_ store: CodexReviewStore) {
+        attachedStore = store
     }
 
     func start(

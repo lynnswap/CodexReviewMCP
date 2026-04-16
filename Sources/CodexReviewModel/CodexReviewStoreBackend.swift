@@ -23,6 +23,8 @@ package protocol CodexReviewStoreBackend: AnyObject {
         reason: String,
         store: CodexReviewStore
     ) async throws
+
+    func attachStore(_ store: CodexReviewStore)
 }
 
 extension CodexReviewStoreBackend {
@@ -32,6 +34,10 @@ extension CodexReviewStoreBackend {
 
     package var initialActiveAccountKey: String? {
         initialAccount?.accountKey
+    }
+
+    package func attachStore(_ store: CodexReviewStore) {
+        _ = store
     }
 }
 
