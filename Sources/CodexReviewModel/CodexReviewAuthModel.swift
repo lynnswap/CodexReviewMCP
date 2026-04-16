@@ -92,7 +92,13 @@ public final class CodexReviewAuthModel {
             await cancelAuthentication()
             return
         }
-        try? await signOutActiveAccount()
+        do {
+            try await signOutActiveAccount()
+        } catch {
+            if errorMessage == nil, isAuthenticated {
+                updatePhase(.failed(message: error.localizedDescription))
+            }
+        }
     }
 
     public func refreshSavedAccountRateLimits(accountKey: String) async {

@@ -148,7 +148,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 await refreshResolvedState(
                     auth: auth,
                     forceRestartSession: true,
-                    forceRecycleServer: auth.hasSavedAccounts
+                    forceRecycleServer: auth.hasSavedAccounts,
+                    allowDuringAuthentication: true
                 )
                 let resolvedRuntimeState = runtimeState()
                 if resolvedRuntimeState.serverIsRunning,
@@ -442,7 +443,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     private func refreshResolvedState(
         auth: CodexReviewAuthModel,
         forceRestartSession: Bool = false,
-        forceRecycleServer: Bool = false
+        forceRecycleServer: Bool = false,
+        allowDuringAuthentication: Bool = false
     ) async {
         do {
             let authManager = makeAuthManager(
@@ -451,7 +453,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             )
             let state = try await authManager.loadState()
             let priorAccountKey = auth.account?.accountKey
-            if auth.isAuthenticating {
+            if auth.isAuthenticating, allowDuringAuthentication == false {
                 return
             }
             if state.account != nil {
@@ -689,7 +691,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         case .signedOut:
             auth.updatePhase(.signedOut)
         case .signedIn:
-            auth.updatePhase(.signedOut)
+            return
         }
     }
 }
