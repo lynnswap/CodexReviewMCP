@@ -60,6 +60,19 @@ package func loadRegisteredReviewAccounts(
     return (registry.activeAccountKey, accounts)
 }
 
+@MainActor
+package func loadSharedReviewAccount(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) -> CodexAccount? {
+    guard let snapshot = loadAuthSnapshot(at: ReviewHomePaths.reviewAuthURL(environment: environment)) else {
+        return nil
+    }
+    return CodexAccount(
+        email: snapshot.email,
+        planType: snapshot.planType
+    )
+}
+
 package actor ReviewAccountRegistryStore {
     private let environment: [String: String]
 

@@ -1602,10 +1602,26 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         self.deferStartupAuthRefreshUntilPrepared = deferStartupAuthRefreshUntilPrepared
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
         let seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
-        self.initialAccounts = seededAccounts.accounts
-        self.initialActiveAccountKey = seededAccounts.activeAccountKey
-        self.initialAccount = seededAccounts.activeAccountKey.flatMap { activeAccountKey in
-            seededAccounts.accounts.first(where: { $0.accountKey == activeAccountKey })
+        let sharedInitialAccount = loadSharedReviewAccount(environment: configuration.environment)
+        let resolvedInitialAccountKey = sharedInitialAccount?.accountKey
+        let initialAccounts = {
+            let mergedAccounts: [CodexAccount]
+            if let sharedInitialAccount,
+               seededAccounts.accounts.contains(where: { $0.accountKey == sharedInitialAccount.accountKey }) == false
+            {
+                mergedAccounts = seededAccounts.accounts + [sharedInitialAccount]
+            } else {
+                mergedAccounts = seededAccounts.accounts
+            }
+            for account in mergedAccounts {
+                account.updateIsActive(account.accountKey == resolvedInitialAccountKey)
+            }
+            return mergedAccounts
+        }()
+        self.initialAccounts = initialAccounts
+        self.initialActiveAccountKey = resolvedInitialAccountKey
+        self.initialAccount = resolvedInitialAccountKey.flatMap { activeAccountKey in
+            initialAccounts.first(where: { $0.accountKey == activeAccountKey })
         }
     }
 

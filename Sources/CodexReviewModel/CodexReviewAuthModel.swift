@@ -88,6 +88,10 @@ public final class CodexReviewAuthModel {
     }
 
     public func logout() async {
+        if isAuthenticating, account == nil {
+            await cancelAuthentication()
+            return
+        }
         try? await signOutActiveAccount()
     }
 
