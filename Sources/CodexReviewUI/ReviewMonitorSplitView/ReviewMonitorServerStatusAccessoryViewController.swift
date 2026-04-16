@@ -276,7 +276,16 @@ struct StatusView: View {
 
     func addAccount() {
         Task {
+            let previousErrorMessage = store.auth.errorMessage
             await store.auth.beginAuthentication()
+            if let message = store.auth.errorMessage,
+               message != previousErrorMessage
+            {
+                await presentAccountActionFailure(
+                    title: "Failed to Add Account",
+                    message: message
+                )
+            }
         }
     }
 
@@ -354,6 +363,16 @@ struct StatusView: View {
     ) async {
         let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let message = description.isEmpty ? "Request failed." : description
+        await presentAccountActionFailure(
+            title: title,
+            message: message
+        )
+    }
+
+    func presentAccountActionFailure(
+        title: String,
+        message: String
+    ) async {
         await MainActor.run {
             let alert = NSAlert()
             alert.alertStyle = .warning

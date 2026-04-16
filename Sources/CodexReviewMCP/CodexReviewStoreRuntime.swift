@@ -46,7 +46,7 @@ extension CodexReviewStore {
             diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
             sharedAuthSessionFactory: sharedFactory,
-            loginAuthSessionFactory: sharedFactory,
+            loginAuthSessionFactory: nil,
             rateLimitObservationClock: rateLimitObservationClock,
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared

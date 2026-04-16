@@ -57,7 +57,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = MockAppServerManager { _ in .success() }
         let authSession = SlowReadAccountReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -95,7 +95,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -222,7 +222,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -287,7 +287,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -347,7 +347,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -397,7 +397,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -448,7 +448,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -543,7 +543,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -578,7 +578,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -641,7 +641,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -714,7 +714,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -784,7 +784,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -826,7 +826,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -886,7 +886,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -993,7 +993,7 @@ struct CodexReviewMCPTests {
                 ),
             ]
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1060,7 +1060,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1099,7 +1099,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1166,7 +1166,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1251,7 +1251,7 @@ struct CodexReviewMCPTests {
                 ),
             ]
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1334,7 +1334,7 @@ struct CodexReviewMCPTests {
                 ),
             ]
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1428,7 +1428,7 @@ struct CodexReviewMCPTests {
                 ),
             ]
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1500,7 +1500,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1544,7 +1544,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1576,7 +1576,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2283,7 +2283,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
         let authFactory = CountingReviewAuthSessionFactory(session: authSession)
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2313,7 +2313,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
         let authFactory = CountingReviewAuthSessionFactory(session: authSession)
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2357,7 +2357,7 @@ struct CodexReviewMCPTests {
         let authSession = BlockingLoginReviewAuthSession()
         let authFactory = CountingReviewAuthSessionFactory(session: authSession)
         let manager = AuthCapableAppServerManager()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2392,7 +2392,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let authSession = DeferredCloseLoginReviewAuthSession()
         let manager = AuthCapableAppServerManager()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2433,7 +2433,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = BlockingLoginReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2472,7 +2472,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SuccessfulLoginReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2498,7 +2498,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SameAccountSuccessfulLoginReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2524,7 +2524,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = NonPersistentSuccessfulLoginReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -5684,6 +5684,31 @@ private func makeTestStore(
         diagnosticsURL: diagnosticsURL,
         appServerManager: appServerManager,
         authSessionFactory: makeStubReviewAuthSessionFactory()
+    )
+}
+
+@MainActor
+private func makeInjectedAuthSessionStore(
+    configuration: ReviewServerConfiguration,
+    diagnosticsURL: URL? = nil,
+    appServerManager: any AppServerManaging,
+    authSessionFactory: @escaping @Sendable () async throws -> any ReviewAuthSession,
+    rateLimitObservationClock: any ReviewClock = ContinuousClock(),
+    rateLimitStaleRefreshInterval: Duration = .seconds(60),
+    deferStartupAuthRefreshUntilPrepared: Bool = false
+) -> CodexReviewStore {
+    let sessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { _ in
+        try await authSessionFactory()
+    }
+    return CodexReviewStore(
+        configuration: configuration,
+        diagnosticsURL: diagnosticsURL,
+        appServerManager: appServerManager,
+        sharedAuthSessionFactory: sessionFactory,
+        loginAuthSessionFactory: sessionFactory,
+        rateLimitObservationClock: rateLimitObservationClock,
+        rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+        deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
     )
 }
 

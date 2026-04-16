@@ -315,15 +315,19 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 )
             }
         } catch let error as ReviewAuthError {
+            let message = error.errorDescription ?? "Failed to sign out."
             await resolveLogoutFailureState(
                 auth: auth,
-                message: error.errorDescription ?? "Failed to sign out."
+                message: message
             )
+            throw error
         } catch {
+            let message = error.localizedDescription
             await resolveLogoutFailureState(
                 auth: auth,
-                message: error.localizedDescription
+                message: message
             )
+            throw error
         }
     }
 
