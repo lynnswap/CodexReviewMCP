@@ -495,7 +495,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
             await reconcileAfterResolvedAuthState(
                 auth: auth,
-                identityChanged: false
+                identityChanged: false,
+                forceRestartSession: forceRestartSession,
+                forceRecycleServer: forceRecycleServer
             )
         }
     }
@@ -551,6 +553,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             sessionFactory: sharedAuthSessionFactory
         )
         if let resolvedState = try? await authManager.loadState() {
+            if resolvedState.isAuthenticated == false {
+                try? await accountRegistryStore.clearActiveAccount(accountKey: auth.account?.accountKey)
+            }
             await refreshSavedAccounts(
                 auth: auth,
                 preserveCurrentWhenEmpty: resolvedState.isAuthenticated
