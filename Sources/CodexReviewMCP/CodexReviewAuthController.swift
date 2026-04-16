@@ -29,6 +29,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     private var authenticationCancellationRestoreState: AuthPresentationSnapshot?
     private var activeAuthenticationManager: ReviewAuthManager?
     private var activeAuthenticationProbe: PreparedInactiveAccountProbe?
+    private var hasResolvedAuthenticatedAccount = false
 
     init(
         configuration: ReviewServerConfiguration,
@@ -84,7 +85,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     package func beginAuthentication(auth: CodexReviewAuthModel) async {
         cancelStartupRefresh()
-        let priorSnapshot = snapshot(from: auth)
+        let priorSnapshot = snapshot(
+            from: auth,
+            isResolvedAuthenticated: hasResolvedAuthenticatedAccount
+        )
         authenticationCancellationRestoreState = priorSnapshot
         defer {
             authenticationCancellationRestoreState = nil
@@ -176,6 +180,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             )
         } catch ReviewAuthError.cancelled {
             if let restoreState = authenticationCancellationRestoreState {
+                hasResolvedAuthenticatedAccount = restoreState.isResolvedAuthenticated
                 restore(auth: auth, from: restoreState)
             }
             await reconcileAfterResolvedAuthState(
@@ -192,8 +197,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     package func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        let restoreState = authenticationCancellationRestoreState ?? snapshot(from: auth)
+        let restoreState = authenticationCancellationRestoreState ?? snapshot(
+            from: auth,
+            isResolvedAuthenticated: hasResolvedAuthenticatedAccount
+        )
         await activeAuthenticationManager?.cancelAuthentication()
+        hasResolvedAuthenticatedAccount = restoreState.isResolvedAuthenticated
         restore(auth: auth, from: restoreState)
         await reconcileAfterResolvedAuthState(
             auth: auth,
@@ -448,8 +457,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             let identityChanged = applyResolvedReviewAuthState(
                 state,
                 activeAccountKey: auth.savedAccounts.first(where: \.isActive)?.accountKey,
+                priorResolvedAuthenticatedAccount: hasResolvedAuthenticatedAccount,
                 to: auth
             )
+            hasResolvedAuthenticatedAccount = state.isAuthenticated
             await reconcileAfterResolvedAuthState(
                 auth: auth,
                 identityChanged: identityChanged,
@@ -465,8 +476,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 _ = applyResolvedReviewAuthState(
                     postRecycleState,
                     activeAccountKey: auth.savedAccounts.first(where: \.isActive)?.accountKey,
+                    priorResolvedAuthenticatedAccount: hasResolvedAuthenticatedAccount,
                     to: auth
                 )
+                hasResolvedAuthenticatedAccount = postRecycleState.isAuthenticated
                 let resolvedRuntimeState = runtimeState()
                 await accountSessionController.reconcile(
                     serverIsRunning: resolvedRuntimeState.serverIsRunning,
@@ -555,8 +568,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             let identityChanged = applyResolvedReviewAuthState(
                 resolvedState,
                 activeAccountKey: auth.savedAccounts.first(where: \.isActive)?.accountKey,
+                priorResolvedAuthenticatedAccount: hasResolvedAuthenticatedAccount,
                 to: auth
             )
+            hasResolvedAuthenticatedAccount = resolvedState.isAuthenticated
             if auth.isAuthenticated {
                 auth.updatePhase(.failed(message: message))
             }
@@ -946,6 +961,7 @@ private final class CodexAccountSessionController {
                     return
                 }
                 self.rateLimitsReadCapability = .unsupported
+                account.clearRateLimits()
                 account.updateRateLimitFetchMetadata(
                     fetchedAt: Date(),
                     error: error.message
@@ -1033,13 +1049,18 @@ private final class CodexAccountSessionController {
 private struct AuthPresentationSnapshot {
     var phase: CodexReviewAuthModel.Phase
     var account: ReviewAuthAccount?
+    var isResolvedAuthenticated: Bool
 }
 
 @MainActor
-private func snapshot(from auth: CodexReviewAuthModel) -> AuthPresentationSnapshot {
+private func snapshot(
+    from auth: CodexReviewAuthModel,
+    isResolvedAuthenticated: Bool
+) -> AuthPresentationSnapshot {
     .init(
         phase: auth.phase,
-        account: auth.account.map(makeReviewAuthAccount)
+        account: auth.account.map(makeReviewAuthAccount),
+        isResolvedAuthenticated: isResolvedAuthenticated
     )
 }
 
@@ -1065,14 +1086,14 @@ private func restore(
 private func applyResolvedReviewAuthState(
     _ state: ReviewAuthState,
     activeAccountKey: String?,
+    priorResolvedAuthenticatedAccount: Bool,
     to auth: CodexReviewAuthModel
 ) -> Bool {
     switch state {
     case .signedOut:
         auth.updatePhase(.signedOut)
-        let hadAccount = auth.account != nil
         auth.updateAccount(nil)
-        return hadAccount
+        return priorResolvedAuthenticatedAccount
     case .signingIn(let progress):
         auth.updatePhase(.signingIn(makeAuthProgress(progress)))
         return false
