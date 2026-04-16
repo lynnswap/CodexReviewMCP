@@ -280,33 +280,22 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 sessionFactory: sharedAuthSessionFactory
             )
             _ = try await authManager.logout()
-            _ = try await accountRegistryStore.removeAccount(activeAccountKey)
+            try await accountRegistryStore.clearActiveAccount()
             if let loaded = try? accountRegistryStore.loadAccounts() {
                 auth.updateSavedAccounts(loaded.accounts)
-                if let nextActiveKey = loaded.activeAccountKey,
-                   let nextActive = loaded.accounts.first(where: { $0.accountKey == nextActiveKey })
-                {
-                    auth.updateAccount(nextActive)
-                    await refreshResolvedState(
-                        auth: auth,
-                        forceRestartSession: true,
-                        forceRecycleServer: true
-                    )
-                } else {
-                    auth.updateSavedAccounts([])
-                    auth.updateAccount(nil)
-                    auth.updatePhase(.signedOut)
-                    await reconcileAfterResolvedAuthState(
-                        auth: auth,
-                        identityChanged: true,
-                        forceRestartSession: true,
-                        forceRecycleServer: true
-                    )
-                }
-            } else {
-                auth.updateSavedAccounts([])
                 auth.updateAccount(nil)
                 auth.updatePhase(.signedOut)
+                hasResolvedAuthenticatedAccount = false
+                await reconcileAfterResolvedAuthState(
+                    auth: auth,
+                    identityChanged: true,
+                    forceRestartSession: true,
+                    forceRecycleServer: true
+                )
+            } else {
+                auth.updateAccount(nil)
+                auth.updatePhase(.signedOut)
+                hasResolvedAuthenticatedAccount = false
                 await reconcileAfterResolvedAuthState(
                     auth: auth,
                     identityChanged: true,
