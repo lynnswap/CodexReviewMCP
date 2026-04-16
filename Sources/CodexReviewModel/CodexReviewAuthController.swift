@@ -7,12 +7,47 @@ package protocol CodexReviewAuthControlling: AnyObject {
     func refresh(auth: CodexReviewAuthModel) async
     func beginAuthentication(auth: CodexReviewAuthModel) async
     func cancelAuthentication(auth: CodexReviewAuthModel) async
-    func logout(auth: CodexReviewAuthModel) async
+    func switchAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws
+    func removeAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws
+    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws
+    func refreshSavedAccountRateLimits(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async
     func reconcileAuthenticatedSession(
         auth: CodexReviewAuthModel,
         serverIsRunning: Bool,
         runtimeGeneration: Int
     ) async
+}
+
+extension CodexReviewAuthControlling {
+    package func switchAccount(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) async throws {}
+
+    package func removeAccount(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) async throws {}
+
+    package func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
+        auth.updatePhase(.signedOut)
+        auth.updateAccount(nil)
+        auth.updateSavedAccounts([])
+    }
+
+    package func refreshSavedAccountRateLimits(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) async {}
 }
 
 @MainActor
@@ -37,11 +72,6 @@ package final class CodexReviewPreviewAuthController: CodexReviewAuthControlling
         if auth.account == nil {
             auth.updatePhase(.signedOut)
         }
-    }
-
-    package func logout(auth: CodexReviewAuthModel) async {
-        auth.updatePhase(.signedOut)
-        auth.updateAccount(nil)
     }
 
     package func reconcileAuthenticatedSession(

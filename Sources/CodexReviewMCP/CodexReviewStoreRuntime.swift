@@ -33,10 +33,41 @@ extension CodexReviewStore {
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
+        let sharedFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)?
+        if let authSessionFactory {
+            sharedFactory = { (_: [String: String]) async throws -> any ReviewAuthSession in
+                try await authSessionFactory()
+            }
+        } else {
+            sharedFactory = nil
+        }
+        self.init(
+            configuration: configuration,
+            diagnosticsURL: diagnosticsURL,
+            appServerManager: appServerManager,
+            sharedAuthSessionFactory: sharedFactory,
+            loginAuthSessionFactory: sharedFactory,
+            rateLimitObservationClock: rateLimitObservationClock,
+            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+            deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
+        )
+    }
+
+    package convenience init(
+        configuration: ReviewServerConfiguration,
+        diagnosticsURL: URL? = nil,
+        appServerManager: (any AppServerManaging)? = nil,
+        sharedAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
+        loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
+        rateLimitObservationClock: any ReviewClock = ContinuousClock(),
+        rateLimitStaleRefreshInterval: Duration = .seconds(60),
+        deferStartupAuthRefreshUntilPrepared: Bool = false
+    ) {
         let backend = CodexReviewEmbeddedServerBackend(
             configuration: configuration,
             appServerManager: appServerManager,
-            authSessionFactory: authSessionFactory,
+            sharedAuthSessionFactory: sharedAuthSessionFactory,
+            loginAuthSessionFactory: loginAuthSessionFactory,
             rateLimitObservationClock: rateLimitObservationClock,
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
@@ -670,7 +701,9 @@ extension CodexReviewStore {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         store.serverState = .running
         store.serverURL = URL(string: "http://127.0.0.1:9417/mcp")
-        store.auth.updateAccount(CodexAccount(email: "ui-test@example.com", planType: "unknown"))
+        let account = CodexAccount(email: "ui-test@example.com", planType: "unknown")
+        store.auth.updateSavedAccounts([account])
+        store.auth.updateAccount(account)
         return store
     }
 
@@ -709,13 +742,33 @@ extension CodexReviewStore {
         nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
         webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
     ) -> CodexReviewStore {
-        let authSessionFactory: @Sendable () async throws -> any ReviewAuthSession = {
+        let sharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { _ in
             let transport = try await appServerManager.checkoutAuthTransport()
+            return SharedAppServerReviewAuthSession(transport: transport)
+        }
+        let loginAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { environment in
+            let runtimeManager: any AppServerManaging
+            if appServerManager is AppServerSupervisor {
+                runtimeManager = AppServerSupervisor(
+                    configuration: .init(
+                        codexCommand: configuration.codexCommand,
+                        environment: environment
+                    )
+                )
+            } else {
+                runtimeManager = appServerManager
+            }
+            let transport = try await runtimeManager.checkoutAuthTransport()
             return await MainActor.run {
                 NativeWebAuthenticationReviewSession(
                     sharedSession: SharedAppServerReviewAuthSession(transport: transport),
                     nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
-                    webAuthenticationSessionFactory: webAuthenticationSessionFactory
+                    webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+                    onClose: { [runtimeManager] in
+                        if appServerManager is AppServerSupervisor {
+                            await runtimeManager.shutdown()
+                        }
+                    }
                 )
             }
         }
@@ -724,7 +777,8 @@ extension CodexReviewStore {
             configuration: configuration,
             diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
-            authSessionFactory: authSessionFactory,
+            sharedAuthSessionFactory: sharedAuthSessionFactory,
+            loginAuthSessionFactory: loginAuthSessionFactory,
             deferStartupAuthRefreshUntilPrepared: true
         )
     }
@@ -908,15 +962,18 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
     private var activeAuthenticationSession: ReviewMonitorWebAuthenticationSession?
     private var authenticationTask: Task<Void, Never>?
     private var isClosed = false
+    private let onClose: (@Sendable () async -> Void)?
 
     init(
         sharedSession: SharedAppServerReviewAuthSession,
         nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
-        webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
+        webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory,
+        onClose: (@Sendable () async -> Void)? = nil
     ) {
         self.sharedSession = sharedSession
         self.nativeAuthenticationConfiguration = nativeAuthenticationConfiguration
         self.webAuthenticationSessionFactory = webAuthenticationSessionFactory
+        self.onClose = onClose
     }
 
     func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
@@ -1079,6 +1136,9 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         relayTask?.cancel()
         relayTask = nil
         await sharedSession.close()
+        if let onClose {
+            await onClose()
+        }
     }
 
     private func startRelayIfNeeded() async throws {
@@ -1319,25 +1379,35 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
 private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let configuration: ReviewServerConfiguration
     let appServerManager: any AppServerManaging
-    let authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)?
+    let accountRegistryStore: ReviewAccountRegistryStore
+    let sharedAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)?
+    let loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)?
     let deferStartupAuthRefreshUntilPrepared: Bool
     let shouldAutoStartEmbeddedServer: Bool
     let initialAccount: CodexAccount?
+    let initialAccounts: [CodexAccount]
+    let initialActiveAccountKey: String?
     let rateLimitObservationClock: any ReviewClock
     let rateLimitStaleRefreshInterval: Duration
-    lazy var liveAuthSessionFactory: @Sendable () async throws -> any ReviewAuthSession = { [configuration] in
+    lazy var liveSharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [appServerManager] _ in
+        let transport = try await appServerManager.checkoutAuthTransport()
+        return SharedAppServerReviewAuthSession(transport: transport)
+    }
+    lazy var liveCLIAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [configuration] environment in
         CLIReviewAuthSession(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
-                environment: configuration.environment
+                environment: environment
             )
         )
     }
     lazy var authController: CodexAuthController = {
         CodexAuthController(
             configuration: configuration,
+            accountRegistryStore: accountRegistryStore,
             appServerManager: appServerManager,
-            authSessionFactory: authSessionFactory ?? liveAuthSessionFactory,
+            sharedAuthSessionFactory: sharedAuthSessionFactory ?? liveSharedAuthSessionFactory,
+            loginAuthSessionFactory: loginAuthSessionFactory ?? liveCLIAuthSessionFactory,
             runtimeState: { [weak self] in
                 self?.authRuntimeState ?? .stopped
             },
@@ -1395,7 +1465,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     init(
         configuration: ReviewServerConfiguration,
         appServerManager: (any AppServerManaging)? = nil,
-        authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil,
+        sharedAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
+        loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
         rateLimitObservationClock: any ReviewClock = ContinuousClock(),
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
@@ -1407,17 +1478,19 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 environment: configuration.environment
             )
         )
-        self.authSessionFactory = authSessionFactory
+        self.accountRegistryStore = ReviewAccountRegistryStore(environment: configuration.environment)
+        self.sharedAuthSessionFactory = sharedAuthSessionFactory
+        self.loginAuthSessionFactory = loginAuthSessionFactory
         self.rateLimitObservationClock = rateLimitObservationClock
         self.rateLimitStaleRefreshInterval = rateLimitStaleRefreshInterval
         self.deferStartupAuthRefreshUntilPrepared = deferStartupAuthRefreshUntilPrepared
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
-        self.initialAccount = loadStoredReviewAuthAccount(environment: configuration.environment).map {
-            CodexAccount(
-                email: $0.email,
-                planType: $0.planType
-            )
-        }
+        let seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
+        self.initialAccounts = seededAccounts.accounts
+        self.initialActiveAccountKey = seededAccounts.activeAccountKey
+        self.initialAccount = seededAccounts.accounts.first(where: {
+            $0.accountKey == seededAccounts.activeAccountKey
+        }) ?? seededAccounts.accounts.first
     }
 
     func start(

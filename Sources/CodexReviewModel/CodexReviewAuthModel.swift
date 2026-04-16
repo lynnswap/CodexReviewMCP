@@ -28,6 +28,7 @@ public final class CodexReviewAuthModel {
 
     public package(set) var phase: Phase = .signedOut
     public package(set) var account: CodexAccount?
+    public package(set) var savedAccounts: [CodexAccount] = []
 
     @ObservationIgnored private let controller: any CodexReviewAuthControlling
 
@@ -44,6 +45,10 @@ public final class CodexReviewAuthModel {
 
     public var isAuthenticated: Bool {
         account != nil
+    }
+
+    public var hasSavedAccounts: Bool {
+        savedAccounts.isEmpty == false
     }
 
     public var errorMessage: String? {
@@ -69,8 +74,24 @@ public final class CodexReviewAuthModel {
         await controller.cancelAuthentication(auth: self)
     }
 
+    public func switchAccount(accountKey: String) async throws {
+        try await controller.switchAccount(auth: self, accountKey: accountKey)
+    }
+
+    public func removeAccount(accountKey: String) async throws {
+        try await controller.removeAccount(auth: self, accountKey: accountKey)
+    }
+
+    public func signOutActiveAccount() async throws {
+        try await controller.signOutActiveAccount(auth: self)
+    }
+
     public func logout() async {
-        await controller.logout(auth: self)
+        try? await signOutActiveAccount()
+    }
+
+    public func refreshSavedAccountRateLimits(accountKey: String) async {
+        await controller.refreshSavedAccountRateLimits(auth: self, accountKey: accountKey)
     }
 
     package func startStartupRefresh() {
@@ -98,5 +119,17 @@ public final class CodexReviewAuthModel {
 
     package func updateAccount(_ account: CodexAccount?) {
         self.account = account
+        let activeAccountKey = account?.accountKey
+        for savedAccount in savedAccounts {
+            savedAccount.updateIsActive(savedAccount.accountKey == activeAccountKey)
+        }
+    }
+
+    package func updateSavedAccounts(_ savedAccounts: [CodexAccount]) {
+        self.savedAccounts = savedAccounts
+        let activeAccountKey = account?.accountKey
+        for savedAccount in savedAccounts {
+            savedAccount.updateIsActive(savedAccount.accountKey == activeAccountKey)
+        }
     }
 }

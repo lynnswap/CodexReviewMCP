@@ -126,7 +126,7 @@ public final class ReviewMonitorWindowController: NSWindowController {
         if forceSplitView {
             return .splitView
         }
-        if auth.account != nil {
+        if auth.hasSavedAccounts {
             return .splitView
         }
         if auth.isAuthenticating {
@@ -335,6 +335,7 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
         store.serverURL = nil
     }
     store.auth.updatePhase(authPhase)
+    store.auth.updateSavedAccounts(account.map { [$0] } ?? [])
     store.auth.updateAccount(account)
     let splitViewController = ReviewMonitorSplitViewController(store: store)
     splitViewController.loadViewIfNeeded()

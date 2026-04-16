@@ -3117,13 +3117,14 @@ private func applyTestAuthState(
 ) {
     auth.updatePhase(state.phase)
     if let accountEmail = state.accountEmail {
-        auth.updateAccount(
-            CodexAccount(
-                email: accountEmail,
-                planType: state.accountPlanType ?? "pro"
-            )
+        let account = CodexAccount(
+            email: accountEmail,
+            planType: state.accountPlanType ?? "pro"
         )
+        auth.updateSavedAccounts([account])
+        auth.updateAccount(account)
     } else {
+        auth.updateSavedAccounts([])
         auth.updateAccount(nil)
     }
 }
@@ -3155,6 +3156,14 @@ private extension CodexReviewStore {
                     planType: authState.accountPlanType ?? "pro"
                 )
             },
+            savedAccounts: authState.accountEmail.map {
+                [
+                    CodexAccount(
+                        email: $0,
+                        planType: authState.accountPlanType ?? "pro"
+                    )
+                ]
+            } ?? [],
             serverURL: serverURL,
             workspaces: workspaces
         )
@@ -3254,7 +3263,7 @@ private final class CountingStartAuthController: CodexReviewAuthControlling {
         await backend.cancelAuthentication(auth: auth)
     }
 
-    func logout(auth: CodexReviewAuthModel) async {
+    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
         await backend.logout(auth: auth)
     }
 
@@ -3411,7 +3420,7 @@ private final class AuthActionController: CodexReviewAuthControlling {
         await backend.cancelAuthentication(auth: auth)
     }
 
-    func logout(auth: CodexReviewAuthModel) async {
+    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
         await backend.logout(auth: auth)
     }
 

@@ -18,6 +18,7 @@ extension CodexReviewStore {
         serverState: CodexReviewServerState,
         authPhase: CodexReviewAuthModel.Phase = .signedOut,
         account: CodexAccount? = nil,
+        savedAccounts: [CodexAccount] = [],
         serverURL: URL? = nil,
         workspaces: [CodexReviewWorkspace]
     ) {
@@ -27,6 +28,8 @@ extension CodexReviewStore {
         )
         self.serverState = serverState
         self.auth.updatePhase(authPhase)
+        let resolvedSavedAccounts = savedAccounts.isEmpty ? account.map { [$0] } ?? [] : savedAccounts
+        self.auth.updateSavedAccounts(resolvedSavedAccounts)
         self.auth.updateAccount(account)
         self.serverURL = serverURL
         var existingByCWD: [String: CodexReviewWorkspace] = [:]

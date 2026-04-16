@@ -40,6 +40,10 @@ struct StatusView: View {
     private var account: CodexAccount? {
         store.auth.account
     }
+
+    private var savedAccounts: [CodexAccount] {
+        store.auth.savedAccounts
+    }
     
     private var ratelimits: [CodexRateLimitWindow] {
         account?.rateLimits ?? []
@@ -61,7 +65,7 @@ struct StatusView: View {
     }
 
     private var showsManagementSection: Bool {
-        showsServerRestartAction || primaryAccountAction == .signOut
+        showsServerRestartAction || primaryAccountAction == .signOut || savedAccounts.isEmpty == false
     }
 
     var body: some View {
@@ -90,19 +94,49 @@ struct StatusView: View {
     
     @ViewBuilder
     private var accountMenu: some View{
-        if primaryAccountAction == .signOut {
-            Menu{
-                Button{
-                    performLogout()
-                }label:{
-                    Label("Sign Out",systemImage:"rectangle.portrait.and.arrow.right")
-                    if let account{
-                        Text(account.email)
+        Menu {
+            if let account {
+                Section("Current") {
+                    Label(account.email, systemImage: "checkmark.circle.fill")
+                    Button("Refresh Rate Limits", systemImage: "arrow.clockwise") {
+                        refreshRateLimits(for: account)
+                    }
+                    Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right") {
+                        confirmAndSignOut()
                     }
                 }
-            }label:{
-                Text("Account")
             }
+
+            Section("Accounts") {
+                ForEach(savedAccounts) { savedAccount in
+                    Menu(savedAccount.email) {
+                        if savedAccount.isActive == false {
+                            Button("Switch", systemImage: "arrow.triangle.swap") {
+                                confirmAndSwitch(to: savedAccount)
+                            }
+                        }
+                        Button("Refresh Rate Limits", systemImage: "arrow.clockwise") {
+                            refreshRateLimits(for: savedAccount)
+                        }
+                        Button("Remove", systemImage: "trash") {
+                            confirmAndRemove(savedAccount)
+                        }
+                        if savedAccount.rateLimits.isEmpty == false {
+                            Divider()
+                            ForEach(savedAccount.rateLimits) { window in
+                                Text("\(formattedDuration(for: window)): \(remainingPercent(for: window))%")
+                            }
+                        }
+                    }
+                }
+            }
+
+            Divider()
+            Button("Add Account", systemImage: "plus") {
+                addAccount()
+            }
+        } label: {
+            Text("Account")
         }
     }
     
@@ -232,8 +266,80 @@ struct StatusView: View {
 
     func performLogout() {
         Task {
-            await store.auth.logout()
+            try? await store.auth.signOutActiveAccount()
         }
+    }
+
+    func addAccount() {
+        Task {
+            await store.auth.beginAuthentication()
+        }
+    }
+
+    func refreshRateLimits(for account: CodexAccount) {
+        Task {
+            await store.auth.refreshSavedAccountRateLimits(accountKey: account.accountKey)
+        }
+    }
+
+    func confirmAndSwitch(to account: CodexAccount) {
+        Task {
+            guard await confirmJobCancellationIfNeeded(
+                title: "Switch Account?",
+                message: "Running review jobs will be cancelled before switching accounts."
+            ) else {
+                return
+            }
+            try? await store.auth.switchAccount(accountKey: account.accountKey)
+        }
+    }
+
+    func confirmAndRemove(_ account: CodexAccount) {
+        Task {
+            guard await confirmJobCancellationIfNeeded(
+                title: "Remove Account?",
+                message: "Running review jobs will be cancelled before removing this account."
+            ) else {
+                return
+            }
+            try? await store.auth.removeAccount(accountKey: account.accountKey)
+        }
+    }
+
+    func confirmAndSignOut() {
+        Task {
+            guard await confirmJobCancellationIfNeeded(
+                title: "Sign Out?",
+                message: "Running review jobs will be cancelled before signing out."
+            ) else {
+                return
+            }
+            try? await store.auth.signOutActiveAccount()
+        }
+    }
+
+    func confirmJobCancellationIfNeeded(
+        title: String,
+        message: String
+    ) async -> Bool {
+        guard store.hasRunningJobs else {
+            return true
+        }
+
+        let confirmed = await MainActor.run {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = title
+            alert.informativeText = message
+            alert.addButton(withTitle: "Continue")
+            alert.addButton(withTitle: "Cancel")
+            return alert.runModal() == .alertFirstButtonReturn
+        }
+        guard confirmed else {
+            return false
+        }
+        await store.cancelAllRunningJobs(reason: "Account change requested.")
+        return true
     }
 
 }
@@ -300,6 +406,7 @@ func makeStatusPreviewStore(
     let store = ReviewMonitorPreviewContent.makeStore()
     let runningServerURL = store.serverURL
     store.auth.updatePhase(authPhase)
+    store.auth.updateSavedAccounts(account.map { [$0] } ?? [])
     store.auth.updateAccount(account)
     store.serverState = serverState
     store.serverURL = serverState == .running ? runningServerURL : nil

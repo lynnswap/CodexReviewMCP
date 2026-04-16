@@ -28,6 +28,43 @@ package enum ReviewHomePaths {
             .appendingPathComponent("auth.json")
     }
 
+    package static func accountsDirectoryURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        reviewHomeURL(environment: environment)
+            .appendingPathComponent("accounts", isDirectory: true)
+    }
+
+    package static func accountsRegistryURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        accountsDirectoryURL(environment: environment)
+            .appendingPathComponent("registry.json")
+    }
+
+    package static func savedAccountDirectoryURL(
+        accountKey: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        accountsDirectoryURL(environment: environment)
+            .appendingPathComponent(accountKey, isDirectory: true)
+    }
+
+    package static func savedAccountAuthURL(
+        accountKey: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        savedAccountDirectoryURL(accountKey: accountKey, environment: environment)
+            .appendingPathComponent("auth.json")
+    }
+
+    package static func makeProbeRootURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        accountsDirectoryURL(environment: environment)
+            .appendingPathComponent("probes", isDirectory: true)
+    }
+
     package static func reviewAgentsURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {

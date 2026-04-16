@@ -71,4 +71,22 @@ extension CodexReviewStore {
         }
         writeDiagnosticsIfNeeded()
     }
+
+    public func cancelAllRunningJobs(
+        reason: String = "Cancellation requested."
+    ) async {
+        let jobs = workspaces
+            .flatMap(\.jobs)
+            .filter { $0.isTerminal == false }
+        for job in jobs {
+            do {
+                try await cancelReview(
+                    jobID: job.id,
+                    sessionID: job.sessionID,
+                    reason: reason
+                )
+            } catch {
+            }
+        }
+    }
 }

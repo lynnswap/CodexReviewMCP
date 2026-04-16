@@ -5589,13 +5589,14 @@ private func applyTestAuthState(
 ) {
     auth.updatePhase(state.phase)
     if let accountEmail = state.accountEmail {
-        auth.updateAccount(
-            CodexAccount(
-                email: accountEmail,
-                planType: state.accountPlanType ?? "pro"
-            )
+        let account = CodexAccount(
+            email: accountEmail,
+            planType: state.accountPlanType ?? "pro"
         )
+        auth.updateSavedAccounts([account])
+        auth.updateAccount(account)
     } else {
+        auth.updateSavedAccounts([])
         auth.updateAccount(nil)
     }
 }
