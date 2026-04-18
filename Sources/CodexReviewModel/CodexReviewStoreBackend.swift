@@ -6,7 +6,7 @@ package protocol CodexReviewStoreBackend: AnyObject {
     var shouldAutoStartEmbeddedServer: Bool { get }
     var initialAccount: CodexAccount? { get }
     var initialAccounts: [CodexAccount] { get }
-    var initialActiveAccountKey: UUID? { get }
+    var initialActiveAccountKey: String? { get }
 
     func start(
         store: CodexReviewStore,
@@ -32,7 +32,7 @@ extension CodexReviewStoreBackend {
         initialAccount.map { [$0] } ?? []
     }
 
-    package var initialActiveAccountKey: UUID? {
+    package var initialActiveAccountKey: String? {
         initialAccount?.accountKey
     }
 
@@ -47,7 +47,7 @@ package final class CodexReviewPreviewStoreBackend: CodexReviewStoreBackend {
     package let shouldAutoStartEmbeddedServer = false
     package let initialAccount: CodexAccount? = nil
     package let initialAccounts: [CodexAccount] = []
-    package let initialActiveAccountKey: UUID? = nil
+    package let initialActiveAccountKey: String? = nil
 
     package init() {}
 

@@ -76,12 +76,20 @@ public final class CodexReviewAuthModel {
         await controller.cancelAuthentication(auth: self)
     }
 
-    public func switchAccount(accountKey: UUID) async throws {
+    public func switchAccount(accountKey: String) async throws {
         try await controller.switchAccount(auth: self, accountKey: accountKey)
     }
 
-    public func removeAccount(accountKey: UUID) async throws {
+    public func removeAccount(accountKey: String) async throws {
         try await controller.removeAccount(auth: self, accountKey: accountKey)
+    }
+
+    package func reorderSavedAccount(accountKey: String, toIndex: Int) async throws {
+        try await controller.reorderSavedAccount(
+            auth: self,
+            accountKey: accountKey,
+            toIndex: toIndex
+        )
     }
 
     public func signOutActiveAccount() async throws {
@@ -102,7 +110,7 @@ public final class CodexReviewAuthModel {
         }
     }
 
-    public func refreshSavedAccountRateLimits(accountKey: UUID) async {
+    public func refreshSavedAccountRateLimits(accountKey: String) async {
         await controller.refreshSavedAccountRateLimits(auth: self, accountKey: accountKey)
     }
 

@@ -9,16 +9,21 @@ package protocol CodexReviewAuthControlling: AnyObject {
     func cancelAuthentication(auth: CodexReviewAuthModel) async
     func switchAccount(
         auth: CodexReviewAuthModel,
-        accountKey: UUID
+        accountKey: String
     ) async throws
     func removeAccount(
         auth: CodexReviewAuthModel,
-        accountKey: UUID
+        accountKey: String
+    ) async throws
+    func reorderSavedAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String,
+        toIndex: Int
     ) async throws
     func signOutActiveAccount(auth: CodexReviewAuthModel) async throws
     func refreshSavedAccountRateLimits(
         auth: CodexReviewAuthModel,
-        accountKey: UUID
+        accountKey: String
     ) async
     func reconcileAuthenticatedSession(
         auth: CodexReviewAuthModel,
@@ -30,13 +35,33 @@ package protocol CodexReviewAuthControlling: AnyObject {
 extension CodexReviewAuthControlling {
     package func switchAccount(
         auth _: CodexReviewAuthModel,
-        accountKey _: UUID
+        accountKey _: String
     ) async throws {}
 
     package func removeAccount(
         auth _: CodexReviewAuthModel,
-        accountKey _: UUID
+        accountKey _: String
     ) async throws {}
+
+    package func reorderSavedAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String,
+        toIndex: Int
+    ) async throws {
+        var reorderedAccounts = auth.savedAccounts
+        guard let sourceIndex = reorderedAccounts.firstIndex(where: { $0.accountKey == accountKey }) else {
+            return
+        }
+
+        let destinationIndex = max(0, min(toIndex, reorderedAccounts.count - 1))
+        guard sourceIndex != destinationIndex else {
+            return
+        }
+
+        let account = reorderedAccounts.remove(at: sourceIndex)
+        reorderedAccounts.insert(account, at: destinationIndex)
+        auth.updateSavedAccounts(reorderedAccounts)
+    }
 
     package func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
         auth.updatePhase(.signedOut)
@@ -46,7 +71,7 @@ extension CodexReviewAuthControlling {
 
     package func refreshSavedAccountRateLimits(
         auth _: CodexReviewAuthModel,
-        accountKey _: UUID
+        accountKey _: String
     ) async {}
 }
 

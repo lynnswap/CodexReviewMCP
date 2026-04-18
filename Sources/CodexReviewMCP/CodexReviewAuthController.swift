@@ -249,7 +249,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     package func switchAccount(
         auth: CodexReviewAuthModel,
-        accountKey: UUID
+        accountKey: String
     ) async throws {
         cancelStartupRefresh()
         auth.updateWarning(message: nil)
@@ -283,7 +283,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     package func removeAccount(
         auth: CodexReviewAuthModel,
-        accountKey: UUID
+        accountKey: String
     ) async throws {
         cancelStartupRefresh()
         auth.updateWarning(message: nil)
@@ -327,6 +327,18 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         } else {
             auth.updateWarning(message: nil)
         }
+    }
+
+    package func reorderSavedAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String,
+        toIndex: Int
+    ) async throws {
+        try await accountRegistryStore.reorderAccount(
+            accountKey: accountKey,
+            toIndex: toIndex
+        )
+        await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
     }
 
     package func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
@@ -413,7 +425,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     package func refreshSavedAccountRateLimits(
         auth: CodexReviewAuthModel,
-        accountKey: UUID
+        accountKey: String
     ) async {
         let isActiveAccount = auth.account?.accountKey == accountKey
         let priorUnsavedCurrentAccount = auth.account.flatMap { currentAccount in
@@ -574,8 +586,11 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         ) async {
         await accountSessionController.reconcile(
             serverIsRunning: serverIsRunning,
-            account: auth.account,
-            runtimeGeneration: runtimeGeneration
+            accountKey: auth.account?.accountKey,
+            runtimeGeneration: runtimeGeneration,
+            accountResolver: { accountKey in
+                resolvedAccount(for: accountKey, in: auth)
+            }
         )
     }
 
@@ -614,13 +629,25 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             auth.updateWarning(message: nil)
             let identityChanged = didAccountIdentityChange(from: priorAccount, to: auth.account)
             hasResolvedAuthenticatedAccount = state.isAuthenticated
+            let shouldRestartSameIdentitySession = state.isAuthenticated
+                && identityChanged == false
+                && forceRecycleServer == false
+                && runtimeState().serverIsRunning
             await reconcileAfterResolvedAuthState(
                 auth: auth,
                 identityChanged: identityChanged,
-                forceRestartSession: forceRestartSession || state.isAuthenticated,
+                forceRestartSession: forceRestartSession || shouldRestartSameIdentitySession,
                 forceRecycleServer: forceRecycleServer,
                 skipFinalAttach: forceRecycleServer
             )
+            if state.isAuthenticated,
+               identityChanged == false,
+               forceRecycleServer == false,
+               let activeAccountKey = auth.account?.accountKey,
+               runtimeState().serverIsRunning
+            {
+                await refreshSavedAccountRateLimits(auth: auth, accountKey: activeAccountKey)
+            }
             if forceRecycleServer {
                 let postRecycleState = try await authManager.loadState()
                 if postRecycleState.isAuthenticated == false {
@@ -642,8 +669,11 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 let resolvedRuntimeState = runtimeState()
                 await accountSessionController.reconcile(
                     serverIsRunning: resolvedRuntimeState.serverIsRunning,
-                    account: auth.account,
-                    runtimeGeneration: resolvedRuntimeState.runtimeGeneration
+                    accountKey: auth.account?.accountKey,
+                    runtimeGeneration: resolvedRuntimeState.runtimeGeneration,
+                    accountResolver: { accountKey in
+                        resolvedAccount(for: accountKey, in: auth)
+                    }
                 )
             }
         } catch {
@@ -685,8 +715,11 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         {
             await accountSessionController.reconcile(
                 serverIsRunning: false,
-                account: auth.account,
-                runtimeGeneration: currentRuntimeState.runtimeGeneration
+                accountKey: auth.account?.accountKey,
+                runtimeGeneration: currentRuntimeState.runtimeGeneration,
+                accountResolver: { accountKey in
+                    resolvedAccount(for: accountKey, in: auth)
+                }
             )
             if identityChanged || forceRecycleServer {
                 await recycleServerIfRunning()
@@ -700,8 +733,11 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         let resolvedRuntimeState = runtimeState()
         await accountSessionController.reconcile(
             serverIsRunning: resolvedRuntimeState.serverIsRunning,
-            account: auth.account,
-            runtimeGeneration: resolvedRuntimeState.runtimeGeneration
+            accountKey: auth.account?.accountKey,
+            runtimeGeneration: resolvedRuntimeState.runtimeGeneration,
+            accountResolver: { accountKey in
+                resolvedAccount(for: accountKey, in: auth)
+            }
         )
     }
 
@@ -877,8 +913,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         await refreshSavedAccounts(auth: auth)
         if let activeAccount = auth.savedAccounts.first(where: \.isActive) {
             auth.updateAccount(activeAccount)
-        } else if let savedAccount {
-            auth.updateAccount(savedAccount)
+        } else if let savedAccountKey = savedAccount?.accountKey,
+                  let resolvedSavedAccount = auth.savedAccounts.first(where: { $0.accountKey == savedAccountKey })
+        {
+            auth.updateAccount(resolvedSavedAccount)
         }
         auth.updatePhase(.signedOut)
         auth.updateWarning(message: nil)
@@ -906,19 +944,19 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         preserveCurrentWhenEmpty: Bool = false
     ) async {
         if let loaded = try? accountRegistryStore.loadAccounts() {
-            if loaded.accounts.isEmpty, preserveCurrentWhenEmpty {
-                return
-            }
-            if let activeAccountKey = loaded.activeAccountKey,
-               let loadedActiveAccount = loaded.accounts.first(where: { $0.accountKey == activeAccountKey })
-            {
-                if let currentAccount = auth.account,
-                   currentAccount.accountKey == activeAccountKey,
-                   currentAccount.email == loadedActiveAccount.email
-                {
-                    currentAccount.updatePlanType(loadedActiveAccount.planType)
-                    currentAccount.updateRateLimits(
-                        loadedActiveAccount.rateLimits.map {
+            let priorAccount = auth.account
+            let loadedAccounts = loaded.accounts.map { loadedAccount in
+                guard let priorAccount,
+                      priorAccount.accountKey == loadedAccount.accountKey
+                else {
+                    return loadedAccount
+                }
+                if shouldPreferInMemoryRateLimitState(
+                    priorAccount: priorAccount,
+                    loadedAccount: loadedAccount
+                ) {
+                    loadedAccount.updateRateLimits(
+                        priorAccount.rateLimits.map {
                             (
                                 windowDurationMinutes: $0.windowDurationMinutes,
                                 usedPercent: $0.usedPercent,
@@ -926,28 +964,30 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                             )
                         }
                     )
-                    currentAccount.updateRateLimitFetchMetadata(
-                        fetchedAt: loadedActiveAccount.lastRateLimitFetchAt,
-                        error: loadedActiveAccount.lastRateLimitError
+                    loadedAccount.updateRateLimitFetchMetadata(
+                        fetchedAt: priorAccount.lastRateLimitFetchAt,
+                        error: priorAccount.lastRateLimitError
                     )
-                    let reconciledAccounts = loaded.accounts.map { account in
-                        account.accountKey == currentAccount.accountKey ? currentAccount : account
-                    }
-                    auth.updateSavedAccounts(reconciledAccounts)
-                    auth.updateAccount(currentAccount)
-                    return
                 }
-                auth.updateSavedAccounts(loaded.accounts)
+                return loadedAccount
+            }
+            let priorAccountKey = priorAccount?.accountKey
+            auth.updateSavedAccounts(loadedAccounts)
+            if let activeAccountKey = loaded.activeAccountKey,
+               let loadedActiveAccount = loadedAccounts.first(where: { $0.accountKey == activeAccountKey })
+            {
                 auth.updateAccount(loadedActiveAccount)
+                return
+            }
+
+            if let priorAccountKey,
+               let resolvedSavedAccount = loadedAccounts.first(where: { $0.accountKey == priorAccountKey })
+            {
+                auth.updateAccount(resolvedSavedAccount)
+            } else if preserveCurrentWhenEmpty, let priorAccount {
+                auth.updateAccount(priorAccount)
             } else {
-                auth.updateSavedAccounts(loaded.accounts)
-                if let currentAccount = auth.account,
-                   loaded.accounts.contains(where: { $0.accountKey == currentAccount.accountKey }) == false
-                {
-                    auth.updateAccount(currentAccount)
-                } else if preserveCurrentWhenEmpty == false {
-                    auth.updateAccount(nil)
-                }
+                auth.updateAccount(nil)
             }
         }
     }
@@ -967,12 +1007,28 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             return
         }
     }
+
+    private func shouldPreferInMemoryRateLimitState(
+        priorAccount: CodexAccount,
+        loadedAccount: CodexAccount
+    ) -> Bool {
+        switch (priorAccount.lastRateLimitFetchAt, loadedAccount.lastRateLimitFetchAt) {
+        case let (priorFetchedAt?, loadedFetchedAt?):
+            return priorFetchedAt > loadedFetchedAt
+        case (.some, nil):
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 @MainActor
 private final class CodexAccountSessionController {
+    typealias AccountResolver = @MainActor @Sendable (String) -> CodexAccount?
+
     private struct AttachmentTarget: Equatable {
-        var accountID: ObjectIdentifier
+        var accountKey: String
         var runtimeGeneration: Int
     }
 
@@ -993,6 +1049,7 @@ private final class CodexAccountSessionController {
     private var staleRefreshTask: Task<Void, Never>?
     private var staleRefreshTaskID: UUID?
     private var rateLimitsReadCapability: RateLimitsReadCapability = .unknown
+    private var accountResolver: AccountResolver?
 
     init(
         appServerManager: any AppServerManaging,
@@ -1008,12 +1065,13 @@ private final class CodexAccountSessionController {
 
     func reconcile(
         serverIsRunning: Bool,
-        account: CodexAccount?,
-        runtimeGeneration: Int
+        accountKey: String?,
+        runtimeGeneration: Int,
+        accountResolver: @escaping AccountResolver
     ) async {
-        let desiredTarget = account.map {
+        let desiredTarget = accountKey.map {
             AttachmentTarget(
-                accountID: ObjectIdentifier($0),
+                accountKey: $0,
                 runtimeGeneration: runtimeGeneration
             )
         }
@@ -1023,9 +1081,9 @@ private final class CodexAccountSessionController {
             await detach()
             activeTarget = shouldAttach ? desiredTarget : nil
         }
+        self.accountResolver = shouldAttach ? accountResolver : nil
 
         guard shouldAttach,
-              let account,
               let target = activeTarget,
               observerTask == nil,
               observerTransport == nil,
@@ -1034,54 +1092,41 @@ private final class CodexAccountSessionController {
             return
         }
 
-        await attach(account: account, target: target)
+        await attach(target: target)
     }
 
-    private func detach() async {
-        retryTask?.cancel()
-        retryTask = nil
-        staleRefreshTask?.cancel()
-        staleRefreshTask = nil
-        staleRefreshTaskID = nil
-        rateLimitsReadCapability = .unknown
-        let task = observerTask
-        observerTask = nil
-        let transport = observerTransport
-        observerTransport = nil
-        task?.cancel()
-        if let transport {
-            await transport.close()
-        }
+    private func resolveCurrentAccount(for target: AttachmentTarget) -> CodexAccount? {
+        accountResolver?(target.accountKey)
     }
 
     private func attach(
-        account: CodexAccount,
         target: AttachmentTarget
     ) async {
+        guard resolveCurrentAccount(for: target) != nil else {
+            return
+        }
         do {
             let transport = try await appServerManager.checkoutAuthTransport()
-            guard isCurrent(target: target, account: account) else {
+            guard isCurrent(target: target) else {
                 await transport.close()
                 return
             }
             observerTransport = transport
-            observerTask = Task { @MainActor [weak self, weak account] in
-                guard let self, let account else {
+            observerTask = Task { @MainActor [weak self] in
+                guard let self else {
                     return
                 }
                 await self.runObservation(
-                    account: account,
                     target: target,
                     transport: transport
                 )
             }
         } catch {
-            scheduleRetry(account: account, target: target)
+            scheduleRetry(target: target)
         }
     }
 
     private func runObservation(
-        account: CodexAccount,
         target: AttachmentTarget,
         transport: any AppServerSessionTransport
     ) async {
@@ -1092,7 +1137,7 @@ private final class CodexAccountSessionController {
             }
             finishObservation(target: target)
             if shouldRetry {
-                scheduleRetry(account: account, target: target)
+                scheduleRetry(target: target)
             }
         }
 
@@ -1106,7 +1151,9 @@ private final class CodexAccountSessionController {
 
         do {
             let response = try await session.readRateLimits()
-            guard isCurrent(target: target, account: account) else {
+            guard isCurrent(target: target),
+                  let account = resolveCurrentAccount(for: target)
+            else {
                 return
             }
             rateLimitsReadCapability = .supported
@@ -1114,12 +1161,13 @@ private final class CodexAccountSessionController {
             try? accountRegistryStore.updateSavedAccountMetadata(from: account)
             try? accountRegistryStore.updateCachedRateLimits(from: account)
             scheduleStaleRefresh(
-                account: account,
                 target: target,
                 session: session
             )
         } catch let error as AppServerResponseError where error.isUnsupportedMethod {
-            guard isCurrent(target: target, account: account) else {
+            guard isCurrent(target: target),
+                  let account = resolveCurrentAccount(for: target)
+            else {
                 return
             }
             rateLimitsReadCapability = .unsupported
@@ -1130,7 +1178,9 @@ private final class CodexAccountSessionController {
             )
             try? accountRegistryStore.updateCachedRateLimits(from: account)
         } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
-            guard isCurrent(target: target, account: account) else {
+            guard isCurrent(target: target),
+                  let account = resolveCurrentAccount(for: target)
+            else {
                 return
             }
             account.clearRateLimits()
@@ -1143,7 +1193,9 @@ private final class CodexAccountSessionController {
         } catch is CancellationError {
             return
         } catch {
-            guard isCurrent(target: target, account: account) else {
+            guard isCurrent(target: target),
+                  let account = resolveCurrentAccount(for: target)
+            else {
                 return
             }
             account.updateRateLimitFetchMetadata(
@@ -1155,7 +1207,7 @@ private final class CodexAccountSessionController {
             return
         }
 
-        guard isCurrent(target: target, account: account) else {
+        guard isCurrent(target: target) else {
             return
         }
 
@@ -1164,7 +1216,9 @@ private final class CodexAccountSessionController {
                 guard case .accountRateLimitsUpdated(let payload) = notification else {
                     continue
                 }
-                guard isCurrent(target: target, account: account) else {
+                guard isCurrent(target: target),
+                      let account = resolveCurrentAccount(for: target)
+                else {
                     return
                 }
                 guard isCodexRateLimit(payload.rateLimits.limitID) else {
@@ -1174,20 +1228,19 @@ private final class CodexAccountSessionController {
                 try? accountRegistryStore.updateCachedRateLimits(from: account)
                 if rateLimitsReadCapability != .unsupported {
                     scheduleStaleRefresh(
-                        account: account,
                         target: target,
                         session: session
                     )
                 }
             }
-            guard isCurrent(target: target, account: account) else {
+            guard isCurrent(target: target) else {
                 return
             }
             shouldRetry = true
         } catch is CancellationError {
             return
         } catch {
-            guard isCurrent(target: target, account: account),
+            guard isCurrent(target: target),
                   shouldRetryRateLimitObservation(after: error)
             else {
                 return
@@ -1209,7 +1262,6 @@ private final class CodexAccountSessionController {
     }
 
     private func scheduleStaleRefresh(
-        account: CodexAccount,
         target: AttachmentTarget,
         session: SharedAppServerReviewAuthSession
     ) {
@@ -1219,7 +1271,7 @@ private final class CodexAccountSessionController {
         staleRefreshTask?.cancel()
         let taskID = UUID()
         staleRefreshTaskID = taskID
-        staleRefreshTask = Task { @MainActor [weak self, weak account] in
+        staleRefreshTask = Task { @MainActor [weak self] in
             guard let self else {
                 return
             }
@@ -1228,12 +1280,10 @@ private final class CodexAccountSessionController {
             } catch {
                 return
             }
-            guard let account else {
-                return
-            }
 
             guard self.staleRefreshTaskID == taskID,
-                  self.isCurrent(target: target, account: account)
+                  self.isCurrent(target: target),
+                  let account = self.resolveCurrentAccount(for: target)
             else {
                 return
             }
@@ -1241,23 +1291,23 @@ private final class CodexAccountSessionController {
             do {
                 let response = try await session.readRateLimits()
                 guard self.staleRefreshTaskID == taskID,
-                      self.isCurrent(target: target, account: account)
+                      self.isCurrent(target: target),
+                      let currentAccount = self.resolveCurrentAccount(for: target)
                 else {
                     return
                 }
                 self.rateLimitsReadCapability = .supported
-                applyRateLimits(from: response, to: account)
-                try? self.accountRegistryStore.updateCachedRateLimits(from: account)
+                applyRateLimits(from: response, to: currentAccount)
+                try? self.accountRegistryStore.updateCachedRateLimits(from: currentAccount)
                 self.staleRefreshTask = nil
                 self.staleRefreshTaskID = nil
                 self.scheduleStaleRefresh(
-                    account: account,
                     target: target,
                     session: session
                 )
             } catch let error as AppServerResponseError where error.isUnsupportedMethod {
                 guard self.staleRefreshTaskID == taskID,
-                      self.isCurrent(target: target, account: account)
+                      self.isCurrent(target: target)
                 else {
                     return
                 }
@@ -1272,7 +1322,7 @@ private final class CodexAccountSessionController {
                 self.staleRefreshTaskID = nil
             } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
                 guard self.staleRefreshTaskID == taskID,
-                      self.isCurrent(target: target, account: account)
+                      self.isCurrent(target: target)
                 else {
                     return
                 }
@@ -1288,7 +1338,7 @@ private final class CodexAccountSessionController {
                 return
             } catch {
                 guard self.staleRefreshTaskID == taskID,
-                      self.isCurrent(target: target, account: account)
+                      self.isCurrent(target: target)
                 else {
                     return
                 }
@@ -1300,7 +1350,6 @@ private final class CodexAccountSessionController {
                 self.staleRefreshTask = nil
                 self.staleRefreshTaskID = nil
                 self.scheduleStaleRefresh(
-                    account: account,
                     target: target,
                     session: session
                 )
@@ -1309,7 +1358,6 @@ private final class CodexAccountSessionController {
     }
 
     private func scheduleRetry(
-        account: CodexAccount,
         target: AttachmentTarget
     ) {
         guard activeTarget == target,
@@ -1318,28 +1366,45 @@ private final class CodexAccountSessionController {
             return
         }
 
-        retryTask = Task { @MainActor [weak self, weak account] in
+        retryTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(250))
             } catch {
                 return
             }
-            guard let self, let account else {
+            guard let self else {
                 return
             }
             self.retryTask = nil
-            guard self.isCurrent(target: target, account: account) else {
+            guard self.isCurrent(target: target) else {
                 return
             }
-            await self.attach(account: account, target: target)
+            await self.attach(target: target)
         }
     }
 
     private func isCurrent(
-        target: AttachmentTarget,
-        account: CodexAccount
+        target: AttachmentTarget
     ) -> Bool {
-        activeTarget == target && ObjectIdentifier(account) == target.accountID
+        activeTarget == target
+    }
+
+    private func detach() async {
+        retryTask?.cancel()
+        retryTask = nil
+        staleRefreshTask?.cancel()
+        staleRefreshTask = nil
+        staleRefreshTaskID = nil
+        rateLimitsReadCapability = .unknown
+        accountResolver = nil
+        let task = observerTask
+        observerTask = nil
+        let transport = observerTransport
+        observerTransport = nil
+        task?.cancel()
+        if let transport {
+            await transport.close()
+        }
     }
 
     func checkoutActiveRateLimitTransport() async throws -> any AppServerSessionTransport {
@@ -1356,7 +1421,7 @@ private struct AuthPresentationSnapshot {
 }
 
 private struct SavedAccountPresentationSnapshot {
-    var accountKey: UUID
+    var accountKey: String
     var email: String
     var planType: String?
     var isActive: Bool
@@ -1404,7 +1469,7 @@ private func restore(
 @discardableResult
 private func applyResolvedReviewAuthState(
     _ state: ReviewAuthState,
-    activeAccountKey: UUID?,
+    activeAccountKey: String?,
     priorResolvedAuthenticatedAccount: Bool,
     preferActiveAccountSelection: Bool,
     to auth: CodexReviewAuthModel
@@ -1436,7 +1501,7 @@ private func applyResolvedReviewAuthState(
 @discardableResult
 private func applyReviewAuthAccount(
     _ account: ReviewAuthAccount,
-    activeAccountKey: UUID?,
+    activeAccountKey: String?,
     preferActiveAccountSelection: Bool,
     to auth: CodexReviewAuthModel
 ) -> Bool {
@@ -1450,17 +1515,19 @@ private func applyReviewAuthAccount(
     let normalizedEmail = normalizedReviewAccountEmail(email: account.email)
 
     if let activeAccountKey,
-       let existingAccount = auth.savedAccounts.first(where: { $0.accountKey == activeAccountKey }),
-       (preferActiveAccountSelection || normalizedReviewAccountEmail(email: existingAccount.email) == normalizedEmail)
+       activeAccountKey == normalizedEmail,
+       let existingAccount = auth.savedAccounts.first(where: { $0.accountKey == activeAccountKey })
     {
+        existingAccount.updateEmail(account.email)
         existingAccount.updatePlanType(account.planType)
         auth.updateAccount(existingAccount)
         return didAccountIdentityChange(from: priorAccount, to: existingAccount)
     }
 
     if let existingAccount = auth.savedAccounts.first(where: {
-        normalizedReviewAccountEmail(email: $0.email) == normalizedEmail
+        $0.accountKey == normalizedEmail
     }) {
+        existingAccount.updateEmail(account.email)
         existingAccount.updatePlanType(account.planType)
         auth.updateAccount(existingAccount)
         return didAccountIdentityChange(from: priorAccount, to: existingAccount)
@@ -1536,9 +1603,22 @@ private func didAccountIdentityChange(
     case (.some, .none), (.none, .some):
         return true
     case let (previousAccount?, currentAccount?):
-        return normalizedReviewAccountEmail(email: previousAccount.email)
-            != normalizedReviewAccountEmail(email: currentAccount.email)
+        return previousAccount.accountKey != currentAccount.accountKey
     }
+}
+
+@MainActor
+private func resolvedAccount(
+    for accountKey: String,
+    in auth: CodexReviewAuthModel
+) -> CodexAccount? {
+    if let savedAccount = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
+        return savedAccount
+    }
+    if auth.account?.accountKey == accountKey {
+        return auth.account
+    }
+    return nil
 }
 
 private func rateLimitWindowRecords(

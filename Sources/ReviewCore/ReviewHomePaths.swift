@@ -1,6 +1,12 @@
 import Foundation
 
 package enum ReviewHomePaths {
+    private static let encodedAccountKeyAllowedCharacters: CharacterSet = {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return allowed
+    }()
+
     package static func reviewHomeURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
@@ -43,19 +49,35 @@ package enum ReviewHomePaths {
     }
 
     package static func savedAccountDirectoryURL(
-        accountKey: UUID,
+        accountKey: String,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
         accountsDirectoryURL(environment: environment)
-            .appendingPathComponent(accountKey.uuidString, isDirectory: true)
+            .appendingPathComponent(
+                encodedSavedAccountPathComponent(accountKey: accountKey),
+                isDirectory: true
+            )
     }
 
     package static func savedAccountAuthURL(
-        accountKey: UUID,
+        accountKey: String,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
         savedAccountDirectoryURL(accountKey: accountKey, environment: environment)
             .appendingPathComponent("auth.json")
+    }
+
+    package static func legacySavedAccountDirectoryURL(
+        accountKey: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        accountsDirectoryURL(environment: environment)
+            .appendingPathComponent(accountKey, isDirectory: true)
+    }
+
+    private static func encodedSavedAccountPathComponent(accountKey: String) -> String {
+        accountKey.addingPercentEncoding(withAllowedCharacters: encodedAccountKeyAllowedCharacters)
+            ?? accountKey.replacingOccurrences(of: "/", with: "%2F")
     }
 
     package static func makeProbeRootURL(

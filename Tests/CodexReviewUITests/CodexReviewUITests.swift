@@ -992,6 +992,130 @@ struct CodexReviewUITests {
         #expect(sidebar.selectedJobForTesting?.id == "job-1")
     }
 
+    @Test func accountDropReordersDisplayedAccountsAndPreservesSelection() async {
+        let firstAccount = CodexAccount(
+            email: "first@example.com",
+            planType: "pro"
+        )
+        let secondAccount = CodexAccount(
+            email: "second@example.com",
+            planType: "plus"
+        )
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store.auth.updateSavedAccounts([firstAccount, secondAccount])
+        store.auth.updateAccount(firstAccount)
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(
+            store: store,
+            uiState: uiState
+        )
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        viewController.loadViewIfNeeded()
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+
+        #expect(accountsViewController.displayedAccountEmailsForTesting == [
+            "first@example.com",
+            "second@example.com",
+        ])
+        #expect(await accountsViewController.performAccountDropForTesting(firstAccount, toIndex: 2))
+        await Task.yield()
+        await Task.yield()
+        #expect(accountsViewController.displayedAccountEmailsForTesting == [
+            "second@example.com",
+            "first@example.com",
+        ])
+        #expect(store.auth.account?.accountKey == firstAccount.accountKey)
+        #expect(accountsViewController.selectedAccountEmailForTesting == "first@example.com")
+    }
+
+    @Test func accountMenuSwitchActionUsesCodexAccountAndUpdatesSelection() async {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        store.auth.updateSavedAccounts([firstAccount, secondAccount])
+        store.auth.updateAccount(firstAccount)
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        accountsViewController.performSwitchMenuActionForTesting(secondAccount)
+        await backend.waitForSwitchAccountCallCount(1)
+        await Task.yield()
+
+        #expect(backend.lastSwitchedAccountKey() == secondAccount.accountKey)
+        #expect(store.auth.account === secondAccount)
+        #expect(accountsViewController.selectedAccountEmailForTesting == "second@example.com")
+    }
+
+    @Test func accountDraggedSelectionEventDoesNotSwitchAccount() async {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        store.auth.updateSavedAccounts([firstAccount, secondAccount])
+        store.auth.updateAccount(firstAccount)
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        accountsViewController.performSelectionChangeForTesting(
+            selecting: secondAccount,
+            eventType: .leftMouseDragged
+        )
+        await Task.yield()
+
+        #expect(backend.lastSwitchedAccountKey() == nil)
+        #expect(store.auth.account === firstAccount)
+    }
+
+    @Test func accountKeyboardSelectionEventSwitchesAccount() async {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        store.auth.updateSavedAccounts([firstAccount, secondAccount])
+        store.auth.updateAccount(firstAccount)
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        accountsViewController.performSelectionChangeForTesting(
+            selecting: secondAccount,
+            eventType: .keyDown
+        )
+        await backend.waitForSwitchAccountCallCount(1)
+        await Task.yield()
+
+        #expect(backend.lastSwitchedAccountKey() == secondAccount.accountKey)
+        #expect(store.auth.account === secondAccount)
+    }
+
     @Test func workspaceDropPreservesExpansionState() {
         let alphaJob = makeJob(
             id: "job-alpha",
@@ -2762,6 +2886,31 @@ struct CodexReviewUITests {
         #expect(backend.cancelAuthenticationCallCount() == 0)
     }
 
+    @Test func statusViewTracksActiveAccountRateLimitsFromAuthModel() {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        firstAccount.updateRateLimits([
+            (windowDurationMinutes: 300, usedPercent: 10, resetsAt: nil),
+        ])
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        secondAccount.updateRateLimits([
+            (windowDurationMinutes: 300, usedPercent: 65, resetsAt: nil),
+            (windowDurationMinutes: 10_080, usedPercent: 20, resetsAt: nil),
+        ])
+
+        store.auth.updateSavedAccounts([firstAccount, secondAccount])
+        store.auth.updateAccount(firstAccount)
+        let view = StatusView(store: store)
+
+        #expect(view.currentAccountEmailForTesting == "first@example.com")
+        #expect(view.remainingRateLimitPercentsForTesting == [90])
+
+        store.auth.updateAccount(secondAccount)
+
+        #expect(view.currentAccountEmailForTesting == "second@example.com")
+        #expect(view.remainingRateLimitPercentsForTesting == [35, 80])
+    }
+
     @Test func statusViewOmitsRateLimitResetDetailsWhenResetDateIsUnknown() {
         let store = makeStatusPreviewStore()
         let view = StatusView(store: store)
@@ -3462,6 +3611,13 @@ private final class AuthActionController: CodexReviewAuthControlling {
         await backend.cancelAuthentication(auth: auth)
     }
 
+    func switchAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws {
+        await backend.switchAccount(auth: auth, accountKey: accountKey)
+    }
+
     func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
         await backend.logout(auth: auth)
     }
@@ -3488,10 +3644,13 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
     private let beginSignal = AsyncSignal()
     private let cancelSignal = AsyncSignal()
     private let logoutSignal = AsyncSignal()
+    private let switchSignal = AsyncSignal()
     private var refreshCalls = 0
     private var beginCalls = 0
     private var cancelCalls = 0
     private var logoutCalls = 0
+    private var switchCalls = 0
+    private var switchedAccountKeys: [String] = []
 
     init(initialAuthState: TestAuthState = .signedOut) {
         self.initialAuthState = initialAuthState
@@ -3547,6 +3706,18 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
         await logoutSignal.signal()
     }
 
+    func switchAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async {
+        switchCalls += 1
+        switchedAccountKeys.append(accountKey)
+        if let account = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
+            auth.updateAccount(account)
+        }
+        await switchSignal.signal()
+    }
+
     func beginAuthenticationCallCount() -> Int {
         beginCalls
     }
@@ -3589,5 +3760,16 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
             return
         }
         await logoutSignal.wait(untilCount: count)
+    }
+
+    func waitForSwitchAccountCallCount(_ count: Int) async {
+        if switchCalls >= count {
+            return
+        }
+        await switchSignal.wait(untilCount: count)
+    }
+
+    func lastSwitchedAccountKey() -> String? {
+        switchedAccountKeys.last
     }
 }

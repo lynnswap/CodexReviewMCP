@@ -5,11 +5,17 @@ import ObservationBridge
 
 @MainActor
 final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAccessoryViewController {
+    private let store: CodexReviewStore
     private let uiState: ReviewMonitorUIState
     private var observationHandles: Set<ObservationHandle> = []
     private var shouldHideStatusAccessory = false
 
+    private var hostingView: NSHostingView<StatusView>? {
+        view as? NSHostingView<StatusView>
+    }
+
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
+        self.store = store
         self.uiState = uiState
         super.init(nibName: nil, bundle: nil)
 
@@ -32,6 +38,18 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
             self.updateVisibility(animated: true)
         }
         .store(in: &observationHandles)
+        store.auth.observe(\.account) { [weak self] _ in
+            self?.refreshStatusView()
+        }
+        .store(in: &observationHandles)
+        store.auth.observe(\.savedAccounts) { [weak self] _ in
+            self?.refreshStatusView()
+        }
+        .store(in: &observationHandles)
+    }
+
+    private func refreshStatusView() {
+        hostingView?.rootView = StatusView(store: store)
     }
 
     private func updateVisibility(animated: Bool) {
@@ -75,13 +93,19 @@ struct StatusView: View {
     }
 
     let store: CodexReviewStore
+    let auth: CodexReviewAuthModel
+
+    init(store: CodexReviewStore) {
+        self.store = store
+        self.auth = store.auth
+    }
     
     private var account: CodexAccount? {
-        store.auth.account
+        auth.account
     }
 
     private var savedAccounts: [CodexAccount] {
-        store.auth.savedAccounts
+        auth.savedAccounts
     }
     
     private var ratelimits: [CodexRateLimitWindow] {
@@ -216,7 +240,7 @@ struct StatusView: View {
     }
 
     var canSignOut: Bool {
-        store.auth.isAuthenticated
+        auth.isAuthenticated
     }
 
     var showsServerRestartAction: Bool {
@@ -239,7 +263,7 @@ struct StatusView: View {
             await performAccountMutation(
                 errorTitle: "Failed to Sign Out"
             ) {
-                try await store.auth.signOutActiveAccount()
+                try await auth.signOutActiveAccount()
             }
         }
     }
@@ -252,16 +276,16 @@ struct StatusView: View {
             ) else {
                 return
             }
-            let previousFailureCount = store.auth.authenticationFailureCount
-            await store.auth.beginAuthentication()
-            if store.auth.authenticationFailureCount != previousFailureCount,
-               let message = store.auth.errorMessage
+            let previousFailureCount = auth.authenticationFailureCount
+            await auth.beginAuthentication()
+            if auth.authenticationFailureCount != previousFailureCount,
+               let message = auth.errorMessage
             {
                 await presentAccountActionFailure(
                     title: "Failed to Add Account",
                     message: message
                 )
-            } else if let warningMessage = store.auth.warningMessage {
+            } else if let warningMessage = auth.warningMessage {
                 await presentAccountActionFailure(
                     title: "Account Updated With Warning",
                     message: warningMessage
@@ -272,7 +296,7 @@ struct StatusView: View {
 
     func refreshRateLimits(for account: CodexAccount) {
         Task {
-            await store.auth.refreshSavedAccountRateLimits(accountKey: account.accountKey)
+            await auth.refreshSavedAccountRateLimits(accountKey: account.accountKey)
         }
     }
 
@@ -287,7 +311,7 @@ struct StatusView: View {
             await performAccountMutation(
                 errorTitle: "Failed to Switch Account"
             ) {
-                try await store.auth.switchAccount(accountKey: account.accountKey)
+                try await auth.switchAccount(accountKey: account.accountKey)
             }
         }
     }
@@ -305,7 +329,7 @@ struct StatusView: View {
             await performAccountMutation(
                 errorTitle: "Failed to Remove Account"
             ) {
-                try await store.auth.removeAccount(accountKey: account.accountKey)
+                try await auth.removeAccount(accountKey: account.accountKey)
             }
         }
     }
@@ -321,7 +345,7 @@ struct StatusView: View {
             await performAccountMutation(
                 errorTitle: "Failed to Sign Out"
             ) {
-                try await store.auth.signOutActiveAccount()
+                try await auth.signOutActiveAccount()
             }
         }
     }
@@ -332,7 +356,7 @@ struct StatusView: View {
     ) async {
         do {
             try await operation()
-            if let warningMessage = store.auth.warningMessage {
+            if let warningMessage = auth.warningMessage {
                 await presentAccountActionFailure(
                     title: "Account Updated With Warning",
                     message: warningMessage
@@ -407,6 +431,14 @@ extension StatusView {
 
     var showsRedactedRateLimitsForTesting: Bool {
         showsRedactedRateLimits
+    }
+
+    var currentAccountEmailForTesting: String? {
+        account?.email
+    }
+
+    var remainingRateLimitPercentsForTesting: [Int] {
+        ratelimits.map(\.remainingPercent)
     }
 
     var primaryAccountActionForTesting: PrimaryAccountActionForTesting {

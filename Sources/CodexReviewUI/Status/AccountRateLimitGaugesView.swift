@@ -44,7 +44,7 @@ struct AccountRateLimitGaugesView: View {
 }
 
 private struct RateLimitWindowGaugeView: View {
-    let window: CodexRateLimitWindow
+    var window: CodexRateLimitWindow
 
     var body: some View {
         let remainingPercent = window.remainingPercent

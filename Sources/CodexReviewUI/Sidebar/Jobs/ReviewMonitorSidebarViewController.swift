@@ -878,7 +878,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         guard let workspace = workspace(from: notification.userInfo?["NSObject"]) else {
             return
         }
-        workspace.isExpanded = true
+        if workspace.isExpanded == false {
+            workspace.isExpanded = true
+        }
 
         guard let selectedJob = uiState.selectedJobEntry,
               selectedJob.cwd == workspace.cwd,
@@ -893,7 +895,9 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         guard let workspace = workspace(from: notification.userInfo?["NSObject"]) else {
             return
         }
-        workspace.isExpanded = false
+        if workspace.isExpanded {
+            workspace.isExpanded = false
+        }
     }
 
     func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
@@ -952,6 +956,11 @@ extension ReviewMonitorSidebarViewController {
 
     var selectedJobForTesting: CodexReviewJob? {
         uiState.selectedJobEntry
+    }
+
+    var accountsViewControllerForTesting: ReviewMonitorAccountsViewController {
+        accountsViewController.loadViewIfNeeded()
+        return accountsViewController
     }
 
     var isShowingEmptyStateForTesting: Bool {

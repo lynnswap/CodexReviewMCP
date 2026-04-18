@@ -64,7 +64,7 @@ struct CodexReviewMCPTests {
             activeAccountKey: nil,
             accounts: [
                 .init(
-                    accountKey: UUID(),
+                    accountKey: "saved@example.com",
                     email: "saved@example.com",
                     planType: "pro",
                     lastActivatedAt: nil,
@@ -75,7 +75,7 @@ struct CodexReviewMCPTests {
             ]
         )
         let registryData = try JSONEncoder().encode(registry)
-        try registryData.write(to: registryURL, options: [.atomic])
+        try registryData.write(to: registryURL, options: Data.WritingOptions.atomic)
 
         let store = makeTestStore(
             configuration: .init(
@@ -197,6 +197,53 @@ struct CodexReviewMCPTests {
         #expect(loadedAccounts.accounts.map(\.email) == ["first@example.com", "second@example.com"])
     }
 
+    @Test func reorderingSavedAccountPersistsOrderAndPreservesActiveAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "first@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let firstAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+
+        try writeReviewAuthSnapshot(
+            email: "second@example.com",
+            planType: "plus",
+            environment: environment
+        )
+        let secondAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first { $0.accountKey == initialAccounts.activeAccountKey })
+
+        try await auth.reorderSavedAccount(accountKey: firstAccount.accountKey, toIndex: 1)
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(loadedAccounts.activeAccountKey == secondAccount.accountKey)
+        #expect(auth.account?.accountKey == secondAccount.accountKey)
+        #expect(auth.savedAccounts.map(\.email) == ["second@example.com", "first@example.com"])
+        #expect(loadedAccounts.accounts.map(\.email) == ["second@example.com", "first@example.com"])
+    }
+
     @Test func storeSeedsSharedAccountWhenRegistryPersistenceFails() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
@@ -222,6 +269,195 @@ struct CodexReviewMCPTests {
 
         #expect(store.auth.account?.email == "review@example.com")
         #expect(store.auth.savedAccounts.first?.email == "review@example.com")
+    }
+
+    @Test func registryMigrationDoesNotRewriteKeysWhenSavedAccountDirectoryIsBlocked() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: registryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let legacyAccountKey = "8D0A808B-7DA5-47BE-B5C2-2262783BBF20"
+        let registry = ReviewAccountRegistryRecord(
+            activeAccountKey: legacyAccountKey,
+            accounts: [
+                .init(
+                    accountKey: legacyAccountKey,
+                    email: "saved@example.com",
+                    planType: "pro",
+                    lastActivatedAt: Date(timeIntervalSince1970: 100),
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                )
+            ]
+        )
+        try JSONEncoder().encode(registry).write(to: registryURL, options: .atomic)
+        try writeSavedAccountAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            accountKey: legacyAccountKey,
+            environment: environment,
+            useLegacyDirectory: true
+        )
+
+        let blockedDestinationURL = ReviewHomePaths.savedAccountDirectoryURL(
+            accountKey: "saved@example.com",
+            environment: environment
+        )
+        try FileManager.default.createDirectory(
+            at: blockedDestinationURL,
+            withIntermediateDirectories: true
+        )
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let persistedRegistry = try JSONDecoder().decode(
+            ReviewAccountRegistryRecord.self,
+            from: Data(contentsOf: registryURL)
+        )
+
+        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
+        #expect(loadedAccounts.accounts.map(\.accountKey) == ["saved@example.com"])
+        #expect(persistedRegistry.activeAccountKey == legacyAccountKey)
+        #expect(persistedRegistry.accounts.map(\.accountKey) == [legacyAccountKey])
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.legacySavedAccountDirectoryURL(
+                    accountKey: legacyAccountKey,
+                    environment: environment
+                )
+                .appendingPathComponent("auth.json")
+                .path
+            )
+        )
+    }
+
+    @Test func registryMigrationMovesCanonicalDuplicateSavedAccountDirectory() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: registryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let staleAccountKey = "96E5D11C-55E1-41DF-9A8B-5D7D1317A337"
+        let canonicalAccountKey = "D2095F6A-E0C4-45D3-8FD7-FA31D11A4B76"
+        let registry = ReviewAccountRegistryRecord(
+            activeAccountKey: canonicalAccountKey,
+            accounts: [
+                .init(
+                    accountKey: staleAccountKey,
+                    email: "Saved@example.com",
+                    planType: "pro",
+                    lastActivatedAt: Date(timeIntervalSince1970: 10),
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                ),
+                .init(
+                    accountKey: canonicalAccountKey,
+                    email: "saved@example.com",
+                    planType: "plus",
+                    lastActivatedAt: Date(timeIntervalSince1970: 20),
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                ),
+            ]
+        )
+        try JSONEncoder().encode(registry).write(to: registryURL, options: .atomic)
+        try writeSavedAccountAuthSnapshot(
+            email: "saved@example.com",
+            planType: "plus",
+            accountKey: canonicalAccountKey,
+            environment: environment,
+            useLegacyDirectory: true
+        )
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(loadedAccounts.accounts.count == 1)
+        let migratedAccount = try #require(loadedAccounts.accounts.first)
+        let migratedAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: migratedAccount.accountKey,
+            environment: environment
+        )
+
+        #expect(migratedAccount.accountKey == "saved@example.com")
+        #expect(migratedAccount.planType == "plus")
+        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
+        #expect(FileManager.default.fileExists(atPath: migratedAuthURL.path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.legacySavedAccountDirectoryURL(
+                    accountKey: canonicalAccountKey,
+                    environment: environment
+                )
+                .appendingPathComponent("auth.json")
+                .path
+            )
+        )
+    }
+
+    @Test func registryMigrationKeepsNewerEncodedAuthSnapshotWhenLegacyCopyIsOlder() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: registryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let registry = ReviewAccountRegistryRecord(
+            activeAccountKey: "saved@example.com",
+            accounts: [
+                .init(
+                    accountKey: "saved@example.com",
+                    email: "saved@example.com",
+                    planType: "pro",
+                    lastActivatedAt: Date(timeIntervalSince1970: 20),
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                )
+            ]
+        )
+        try JSONEncoder().encode(registry).write(to: registryURL, options: .atomic)
+        try writeSavedAccountAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            accountKey: "saved@example.com",
+            environment: environment,
+            useLegacyDirectory: true
+        )
+        try writeSavedAccountAuthSnapshot(
+            email: "saved@example.com",
+            planType: "plus",
+            accountKey: "saved@example.com",
+            environment: environment,
+            useLegacyDirectory: false
+        )
+
+        let legacyAuthURL = ReviewHomePaths.legacySavedAccountDirectoryURL(
+            accountKey: "saved@example.com",
+            environment: environment
+        ).appendingPathComponent("auth.json")
+        let encodedAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: "saved@example.com",
+            environment: environment
+        )
+        let encodedAuthDataBeforeLoad = try Data(contentsOf: encodedAuthURL)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 10)],
+            ofItemAtPath: legacyAuthURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 20)],
+            ofItemAtPath: encodedAuthURL.path
+        )
+
+        _ = loadRegisteredReviewAccounts(environment: environment)
+        #expect(try Data(contentsOf: encodedAuthURL) == encodedAuthDataBeforeLoad)
     }
 
     @Test func storePrefersSharedAuthWhenRegistryUpdateFails() async throws {
@@ -1615,20 +1851,10 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
-        defer { fiveHourProbe.cancel() }
-
         await store.start()
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 40
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
         }
-
-        let initialSessionWindow = try #require(
-            rateLimitWindow(duration: 300, in: store.auth.account)
-        )
-        let initialWeeklyWindow = try #require(
-            rateLimitWindow(duration: 10_080, in: store.auth.account)
-        )
 
         let authTransport = try #require(await manager.authTransportForTesting())
         await authTransport.updateRateLimitsResponse(
@@ -1666,13 +1892,12 @@ struct CodexReviewMCPTests {
 
         await store.auth.refresh()
 
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 18
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 18
         }
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) === initialSessionWindow)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) === initialWeeklyWindow)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 18)
         #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 14)
 
         await store.stop()
@@ -2208,6 +2433,116 @@ struct CodexReviewMCPTests {
         )
         #expect(refreshedAccount.lastRateLimitFetchAt != nil)
         #expect(refreshedAccount.lastRateLimitError?.isEmpty == false)
+    }
+
+    @Test func refreshingInactiveRateLimitsUpdatesExistingSavedAccountRateLimits() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let rateLimitTransport = AuthCapableAppServerSessionTransport()
+        let rateLimitManager = AuthCapableAppServerManager(authTransport: rateLimitTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                rateLimitManager
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.savedAccounts.first)
+
+        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+
+        let refreshedAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
+        )
+        #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 300, in: refreshedAccount)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: refreshedAccount)?.usedPercent == 20)
+    }
+
+    @Test func refreshingInactiveRateLimitsReplacesSavedAccountWhenPersistedEmailChanges() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        let initialSavedAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        )
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "/usr/bin/false",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.savedAccounts.first)
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        let updatedRegistry = ReviewAccountRegistryRecord(
+            activeAccountKey: nil,
+            accounts: [
+                .init(
+                    accountKey: "updated@example.com",
+                    email: "updated@example.com",
+                    planType: "pro",
+                    lastActivatedAt: nil,
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                )
+            ]
+        )
+        let previousAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: initialSavedAccount.accountKey,
+            environment: environment
+        )
+        let updatedAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: "updated@example.com",
+            environment: environment
+        )
+        try FileManager.default.createDirectory(
+            at: updatedAuthURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: previousAuthURL, to: updatedAuthURL)
+        try JSONEncoder().encode(updatedRegistry).write(
+            to: registryURL,
+            options: Data.WritingOptions.atomic
+        )
+
+        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+
+        let refreshedAccount = try #require(auth.savedAccounts.first)
+        #expect(refreshedAccount !== savedAccount)
+        #expect(refreshedAccount.email == "updated@example.com")
     }
 
     @Test func startingStoreKeepsSeededAuthWhenBackgroundRefreshFails() async throws {
@@ -3557,7 +3892,7 @@ struct CodexReviewMCPTests {
         )
 
         await #expect(throws: Error.self) {
-            try await auth.switchAccount(accountKey: UUID())
+            try await auth.switchAccount(accountKey: "missing@example.com")
         }
         #expect(cancelCallCount == 0)
     }
@@ -6242,7 +6577,7 @@ private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer = false
     let initialAccount: CodexAccount? = nil
     let initialAccounts: [CodexAccount] = []
-    let initialActiveAccountKey: UUID? = nil
+    let initialActiveAccountKey: String? = nil
 
     private let failingSessionIDs: Set<String>
     private let error: any Error
@@ -7408,6 +7743,38 @@ private func writeReviewAuthSnapshot(
     ]
     let data = try JSONSerialization.data(withJSONObject: object)
     try data.write(to: authURL, options: .atomic)
+}
+
+private func writeSavedAccountAuthSnapshot(
+    email: String,
+    planType: String?,
+    accountKey: String,
+    environment: [String: String],
+    useLegacyDirectory: Bool
+) throws {
+    try writeReviewAuthSnapshot(
+        email: email,
+        planType: planType,
+        environment: environment
+    )
+    let destinationDirectoryURL = useLegacyDirectory
+        ? ReviewHomePaths.legacySavedAccountDirectoryURL(
+            accountKey: accountKey,
+            environment: environment
+        )
+        : ReviewHomePaths.savedAccountDirectoryURL(
+            accountKey: accountKey,
+            environment: environment
+        )
+    try FileManager.default.createDirectory(
+        at: destinationDirectoryURL,
+        withIntermediateDirectories: true
+    )
+    try Data(contentsOf: ReviewHomePaths.reviewAuthURL(environment: environment))
+        .write(
+            to: destinationDirectoryURL.appendingPathComponent("auth.json"),
+            options: .atomic
+        )
 }
 
 private func makeReviewAuthTestJWT(payload: [String: Any]) -> String {

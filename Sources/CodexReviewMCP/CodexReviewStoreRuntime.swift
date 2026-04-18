@@ -1572,7 +1572,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer: Bool
     let initialAccount: CodexAccount?
     let initialAccounts: [CodexAccount]
-    let initialActiveAccountKey: UUID?
+    let initialActiveAccountKey: String?
     let rateLimitObservationClock: any ReviewClock
     let rateLimitStaleRefreshInterval: Duration
     lazy var liveSharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [weak self, appServerManager, configuration] environment in
