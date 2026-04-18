@@ -21,6 +21,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     private let accountRegistryStore: ReviewAccountRegistryStore
     private let sharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession
     private let loginAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession
+    private let probeAppServerManagerFactory: @Sendable ([String: String]) -> any AppServerManaging
     private let accountSessionController: CodexAccountSessionController
     private let runtimeState: @MainActor @Sendable () -> CodexAuthRuntimeState
     private let recycleServerIfRunning: @MainActor @Sendable () async -> Void
@@ -39,6 +40,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         appServerManager: any AppServerManaging,
         sharedAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
         loginAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
+        probeAppServerManagerFactory: (@Sendable ([String: String]) -> any AppServerManaging)? = nil,
         runtimeState: @escaping @MainActor @Sendable () -> CodexAuthRuntimeState,
         recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void,
         cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in },
@@ -49,6 +51,15 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         self.accountRegistryStore = accountRegistryStore
         self.sharedAuthSessionFactory = sharedAuthSessionFactory
         self.loginAuthSessionFactory = loginAuthSessionFactory
+        let codexCommand = configuration.codexCommand
+        self.probeAppServerManagerFactory = probeAppServerManagerFactory ?? { environment in
+            AppServerSupervisor(
+                configuration: .init(
+                    codexCommand: codexCommand,
+                    environment: environment
+                )
+            )
+        }
         accountSessionController = CodexAccountSessionController(
             appServerManager: appServerManager,
             accountRegistryStore: accountRegistryStore,
@@ -181,6 +192,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
             auth.updatePhase(.signedOut)
             auth.updateWarning(message: nil)
+            await refreshSavedAccountRateLimits(auth: auth, accountKey: savedAccount.accountKey)
             hasResolvedAuthenticatedAccount = auth.account != nil
             await reconcileAfterResolvedAuthState(
                 auth: auth,
@@ -457,15 +469,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 } else {
                     probe = try await accountRegistryStore.prepareSharedAuthProbe()
                 }
-                let supervisor = AppServerSupervisor(
-                    configuration: .init(
-                        codexCommand: configuration.codexCommand,
-                        environment: probe.environment
-                    )
-                )
+                let probeManager = probeAppServerManagerFactory(probe.environment)
                 var sharedSession: SharedAppServerReviewAuthSession?
                 do {
-                    let transport = try await supervisor.checkoutAuthTransport()
+                    let transport = try await probeManager.checkoutAuthTransport()
                     let session = SharedAppServerReviewAuthSession(transport: transport)
                     sharedSession = session
                     let response = try await session.readRateLimits()
@@ -490,7 +497,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 if let sharedSession {
                     await sharedSession.close()
                 }
-                await supervisor.shutdown()
+                await probeManager.shutdown()
                 await accountRegistryStore.cleanupProbeHome(probe)
             } catch {
                 activeAccount.updateRateLimitFetchMetadata(
@@ -506,15 +513,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         let fetchedAt = Date()
         do {
             let probe = try await accountRegistryStore.prepareInactiveAccountProbe(accountKey: accountKey)
-            let supervisor = AppServerSupervisor(
-                configuration: .init(
-                    codexCommand: configuration.codexCommand,
-                    environment: probe.environment
-                )
-            )
+            let probeManager = probeAppServerManagerFactory(probe.environment)
             var sharedSession: SharedAppServerReviewAuthSession?
             do {
-                let transport = try await supervisor.checkoutAuthTransport()
+                let transport = try await probeManager.checkoutAuthTransport()
                 let session = SharedAppServerReviewAuthSession(transport: transport)
                 sharedSession = session
                 let rateLimits = try await session.readRateLimits()
@@ -548,7 +550,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             if let sharedSession {
                 await sharedSession.close()
             }
-            await supervisor.shutdown()
+            await probeManager.shutdown()
             await accountRegistryStore.cleanupProbeHome(probe)
         } catch {
             try? await accountRegistryStore.updateRateLimitFetchStatus(

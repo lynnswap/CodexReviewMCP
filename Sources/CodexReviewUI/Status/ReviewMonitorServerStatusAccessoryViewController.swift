@@ -1,19 +1,69 @@
 import AppKit
 import SwiftUI
 import CodexReviewModel
+import ObservationBridge
 
 @MainActor
 final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAccessoryViewController {
-    init(store: CodexReviewStore) {
+    private let uiState: ReviewMonitorUIState
+    private var observationHandles: Set<ObservationHandle> = []
+    private var shouldHideStatusAccessory = false
+
+    init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
+        self.uiState = uiState
         super.init(nibName: nil, bundle: nil)
 
         automaticallyAppliesContentInsets = true
         view = NSHostingView(rootView: StatusView(store: store))
+        updateVisibility(animated: false)
+        bindObservation()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         nil
+    }
+
+    private func bindObservation() {
+        uiState.observe(\.sidebarSelection) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.updateVisibility(animated: true)
+        }
+        .store(in: &observationHandles)
+    }
+
+    private func updateVisibility(animated: Bool) {
+        let shouldHide = uiState.sidebarSelection == .account
+        shouldHideStatusAccessory = shouldHide
+        guard animated else {
+            isHidden = shouldHide
+            view.alphaValue = shouldHide ? 0 : 1
+            return
+        }
+
+        if shouldHide {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.allowsImplicitAnimation = true
+                view.animator().alphaValue = 0
+            } completionHandler: { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.shouldHideStatusAccessory else {
+                        return
+                    }
+                    self.isHidden = true
+                }
+            }
+        } else {
+            isHidden = false
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.allowsImplicitAnimation = true
+                view.animator().alphaValue = 1
+            }
+        }
     }
 }
 

@@ -39,7 +39,10 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         let sidebarSegmentedAccessoryViewController = ReviewMonitorSidebarSegmentedAccessoryViewController(
             uiState: uiState
         )
-        let statusAccessoryViewController = ReviewMonitorServerStatusAccessoryViewController(store: store)
+        let statusAccessoryViewController = ReviewMonitorServerStatusAccessoryViewController(
+            store: store,
+            uiState: uiState
+        )
         if #available(macOS 26.1, *) {
             sidebarSegmentedAccessoryViewController.preferredScrollEdgeEffectStyle = .soft
             statusAccessoryViewController.preferredScrollEdgeEffectStyle = .soft
@@ -212,6 +215,10 @@ extension ReviewMonitorSplitViewController {
 
     var sidebarBottomAccessoryCountForTesting: Int {
         sidebarItem?.bottomAlignedAccessoryViewControllers.count ?? 0
+    }
+
+    var sidebarBottomAccessoryIsHiddenForTesting: Bool {
+        sidebarItem?.bottomAlignedAccessoryViewControllers.first?.isHidden ?? false
     }
 
     var sidebarTopAccessorySegmentAccessibilityDescriptionsForTesting: [String] {

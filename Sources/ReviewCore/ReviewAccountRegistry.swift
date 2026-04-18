@@ -140,7 +140,7 @@ package actor ReviewAccountRegistryStore {
                 updated.lastActivatedAt = Date()
             }
             return updated
-        }.sorted(by: sortAccounts)
+        }
         try saveRegistry(registry)
         let sharedAuthBackup = loadSharedAuthData()
         do {
@@ -515,7 +515,6 @@ private func upsertSavedAccountRecord(
             activated.lastActivatedAt = now
             registry.accounts[emailIndex] = activated
             registry.activeAccountKey = activated.accountKey
-            registry.accounts.sort(by: sortAccounts)
             return activated
         }
 
@@ -564,7 +563,6 @@ private func upsertSavedAccountRecord(
     if makeActive {
         registry.activeAccountKey = record.accountKey
     }
-    registry.accounts.sort(by: sortAccounts)
     return record
 }
 
@@ -611,25 +609,26 @@ private func canonicalizeRegistryRecord(
     _ registry: ReviewAccountRegistryRecord,
     environment: [String: String]
 ) -> ReviewAccountRegistryRecord {
-    let orderedAccounts = registry.accounts.sorted {
-        canonicalRegistryOrder(
-            lhs: $0,
-            rhs: $1,
-            activeAccountKey: registry.activeAccountKey,
-            environment: environment
-        )
-    }
-    var deduplicatedAccounts: [ReviewSavedAccountRecord] = []
-    for account in orderedAccounts {
+    var canonicalAccountsByEmail: [String: ReviewSavedAccountRecord] = [:]
+    for account in registry.accounts {
         let normalizedEmail = normalizedReviewAccountEmail(email: account.email)
-        guard deduplicatedAccounts.contains(where: {
-            normalizedReviewAccountEmail(email: $0.email) == normalizedEmail
-        }) == false else {
-            continue
+        if let existingAccount = canonicalAccountsByEmail[normalizedEmail] {
+            if shouldReplaceCanonicalAccount(
+                existingAccount,
+                with: account,
+                activeAccountKey: registry.activeAccountKey,
+                environment: environment
+            ) {
+                canonicalAccountsByEmail[normalizedEmail] = account
+            }
+        } else {
+            canonicalAccountsByEmail[normalizedEmail] = account
         }
-        deduplicatedAccounts.append(account)
     }
-    deduplicatedAccounts.sort(by: sortAccounts)
+    let deduplicatedAccounts = registry.accounts.filter { account in
+        let normalizedEmail = normalizedReviewAccountEmail(email: account.email)
+        return canonicalAccountsByEmail[normalizedEmail]?.accountKey == account.accountKey
+    }
 
     let resolvedActiveAccountKey: UUID? = {
         guard let activeAccountKey = registry.activeAccountKey else {
@@ -653,55 +652,42 @@ private func canonicalizeRegistryRecord(
     )
 }
 
-private func canonicalRegistryOrder(
-    lhs: ReviewSavedAccountRecord,
-    rhs: ReviewSavedAccountRecord,
+private func shouldReplaceCanonicalAccount(
+    _ current: ReviewSavedAccountRecord,
+    with candidate: ReviewSavedAccountRecord,
     activeAccountKey: UUID?,
     environment: [String: String]
 ) -> Bool {
-    let lhsHasAuthSnapshot = FileManager.default.fileExists(
-        atPath: ReviewHomePaths.savedAccountAuthURL(accountKey: lhs.accountKey, environment: environment).path
+    let currentHasAuthSnapshot = FileManager.default.fileExists(
+        atPath: ReviewHomePaths.savedAccountAuthURL(accountKey: current.accountKey, environment: environment).path
     )
-    let rhsHasAuthSnapshot = FileManager.default.fileExists(
-        atPath: ReviewHomePaths.savedAccountAuthURL(accountKey: rhs.accountKey, environment: environment).path
+    let candidateHasAuthSnapshot = FileManager.default.fileExists(
+        atPath: ReviewHomePaths.savedAccountAuthURL(accountKey: candidate.accountKey, environment: environment).path
     )
-    if lhsHasAuthSnapshot != rhsHasAuthSnapshot {
-        return lhsHasAuthSnapshot && rhsHasAuthSnapshot == false
+    if currentHasAuthSnapshot != candidateHasAuthSnapshot {
+        return candidateHasAuthSnapshot
     }
 
-    let lhsIsActive = lhs.accountKey == activeAccountKey
-    let rhsIsActive = rhs.accountKey == activeAccountKey
-    if lhsIsActive != rhsIsActive {
-        return lhsIsActive && rhsIsActive == false
+    let currentIsActive = current.accountKey == activeAccountKey
+    let candidateIsActive = candidate.accountKey == activeAccountKey
+    if currentIsActive != candidateIsActive {
+        return candidateIsActive
     }
 
-    if sortAccounts(lhs: lhs, rhs: rhs) {
-        return true
-    }
-    if sortAccounts(lhs: rhs, rhs: lhs) {
-        return false
-    }
-    return lhs.accountKey.uuidString < rhs.accountKey.uuidString
-}
-
-
-private func sortAccounts(
-    lhs: ReviewSavedAccountRecord,
-    rhs: ReviewSavedAccountRecord
-) -> Bool {
-    switch (lhs.lastActivatedAt, rhs.lastActivatedAt) {
-    case let (left?, right?):
-        if left != right {
-            return left > right
+    switch (current.lastActivatedAt, candidate.lastActivatedAt) {
+    case let (currentActivatedAt?, candidateActivatedAt?):
+        if currentActivatedAt != candidateActivatedAt {
+            return candidateActivatedAt > currentActivatedAt
         }
-    case (.some, .none):
+    case (nil, .some):
         return true
-    case (.none, .some):
+    case (.some, nil):
         return false
-    case (.none, .none):
+    case (nil, nil):
         break
     }
-    return lhs.email.localizedCaseInsensitiveCompare(rhs.email) == .orderedAscending
+
+    return candidate.accountKey.uuidString < current.accountKey.uuidString
 }
 
 private struct ReviewStoredAuthSnapshot: Equatable, Sendable {
