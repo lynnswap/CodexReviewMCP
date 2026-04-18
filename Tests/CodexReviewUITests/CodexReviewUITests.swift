@@ -1116,6 +1116,33 @@ struct CodexReviewUITests {
         #expect(store.auth.account === secondAccount)
     }
 
+    @Test func accountCellConfigureReappliesHostedSwiftUIView() {
+        let cell = ReviewMonitorAccountCellView(frame: .init(x: 0, y: 0, width: 320, height: 1))
+        let placeholderAccount = CodexAccount(email: "review@example.com", planType: "pro")
+        let loadedAccount = CodexAccount(email: "review@example.com", planType: "pro")
+        loadedAccount.updateRateLimits(
+            [
+                (
+                    windowDurationMinutes: 10_080,
+                    usedPercent: 27,
+                    resetsAt: nil
+                ),
+            ]
+        )
+
+        cell.configure(with: placeholderAccount)
+        cell.layoutSubtreeIfNeeded()
+        let placeholderHeight = cell.renderedContentHeightForTesting
+
+        cell.configure(with: loadedAccount)
+        cell.layoutSubtreeIfNeeded()
+        let loadedHeight = cell.renderedContentHeightForTesting
+
+        #expect(placeholderHeight > 0)
+        #expect(loadedHeight > 0)
+        #expect(loadedHeight < placeholderHeight)
+    }
+
     @Test func workspaceDropPreservesExpansionState() {
         let alphaJob = makeJob(
             id: "job-alpha",

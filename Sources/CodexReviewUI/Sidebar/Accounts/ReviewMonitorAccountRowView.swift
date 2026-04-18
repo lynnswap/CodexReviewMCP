@@ -38,7 +38,9 @@ final class ReviewMonitorAccountCellView: NSTableCellView {
         objectValue = account
         toolTip = account.email
         if let hostingView {
-            hostingView.rootView.account = account
+            var rootView = hostingView.rootView
+            rootView.account = account
+            hostingView.rootView = rootView
         } else {
             let hostingView = NSHostingView(rootView: ReviewMonitorAccountRowView(account: account))
             hostingView.translatesAutoresizingMaskIntoConstraints = false
@@ -53,6 +55,12 @@ final class ReviewMonitorAccountCellView: NSTableCellView {
             self.hostingView = hostingView
         }
     }
+
+    #if DEBUG
+    var renderedContentHeightForTesting: CGFloat {
+        hostingView?.fittingSize.height ?? 0
+    }
+    #endif
 }
 
 struct ReviewMonitorAccountRowView: View {

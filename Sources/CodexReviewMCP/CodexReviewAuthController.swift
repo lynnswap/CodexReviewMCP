@@ -532,6 +532,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 let session = SharedAppServerReviewAuthSession(transport: transport)
                 sharedSession = session
                 let rateLimits = try await session.readRateLimits()
+                if let savedAccount = resolvedSavedAccount(for: accountKey, in: auth) {
+                    applyRateLimits(from: rateLimits, to: savedAccount)
+                }
                 try await accountRegistryStore.updateCachedRateLimits(
                     accountKey: accountKey,
                     rateLimits: rateLimitWindowRecords(from: resolvedCodexSnapshot(from: rateLimits)),
@@ -539,6 +542,13 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     error: nil
                 )
             } catch let error as AppServerResponseError where error.isUnsupportedMethod {
+                if let savedAccount = resolvedSavedAccount(for: accountKey, in: auth) {
+                    savedAccount.clearRateLimits()
+                    savedAccount.updateRateLimitFetchMetadata(
+                        fetchedAt: fetchedAt,
+                        error: error.message
+                    )
+                }
                 try? await accountRegistryStore.updateCachedRateLimits(
                     accountKey: accountKey,
                     rateLimits: [],
@@ -546,6 +556,13 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     error: error.message
                 )
             } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
+                if let savedAccount = resolvedSavedAccount(for: accountKey, in: auth) {
+                    savedAccount.clearRateLimits()
+                    savedAccount.updateRateLimitFetchMetadata(
+                        fetchedAt: fetchedAt,
+                        error: error.message
+                    )
+                }
                 try? await accountRegistryStore.updateCachedRateLimits(
                     accountKey: accountKey,
                     rateLimits: [],
@@ -553,6 +570,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     error: error.message
                 )
             } catch {
+                if let savedAccount = resolvedSavedAccount(for: accountKey, in: auth) {
+                    savedAccount.updateRateLimitFetchMetadata(
+                        fetchedAt: fetchedAt,
+                        error: error.localizedDescription
+                    )
+                }
                 try? await accountRegistryStore.updateRateLimitFetchStatus(
                     accountKey: accountKey,
                     fetchedAt: fetchedAt,
@@ -565,6 +588,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             await probeManager.shutdown()
             await accountRegistryStore.cleanupProbeHome(probe)
         } catch {
+            if let savedAccount = resolvedSavedAccount(for: accountKey, in: auth) {
+                savedAccount.updateRateLimitFetchMetadata(
+                    fetchedAt: fetchedAt,
+                    error: error.localizedDescription
+                )
+            }
             try? await accountRegistryStore.updateRateLimitFetchStatus(
                 accountKey: accountKey,
                 fetchedAt: fetchedAt,
@@ -1619,6 +1648,14 @@ private func resolvedAccount(
         return auth.account
     }
     return nil
+}
+
+@MainActor
+private func resolvedSavedAccount(
+    for accountKey: String,
+    in auth: CodexReviewAuthModel
+) -> CodexAccount? {
+    auth.savedAccounts.first(where: { $0.accountKey == accountKey })
 }
 
 private func rateLimitWindowRecords(

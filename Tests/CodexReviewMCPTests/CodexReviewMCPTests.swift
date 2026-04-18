@@ -2477,6 +2477,45 @@ struct CodexReviewMCPTests {
         #expect(rateLimitWindow(duration: 10_080, in: refreshedAccount)?.usedPercent == 20)
     }
 
+    @Test func refreshingInactiveRateLimitsMutatesExistingSavedAccountObject() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let rateLimitTransport = AuthCapableAppServerSessionTransport()
+        let rateLimitManager = AuthCapableAppServerManager(authTransport: rateLimitTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                rateLimitManager
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.savedAccounts.first)
+
+        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+
+        #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: savedAccount)?.usedPercent == 20)
+    }
+
     @Test func refreshingInactiveRateLimitsReplacesSavedAccountWhenPersistedEmailChanges() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(

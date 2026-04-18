@@ -1486,7 +1486,9 @@ private final class ReviewMonitorJobCellView: NSTableCellView {
         objectValue = job
         toolTip = job.cwd
         if let hostingView {
-            hostingView.rootView.job = job
+            var rootView = hostingView.rootView
+            rootView.job = job
+            hostingView.rootView = rootView
         } else {
             let hostingView = NSHostingView(
                 rootView: ReviewMonitorJobRowView(job: job)
