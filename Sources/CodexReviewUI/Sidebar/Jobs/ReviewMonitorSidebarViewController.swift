@@ -82,7 +82,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
     override func viewDidLayout() {
         super.viewDidLayout()
-        updateOutlineViewFrame()
     }
 
     private func configureHierarchy() {
@@ -106,8 +105,8 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
             emptyStateView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
-            emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -24),
+            emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor),
+            emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor),
 
             unavailableView.topAnchor.constraint(equalTo: view.topAnchor),
             unavailableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -127,12 +126,13 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         outlineView.headerView = nil
         outlineView.indentationPerLevel = 0
         outlineView.indentationMarkerFollowsCell = false
-        outlineView.rowSizeStyle = .default
+        outlineView.rowSizeStyle = .custom
+        outlineView.usesAutomaticRowHeights = true
         outlineView.style = .sourceList
         outlineView.floatsGroupRows = true
         outlineView.backgroundColor = .clear
         outlineView.usesAlternatingRowBackgroundColors = false
-        outlineView.intercellSpacing = NSSize(width: 0, height: 0)
+        outlineView.intercellSpacing = NSSize(width: 0, height: 12)
         outlineView.allowsEmptySelection = true
         outlineView.allowsMultipleSelection = false
         outlineView.setAccessibilityIdentifier("review-monitor.job-list")
@@ -201,7 +201,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         applyWorkspaceExpansionState(for: workspaces)
         reconcileSelectionAfterReload()
         isReconcilingSelection = false
-        updateOutlineViewFrame()
         updatePresentation()
     }
 
@@ -231,7 +230,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         applyWorkspaceExpansionState(for: [workspace])
         reconcileSelectionAfterReload()
         isReconcilingSelection = false
-        updateOutlineViewFrame()
         updatePresentation()
     }
 
@@ -416,24 +414,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
     private func totalJobCount(in workspaces: [CodexReviewWorkspace]) -> Int {
         workspaces.reduce(into: 0) { $0 += $1.jobs.count }
-    }
-
-    private func updateOutlineViewFrame() {
-        let contentSize = scrollView.contentSize
-        let width = max(1, contentSize.width)
-        let height = outlineContentHeight
-        let size = NSSize(width: width, height: height)
-        guard outlineView.frame.size != size else {
-            return
-        }
-        outlineView.setFrameSize(size)
-    }
-
-    private var outlineContentHeight: CGFloat {
-        guard outlineView.numberOfRows > 0 else {
-            return 0
-        }
-        return outlineView.rect(ofRow: outlineView.numberOfRows - 1).maxY
     }
 
     private func workspace(from item: Any?) -> CodexReviewWorkspace? {
@@ -896,16 +876,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         return nil
     }
 
-    func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-        if workspace(from: item) != nil {
-            return 28
-        }
-        if job(from: item) != nil {
-            return 46
-        }
-        return 0
-    }
-
     func outlineView(
         _ outlineView: NSOutlineView,
         viewFor tableColumn: NSTableColumn?,
@@ -1101,7 +1071,10 @@ extension ReviewMonitorSidebarViewController {
     }
 
     var sidebarOutlineContentHeightForTesting: CGFloat {
-        outlineContentHeight
+        guard outlineView.numberOfRows > 0 else {
+            return 0
+        }
+        return outlineView.rect(ofRow: outlineView.numberOfRows - 1).maxY
     }
 
     var sidebarMaximumVerticalScrollOffsetForTesting: CGFloat {
@@ -1474,14 +1447,10 @@ private final class ReviewMonitorJobCellView: NSTableCellView {
         objectValue = job
         toolTip = job.cwd
         if let hostingView {
-            hostingView.rootView = ReviewMonitorJobRowView(
-                job: job
-            )
+            hostingView.rootView.job = job
         } else {
             let hostingView = NSHostingView(
-                rootView: ReviewMonitorJobRowView(
-                    job: job
-                )
+                rootView: ReviewMonitorJobRowView(job: job)
             )
             hostingView.translatesAutoresizingMaskIntoConstraints = false
             hostingView.setAccessibilityIdentifier("review-monitor.job-row")
@@ -1557,6 +1526,8 @@ private final class ReviewMonitorWorkspaceCellView: NSTableCellView {
         NSLayoutConstraint.activate([
             contentStack.leadingAnchor.constraint(equalTo: leadingAnchor),
             contentStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            contentStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            contentStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
             contentStack.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
     }

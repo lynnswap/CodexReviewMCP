@@ -29,7 +29,7 @@ struct AccountRateLimitGaugesView: View {
 
     var body: some View {
         Group {
-            VStack {
+            VStack(spacing:0) {
                 ForEach(displayedRateLimits) { window in
                     RateLimitWindowGaugeView(window: window)
                         .transaction(value: account?.id) { transaction in

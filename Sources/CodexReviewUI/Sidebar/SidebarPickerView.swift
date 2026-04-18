@@ -27,7 +27,7 @@ struct SidebarPickerView: View {
                 } icon: {
                     Image(systemName: selection.systemImage)
                 }
-                    .tag(selection)
+                .tag(selection)
             }
         }
         .labelStyle(.iconOnly)
