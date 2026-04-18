@@ -290,6 +290,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         if auth.isAuthenticating {
             await cancelAuthentication(auth: auth)
         }
+        let priorAccount = auth.account
         let removedActive = auth.account?.accountKey == accountKey
         let priorUnsavedCurrentAccount = auth.account.flatMap { currentAccount in
             auth.savedAccounts.contains(where: { $0.accountKey == currentAccount.accountKey })
@@ -297,12 +298,14 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 : currentAccount
         }
         _ = try await accountRegistryStore.removeAccount(accountKey)
+        var replacementSavedAccount: CodexAccount?
         if let loaded = try? accountRegistryStore.loadAccounts() {
             auth.updateSavedAccounts(loaded.accounts)
             if let activeAccountKey = loaded.activeAccountKey,
                let activeAccount = loaded.accounts.first(where: { $0.accountKey == activeAccountKey })
             {
                 auth.updateAccount(activeAccount)
+                replacementSavedAccount = activeAccount
             } else if let priorUnsavedCurrentAccount,
                       loaded.accounts.contains(where: { $0.accountKey == priorUnsavedCurrentAccount.accountKey }) == false
             {
@@ -313,13 +316,13 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         }
         if removedActive {
             auth.updatePhase(.signedOut)
-            hasResolvedAuthenticatedAccount = false
+            hasResolvedAuthenticatedAccount = replacementSavedAccount != nil
             let warningMessage = await performCommittedJobCleanupIfNeeded(shouldCancelJobs: true)
             await reconcileAfterResolvedAuthState(
                 auth: auth,
-                identityChanged: true,
+                identityChanged: didAccountIdentityChange(from: priorAccount, to: auth.account),
                 forceRestartSession: true,
-                forceRecycleServer: true
+                forceRecycleServer: runtimeState().serverIsRunning
             )
             if let warningMessage {
                 auth.updateWarning(message: warningMessage)

@@ -296,18 +296,41 @@ package actor ReviewAccountRegistryStore {
             matchingRuntimeAccountKey: accountKey,
             environment: environment
         )
+        let removedActive = originalRegistry.activeAccountKey == storedAccount?.accountKey
         registry.accounts.removeAll { account in
             account.accountKey == storedAccount?.accountKey
         }
-        if originalRegistry.activeAccountKey == storedAccount?.accountKey {
+        if removedActive,
+           let replacementIndex = registry.accounts.firstIndex(where: { account in
+               savedAccountAuthSnapshotExists(
+                   accountKey: account.accountKey,
+                   environment: environment
+               )
+           })
+        {
+            var replacementAccount = registry.accounts[replacementIndex]
+            replacementAccount.lastActivatedAt = Date()
+            registry.accounts[replacementIndex] = replacementAccount
+            registry.activeAccountKey = replacementAccount.accountKey
+        } else if removedActive {
             registry.activeAccountKey = nil
         }
 
         try saveRegistry(registry)
         let sharedAuthBackup = loadSharedAuthData()
         do {
-            if originalRegistry.activeAccountKey == storedAccount?.accountKey {
-                try removeItemIfExists(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+            if removedActive {
+                if let replacementAccountKey = registry.activeAccountKey {
+                    try persistAuthSnapshot(
+                        from: persistedSavedAccountAuthURL(
+                            accountKey: replacementAccountKey,
+                            environment: environment
+                        ),
+                        to: ReviewHomePaths.reviewAuthURL(environment: environment)
+                    )
+                } else {
+                    try removeItemIfExists(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+                }
             }
             if let storedAccount {
                 for directoryURL in savedAccountDirectories(

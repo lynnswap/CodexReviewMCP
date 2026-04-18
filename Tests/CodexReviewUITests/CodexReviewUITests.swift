@@ -1143,6 +1143,53 @@ struct CodexReviewUITests {
         #expect(loadedHeight < placeholderHeight)
     }
 
+    @Test func removingActiveAccountSelectsFirstRemainingSidebarRow() async throws {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "second@example.com"))
+        let store = makeStore(backend: backend)
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        let thirdAccount = CodexAccount(email: "third@example.com", planType: "free")
+        store.auth.updateSavedAccounts([firstAccount, secondAccount, thirdAccount])
+        store.auth.updateAccount(secondAccount)
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+
+        try await store.auth.removeAccount(accountKey: secondAccount.accountKey)
+        await backend.waitForRemoveAccountCallCount(1)
+        await Task.yield()
+
+        #expect(backend.lastRemovedAccountKey() == secondAccount.accountKey)
+        #expect(store.auth.account === firstAccount)
+        #expect(accountsViewController.selectedAccountEmailForTesting == "first@example.com")
+    }
+
+    @Test func statusViewTracksFirstRemainingAccountAfterActiveRemoval() async throws {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "second@example.com"))
+        let store = makeStore(backend: backend)
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        store.auth.updateSavedAccounts([firstAccount, secondAccount])
+        store.auth.updateAccount(secondAccount)
+        let view = StatusView(store: store)
+
+        #expect(view.currentAccountEmailForTesting == "second@example.com")
+
+        try await store.auth.removeAccount(accountKey: secondAccount.accountKey)
+        await backend.waitForRemoveAccountCallCount(1)
+        await Task.yield()
+
+        #expect(view.currentAccountEmailForTesting == "first@example.com")
+    }
+
     @Test func workspaceDropPreservesExpansionState() {
         let alphaJob = makeJob(
             id: "job-alpha",
@@ -3645,6 +3692,13 @@ private final class AuthActionController: CodexReviewAuthControlling {
         await backend.switchAccount(auth: auth, accountKey: accountKey)
     }
 
+    func removeAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws {
+        await backend.removeAccount(auth: auth, accountKey: accountKey)
+    }
+
     func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
         await backend.logout(auth: auth)
     }
@@ -3672,12 +3726,15 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
     private let cancelSignal = AsyncSignal()
     private let logoutSignal = AsyncSignal()
     private let switchSignal = AsyncSignal()
+    private let removeSignal = AsyncSignal()
     private var refreshCalls = 0
     private var beginCalls = 0
     private var cancelCalls = 0
     private var logoutCalls = 0
     private var switchCalls = 0
+    private var removeCalls = 0
     private var switchedAccountKeys: [String] = []
+    private var removedAccountKeys: [String] = []
 
     init(initialAuthState: TestAuthState = .signedOut) {
         self.initialAuthState = initialAuthState
@@ -3745,6 +3802,27 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
         await switchSignal.signal()
     }
 
+    func removeAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async {
+        removeCalls += 1
+        removedAccountKeys.append(accountKey)
+
+        let remainingAccounts = auth.savedAccounts.filter { $0.accountKey != accountKey }
+        auth.updateSavedAccounts(remainingAccounts)
+
+        if auth.account?.accountKey == accountKey {
+            auth.updateAccount(remainingAccounts.first)
+        } else if let currentAccount = auth.account,
+                  remainingAccounts.contains(where: { $0.accountKey == currentAccount.accountKey }) == false
+        {
+            auth.updateAccount(nil)
+        }
+
+        await removeSignal.signal()
+    }
+
     func beginAuthenticationCallCount() -> Int {
         beginCalls
     }
@@ -3798,5 +3876,16 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
 
     func lastSwitchedAccountKey() -> String? {
         switchedAccountKeys.last
+    }
+
+    func waitForRemoveAccountCallCount(_ count: Int) async {
+        if removeCalls >= count {
+            return
+        }
+        await removeSignal.wait(untilCount: count)
+    }
+
+    func lastRemovedAccountKey() -> String? {
+        removedAccountKeys.last
     }
 }
