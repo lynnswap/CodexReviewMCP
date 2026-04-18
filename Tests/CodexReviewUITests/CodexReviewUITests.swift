@@ -16,7 +16,12 @@ struct CodexReviewUITests {
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
 
+        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
+        #expect(
+            viewController.sidebarTopAccessorySegmentAccessibilityDescriptionsForTesting ==
+                ["Workspace", "Account"]
+        )
         #expect(viewController.contentAccessoryCountForTesting == 0)
         #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
         #expect(viewController.contentPaneViewControllerForTesting.isShowingEmptyStateForTesting)
@@ -28,6 +33,7 @@ struct CodexReviewUITests {
         viewController.loadViewIfNeeded()
 
         #expect(viewController.splitViewItems.count == 2)
+        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
         #expect(viewController.contentAccessoryCountForTesting == 0)
         #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
@@ -45,6 +51,7 @@ struct CodexReviewUITests {
 
         #expect(viewController.splitViewItems.count == 2)
         #expect(viewController.sidebarPresentationForTesting == .unavailable)
+        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
     }
 
@@ -59,6 +66,7 @@ struct CodexReviewUITests {
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarPresentationForTesting == .jobList)
+        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
     }
 

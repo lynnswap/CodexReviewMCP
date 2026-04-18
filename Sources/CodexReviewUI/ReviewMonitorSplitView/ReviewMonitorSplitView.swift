@@ -36,8 +36,12 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             uiState: uiState
         )
         let transportViewController = ReviewMonitorTransportViewController(uiState: uiState)
+        let sidebarSegmentedAccessoryViewController = ReviewMonitorSidebarSegmentedAccessoryViewController(
+            uiState: uiState
+        )
         let statusAccessoryViewController = ReviewMonitorServerStatusAccessoryViewController(store: store)
         if #available(macOS 26.1, *) {
+            sidebarSegmentedAccessoryViewController.preferredScrollEdgeEffectStyle = .soft
             statusAccessoryViewController.preferredScrollEdgeEffectStyle = .soft
         }
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
@@ -45,6 +49,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         sidebarItem.minimumThickness = 220
         sidebarItem.preferredThicknessFraction = 0.22
         sidebarItem.titlebarSeparatorStyle = .none
+        sidebarItem.addTopAlignedAccessoryViewController(sidebarSegmentedAccessoryViewController)
         sidebarItem.addBottomAlignedAccessoryViewController(statusAccessoryViewController)
 
         let contentItem = NSSplitViewItem(viewController: transportViewController)
@@ -195,7 +200,24 @@ extension ReviewMonitorSplitViewController {
     }
 
     var sidebarAccessoryCountForTesting: Int {
+        sidebarBottomAccessoryCountForTesting
+    }
+
+    var sidebarTopAccessoryCountForTesting: Int {
+        sidebarItem?.topAlignedAccessoryViewControllers.count ?? 0
+    }
+
+    var sidebarBottomAccessoryCountForTesting: Int {
         sidebarItem?.bottomAlignedAccessoryViewControllers.count ?? 0
+    }
+
+    var sidebarTopAccessorySegmentAccessibilityDescriptionsForTesting: [String] {
+        guard let accessoryViewController = sidebarItem?.topAlignedAccessoryViewControllers.first
+            as? ReviewMonitorSidebarSegmentedAccessoryViewController
+        else {
+            return []
+        }
+        return accessoryViewController.segmentAccessibilityDescriptionsForTesting
     }
 
     var contentAccessoryCountForTesting: Int {
