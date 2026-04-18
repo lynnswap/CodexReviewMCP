@@ -43,15 +43,15 @@ package enum ReviewHomePaths {
     }
 
     package static func savedAccountDirectoryURL(
-        accountKey: String,
+        accountKey: UUID,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
         accountsDirectoryURL(environment: environment)
-            .appendingPathComponent(accountKey, isDirectory: true)
+            .appendingPathComponent(accountKey.uuidString, isDirectory: true)
     }
 
     package static func savedAccountAuthURL(
-        accountKey: String,
+        accountKey: UUID,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
         savedAccountDirectoryURL(accountKey: accountKey, environment: environment)

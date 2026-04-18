@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import ReviewJobs
 
 @MainActor
 @Observable
@@ -46,7 +45,7 @@ extension CodexRateLimitWindow: Identifiable, Hashable {
 @MainActor
 @Observable
 public final class CodexAccount {
-    nonisolated public let id: String
+    nonisolated public let id: UUID
     nonisolated public let email: String
     public var planType: String?
     public package(set) var rateLimits: [CodexRateLimitWindow] = []
@@ -54,17 +53,18 @@ public final class CodexAccount {
     public package(set) var lastRateLimitFetchAt: Date?
     public package(set) var lastRateLimitError: String?
 
-    nonisolated public var accountKey: String {
+    nonisolated public var accountKey: UUID {
         id
     }
 
     public init(
+        accountKey: UUID = UUID(),
         email: String,
         planType: String? = nil
     ) {
         let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         precondition(normalizedEmail.isEmpty == false, "CodexAccount email must not be empty.")
-        self.id = normalizedReviewAccountKey(email: normalizedEmail)
+        self.id = accountKey
         self.email = normalizedEmail
         self.planType = planType
     }

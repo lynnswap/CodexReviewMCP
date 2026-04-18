@@ -19,7 +19,7 @@ package struct ReviewSavedRateLimitWindowRecord: Codable, Equatable, Sendable {
 }
 
 package struct ReviewSavedAccountRecord: Codable, Equatable, Sendable {
-    package var accountKey: String
+    package var accountKey: UUID
     package var email: String
     package var planType: String?
     package var lastActivatedAt: Date?
@@ -29,11 +29,11 @@ package struct ReviewSavedAccountRecord: Codable, Equatable, Sendable {
 }
 
 package struct ReviewAccountRegistryRecord: Codable, Equatable, Sendable {
-    package var activeAccountKey: String?
+    package var activeAccountKey: UUID?
     package var accounts: [ReviewSavedAccountRecord]
 
     package init(
-        activeAccountKey: String? = nil,
+        activeAccountKey: UUID? = nil,
         accounts: [ReviewSavedAccountRecord] = []
     ) {
         self.activeAccountKey = activeAccountKey
@@ -49,7 +49,7 @@ package struct PreparedInactiveAccountProbe: Sendable {
 @MainActor
 package func loadRegisteredReviewAccounts(
     environment: [String: String] = ProcessInfo.processInfo.environment
-) -> (activeAccountKey: String?, accounts: [CodexAccount]) {
+) -> (activeAccountKey: UUID?, accounts: [CodexAccount]) {
     let registry = (try? loadRegistryRecord(environment: environment)) ?? .init()
     let records = registry.accounts.filter {
         FileManager.default.fileExists(
@@ -92,7 +92,7 @@ package actor ReviewAccountRegistryStore {
     }
 
     @MainActor
-    package func loadAccounts() throws -> (activeAccountKey: String?, accounts: [CodexAccount]) {
+    package func loadAccounts() throws -> (activeAccountKey: UUID?, accounts: [CodexAccount]) {
         loadRegisteredReviewAccounts(environment: environment)
     }
 
@@ -127,7 +127,7 @@ package actor ReviewAccountRegistryStore {
         )
     }
 
-    package func activateAccount(_ accountKey: String) throws {
+    package func activateAccount(_ accountKey: UUID) throws {
         let originalRegistry = try loadRegistry()
         var registry = originalRegistry
         guard let record = registry.accounts.first(where: { $0.accountKey == accountKey }) else {
@@ -157,7 +157,7 @@ package actor ReviewAccountRegistryStore {
         }
     }
 
-    package func clearActiveAccount(accountKey: String? = nil) throws {
+    package func clearActiveAccount(accountKey: UUID? = nil) throws {
         let originalRegistry = try loadRegistry()
         var registry = originalRegistry
         if let accountKey {
@@ -185,7 +185,7 @@ package actor ReviewAccountRegistryStore {
         }
     }
 
-    package func invalidateSavedAccountAuth(_ accountKey: String) throws {
+    package func invalidateSavedAccountAuth(_ accountKey: UUID) throws {
         try removeItemIfExists(
             at: ReviewHomePaths.savedAccountAuthURL(
                 accountKey: accountKey,
@@ -194,7 +194,7 @@ package actor ReviewAccountRegistryStore {
         )
     }
 
-    package func removeAccount(_ accountKey: String) throws -> String? {
+    package func removeAccount(_ accountKey: UUID) throws -> UUID? {
         let originalRegistry = try loadRegistry()
         var registry = originalRegistry
         registry.accounts.removeAll { $0.accountKey == accountKey }
@@ -226,7 +226,7 @@ package actor ReviewAccountRegistryStore {
     }
 
     package func updateCachedRateLimits(
-        accountKey: String,
+        accountKey: UUID,
         rateLimits: [ReviewSavedRateLimitWindowRecord],
         fetchedAt: Date,
         error: String?
@@ -242,7 +242,7 @@ package actor ReviewAccountRegistryStore {
     }
 
     package func updateRateLimitFetchStatus(
-        accountKey: String,
+        accountKey: UUID,
         fetchedAt: Date,
         error: String?
     ) throws {
@@ -283,7 +283,7 @@ package actor ReviewAccountRegistryStore {
         }
     }
 
-    package func prepareInactiveAccountProbe(accountKey: String) throws -> PreparedInactiveAccountProbe {
+    package func prepareInactiveAccountProbe(accountKey: UUID) throws -> PreparedInactiveAccountProbe {
         let probeRoot = try makePreparedProbeRoot(copySharedAuthFromAccountKey: accountKey)
         return .init(
             environment: makeProbeEnvironment(homeRootURL: probeRoot),
@@ -315,7 +315,7 @@ package actor ReviewAccountRegistryStore {
     }
 
     private func makePreparedProbeRoot(
-        copySharedAuthFromAccountKey accountKey: String?,
+        copySharedAuthFromAccountKey accountKey: UUID?,
         copySharedAuthFromSharedHome: Bool = false
     ) throws -> URL {
         let probeRoot = ReviewHomePaths.makeProbeRootURL(environment: environment)
@@ -440,7 +440,10 @@ private func loadRegistryRecord(
     guard let data = try? Data(contentsOf: registryURL) else {
         return .init()
     }
-    return try JSONDecoder().decode(ReviewAccountRegistryRecord.self, from: data)
+    guard let decoded = try? JSONDecoder().decode(ReviewAccountRegistryRecord.self, from: data) else {
+        return .init()
+    }
+    return canonicalizeRegistryRecord(decoded, environment: environment)
 }
 
 private func saveRegistryRecord(
@@ -487,22 +490,68 @@ private func upsertSavedAccountRecord(
     planType: String?,
     makeActive: Bool
 ) -> ReviewSavedAccountRecord {
-    let accountKey = normalizedReviewAccountKey(email: email)
+    let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalizedEmail = normalizedReviewAccountEmail(email: trimmedEmail)
     let now = Date()
     let record: ReviewSavedAccountRecord
-    if let index = registry.accounts.firstIndex(where: { $0.accountKey == accountKey }) {
-        var updated = registry.accounts[index]
-        updated.email = email
+    let activeIndex = makeActive
+        ? registry.accounts.firstIndex(where: { $0.accountKey == registry.activeAccountKey })
+        : nil
+    let emailIndex = registry.accounts.firstIndex {
+        normalizedReviewAccountEmail(email: $0.email) == normalizedEmail
+    }
+
+    if makeActive, let activeIndex {
+        let activeRecord = registry.accounts[activeIndex]
+        let activeEmail = normalizedReviewAccountEmail(email: activeRecord.email)
+        if activeEmail != normalizedEmail,
+           let emailIndex,
+           emailIndex != activeIndex
+        {
+            let emailRecord = registry.accounts[emailIndex]
+            var activated = emailRecord
+            activated.email = trimmedEmail
+            activated.planType = planType
+            activated.lastActivatedAt = now
+            registry.accounts[emailIndex] = activated
+            registry.activeAccountKey = activated.accountKey
+            registry.accounts.sort(by: sortAccounts)
+            return activated
+        }
+
+        if activeEmail != normalizedEmail {
+            let inserted = ReviewSavedAccountRecord(
+                accountKey: UUID(),
+                email: trimmedEmail,
+                planType: planType,
+                lastActivatedAt: now,
+                lastRateLimitFetchAt: nil,
+                lastRateLimitError: nil,
+                cachedRateLimits: []
+            )
+            registry.accounts.append(inserted)
+            record = inserted
+        } else {
+            var updated = activeRecord
+            updated.email = trimmedEmail
+            updated.planType = planType
+            updated.lastActivatedAt = now
+            registry.accounts[activeIndex] = updated
+            record = updated
+        }
+    } else if let emailIndex {
+        var updated = registry.accounts[emailIndex]
+        updated.email = trimmedEmail
         updated.planType = planType
         if makeActive {
             updated.lastActivatedAt = now
         }
-        registry.accounts[index] = updated
+        registry.accounts[emailIndex] = updated
         record = updated
     } else {
         let inserted = ReviewSavedAccountRecord(
-            accountKey: accountKey,
-            email: email,
+            accountKey: UUID(),
+            email: trimmedEmail,
             planType: planType,
             lastActivatedAt: makeActive ? now : nil,
             lastRateLimitFetchAt: nil,
@@ -513,7 +562,7 @@ private func upsertSavedAccountRecord(
         record = inserted
     }
     if makeActive {
-        registry.activeAccountKey = accountKey
+        registry.activeAccountKey = record.accountKey
     }
     registry.accounts.sort(by: sortAccounts)
     return record
@@ -537,6 +586,7 @@ private func makeCodexAccount(
     isActive: Bool = false
 ) -> CodexAccount {
     let account = CodexAccount(
+        accountKey: record.accountKey,
         email: record.email,
         planType: record.planType
     )
@@ -556,6 +606,84 @@ private func makeCodexAccount(
     account.updateIsActive(isActive)
     return account
 }
+
+private func canonicalizeRegistryRecord(
+    _ registry: ReviewAccountRegistryRecord,
+    environment: [String: String]
+) -> ReviewAccountRegistryRecord {
+    let orderedAccounts = registry.accounts.sorted {
+        canonicalRegistryOrder(
+            lhs: $0,
+            rhs: $1,
+            activeAccountKey: registry.activeAccountKey,
+            environment: environment
+        )
+    }
+    var deduplicatedAccounts: [ReviewSavedAccountRecord] = []
+    for account in orderedAccounts {
+        let normalizedEmail = normalizedReviewAccountEmail(email: account.email)
+        guard deduplicatedAccounts.contains(where: {
+            normalizedReviewAccountEmail(email: $0.email) == normalizedEmail
+        }) == false else {
+            continue
+        }
+        deduplicatedAccounts.append(account)
+    }
+    deduplicatedAccounts.sort(by: sortAccounts)
+
+    let resolvedActiveAccountKey: UUID? = {
+        guard let activeAccountKey = registry.activeAccountKey else {
+            return nil
+        }
+        if deduplicatedAccounts.contains(where: { $0.accountKey == activeAccountKey }) {
+            return activeAccountKey
+        }
+        guard let activeAccount = registry.accounts.first(where: { $0.accountKey == activeAccountKey }) else {
+            return nil
+        }
+        let normalizedEmail = normalizedReviewAccountEmail(email: activeAccount.email)
+        return deduplicatedAccounts.first {
+            normalizedReviewAccountEmail(email: $0.email) == normalizedEmail
+        }?.accountKey
+    }()
+
+    return .init(
+        activeAccountKey: resolvedActiveAccountKey,
+        accounts: deduplicatedAccounts
+    )
+}
+
+private func canonicalRegistryOrder(
+    lhs: ReviewSavedAccountRecord,
+    rhs: ReviewSavedAccountRecord,
+    activeAccountKey: UUID?,
+    environment: [String: String]
+) -> Bool {
+    let lhsHasAuthSnapshot = FileManager.default.fileExists(
+        atPath: ReviewHomePaths.savedAccountAuthURL(accountKey: lhs.accountKey, environment: environment).path
+    )
+    let rhsHasAuthSnapshot = FileManager.default.fileExists(
+        atPath: ReviewHomePaths.savedAccountAuthURL(accountKey: rhs.accountKey, environment: environment).path
+    )
+    if lhsHasAuthSnapshot != rhsHasAuthSnapshot {
+        return lhsHasAuthSnapshot && rhsHasAuthSnapshot == false
+    }
+
+    let lhsIsActive = lhs.accountKey == activeAccountKey
+    let rhsIsActive = rhs.accountKey == activeAccountKey
+    if lhsIsActive != rhsIsActive {
+        return lhsIsActive && rhsIsActive == false
+    }
+
+    if sortAccounts(lhs: lhs, rhs: rhs) {
+        return true
+    }
+    if sortAccounts(lhs: rhs, rhs: lhs) {
+        return false
+    }
+    return lhs.accountKey.uuidString < rhs.accountKey.uuidString
+}
+
 
 private func sortAccounts(
     lhs: ReviewSavedAccountRecord,

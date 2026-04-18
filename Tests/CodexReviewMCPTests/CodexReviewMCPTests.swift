@@ -64,7 +64,7 @@ struct CodexReviewMCPTests {
             activeAccountKey: nil,
             accounts: [
                 .init(
-                    accountKey: "saved@example.com",
+                    accountKey: UUID(),
                     email: "saved@example.com",
                     planType: "pro",
                     lastActivatedAt: nil,
@@ -75,7 +75,7 @@ struct CodexReviewMCPTests {
             ]
         )
         let registryData = try JSONEncoder().encode(registry)
-        try registryData.write(to: registryURL, options: .atomic)
+        try registryData.write(to: registryURL, options: [.atomic])
 
         let store = makeTestStore(
             configuration: .init(
@@ -122,6 +122,51 @@ struct CodexReviewMCPTests {
         #expect(store.auth.savedAccounts.map(\.email) == ["current@example.com", "stale@example.com"])
     }
 
+    @Test func savingDifferentActiveAccountPreservesExistingSavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let firstSavedAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "plus",
+            environment: environment
+        )
+        let secondSavedAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+
+        #expect(firstSavedAccount.accountKey != secondSavedAccount.accountKey)
+        #expect(loadedAccounts.activeAccountKey == secondSavedAccount.accountKey)
+        #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com", "active@example.com"])
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.savedAccountAuthURL(
+                    accountKey: firstSavedAccount.accountKey,
+                    environment: environment
+                ).path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.savedAccountAuthURL(
+                    accountKey: secondSavedAccount.accountKey,
+                    environment: environment
+                ).path
+            )
+        )
+    }
+
     @Test func storeSeedsSharedAccountWhenRegistryPersistenceFails() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
@@ -147,6 +192,41 @@ struct CodexReviewMCPTests {
 
         #expect(store.auth.account?.email == "review@example.com")
         #expect(store.auth.savedAccounts.first?.email == "review@example.com")
+    }
+
+    @Test func storePrefersSharedAuthWhenRegistryUpdateFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "stale@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        try writeReviewAuthSnapshot(
+            email: "current@example.com",
+            planType: "plus",
+            environment: environment
+        )
+
+        let accountsDirectoryURL = ReviewHomePaths.accountsDirectoryURL(environment: environment)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: accountsDirectoryURL.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: accountsDirectoryURL.path)
+        }
+
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() }
+        )
+
+        #expect(store.auth.account?.email == "current@example.com")
     }
 
     @Test func startingStoreRefreshesAuthStateInBackgroundWithoutBlockingStartup() async throws {
@@ -1175,8 +1255,8 @@ struct CodexReviewMCPTests {
         await clock.sleepUntilSuspendedBy()
 
         await store.auth.refresh()
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 12
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 12
         }
         await clock.sleepUntilSuspendedBy()
 
@@ -1198,8 +1278,8 @@ struct CodexReviewMCPTests {
 
         clock.advance(by: .seconds(60))
         await secondTransport.waitForRateLimitsReadCount(2)
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 18
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 18
         }
 
         #expect(await firstTransport.rateLimitsReadCount() == 1)
@@ -1466,8 +1546,8 @@ struct CodexReviewMCPTests {
 
         await store.auth.refresh()
 
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 12
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 12
         }
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "new@example.com"))
@@ -2904,6 +2984,7 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let savedAccountKey = try #require(initialAccounts.activeAccountKey)
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
@@ -2916,7 +2997,7 @@ struct CodexReviewMCPTests {
         #expect(
             FileManager.default.fileExists(
                 atPath: ReviewHomePaths.savedAccountAuthURL(
-                    accountKey: "review@example.com",
+                    accountKey: savedAccountKey,
                     environment: environment
                 ).path
             ) == false
@@ -3019,6 +3100,47 @@ struct CodexReviewMCPTests {
 
         #expect(testAuthState(from: auth) == .failed(reviewAuthPersistenceFailureMessage))
         #expect(cancelCallCount == 0)
+    }
+
+    @Test func refreshSameEmailDoesNotRecycleSharedAppServerWhenSavedIdentityReplacesUnsavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        store.auth.updateSavedAccounts([])
+        store.auth.updatePhase(.signedOut)
+        store.auth.updateAccount(
+            CodexAccount(
+                email: "review@example.com",
+                planType: "pro"
+            )
+        )
+
+        await store.start()
+        try await waitForMainActorCondition {
+            store.auth.savedAccounts.map(\.email) == ["review@example.com"]
+        }
+
+        #expect(store.auth.account?.email == "review@example.com")
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 0)
+
+        await store.stop()
     }
 
     @Test func recoveredSignOutCancelsRunningJobs() async throws {
@@ -3360,7 +3482,7 @@ struct CodexReviewMCPTests {
         )
 
         await #expect(throws: Error.self) {
-            try await auth.switchAccount(accountKey: "missing@example.com")
+            try await auth.switchAccount(accountKey: UUID())
         }
         #expect(cancelCallCount == 0)
     }
@@ -6045,7 +6167,7 @@ private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer = false
     let initialAccount: CodexAccount? = nil
     let initialAccounts: [CodexAccount] = []
-    let initialActiveAccountKey: String? = nil
+    let initialActiveAccountKey: UUID? = nil
 
     private let failingSessionIDs: Set<String>
     private let error: any Error
@@ -7034,6 +7156,20 @@ private final class FakeForcedRestartEnvironment: @unchecked Sendable {
                 processes[pid] = process
             }
             return .init(result: 0, errorNumber: 0)
+        }
+    }
+}
+
+private func waitForMainActorCondition(
+    timeout: Duration = .seconds(2),
+    condition: @escaping @MainActor @Sendable () -> Bool
+) async throws {
+    try await withTestTimeout(timeout) {
+        while true {
+            if await MainActor.run(body: condition) {
+                return
+            }
+            await Task.yield()
         }
     }
 }

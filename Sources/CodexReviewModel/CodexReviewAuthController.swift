@@ -9,16 +9,16 @@ package protocol CodexReviewAuthControlling: AnyObject {
     func cancelAuthentication(auth: CodexReviewAuthModel) async
     func switchAccount(
         auth: CodexReviewAuthModel,
-        accountKey: String
+        accountKey: UUID
     ) async throws
     func removeAccount(
         auth: CodexReviewAuthModel,
-        accountKey: String
+        accountKey: UUID
     ) async throws
     func signOutActiveAccount(auth: CodexReviewAuthModel) async throws
     func refreshSavedAccountRateLimits(
         auth: CodexReviewAuthModel,
-        accountKey: String
+        accountKey: UUID
     ) async
     func reconcileAuthenticatedSession(
         auth: CodexReviewAuthModel,
@@ -30,12 +30,12 @@ package protocol CodexReviewAuthControlling: AnyObject {
 extension CodexReviewAuthControlling {
     package func switchAccount(
         auth _: CodexReviewAuthModel,
-        accountKey _: String
+        accountKey _: UUID
     ) async throws {}
 
     package func removeAccount(
         auth _: CodexReviewAuthModel,
-        accountKey _: String
+        accountKey _: UUID
     ) async throws {}
 
     package func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
@@ -46,7 +46,7 @@ extension CodexReviewAuthControlling {
 
     package func refreshSavedAccountRateLimits(
         auth _: CodexReviewAuthModel,
-        accountKey _: String
+        accountKey _: UUID
     ) async {}
 }
 

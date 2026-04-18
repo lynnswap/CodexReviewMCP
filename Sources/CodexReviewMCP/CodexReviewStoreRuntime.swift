@@ -1572,7 +1572,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let shouldAutoStartEmbeddedServer: Bool
     let initialAccount: CodexAccount?
     let initialAccounts: [CodexAccount]
-    let initialActiveAccountKey: String?
+    let initialActiveAccountKey: UUID?
     let rateLimitObservationClock: any ReviewClock
     let rateLimitStaleRefreshInterval: Duration
     lazy var liveSharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [weak self, appServerManager, configuration] environment in
@@ -1710,30 +1710,51 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
         var seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
         let sharedInitialAccount = loadSharedReviewAccount(environment: configuration.environment)
-        if let sharedInitialAccount,
-           seededAccounts.activeAccountKey != sharedInitialAccount.accountKey
-        {
-            _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
-            seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
+        if let sharedInitialAccount {
+            let matchingSavedAccount = seededAccounts.accounts.first {
+                normalizedReviewAccountEmail(email: $0.email)
+                    == normalizedReviewAccountEmail(email: sharedInitialAccount.email)
+            }
+            let activeSavedAccount = seededAccounts.activeAccountKey.flatMap { activeAccountKey in
+                seededAccounts.accounts.first(where: { $0.accountKey == activeAccountKey })
+            }
+            if matchingSavedAccount == nil || activeSavedAccount?.accountKey != matchingSavedAccount?.accountKey {
+                _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+                seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
+            }
         }
-        let resolvedInitialAccountKey = sharedInitialAccount?.accountKey ?? seededAccounts.activeAccountKey
+
+        let resolvedInitialAccount: CodexAccount? = {
+            if let sharedInitialAccount {
+                return seededAccounts.accounts.first {
+                    normalizedReviewAccountEmail(email: $0.email)
+                        == normalizedReviewAccountEmail(email: sharedInitialAccount.email)
+                } ?? sharedInitialAccount
+            }
+            if let activeAccountKey = seededAccounts.activeAccountKey {
+                return seededAccounts.accounts.first(where: { $0.accountKey == activeAccountKey })
+            }
+            return nil
+        }()
+
         let initialAccounts = {
             var accounts = seededAccounts.accounts
             if let sharedInitialAccount,
-               accounts.contains(where: { $0.accountKey == sharedInitialAccount.accountKey }) == false
+               accounts.contains(where: {
+                   normalizedReviewAccountEmail(email: $0.email)
+                       == normalizedReviewAccountEmail(email: sharedInitialAccount.email)
+               }) == false
             {
                 accounts.insert(sharedInitialAccount, at: 0)
             }
             for account in accounts {
-                account.updateIsActive(account.accountKey == resolvedInitialAccountKey)
+                account.updateIsActive(account.accountKey == resolvedInitialAccount?.accountKey)
             }
             return accounts
         }()
         self.initialAccounts = initialAccounts
-        self.initialActiveAccountKey = resolvedInitialAccountKey
-        self.initialAccount = resolvedInitialAccountKey.flatMap { activeAccountKey in
-            initialAccounts.first(where: { $0.accountKey == activeAccountKey })
-        }
+        self.initialActiveAccountKey = resolvedInitialAccount?.accountKey
+        self.initialAccount = resolvedInitialAccount
     }
 
     func attachStore(_ store: CodexReviewStore) {

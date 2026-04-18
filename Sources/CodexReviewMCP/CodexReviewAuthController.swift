@@ -134,7 +134,6 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 priorSnapshot: priorSnapshot,
                 completedAccount: completedAccount
             )
-            let priorAccountKey = auth.account?.accountKey
             let priorCurrentAccount = auth.account
             guard let commitProbe = takeAuthenticationProbeForCommit(authenticationAttemptID) else {
                 throw ReviewAuthError.cancelled
@@ -161,7 +160,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 await applyCommittedActiveAccount(
                     auth: auth,
                     savedAccount: savedAccount,
-                    priorAccountKey: priorAccountKey,
+                    priorAccount: priorCurrentAccount,
                     forceRecycleServer: runtimeState().serverIsRunning
                 )
                 if let warningMessage {
@@ -171,7 +170,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
 
             await refreshSavedAccounts(auth: auth)
-            if let priorAccountKey,
+            if let priorAccountKey = priorCurrentAccount?.accountKey,
                let activeAccount = auth.savedAccounts.first(where: { $0.accountKey == priorAccountKey })
             {
                 auth.updateAccount(activeAccount)
@@ -238,7 +237,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     package func switchAccount(
         auth: CodexReviewAuthModel,
-        accountKey: String
+        accountKey: UUID
     ) async throws {
         cancelStartupRefresh()
         auth.updateWarning(message: nil)
@@ -252,14 +251,14 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         guard loadedAccounts.accounts.contains(where: { $0.accountKey == accountKey }) else {
             throw ReviewAuthError.authenticationRequired("Saved account was not found.")
         }
-        let priorAccountKey = auth.account?.accountKey
+        let priorAccount = auth.account
         try await accountRegistryStore.activateAccount(accountKey)
         let warningMessage = await performCommittedJobCleanupIfNeeded(shouldCancelJobs: true)
         if runtimeState().serverIsRunning {
             await applyCommittedActiveAccount(
                 auth: auth,
                 savedAccount: loadedAccounts.accounts.first(where: { $0.accountKey == accountKey }),
-                priorAccountKey: priorAccountKey,
+                priorAccount: priorAccount,
                 forceRecycleServer: true
             )
         } else {
@@ -272,7 +271,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     package func removeAccount(
         auth: CodexReviewAuthModel,
-        accountKey: String
+        accountKey: UUID
     ) async throws {
         cancelStartupRefresh()
         auth.updateWarning(message: nil)
@@ -328,9 +327,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             await cancelAuthentication(auth: auth)
         }
         var didCompleteLogout = false
-        let signedOutAccountKey = auth.account?.accountKey
-        let hasSavedSignedOutAccount = signedOutAccountKey.map { accountKey in
-            auth.savedAccounts.contains(where: { $0.accountKey == accountKey })
+        let signedOutAccount = auth.account
+        let hasSavedSignedOutAccount = signedOutAccount.map { signedOutAccount in
+            auth.savedAccounts.contains(where: { $0.accountKey == signedOutAccount.accountKey })
         } ?? false
         do {
             let authManager = makeAuthManager(
@@ -339,7 +338,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             )
             _ = try await authManager.logout()
             didCompleteLogout = true
-            if let signedOutAccountKey, hasSavedSignedOutAccount {
+            if let signedOutAccountKey = signedOutAccount?.accountKey, hasSavedSignedOutAccount {
                 _ = try await accountRegistryStore.removeAccount(signedOutAccountKey)
             } else {
                 try await accountRegistryStore.clearActiveAccount()
@@ -367,7 +366,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             let message = error.errorDescription ?? "Failed to sign out."
             await resolveLogoutFailureState(
                 auth: auth,
-                priorAccountKey: signedOutAccountKey,
+                priorAccount: signedOutAccount,
                 message: message,
                 logoutCompleted: didCompleteLogout
             )
@@ -384,7 +383,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             let message = error.localizedDescription
             await resolveLogoutFailureState(
                 auth: auth,
-                priorAccountKey: signedOutAccountKey,
+                priorAccount: signedOutAccount,
                 message: message,
                 logoutCompleted: didCompleteLogout
             )
@@ -402,7 +401,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     package func refreshSavedAccountRateLimits(
         auth: CodexReviewAuthModel,
-        accountKey: String
+        accountKey: UUID
     ) async {
         let isActiveAccount = auth.account?.accountKey == accountKey
         let priorUnsavedCurrentAccount = auth.account.flatMap { currentAccount in
@@ -590,7 +589,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 sessionFactory: sharedAuthSessionFactory
             )
             let state = try await authManager.loadState()
-            let priorAccountKey = auth.account?.accountKey
+            let priorAccount = auth.account
             if auth.isAuthenticating, allowDuringAuthentication == false {
                 return
             }
@@ -611,7 +610,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 to: auth
             )
             auth.updateWarning(message: nil)
-            let identityChanged = priorAccountKey != auth.account?.accountKey
+            let identityChanged = didAccountIdentityChange(from: priorAccount, to: auth.account)
             hasResolvedAuthenticatedAccount = state.isAuthenticated
             await reconcileAfterResolvedAuthState(
                 auth: auth,
@@ -719,11 +718,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     private func resolveLogoutFailureState(
         auth: CodexReviewAuthModel,
-        priorAccountKey: String?,
+        priorAccount: CodexAccount?,
         message: String,
         logoutCompleted: Bool = false
     ) async {
         let hadAuthenticatedAccount = auth.account != nil
+        let priorAccountKey = priorAccount?.accountKey
         let authManager = makeAuthManager(
             environment: configuration.environment,
             sessionFactory: sharedAuthSessionFactory
@@ -747,7 +747,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 preferActiveAccountSelection: false,
                 to: auth
             )
-            let identityChanged = priorAccountKey != auth.account?.accountKey
+            let identityChanged = didAccountIdentityChange(from: priorAccount, to: auth.account)
             hasResolvedAuthenticatedAccount = resolvedState.isAuthenticated
             auth.updateWarning(message: nil)
             if auth.isAuthenticated {
@@ -852,14 +852,14 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         if case .failed = priorSnapshot.phase {
             return true
         }
-        return normalizedReviewAccountKey(email: currentAccount.email)
-            == normalizedReviewAccountKey(email: completedAccount.email)
+        return normalizedReviewAccountEmail(email: currentAccount.email)
+            == normalizedReviewAccountEmail(email: completedAccount.email)
     }
 
     private func applyCommittedActiveAccount(
         auth: CodexReviewAuthModel,
         savedAccount: CodexAccount?,
-        priorAccountKey: String?,
+        priorAccount: CodexAccount?,
         forceRecycleServer: Bool
     ) async {
         if runtimeState().serverIsRunning {
@@ -883,7 +883,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         hasResolvedAuthenticatedAccount = auth.account != nil
         await reconcileAfterResolvedAuthState(
             auth: auth,
-            identityChanged: priorAccountKey != auth.account?.accountKey
+            identityChanged: didAccountIdentityChange(from: priorAccount, to: auth.account)
         )
     }
 
@@ -911,7 +911,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                let loadedActiveAccount = loaded.accounts.first(where: { $0.accountKey == activeAccountKey })
             {
                 if let currentAccount = auth.account,
-                   currentAccount.accountKey == activeAccountKey
+                   currentAccount.accountKey == activeAccountKey,
+                   currentAccount.email == loadedActiveAccount.email
                 {
                     currentAccount.updatePlanType(loadedActiveAccount.planType)
                     currentAccount.updateRateLimits(
@@ -1353,6 +1354,7 @@ private struct AuthPresentationSnapshot {
 }
 
 private struct SavedAccountPresentationSnapshot {
+    var accountKey: UUID
     var email: String
     var planType: String?
     var isActive: Bool
@@ -1400,7 +1402,7 @@ private func restore(
 @discardableResult
 private func applyResolvedReviewAuthState(
     _ state: ReviewAuthState,
-    activeAccountKey: String?,
+    activeAccountKey: UUID?,
     priorResolvedAuthenticatedAccount: Bool,
     preferActiveAccountSelection: Bool,
     to auth: CodexReviewAuthModel
@@ -1432,53 +1434,42 @@ private func applyResolvedReviewAuthState(
 @discardableResult
 private func applyReviewAuthAccount(
     _ account: ReviewAuthAccount,
-    activeAccountKey: String?,
+    activeAccountKey: UUID?,
     preferActiveAccountSelection: Bool,
     to auth: CodexReviewAuthModel
 ) -> Bool {
-    let resolvedAccountKey = normalizedReviewAccountKey(email: account.email)
+    let priorAccount = auth.account
     if preferActiveAccountSelection,
        activeAccountKey == nil
     {
-        let priorAccountKey = auth.account?.accountKey
         auth.updateAccount(nil)
-        return priorAccountKey != nil
+        return didAccountIdentityChange(from: priorAccount, to: nil)
     }
-    let targetAccountKey = preferActiveAccountSelection ? (activeAccountKey ?? resolvedAccountKey) : resolvedAccountKey
-    let priorAccountKey = auth.account?.accountKey
-    if let existingAccount = auth.savedAccounts.first(where: { $0.accountKey == targetAccountKey }) {
-        if preferActiveAccountSelection,
-           activeAccountKey == existingAccount.accountKey,
-           existingAccount.email != account.email
-        {
-            auth.updateAccount(existingAccount)
-            return priorAccountKey != existingAccount.accountKey
-        }
-        if existingAccount.email != account.email {
-            let replacementAccount = CodexAccount(
-                email: account.email,
-                planType: account.planType
-            )
-            let otherAccounts = auth.savedAccounts.filter { $0.accountKey != existingAccount.accountKey }
-            auth.updateSavedAccounts(otherAccounts + [replacementAccount])
-            auth.updateAccount(replacementAccount)
-            return priorAccountKey != replacementAccount.accountKey
-        }
+    let normalizedEmail = normalizedReviewAccountEmail(email: account.email)
+
+    if let activeAccountKey,
+       let existingAccount = auth.savedAccounts.first(where: { $0.accountKey == activeAccountKey }),
+       (preferActiveAccountSelection || normalizedReviewAccountEmail(email: existingAccount.email) == normalizedEmail)
+    {
         existingAccount.updatePlanType(account.planType)
         auth.updateAccount(existingAccount)
-        return priorAccountKey != existingAccount.accountKey
+        return didAccountIdentityChange(from: priorAccount, to: existingAccount)
     }
+
+    if let existingAccount = auth.savedAccounts.first(where: {
+        normalizedReviewAccountEmail(email: $0.email) == normalizedEmail
+    }) {
+        existingAccount.updatePlanType(account.planType)
+        auth.updateAccount(existingAccount)
+        return didAccountIdentityChange(from: priorAccount, to: existingAccount)
+    }
+
     let createdAccount = CodexAccount(
         email: account.email,
         planType: account.planType
     )
-    if activeAccountKey == nil {
-        auth.updateAccount(createdAccount)
-        return priorAccountKey != createdAccount.accountKey
-    }
-    auth.updateSavedAccounts(auth.savedAccounts + [createdAccount])
     auth.updateAccount(createdAccount)
-    return priorAccountKey != createdAccount.accountKey
+    return didAccountIdentityChange(from: priorAccount, to: createdAccount)
 }
 
 @MainActor
@@ -1492,6 +1483,7 @@ private func makeReviewAuthAccount(_ account: CodexAccount) -> ReviewAuthAccount
 @MainActor
 private func makeSavedAccountPresentationSnapshot(_ account: CodexAccount) -> SavedAccountPresentationSnapshot {
     .init(
+        accountKey: account.accountKey,
         email: account.email,
         planType: account.planType,
         isActive: account.isActive,
@@ -1510,6 +1502,7 @@ private func makeSavedAccountPresentationSnapshot(_ account: CodexAccount) -> Sa
 @MainActor
 private func makeCodexAccount(_ snapshot: SavedAccountPresentationSnapshot) -> CodexAccount {
     let account = CodexAccount(
+        accountKey: snapshot.accountKey,
         email: snapshot.email,
         planType: snapshot.planType
     )
@@ -1528,6 +1521,22 @@ private func makeCodexAccount(_ snapshot: SavedAccountPresentationSnapshot) -> C
         error: snapshot.lastRateLimitError
     )
     return account
+}
+
+@MainActor
+private func didAccountIdentityChange(
+    from previousAccount: CodexAccount?,
+    to currentAccount: CodexAccount?
+) -> Bool {
+    switch (previousAccount, currentAccount) {
+    case (.none, .none):
+        return false
+    case (.some, .none), (.none, .some):
+        return true
+    case let (previousAccount?, currentAccount?):
+        return normalizedReviewAccountEmail(email: previousAccount.email)
+            != normalizedReviewAccountEmail(email: currentAccount.email)
+    }
 }
 
 private func rateLimitWindowRecords(
