@@ -179,6 +179,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
 extension ReviewMonitorSplitViewController {
     enum SidebarPresentationForTesting: Equatable {
         case jobList
+        case accountList
         case unavailable
     }
 
@@ -194,6 +195,8 @@ extension ReviewMonitorSplitViewController {
         switch sidebarViewControllerForTesting.presentationForTesting {
         case .jobList, .empty:
             return .jobList
+        case .accountList:
+            return .accountList
         case .unavailable:
             return .unavailable
         }

@@ -403,35 +403,22 @@ extension StatusView {
 @MainActor
 func makeStatusPreviewStore(
     authPhase: CodexReviewAuthModel.Phase = .signedOut,
-    account: CodexAccount? = makeStatusPreviewAccount(),
+    account: CodexAccount? = nil,
     serverState: CodexReviewServerState = .running
 ) -> CodexReviewStore {
     let store = ReviewMonitorPreviewContent.makeStore()
     let runningServerURL = store.serverURL
+    let previewAccounts = ReviewMonitorPreviewContent.makePreviewAccounts()
+    let resolvedAccount = account ?? previewAccounts.first
     store.auth.updatePhase(authPhase)
-    store.auth.updateSavedAccounts(account.map { [$0] } ?? [])
-    store.auth.updateAccount(account)
+    store.auth.updateSavedAccounts(previewAccounts)
+    store.auth.updateAccount(resolvedAccount)
     store.serverState = serverState
     store.serverURL = serverState == .running ? runningServerURL : nil
     return store
 }
 @MainActor
 func makeStatusPreviewAccount() -> CodexAccount {
-    let account = CodexAccount(email: "review@example.com", planType: "pro")
-    account.updateRateLimits(
-        [
-            (
-                windowDurationMinutes: 300,
-                usedPercent: 34,
-                resetsAt: Date(timeIntervalSince1970: 1_735_776_000)
-            ),
-            (
-                windowDurationMinutes: 10_080,
-                usedPercent: 61,
-                resetsAt: Date(timeIntervalSince1970: 1_736_380_800)
-            ),
-        ]
-    )
-    return account
+    ReviewMonitorPreviewContent.makePreviewAccount()
 }
 #endif

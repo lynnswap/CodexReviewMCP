@@ -86,8 +86,11 @@ public enum ReviewMonitorPreviewContent {
         streamInterval: Duration = .seconds(1)
     ) -> CodexReviewStore {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let accounts = makePreviewAccounts()
         store.loadForTesting(
             serverState: .running,
+            account: accounts.first,
+            savedAccounts: accounts,
             serverURL: URL(string: "http://localhost:9417/mcp"),
             workspaces: makeWorkspaces()
         )
@@ -96,6 +99,47 @@ public enum ReviewMonitorPreviewContent {
             interval: streamInterval
         )
         return store
+    }
+
+    @_spi(PreviewSupport)
+    public static func makePreviewAccounts() -> [CodexAccount] {
+        [
+            makePreviewAccount(
+                email: "workspace@example.com",
+                usedPercents: (short: 34, long: 61)
+            ),
+            makePreviewAccount(
+                email: "personal@example.com",
+                usedPercents: (short: 12, long: 27)
+            ),
+            makePreviewAccount(
+                email: "team@example.com",
+                usedPercents: (short: 72, long: 44)
+            ),
+        ]
+    }
+
+    @_spi(PreviewSupport)
+    public static func makePreviewAccount(
+        email: String = "review@example.com",
+        usedPercents: (short: Int, long: Int) = (short: 34, long: 61)
+    ) -> CodexAccount {
+        let account = CodexAccount(email: email, planType: "pro")
+        account.updateRateLimits(
+            [
+                (
+                    windowDurationMinutes: 300,
+                    usedPercent: usedPercents.short,
+                    resetsAt: Date.now.addingTimeInterval(60 * 60)
+                ),
+                (
+                    windowDurationMinutes: 10_080,
+                    usedPercent: usedPercents.long,
+                    resetsAt: Date.now.addingTimeInterval(24 * 60 * 60)
+                ),
+            ]
+        )
+        return account
     }
 
     private static func makeWorkspaces() -> [CodexReviewWorkspace] {

@@ -294,12 +294,11 @@ private struct ReviewMonitorAccountRowView: View {
     var account: CodexAccount?
 
     var body: some View {
-        VStack {
-            Text(account?.email ?? "")
-                .foregroundStyle(.secondary)
-                .textScale(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        GroupBox{
             AccountRateLimitGaugesView(account: account)
+                .padding(4)
+        } label: {
+            Text(account?.email ?? "")
         }
     }
 }
@@ -313,51 +312,6 @@ private struct ReviewMonitorAccountRowView: View {
 
 @MainActor
 private func makeReviewMonitorAccountsPreviewStore() -> CodexReviewStore {
-    let store = ReviewMonitorPreviewContent.makeStore()
-    let accounts = [
-        makeReviewMonitorAccountsPreviewAccount(
-            email: "workspace@example.com",
-            usedPercents: (short: 34, long: 61)
-        ),
-        makeReviewMonitorAccountsPreviewAccount(
-            email: "personal_1@example.com",
-            usedPercents: (short: 12, long: 27)
-        ),
-        makeReviewMonitorAccountsPreviewAccount(
-            email: "personal_2@example.com",
-            usedPercents: (short: 12, long: 27)
-        ),
-        makeReviewMonitorAccountsPreviewAccount(
-            email: "personal_3@example.com",
-            usedPercents: (short: 12, long: 27)
-        ),
-        
-    ]
-    store.auth.updateSavedAccounts(accounts)
-    store.auth.updateAccount(accounts.first)
-    return store
-}
-
-@MainActor
-private func makeReviewMonitorAccountsPreviewAccount(
-    email: String,
-    usedPercents: (short: Int, long: Int)
-) -> CodexAccount {
-    let account = CodexAccount(email: email, planType: "pro")
-    account.updateRateLimits(
-        [
-            (
-                windowDurationMinutes: 300,
-                usedPercent: usedPercents.short,
-                resetsAt: Date.now.addingTimeInterval(60 * 60)
-            ),
-            (
-                windowDurationMinutes: 10_080,
-                usedPercent: usedPercents.long,
-                resetsAt: Date.now.addingTimeInterval(24 * 60 * 60)
-            ),
-        ]
-    )
-    return account
+    ReviewMonitorPreviewContent.makeStore()
 }
 #endif

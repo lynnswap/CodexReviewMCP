@@ -10,6 +10,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         case unavailable
         case empty
         case jobList
+        case accountList
     }
 
     private enum Identifier {
@@ -43,6 +44,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     private let uiState: ReviewMonitorUIState
     private let scrollView = NSScrollView()
     private let outlineView = ReviewMonitorSidebarOutlineView()
+    private let accountsViewController: ReviewMonitorAccountsViewController
     private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
         title: "No review jobs",
         description: "Start a review through the embedded server to see workspaces here.",
@@ -58,6 +60,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
         self.store = store
         self.uiState = uiState
+        self.accountsViewController = ReviewMonitorAccountsViewController(store: store)
         self.unavailableView = NSHostingView(rootView: MCPServerUnavailableView(store: store))
         super.init(nibName: nil, bundle: nil)
     }
@@ -93,6 +96,10 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
         view.addSubview(scrollView)
         view.addSubview(emptyStateView)
+        addChild(accountsViewController)
+        accountsViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        accountsViewController.view.isHidden = true
+        view.addSubview(accountsViewController.view)
         unavailableView.translatesAutoresizingMaskIntoConstraints = false
         unavailableView.isHidden = true
         view.addSubview(unavailableView)
@@ -107,6 +114,11 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             emptyStateView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor),
             emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor),
+
+            accountsViewController.view.topAnchor.constraint(equalTo: view.topAnchor),
+            accountsViewController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            accountsViewController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            accountsViewController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             unavailableView.topAnchor.constraint(equalTo: view.topAnchor),
             unavailableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -159,6 +171,13 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         storeObservationHandles.removeAll()
         rebindWorkspaceObservations(workspaces: store.workspaces)
         store.observe(\.serverState) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.updatePresentation()
+        }
+        .store(in: &storeObservationHandles)
+        uiState.observe(\.sidebarSelection) { [weak self] _ in
             guard let self else {
                 return
             }
@@ -239,18 +258,29 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             unavailableView.isHidden = false
             scrollView.isHidden = true
             emptyStateView.isHidden = true
+            accountsViewController.view.isHidden = true
         case .empty:
             unavailableView.isHidden = true
             scrollView.isHidden = true
             emptyStateView.isHidden = false
+            accountsViewController.view.isHidden = true
         case .jobList:
             unavailableView.isHidden = true
             scrollView.isHidden = false
             emptyStateView.isHidden = true
+            accountsViewController.view.isHidden = true
+        case .accountList:
+            unavailableView.isHidden = true
+            scrollView.isHidden = true
+            emptyStateView.isHidden = true
+            accountsViewController.view.isHidden = false
         }
     }
 
     private var presentationForCurrentState: PresentationForTesting {
+        if uiState.sidebarSelection == .account {
+            return .accountList
+        }
         if case .failed = store.serverState {
             return .unavailable
         }

@@ -70,6 +70,21 @@ struct CodexReviewUITests {
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
     }
 
+    @Test func splitViewSwitchesSidebarPresentationWhenPickerSelectionChanges() {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let uiState = ReviewMonitorUIState()
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.sidebarPresentationForTesting == .jobList)
+
+        uiState.sidebarSelection = .account
+        #expect(viewController.sidebarPresentationForTesting == .accountList)
+
+        uiState.sidebarSelection = .workspace
+        #expect(viewController.sidebarPresentationForTesting == .jobList)
+    }
+
     @Test func contentPanePinsDisplayedContentToSafeArea() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
