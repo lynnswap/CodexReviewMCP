@@ -25,17 +25,6 @@ struct StatusView: View {
     }
 
     let store: CodexReviewStore
-
-    private static let placeholderRateLimits: [CodexRateLimitWindow] = [
-        CodexRateLimitWindow(
-            windowDurationMinutes: 1,
-            usedPercent: 0
-        ),
-        CodexRateLimitWindow(
-            windowDurationMinutes: 2,
-            usedPercent: 0
-        ),
-    ]
     
     private var account: CodexAccount? {
         store.auth.account
@@ -47,10 +36,6 @@ struct StatusView: View {
     
     private var ratelimits: [CodexRateLimitWindow] {
         account?.rateLimits ?? []
-    }
-
-    private var displayedRateLimits: [CodexRateLimitWindow] {
-        ratelimits.isEmpty ? Self.placeholderRateLimits : ratelimits
     }
 
     private var showsRedactedRateLimits: Bool {
@@ -83,7 +68,9 @@ struct StatusView: View {
                 accountMenu
             }
         } label: {
-            labelView
+            AccountRateLimitGaugesView(account: account)
+                .transition(.blurReplace)
+                .animation(.default, value: account)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(.rect)
         }
@@ -124,7 +111,7 @@ struct StatusView: View {
                         if savedAccount.rateLimits.isEmpty == false {
                             Divider()
                             ForEach(savedAccount.rateLimits) { window in
-                                Text("\(formattedDuration(for: window)): \(remainingPercent(for: window))%")
+                                Text("\(window.formattedDuration): \(window.remainingPercent)%")
                             }
                         }
                     }
@@ -139,49 +126,7 @@ struct StatusView: View {
             Text("Account")
         }
     }
-    
-    @ViewBuilder
-    private var labelView: some View{
-        Group {
-            VStack {
-                ForEach(displayedRateLimits) { window in
-                    gaugeView(window)
-                        .transaction(value: account?.id) { transaction in
-                            transaction.disablesAnimations = true
-                        }
-                }
-            }
-            .redacted(reason: showsRedactedRateLimits ? .placeholder : [])
-            .animation(.easeInOut, value: showsRedactedRateLimits)
-        }
-        .gaugeStyle(.accessoryLinearCapacity)
-        .transition(.blurReplace)
-        .animation(.default, value: account)
-    }
-    
-    @ViewBuilder
-    private func gaugeView(
-        _ window: CodexRateLimitWindow
-    ) -> some View {
-        let remainingPercent = remainingPercent(for: window)
-        Gauge(value: Double(remainingPercent), in: 0...100) {
-            HStack {
-                durationText(for: window)
-                Spacer(minLength: 0)
-                if let resetsAt = limitResetDate(for: window) {
-                    Text(resetsAt, style: .offset)
-                        .foregroundStyle(.secondary)
-                }else{
-                    Text(
-                        Double(remainingPercent) / 100,
-                        format: .percent.precision(.fractionLength(0))
-                    )
-                    .contentTransition(.numericText(value: Double(remainingPercent)))
-                }
-            }
-        }
-        .animation(.default, value: remainingPercent)
-    }
+
     @ViewBuilder
     private var ratelimitsSection: some View {
         Section("Rate limits"){
@@ -206,32 +151,7 @@ struct StatusView: View {
     @ViewBuilder
     private func durationText(for window: CodexRateLimitWindow) -> some View {
         Text(
-            formattedDuration(for: window)
-        )
-    }
-
-    private func limitResetDate(for window: CodexRateLimitWindow) -> Date? {
-        guard window.usedPercent >= 100 else {
-            return nil
-        }
-        return window.resetsAt
-    }
-
-    private func remainingPercent(for window: CodexRateLimitWindow) -> Int {
-        max(0, 100 - window.usedPercent)
-    }
-
-    private func duration(for window: CodexRateLimitWindow) -> Duration {
-        .seconds(window.windowDurationMinutes * 60)
-    }
-
-    private func formattedDuration(for window: CodexRateLimitWindow) -> String {
-        duration(for: window).formatted(
-            .units(
-                allowed: [.minutes, .hours, .days, .weeks],
-                width: .wide,
-                maximumUnitCount: 2
-            )
+            window.formattedDuration
         )
     }
 
