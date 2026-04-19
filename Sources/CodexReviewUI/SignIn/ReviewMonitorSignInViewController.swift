@@ -84,9 +84,6 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
                     self.isRestarting = false
                 }
                 await self.store.restart()
-                guard self.store.serverState == .running else {
-                    return
-                }
             }
             guard self.auth.isAuthenticated == false,
                   self.auth.isAuthenticating == false

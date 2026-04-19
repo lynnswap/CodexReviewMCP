@@ -13,8 +13,28 @@ struct AccountContextMenuView: View {
         auth.account?.accountKey == account.accountKey
     }
 
+    var sectionTitle: String {
+        account.email
+    }
+
+    var destructiveActionTitle: String {
+        isCurrentAccount ? "Sign Out" : "Remove Account"
+    }
+
+    var destructiveActionSystemImage: String {
+        isCurrentAccount ? "rectangle.portrait.and.arrow.right" : "trash"
+    }
+
+    func requestDestructiveAccountAction() {
+        if isCurrentAccount {
+            auth.requestSignOutActiveAccount(requiresConfirmation: store.hasRunningJobs)
+        } else {
+            auth.requestRemoveAccount(account, requiresConfirmation: false)
+        }
+    }
+
     var body: some View {
-        Section(account.accountKey){
+        Section(sectionTitle){
             Button("Switch", systemImage: "arrow.triangle.swap") {
                 auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
             }
@@ -28,8 +48,8 @@ struct AccountContextMenuView: View {
             AccountRateLimitsSectionView(account:account)
         }
         Section{
-            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role:.destructive) {
-                auth.requestRemoveAccount(account, requiresConfirmation: false)
+            Button(destructiveActionTitle, systemImage: destructiveActionSystemImage, role:.destructive) {
+                requestDestructiveAccountAction()
             }
         }
     }

@@ -95,9 +95,9 @@ struct AccountRateLimitsSectionView: View {
     private func rateLimitsRow(
         _ window: CodexRateLimitWindow
     ) -> some View {
-        Button {
-        } label: {
-            if let details = Self.rateLimitDetailsText(for: window) {
+        if let details = Self.rateLimitDetailsText(for: window) {
+            Button {
+            } label: {
                 Text(details)
             }
         }
@@ -137,9 +137,13 @@ struct StatusView: View {
         showsServerRestartAction
     }
 
+    var menuSectionTitle: String {
+        account?.email ?? ""
+    }
+
     var body: some View {
         Menu {
-            Section(auth.account?.accountKey ?? "") {
+            Section(menuSectionTitle) {
                 AccountRateLimitsSectionView(account: account)
             }
 

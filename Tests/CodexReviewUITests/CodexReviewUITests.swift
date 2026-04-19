@@ -265,6 +265,30 @@ struct CodexReviewUITests {
         #expect(window.toolbar != nil)
     }
 
+    @Test func windowControllerKeepsSplitViewForUnsavedCurrentSession() {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: currentAccount,
+            savedAccounts: [],
+            workspaces: []
+        )
+        let windowController = ReviewMonitorWindowController(
+            store: store,
+            performInitialAuthRefresh: false
+        )
+        guard let window = windowController.window else {
+            Issue.record("ReviewMonitorWindowController did not create a window.")
+            return
+        }
+        defer { window.close() }
+
+        #expect(windowController.displayedContentKindForTesting == .splitView)
+        #expect(window.toolbar != nil)
+    }
+
     @Test func windowControllerShowsSignInViewWhenSignedOut() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
@@ -1088,6 +1112,74 @@ struct CodexReviewUITests {
 
         #expect(store.auth.savedAccounts.contains(where: { $0.isSwitching }) == false)
         #expect(store.auth.account?.accountKey == firstAccount.accountKey)
+    }
+
+    @Test func activeAccountContextMenuSignOutUsesLogoutConfirmation() async {
+        let backend = AuthActionBackend()
+        let store = makeStore(backend: backend)
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let otherAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: activeAccount,
+            savedAccounts: [activeAccount, otherAccount],
+            workspaces: makeWorkspaces(from: [runningJob])
+        )
+        let view = AccountContextMenuView(store: store, account: activeAccount)
+
+        #expect(view.destructiveActionTitle == "Sign Out")
+        view.requestDestructiveAccountAction()
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(store.auth.pendingAccountActionConfirmationTitle == "Sign Out?")
+        #expect(backend.logoutCallCount() == 0)
+        #expect(backend.lastRemovedAccountKey() == nil)
+
+        store.auth.confirmPendingAccountAction()
+        await backend.waitForLogoutCallCount(1)
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
+        #expect(backend.logoutCallCount() == 1)
+        #expect(backend.lastRemovedAccountKey() == nil)
+    }
+
+    @Test func inactiveAccountContextMenuRemovesSavedAccountWithoutLogout() async {
+        let backend = AuthActionBackend()
+        let store = makeStore(backend: backend)
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let otherAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: activeAccount,
+            savedAccounts: [activeAccount, otherAccount],
+            workspaces: makeWorkspaces(from: [runningJob])
+        )
+        let view = AccountContextMenuView(store: store, account: otherAccount)
+
+        #expect(view.destructiveActionTitle == "Remove Account")
+        view.requestDestructiveAccountAction()
+        await backend.waitForRemoveAccountCallCount(1)
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
+        #expect(backend.logoutCallCount() == 0)
+        #expect(backend.lastRemovedAccountKey() == otherAccount.accountKey)
+    }
+
+    @Test func accountMenusUseFullEmailForSectionTitles() {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let account = CodexAccount(email: "masked.user@example.com", planType: "pro")
+        store.auth.updateSavedAccounts([account])
+        store.auth.updateAccount(account)
+
+        let contextMenu = AccountContextMenuView(store: store, account: account)
+        let statusView = StatusView(store: store)
+
+        #expect(contextMenu.sectionTitle == account.email)
+        #expect(statusView.menuSectionTitle == account.email)
     }
 
     @Test func addAccountToolbarItemBeginsAuthentication() async throws {
@@ -2836,7 +2928,7 @@ struct CodexReviewUITests {
         #expect(store.serverState == .running)
     }
 
-    @Test func signInViewControllerDoesNotBeginAuthenticationWhenRestartStillFails() async {
+    @Test func signInViewControllerBeginsAuthenticationEvenWhenRestartFails() async {
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
             restartResultingServerState: .failed("Still unavailable.")
@@ -2853,9 +2945,9 @@ struct CodexReviewUITests {
 
         viewController.performPrimaryAction()
         await backend.waitForStartCallCount(1)
-        await Task.yield()
+        await backend.waitForBeginAuthenticationCallCount(1)
 
-        #expect(backend.recordedActions() == ["start"])
+        #expect(backend.recordedActions() == ["start", "begin"])
         #expect(store.serverState == .failed("Still unavailable."))
     }
 

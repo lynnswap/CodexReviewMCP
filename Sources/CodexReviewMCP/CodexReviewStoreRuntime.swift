@@ -883,36 +883,6 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
         try? FileManager.default.removeItem(at: probeAuthURL)
     }
 
-    private func writeProbeAuthSnapshot(
-        email: String,
-        planType: String?
-    ) {
-        let authPayload: [String: Any] = {
-            guard let planType else {
-                return [:]
-            }
-            return ["chatgpt_plan_type": planType]
-        }()
-        let payload: [String: Any] = [
-            "email": email,
-            "https://api.openai.com/auth": authPayload,
-        ]
-        let object: [String: Any] = [
-            "auth_mode": "chatgpt",
-            "tokens": [
-                "id_token": makeReviewAuthToken(payload: payload)
-            ],
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else {
-            return
-        }
-        try? FileManager.default.createDirectory(
-            at: probeAuthURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: probeAuthURL, options: .atomic)
-    }
-
     private func restoreSharedAuthIfNeeded() {
         guard restoredSharedAuth == false else {
             return
@@ -2114,6 +2084,27 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             )
             appServerRuntimeGeneration += 1
         } catch {
+            let endpointRecord = server.currentEndpointRecord()
+            removeRuntimeState(endpointRecord: endpointRecord)
+            await server.stop()
+            self.server = nil
+            self.closedSessions = []
+            if let store = attachedStore {
+                await self.executionCoordinator.shutdown(reason: "Review server failed.", store: store)
+                store.terminateAllRunningJobsLocally(
+                    reason: "Review server failed.",
+                    failureMessage: CodexReviewStore.errorMessage(from: error)
+                )
+                store.auth.cancelStartupRefresh()
+                await store.auth.reconcileAuthenticatedSession(
+                    serverIsRunning: false,
+                    runtimeGeneration: self.appServerRuntimeGeneration
+                )
+                store.transitionToFailed(
+                    CodexReviewStore.errorMessage(from: error),
+                    resetJobs: false
+                )
+            }
         }
     }
 

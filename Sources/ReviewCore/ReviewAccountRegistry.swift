@@ -152,6 +152,8 @@ package func loadSharedReviewAccount(
 }
 
 package actor ReviewAccountRegistryStore {
+    nonisolated(unsafe) static var saveRegistryRecordFailureMessageForTesting: String?
+    nonisolated(unsafe) static var savedAccountDirectoryDeleteFailurePathComponentForTesting: String?
     private let environment: [String: String]
 
     package init(environment: [String: String] = ProcessInfo.processInfo.environment) {
@@ -225,7 +227,8 @@ package actor ReviewAccountRegistryStore {
         } catch {
             rollbackRegistryMutation(
                 originalRegistry: originalRegistry,
-                sharedAuthBackup: sharedAuthBackup
+                sharedAuthBackup: sharedAuthBackup,
+                environment: environment
             )
             throw error
         }
@@ -250,6 +253,15 @@ package actor ReviewAccountRegistryStore {
         registry.activeAccountKey = nil
         try saveRegistry(registry)
         let sharedAuthBackup = loadSharedAuthData()
+        let savedAccountDirectoryBackups = savedAccountDirectoryBackups(
+            for: resolvedStoredAccount.map {
+                savedAccountDirectories(
+                    matchingNormalizedEmail: normalizedReviewAccountEmail(email: $0.email),
+                    fallbackAccountKey: $0.accountKey,
+                    environment: environment
+                )
+            } ?? []
+        )
         do {
             try removeItemIfExists(at: ReviewHomePaths.reviewAuthURL(environment: environment))
             if let resolvedStoredAccount {
@@ -258,13 +270,15 @@ package actor ReviewAccountRegistryStore {
                     fallbackAccountKey: resolvedStoredAccount.accountKey,
                     environment: environment
                 ) {
-                    try FileManager.default.removeItem(at: directoryURL)
+                    try removeSavedAccountDirectory(directoryURL)
                 }
             }
         } catch {
             rollbackRegistryMutation(
                 originalRegistry: originalRegistry,
-                sharedAuthBackup: sharedAuthBackup
+                sharedAuthBackup: sharedAuthBackup,
+                environment: environment,
+                savedAccountDirectoryBackups: savedAccountDirectoryBackups
             )
             throw error
         }
@@ -284,7 +298,7 @@ package actor ReviewAccountRegistryStore {
             fallbackAccountKey: storedAccount.accountKey,
             environment: environment
         ) {
-            try FileManager.default.removeItem(at: directoryURL)
+            try removeSavedAccountDirectory(directoryURL)
         }
     }
 
@@ -318,6 +332,15 @@ package actor ReviewAccountRegistryStore {
 
         try saveRegistry(registry)
         let sharedAuthBackup = loadSharedAuthData()
+        let savedAccountDirectoryBackups = savedAccountDirectoryBackups(
+            for: storedAccount.map {
+                savedAccountDirectories(
+                    matchingNormalizedEmail: normalizedReviewAccountEmail(email: $0.email),
+                    fallbackAccountKey: $0.accountKey,
+                    environment: environment
+                )
+            } ?? []
+        )
         do {
             if removedActive {
                 if let replacementAccountKey = registry.activeAccountKey {
@@ -338,13 +361,15 @@ package actor ReviewAccountRegistryStore {
                     fallbackAccountKey: storedAccount.accountKey,
                     environment: environment
                 ) {
-                    try FileManager.default.removeItem(at: directoryURL)
+                    try removeSavedAccountDirectory(directoryURL)
                 }
             }
         } catch {
             rollbackRegistryMutation(
                 originalRegistry: originalRegistry,
-                sharedAuthBackup: sharedAuthBackup
+                sharedAuthBackup: sharedAuthBackup,
+                environment: environment,
+                savedAccountDirectoryBackups: savedAccountDirectoryBackups
             )
             throw error
         }
@@ -588,49 +613,48 @@ package actor ReviewAccountRegistryStore {
         snapshot: ReviewStoredAuthSnapshot,
         makeActive: Bool
     ) throws -> CodexAccount {
+        let originalRegistry = registry
         let record = upsertSavedAccountRecord(
             in: &registry,
             email: snapshot.email,
             planType: snapshot.planType,
             makeActive: makeActive
         )
-        try persistAuthSnapshot(
-            from: sourceAuthURL,
-            to: ReviewHomePaths.savedAccountAuthURL(accountKey: record.accountKey, environment: environment)
+        let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: environment)
+        let savedAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: record.accountKey,
+            environment: environment
         )
-        if makeActive {
+        let sharedAuthBackup = loadAuthData(at: sharedAuthURL)
+        let savedAuthBackup = loadAuthData(at: savedAuthURL)
+
+        do {
             try persistAuthSnapshot(
                 from: sourceAuthURL,
-                to: ReviewHomePaths.reviewAuthURL(environment: environment)
+                to: savedAuthURL
             )
+            if makeActive {
+                try persistAuthSnapshot(
+                    from: sourceAuthURL,
+                    to: sharedAuthURL
+                )
+            }
+            try saveRegistryRecord(registry, environment: environment)
+        } catch {
+            rollbackRegistryMutation(
+                originalRegistry: originalRegistry,
+                sharedAuthBackup: sharedAuthBackup,
+                environment: environment,
+                savedAuthURL: savedAuthURL,
+                savedAuthBackup: savedAuthBackup
+            )
+            throw error
         }
-        try saveRegistryRecord(registry, environment: environment)
         return makeCodexAccount(record, isActive: registry.activeAccountKey == record.accountKey)
     }
 
     private func loadSharedAuthData() -> Data? {
-        try? Data(contentsOf: ReviewHomePaths.reviewAuthURL(environment: environment))
-    }
-
-    private func rollbackRegistryMutation(
-        originalRegistry: ReviewAccountRegistryRecord,
-        sharedAuthBackup: Data?
-    ) {
-        try? saveRegistry(originalRegistry)
-        try? restoreSharedAuth(from: sharedAuthBackup)
-    }
-
-    private func restoreSharedAuth(from backup: Data?) throws {
-        let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: environment)
-        if let backup {
-            try FileManager.default.createDirectory(
-                at: sharedAuthURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try backup.write(to: sharedAuthURL, options: .atomic)
-            return
-        }
-        try removeItemIfExists(at: sharedAuthURL)
+        loadAuthData(at: ReviewHomePaths.reviewAuthURL(environment: environment))
     }
 
     private func removeItemIfExists(at url: URL) throws {
@@ -659,6 +683,13 @@ private func saveRegistryRecord(
     _ registry: ReviewAccountRegistryRecord,
     environment: [String: String]
 ) throws {
+    if let failureMessage = ReviewAccountRegistryStore.saveRegistryRecordFailureMessageForTesting {
+        throw NSError(
+            domain: "ReviewAccountRegistryStore.saveRegistryRecordFailureForTesting",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: failureMessage]
+        )
+    }
     let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
     try FileManager.default.createDirectory(
         at: registryURL.deletingLastPathComponent(),
@@ -667,6 +698,69 @@ private func saveRegistryRecord(
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     try encoder.encode(registry).write(to: registryURL, options: .atomic)
+}
+
+private func loadAuthData(at url: URL) -> Data? {
+    try? Data(contentsOf: url)
+}
+
+private func rollbackRegistryMutation(
+    originalRegistry: ReviewAccountRegistryRecord,
+    sharedAuthBackup: Data?,
+    environment: [String: String],
+    savedAuthURL: URL? = nil,
+    savedAuthBackup: Data? = nil,
+    savedAccountDirectoryBackups: [SavedAccountDirectoryBackup] = []
+) {
+    try? saveRegistryRecord(originalRegistry, environment: environment)
+    try? restoreAuthData(
+        from: sharedAuthBackup,
+        to: ReviewHomePaths.reviewAuthURL(environment: environment)
+    )
+    if let savedAuthURL {
+        try? restoreAuthData(from: savedAuthBackup, to: savedAuthURL)
+    }
+    for backup in savedAccountDirectoryBackups {
+        try? restoreAuthData(from: backup.authData, to: backup.directoryURL.appendingPathComponent("auth.json"))
+    }
+}
+
+private func restoreAuthData(from backup: Data?, to url: URL) throws {
+    if let backup {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try backup.write(to: url, options: .atomic)
+        return
+    }
+    if FileManager.default.fileExists(atPath: url.path) {
+        try FileManager.default.removeItem(at: url)
+    }
+}
+
+private func removeSavedAccountDirectory(_ directoryURL: URL) throws {
+    if let failingPathComponent = ReviewAccountRegistryStore.savedAccountDirectoryDeleteFailurePathComponentForTesting,
+       directoryURL.lastPathComponent == failingPathComponent
+    {
+        throw NSError(
+            domain: "ReviewAccountRegistryStore.removeSavedAccountDirectoryFailureForTesting",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Directory delete failed."]
+        )
+    }
+    try FileManager.default.removeItem(at: directoryURL)
+}
+
+private struct SavedAccountDirectoryBackup {
+    var directoryURL: URL
+    var authData: Data?
+}
+
+private func savedAccountDirectoryBackups(for directoryURLs: [URL]) -> [SavedAccountDirectoryBackup] {
+    directoryURLs.map { directoryURL in
+        SavedAccountDirectoryBackup(
+            directoryURL: directoryURL,
+            authData: loadAuthData(at: directoryURL.appendingPathComponent("auth.json"))
+        )
+    }
 }
 
 private func migrateLegacySharedAuthIfNeeded(

@@ -15,6 +15,7 @@ enum ReviewMonitorAddAccountAction {
 
             let auth = store.auth
             let previousFailureCount = auth.authenticationFailureCount
+            let previousWarningMessage = auth.warningMessage
             await auth.beginAuthentication()
             if auth.authenticationFailureCount != previousFailureCount,
                let message = auth.errorMessage
@@ -23,7 +24,9 @@ enum ReviewMonitorAddAccountAction {
                     title: "Failed to Add Account",
                     message: message
                 )
-            } else if let warningMessage = auth.warningMessage {
+            } else if let warningMessage = auth.warningMessage,
+                      warningMessage != previousWarningMessage
+            {
                 await presentFailure(
                     title: "Account Updated With Warning",
                     message: warningMessage

@@ -6,63 +6,33 @@ import SwiftUI
 private struct ReviewMonitorAccountsListView: View {
     let store: CodexReviewStore
 
-    private var accounts: [CodexAccount] {
+    private var savedAccounts: [CodexAccount] {
         store.auth.savedAccounts
+    }
+
+    private var unsavedCurrentAccount: CodexAccount? {
+        guard let currentAccount = store.auth.account else {
+            return nil
+        }
+        guard savedAccounts.contains(where: { $0.accountKey == currentAccount.accountKey }) == false else {
+            return nil
+        }
+        return currentAccount
     }
 
     var body: some View {
         @Bindable var auth = store.auth
         
         List {
-            ForEach(accounts) { account in
-                let isSelected :Bool = auth.account == account
-                Label{
-                    VStack{
-                        HStack{
-                            Text(account.maskedEmail)
-                                .textScale(.secondary)
-                                .foregroundStyle(.primary)
-                            Spacer(minLength: 0)
-                        }
-                        RowView(
-                            store:store,
-                            account:account
-                        )
-                    }
-                }icon:{
-                    FocusRingSelectionIndicator(
-                        isSelected: isSelected
-                    )
-                    .accessibilityHidden(true)
-                    .contentShape(.circle)
-                    .onTapGesture {
-                        if isSelected {
-                            return
-                        }
-                        auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
-                    }
-                }
-                .contextMenu{
-                    AccountContextMenuView(
-                        store: store,
-                        account: account
-                    )
-                }
-                .listRowBackground(
-                    RoundedRectangle(
-                        cornerRadius: 8,
-                        style: .continuous
-                    )
-                    .fill(isSelected
-                        ? AnyShapeStyle(.background)
-                        : AnyShapeStyle(.clear)
-                    )
-                    .padding(.horizontal,10)
-                )
+            if let unsavedCurrentAccount {
+                accountRow(unsavedCurrentAccount, auth: auth)
+            }
+            ForEach(savedAccounts) { account in
+                accountRow(account, auth: auth)
             }
             .onMove(perform: handleMove)
         }
-        .animation(.default,value:accounts)
+        .animation(.default, value: savedAccounts)
         .accessibilityIdentifier("review-monitor.account-list")
         .alert(
             auth.pendingAccountActionConfirmationTitle,
@@ -89,13 +59,71 @@ private struct ReviewMonitorAccountsListView: View {
         }
     }
 
+    @ViewBuilder
+    private func accountRow(
+        _ account: CodexAccount,
+        auth: CodexReviewAuthModel
+    ) -> some View {
+        let isSelected: Bool = auth.account == account
+        Label {
+            VStack {
+                HStack {
+                    Text(account.maskedEmail)
+                        .textScale(.secondary)
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 0)
+                }
+                RowView(
+                    store: store,
+                    account: account
+                )
+            }
+        } icon: {
+            FocusRingSelectionIndicator(
+                isSelected: isSelected
+            )
+            .accessibilityHidden(true)
+            .contentShape(.circle)
+            .onTapGesture {
+                if isSelected {
+                    return
+                }
+                auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+            }
+        }
+        .contentShape(.rect)
+        .onTapGesture {
+            if isSelected {
+                return
+            }
+            auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+        }
+        .contextMenu {
+            AccountContextMenuView(
+                store: store,
+                account: account
+            )
+        }
+        .listRowBackground(
+            RoundedRectangle(
+                cornerRadius: 8,
+                style: .continuous
+            )
+            .fill(isSelected
+                ? AnyShapeStyle(.background)
+                : AnyShapeStyle(.clear)
+            )
+            .padding(.horizontal, 10)
+        )
+    }
+
     private func handleMove(
         fromOffsets sourceOffsets: IndexSet,
         toOffset destination: Int
     ) {
         guard sourceOffsets.count == 1,
               let sourceIndex = sourceOffsets.first,
-              accounts.indices.contains(sourceIndex)
+              savedAccounts.indices.contains(sourceIndex)
         else {
             return
         }
@@ -104,14 +132,14 @@ private struct ReviewMonitorAccountsListView: View {
             0,
             min(
                 destination > sourceIndex ? destination - 1 : destination,
-                accounts.count - 1
+                savedAccounts.count - 1
             )
         )
         guard destinationIndex != sourceIndex else {
             return
         }
 
-        let accountKey = accounts[sourceIndex].accountKey
+        let accountKey = savedAccounts[sourceIndex].accountKey
         Task { @MainActor in
             do {
                 try await store.auth.reorderSavedAccount(accountKey: accountKey, toIndex: destinationIndex)
