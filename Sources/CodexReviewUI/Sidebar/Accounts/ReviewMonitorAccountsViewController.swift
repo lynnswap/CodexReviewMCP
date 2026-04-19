@@ -13,29 +13,52 @@ private struct ReviewMonitorAccountsListView: View {
     var body: some View {
         @Bindable var auth = store.auth
         
-        List(
-            selection: Binding(
-                get: {
-                    auth.account
-                },
-                set: { _ in
-                }
-            )
-        ) {
+        List {
             ForEach(accounts) { account in
-                Section {
-                    RowView(
-                        store:store,
-                        account:account
+                let isSelected :Bool = auth.account == account
+                Label{
+                    VStack{
+                        HStack{
+                            Text(account.maskedEmail)
+                                .textScale(.secondary)
+                                .foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                        }
+                        RowView(
+                            store:store,
+                            account:account
+                        )
+                    }
+                }icon:{
+                    FocusRingSelectionIndicator(
+                        isSelected: isSelected
                     )
-                    .tag(account)
-                } header: {
-                    Text(account.maskedEmail)
-                        .foregroundStyle(.primary)
+                    .accessibilityHidden(true)
+                    .contentShape(.circle)
+                    .onTapGesture {
+                        if isSelected {
+                            return
+                        }
+                        auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+                    }
                 }
-                .transaction(value: account.id) { transaction in
-                    transaction.disablesAnimations = true
+                .contextMenu{
+                    AccountContextMenuView(
+                        store: store,
+                        account: account
+                    )
                 }
+                .listRowBackground(
+                    RoundedRectangle(
+                        cornerRadius: 8,
+                        style: .continuous
+                    )
+                    .fill(isSelected
+                        ? AnyShapeStyle(.background)
+                        : AnyShapeStyle(.clear)
+                    )
+                    .padding(.horizontal,10)
+                )
             }
             .onMove(perform: handleMove)
         }
@@ -101,6 +124,33 @@ private struct ReviewMonitorAccountsListView: View {
         }
     }
 }
+
+private struct FocusRingSelectionIndicator: NSViewRepresentable {
+    let isSelected: Bool
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = (NSClassFromString("SwiftUI.FocusRingNSButton") as? NSButton.Type)?
+            .init(frame: .zero) ?? NSButton(frame: .zero)
+        configure(button)
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        configure(button)
+    }
+
+    private func configure(_ button: NSButton) {
+        button.setButtonType(.radio)
+        button.title = ""
+        button.state = isSelected ? .on : .off
+        button.isEnabled = true
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentHuggingPriority(.required, for: .vertical)
+        button.frame.size = CGSize(width: 16, height: 16)
+    }
+}
+
 private struct RowView: View{
     var store: CodexReviewStore
     var account: CodexAccount
