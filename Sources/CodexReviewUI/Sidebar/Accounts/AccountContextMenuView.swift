@@ -14,14 +14,16 @@ struct AccountContextMenuView: View {
     }
 
     var body: some View {
-        Button("Switch", systemImage: "arrow.triangle.swap") {
-            auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+        Section(account.accountKey){
+            Button("Switch", systemImage: "arrow.triangle.swap") {
+                auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+            }
+            .disabled(isCurrentAccount)
         }
-        .disabled(isCurrentAccount)
         Menu("Rate limits", systemImage: "cylinder"){
             AccountRateLimitsSectionView(account:account)
             Divider()
-            Button("Refresh", systemImage: "arrow.clockwise") {
+            Button("Refresh") {
                 refreshRateLimits()
             }
         }
