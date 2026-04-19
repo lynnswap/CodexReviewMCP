@@ -477,7 +477,7 @@ struct CodexReviewUITests {
         #expect(harness.windowController.displayedContentKindForTesting == .signInView)
     }
 
-    @Test func windowControllerKeepsSplitViewPresentedWhileAuthenticatedRetryAuthenticates() async throws {
+    @Test func windowControllerShowsSignInViewWhileAuthenticatedRetryAuthenticates() async throws {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -503,11 +503,12 @@ struct CodexReviewUITests {
                 )
             )
         )
-        await Task.yield()
+        try await waitForDisplayedContentKind(harness.windowController, .signInView)
+        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
 
-        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
-        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
+        #expect(harness.windowController.displayedContentKindForTesting == .signInView)
+        #expect(harness.windowController.isSignInViewEmbeddedForTesting)
+        #expect(harness.windowController.isSplitViewEmbeddedForTesting == false)
     }
 
     @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {
@@ -1145,7 +1146,7 @@ struct CodexReviewUITests {
         #expect(backend.lastRemovedAccountKey() == nil)
     }
 
-    @Test func inactiveAccountContextMenuRemovesSavedAccountWithoutLogout() async {
+    @Test func inactiveAccountContextMenuUsesUnifiedSignOutLabel() async {
         let backend = AuthActionBackend()
         let store = makeStore(backend: backend)
         let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
@@ -1160,7 +1161,7 @@ struct CodexReviewUITests {
         )
         let view = AccountContextMenuView(store: store, account: otherAccount)
 
-        #expect(view.destructiveActionTitle == "Remove Account")
+        #expect(view.destructiveActionTitle == "Sign Out")
         view.requestDestructiveAccountAction()
         await backend.waitForRemoveAccountCallCount(1)
 

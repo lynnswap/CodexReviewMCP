@@ -18,11 +18,11 @@ struct AccountContextMenuView: View {
     }
 
     var destructiveActionTitle: String {
-        isCurrentAccount ? "Sign Out" : "Remove Account"
+        "Sign Out"
     }
 
     var destructiveActionSystemImage: String {
-        isCurrentAccount ? "rectangle.portrait.and.arrow.right" : "trash"
+        "rectangle.portrait.and.arrow.right"
     }
 
     func requestDestructiveAccountAction() {

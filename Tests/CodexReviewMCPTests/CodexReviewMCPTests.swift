@@ -3194,7 +3194,7 @@ struct CodexReviewMCPTests {
         await clock.sleepUntilSuspendedBy()
 
         clock.advance(by: .seconds(15 * 60))
-        await inactiveTransport.waitForRateLimitsReadCount(2)
+        await inactiveTransport.waitForRateLimitsReadCount(3)
         try await waitForMainActorCondition {
             let otherAccount = auth.savedAccounts.first(where: { $0.email == "other@example.com" })
             return rateLimitWindow(duration: 300, in: initialActiveAccount)?.usedPercent == 88
@@ -3202,7 +3202,7 @@ struct CodexReviewMCPTests {
         }
 
         #expect(rateLimitWindow(duration: 300, in: newActiveAccount) == nil)
-        #expect(await inactiveTransport.rateLimitsReadCount() == 2)
+        #expect(await inactiveTransport.rateLimitsReadCount() == 3)
 
         await auth.reconcileAuthenticatedSession(
             serverIsRunning: false,
