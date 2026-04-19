@@ -19,13 +19,13 @@ struct AccountContextMenuView: View {
                 auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
             }
             .disabled(isCurrentAccount)
-        }
-        Menu("Rate limits", systemImage: "cylinder"){
-            AccountRateLimitsSectionView(account:account)
-            Divider()
-            Button("Refresh") {
+            
+            Button("Refresh", systemImage: "arrow.clockwise") {
                 refreshRateLimits()
             }
+        }
+        Section{
+            AccountRateLimitsSectionView(account:account)
         }
         Section{
             Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role:.destructive) {

@@ -83,7 +83,11 @@ struct AccountRateLimitsSectionView: View {
 
     var body: some View {
         ForEach(rateLimits) { window in
-            rateLimitsRow(window)
+            GroupBox{
+                rateLimitsRow(window)
+            }label:{
+                Text(window.formattedDuration)
+            }
         }
     }
 
@@ -93,7 +97,6 @@ struct AccountRateLimitsSectionView: View {
     ) -> some View {
         Button {
         } label: {
-            Text(window.formattedDuration)
             if let details = Self.rateLimitDetailsText(for: window) {
                 Text(details)
             }
@@ -136,7 +139,7 @@ struct StatusView: View {
 
     var body: some View {
         Menu {
-            Section("Rate limits") {
+            Section(auth.account?.accountKey ?? "") {
                 AccountRateLimitsSectionView(account: account)
             }
 
