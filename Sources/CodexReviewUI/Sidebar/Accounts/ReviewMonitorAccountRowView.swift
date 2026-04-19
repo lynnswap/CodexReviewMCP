@@ -2,6 +2,31 @@ import AppKit
 import CodexReviewModel
 import SwiftUI
 
+func maskedReviewAccountEmail(_ email: String) -> String {
+    let parts = email.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2,
+          parts[0].isEmpty == false,
+          parts[1].isEmpty == false
+    else {
+        return maskedReviewAccountEmailSegment(email)
+    }
+    return "\(maskedReviewAccountEmailSegment(String(parts[0])))@\(parts[1])"
+}
+
+private func maskedReviewAccountEmailSegment(_ segment: String) -> String {
+    let characters = Array(segment)
+    switch characters.count {
+    case 0:
+        return segment
+    case 1 ... 2:
+        return String(characters.prefix(1)) + "…"
+    case 3 ... 4:
+        return String(characters.prefix(1)) + "…" + String(characters.suffix(1))
+    default:
+        return String(characters.prefix(2)) + "…" + String(characters.suffix(2))
+    }
+}
+
 @MainActor
 final class ReviewMonitorAccountRowTableView: NSTableRowView {
     override init(frame frameRect: NSRect) {
@@ -38,9 +63,7 @@ final class ReviewMonitorAccountCellView: NSTableCellView {
         objectValue = account
         toolTip = account.email
         if let hostingView {
-            var rootView = hostingView.rootView
-            rootView.account = account
-            hostingView.rootView = rootView
+            hostingView.rootView = ReviewMonitorAccountRowView(account: account)
         } else {
             let hostingView = NSHostingView(rootView: ReviewMonitorAccountRowView(account: account))
             hostingView.translatesAutoresizingMaskIntoConstraints = false
@@ -60,18 +83,56 @@ final class ReviewMonitorAccountCellView: NSTableCellView {
     var renderedContentHeightForTesting: CGFloat {
         hostingView?.fittingSize.height ?? 0
     }
+
+    var displayedEmailForTesting: String {
+        hostingView?.rootView.displayedEmailForTesting ?? ""
+    }
     #endif
 }
 
 struct ReviewMonitorAccountRowView: View {
     var account: CodexAccount?
 
+    private var fullEmail: String {
+        account?.email ?? ""
+    }
+
+    private var displayedEmail: String {
+        maskedReviewAccountEmail(fullEmail)
+    }
+
     var body: some View {
         GroupBox {
             AccountRateLimitGaugesView(account: account)
                 .padding(4)
         } label: {
-            Text(account?.email ?? "")
+            ReviewMonitorAccountEmailLabelView(
+                displayedEmail: displayedEmail,
+                fullEmail: fullEmail
+            )
         }
+    }
+
+    #if DEBUG
+    var displayedEmailForTesting: String {
+        displayedEmail
+    }
+    #endif
+}
+
+private struct ReviewMonitorAccountEmailLabelView: View {
+    let displayedEmail: String
+    let fullEmail: String
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(verbatim: displayedEmail)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: fullEmail))
     }
 }

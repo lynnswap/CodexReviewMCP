@@ -1184,6 +1184,15 @@ struct CodexReviewUITests {
         #expect(backend.beginAuthenticationCallCount() == 1)
     }
 
+    @Test func maskedReviewAccountEmailUsesExpectedLocalPartRules() {
+        #expect(maskedReviewAccountEmail("ashurum.deck@gmail.com") == "as…ck@gmail.com")
+        #expect(maskedReviewAccountEmail("ab+z@example.com") == "a…z@example.com")
+        #expect(maskedReviewAccountEmail("ab@example.com") == "a…@example.com")
+        #expect(maskedReviewAccountEmail("a@example.com") == "a…@example.com")
+        #expect(maskedReviewAccountEmail("alpha.beta+tag@corp.internal.example") == "al…ag@corp.internal.example")
+        #expect(maskedReviewAccountEmail("not-an-email") == "no…il")
+    }
+
     @Test func accountCellConfigureReappliesHostedSwiftUIView() {
         let cell = ReviewMonitorAccountCellView(frame: .init(x: 0, y: 0, width: 320, height: 1))
         let placeholderAccount = CodexAccount(email: "review@example.com", planType: "pro")
@@ -1209,6 +1218,19 @@ struct CodexReviewUITests {
         #expect(placeholderHeight > 0)
         #expect(loadedHeight > 0)
         #expect(loadedHeight < placeholderHeight)
+    }
+
+    @Test func accountCellAlwaysDisplaysMaskedEmail() {
+        let email = "ashurum.deck+qa@corp.internal.example"
+        let cell = ReviewMonitorAccountCellView(frame: .init(x: 0, y: 0, width: 320, height: 1))
+        let account = CodexAccount(email: email, planType: "pro")
+
+        cell.configure(with: account)
+        cell.layoutSubtreeIfNeeded()
+        let maskedEmail = cell.displayedEmailForTesting
+
+        #expect(maskedEmail == "as…qa@corp.internal.example")
+        #expect(cell.renderedContentHeightForTesting > 0)
     }
 
     @Test func removingActiveAccountSelectsFirstRemainingSidebarRow() async throws {
