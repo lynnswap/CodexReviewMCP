@@ -12,8 +12,16 @@ private struct ReviewMonitorAccountsListView: View {
 
     var body: some View {
         @Bindable var auth = store.auth
-
-        List {
+        
+        List(
+            selection: Binding(
+                get: {
+                    auth.account
+                },
+                set: { _ in
+                }
+            )
+        ) {
             ForEach(accounts) { account in
                 Section {
                     Menu {
@@ -22,13 +30,31 @@ private struct ReviewMonitorAccountsListView: View {
                             account: account
                         )
                     } label: {
-                        ReviewMonitorAccountRowView(account: account)
-                            .contentShape(.rect)
+                        AccountRateLimitGaugesView(
+                            account: account
+                        )
+                        .textScale(.secondary)
+                        .foregroundStyle(.secondary)
+                        .controlSize(.mini)
+                        .contentShape(.rect)
                     }
                     .menuStyle(.button)
                     .buttonStyle(.plain)
+                    .overlay {
+                        if account.isSwitching {
+                            ProgressView()
+                                .accessibilityIdentifier("review-monitor.account-row-switching")
+                                .transition(.opacity)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.22), value: account.isSwitching)
+                    .tag(account)
                 } header: {
                     Text(account.maskedEmail)
+                        .foregroundStyle(.primary)
+                }
+                .transaction(value: account.id) { transaction in
+                    transaction.disablesAnimations = true
                 }
             }
             .onMove(perform: handleMove)

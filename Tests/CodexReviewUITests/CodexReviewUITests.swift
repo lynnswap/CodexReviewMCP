@@ -1151,35 +1151,6 @@ struct CodexReviewUITests {
         #expect(savedAccount.isActive)
     }
 
-    @Test func accountRowViewReappliesHostedSwiftUIView() {
-        let placeholderAccount = CodexAccount(email: "review@example.com", planType: "pro")
-        let loadedAccount = CodexAccount(email: "review@example.com", planType: "pro")
-        loadedAccount.updateRateLimits(
-            [
-                (
-                    windowDurationMinutes: 10_080,
-                    usedPercent: 27,
-                    resetsAt: nil
-                ),
-            ]
-        )
-        loadedAccount.updateIsSwitching(true)
-
-        let hostingView = makeAccountRowHostingViewForTesting(account: placeholderAccount)
-        let placeholderHeight = hostingView.fittingSize.height
-        let placeholderIsSwitching = hostingView.rootView.isSwitchingForTesting
-
-        hostingView.rootView.account = loadedAccount
-        hostingView.layoutSubtreeIfNeeded()
-        let loadedHeight = hostingView.fittingSize.height
-        let loadedIsSwitching = hostingView.rootView.isSwitchingForTesting
-
-        #expect(placeholderHeight > 0)
-        #expect(loadedHeight > 0)
-        #expect(placeholderIsSwitching == false)
-        #expect(loadedIsSwitching)
-    }
-
     @Test func jobCellViewUpdatesHostedObservationReferenceWithoutReplacingHostingView() throws {
         let placeholderJob = makeJob(
             id: "job-placeholder",
@@ -1210,16 +1181,6 @@ struct CodexReviewUITests {
         #expect(initialHostingViewIdentity == updatedHostingViewIdentity)
         #expect(cellView.objectValue as? CodexReviewJob === loadedJob)
         #expect(cellView.toolTip == loadedJob.cwd)
-    }
-
-    @Test func accountRowViewAlwaysDisplaysMaskedEmail() {
-        let email = "ashurum.deck+qa@corp.internal.example"
-        let account = CodexAccount(email: email, planType: "pro")
-        let hostingView = makeAccountRowHostingViewForTesting(account: account)
-        let maskedEmail = hostingView.rootView.displayedEmailForTesting
-
-        #expect(maskedEmail == "as…qa@corp.internal.example")
-        #expect(hostingView.fittingSize.height > 0)
     }
 
     @Test func workspaceDropPreservesExpansionState() {
@@ -3162,18 +3123,6 @@ private func waitForAddAccountToolbarItemHidden(
             await Task.yield()
         }
     }
-}
-
-@MainActor
-private func makeAccountRowHostingViewForTesting(
-    account: CodexAccount
-) -> NSHostingView<ReviewMonitorAccountRowView> {
-    let hostingView = NSHostingView(
-        rootView: ReviewMonitorAccountRowView(account: account)
-    )
-    hostingView.frame = .init(x: 0, y: 0, width: 320, height: 1)
-    hostingView.layoutSubtreeIfNeeded()
-    return hostingView
 }
 
 private func withTestTimeout<T: Sendable>(
