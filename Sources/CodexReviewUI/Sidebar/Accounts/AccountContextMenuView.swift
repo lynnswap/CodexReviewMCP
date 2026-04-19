@@ -26,7 +26,7 @@ struct AccountContextMenuView: View {
             }
         }
         Section{
-            Button("Remove", systemImage: "trash", role:.destructive) {
+            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role:.destructive) {
                 auth.requestRemoveAccount(account, requiresConfirmation: false)
             }
         }

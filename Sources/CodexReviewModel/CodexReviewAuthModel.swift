@@ -16,7 +16,7 @@ public final class CodexReviewAuthModel {
             case .signOutActiveAccount:
                 "Sign Out?"
             case .removeAccount:
-                "Remove Account?"
+                "Sign Out?"
             }
         }
 
@@ -31,7 +31,7 @@ public final class CodexReviewAuthModel {
             case .signOutActiveAccount:
                 "Sign Out"
             case .removeAccount:
-                "Remove"
+                "Sign Out"
             }
         }
 
@@ -42,7 +42,7 @@ public final class CodexReviewAuthModel {
             case .signOutActiveAccount:
                 "Failed to Sign Out"
             case .removeAccount:
-                "Failed to Remove Account"
+                "Failed to Sign Out"
             }
         }
     }

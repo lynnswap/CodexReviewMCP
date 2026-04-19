@@ -33,6 +33,7 @@ private struct ReviewMonitorAccountsListView: View {
             }
             .onMove(perform: handleMove)
         }
+        .animation(.default,value:accounts)
         .accessibilityIdentifier("review-monitor.account-list")
         .alert(
             auth.pendingAccountActionConfirmationTitle,
