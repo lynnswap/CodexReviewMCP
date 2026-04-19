@@ -3930,8 +3930,9 @@ struct CodexReviewMCPTests {
             }
         )
 
+        let missingAccount = CodexAccount(email: "missing@example.com")
         await #expect(throws: Error.self) {
-            try await auth.switchAccount(accountKey: "missing@example.com")
+            try await auth.switchAccount(missingAccount)
         }
         #expect(cancelCallCount == 0)
     }
@@ -3963,7 +3964,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         let savedAccount = try #require(auth.savedAccounts.first)
 
-        try await auth.switchAccount(accountKey: savedAccount.accountKey)
+        try await auth.switchAccount(savedAccount)
 
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(auth.account == nil)

@@ -2,7 +2,7 @@ import SwiftUI
 import CodexReviewModel
 
 struct AccountRateLimitGaugesView: View {
-    let account: CodexAccount?
+    var account: CodexAccount?
 
     private static let placeholderRateLimits: [CodexRateLimitWindow] = [
         CodexRateLimitWindow(

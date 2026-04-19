@@ -31,8 +31,13 @@ public final class CodexReviewAuthModel {
     public package(set) var savedAccounts: [CodexAccount] = []
     public package(set) var authenticationFailureCount = 0
     public package(set) var warningMessage: String?
+    public package(set) var isPresentingSwitchAccountConfirmation = false
+    public package(set) var isPresentingAccountActionAlert = false
+    public package(set) var accountActionAlertTitle = ""
+    public package(set) var accountActionAlertMessage = ""
 
     @ObservationIgnored private let controller: any CodexReviewAuthControlling
+    @ObservationIgnored private var pendingSwitchAccount: CodexAccount?
 
     public var progress: Progress? {
         guard case .signingIn(let progress) = phase else {
@@ -76,17 +81,17 @@ public final class CodexReviewAuthModel {
         await controller.cancelAuthentication(auth: self)
     }
 
-    public func switchAccount(accountKey: String) async throws {
-        guard account?.accountKey != accountKey else {
+    package func switchAccount(_ account: CodexAccount) async throws {
+        guard self.account?.accountKey != account.accountKey else {
             return
         }
-        let targetAccount = savedAccounts.first(where: { $0.accountKey == accountKey })
+        let targetAccount = savedAccounts.first(where: { $0.accountKey == account.accountKey })
         if savedAccounts.contains(where: { $0.isSwitching }) {
             return
         }
-        if let account,
-           account.isSwitching,
-           savedAccounts.contains(where: { $0 === account }) == false
+        if let currentAccount = self.account,
+           currentAccount.isSwitching,
+           savedAccounts.contains(where: { $0 === currentAccount }) == false
         {
             return
         }
@@ -94,7 +99,52 @@ public final class CodexReviewAuthModel {
         defer {
             targetAccount?.updateIsSwitching(false)
         }
-        try await controller.switchAccount(auth: self, accountKey: accountKey)
+        try await controller.switchAccount(auth: self, accountKey: account.accountKey)
+    }
+
+    package func requestSwitchAccount(
+        _ account: CodexAccount,
+        requiresConfirmation: Bool
+    ) {
+        guard self.account?.accountKey != account.accountKey else {
+            return
+        }
+        if requiresConfirmation {
+            pendingSwitchAccount = account
+            isPresentingSwitchAccountConfirmation = true
+            return
+        }
+        performSwitchAccountRequest(account)
+    }
+
+    package func confirmSwitchAccountRequest() {
+        guard let pendingSwitchAccount else {
+            return
+        }
+        self.pendingSwitchAccount = nil
+        isPresentingSwitchAccountConfirmation = false
+        performSwitchAccountRequest(pendingSwitchAccount)
+    }
+
+    package func cancelSwitchAccountRequest() {
+        pendingSwitchAccount = nil
+        isPresentingSwitchAccountConfirmation = false
+    }
+
+    package func presentAccountActionAlert(
+        title: String,
+        message: String
+    ) {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        accountActionAlertTitle = title
+        accountActionAlertMessage = trimmedMessage.isEmpty ? "Request failed." : trimmedMessage
+        isPresentingAccountActionAlert = true
+    }
+
+    package func dismissAccountActionAlert() {
+        isPresentingAccountActionAlert = false
+        accountActionAlertTitle = ""
+        accountActionAlertMessage = ""
     }
 
     public func removeAccount(accountKey: String) async throws {
@@ -213,5 +263,27 @@ public final class CodexReviewAuthModel {
 
     private func reusableAccount(for accountKey: String) -> CodexAccount? {
         savedAccounts.first(where: { $0.accountKey == accountKey })
+    }
+
+    private func performSwitchAccountRequest(_ account: CodexAccount) {
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            do {
+                try await switchAccount(account)
+                if let warningMessage {
+                    presentAccountActionAlert(
+                        title: "Account Updated With Warning",
+                        message: warningMessage
+                    )
+                }
+            } catch {
+                presentAccountActionAlert(
+                    title: "Failed to Switch Account",
+                    message: error.localizedDescription
+                )
+            }
+        }
     }
 }

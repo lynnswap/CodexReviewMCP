@@ -958,11 +958,6 @@ extension ReviewMonitorSidebarViewController {
         uiState.selectedJobEntry
     }
 
-    var accountsViewControllerForTesting: ReviewMonitorAccountsViewController {
-        accountsViewController.loadViewIfNeeded()
-        return accountsViewController
-    }
-
     var isShowingEmptyStateForTesting: Bool {
         emptyStateView.isHidden == false
     }

@@ -2,9 +2,12 @@ import CodexReviewModel
 import SwiftUI
 
 struct AccountContextMenuView: View {
-    let auth: CodexReviewAuthModel
+    let store: CodexReviewStore
     let account: CodexAccount
-    let switchAction: @MainActor () -> Void
+
+    private var auth: CodexReviewAuthModel {
+        store.auth
+    }
 
     private var isCurrentAccount: Bool {
         auth.account?.accountKey == account.accountKey
@@ -12,7 +15,7 @@ struct AccountContextMenuView: View {
 
     var body: some View {
         Button("Switch") {
-            switchAction()
+            auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
         }
         .disabled(isCurrentAccount)
     }
@@ -20,15 +23,14 @@ struct AccountContextMenuView: View {
 
 #if DEBUG
 #Preview {
-    let auth = CodexReviewAuthModel(controller: CodexReviewPreviewAuthController())
+    let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
     let currentAccount = CodexAccount(email: "current@example.com")
     let otherAccount = CodexAccount(email: "other@example.com")
-    auth.updateSavedAccounts([currentAccount, otherAccount])
-    auth.updateAccount(currentAccount)
+    store.auth.updateSavedAccounts([currentAccount, otherAccount])
+    store.auth.updateAccount(currentAccount)
     return AccountContextMenuView(
-        auth: auth,
-        account: otherAccount,
-        switchAction: {}
+        store: store,
+        account: otherAccount
     )
 }
 #endif

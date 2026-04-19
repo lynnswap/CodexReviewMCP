@@ -289,7 +289,7 @@ struct StatusView: View {
             await performAccountMutation(
                 errorTitle: "Failed to Switch Account"
             ) {
-                try await auth.switchAccount(accountKey: account.accountKey)
+                try await auth.switchAccount(account)
             }
         }
     }

@@ -49,6 +49,7 @@ extension CodexRateLimitWindow: Identifiable, Hashable {
 public final class CodexAccount {
     nonisolated public let id: String
     public package(set) var email: String
+    public package(set) var maskedEmail: String
     public var planType: String?
     public package(set) var rateLimits: [CodexRateLimitWindow] = []
     public package(set) var isActive = false
@@ -77,6 +78,7 @@ public final class CodexAccount {
         )
         self.id = resolvedAccountKey
         self.email = trimmedEmail
+        self.maskedEmail = maskedReviewAccountEmail(trimmedEmail)
         self.planType = planType
     }
 
@@ -88,6 +90,7 @@ public final class CodexAccount {
             "CodexAccount email updates must preserve account identity."
         )
         self.email = trimmedEmail
+        self.maskedEmail = maskedReviewAccountEmail(trimmedEmail)
     }
 
     package func updatePlanType(_ planType: String?) {
@@ -150,6 +153,31 @@ public final class CodexAccount {
 
     package func clearRateLimits() {
         rateLimits.removeAll()
+    }
+}
+
+private func maskedReviewAccountEmail(_ email: String) -> String {
+    let parts = email.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
+    guard parts.count == 2,
+          parts[0].isEmpty == false,
+          parts[1].isEmpty == false
+    else {
+        return maskedReviewAccountEmailSegment(email)
+    }
+    return "\(maskedReviewAccountEmailSegment(String(parts[0])))@\(parts[1])"
+}
+
+private func maskedReviewAccountEmailSegment(_ segment: String) -> String {
+    let characters = Array(segment)
+    switch characters.count {
+    case 0:
+        return segment
+    case 1 ... 2:
+        return String(characters.prefix(1)) + "…"
+    case 3 ... 4:
+        return String(characters.prefix(1)) + "…" + String(characters.suffix(1))
+    default:
+        return String(characters.prefix(2)) + "…" + String(characters.suffix(2))
     }
 }
 
