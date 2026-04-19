@@ -24,30 +24,10 @@ private struct ReviewMonitorAccountsListView: View {
         ) {
             ForEach(accounts) { account in
                 Section {
-                    Menu {
-                        AccountContextMenuView(
-                            store: store,
-                            account: account
-                        )
-                    } label: {
-                        AccountRateLimitGaugesView(
-                            account: account
-                        )
-                        .textScale(.secondary)
-                        .foregroundStyle(.secondary)
-                        .controlSize(.mini)
-                        .contentShape(.rect)
-                    }
-                    .menuStyle(.button)
-                    .buttonStyle(.plain)
-                    .overlay {
-                        if account.isSwitching {
-                            ProgressView()
-                                .accessibilityIdentifier("review-monitor.account-row-switching")
-                                .transition(.opacity)
-                        }
-                    }
-                    .animation(.easeInOut(duration: 0.22), value: account.isSwitching)
+                    RowView(
+                        store:store,
+                        account:account
+                    )
                     .tag(account)
                 } header: {
                     Text(account.maskedEmail)
@@ -119,6 +99,36 @@ private struct ReviewMonitorAccountsListView: View {
                 )
             }
         }
+    }
+}
+private struct RowView: View{
+    var store: CodexReviewStore
+    var account: CodexAccount
+    var body: some View{
+        Menu {
+            AccountContextMenuView(
+                store: store,
+                account: account
+            )
+        } label: {
+            AccountRateLimitGaugesView(
+                account: account
+            )
+            .textScale(.secondary)
+            .foregroundStyle(.secondary)
+            .controlSize(.mini)
+            .contentShape(.rect)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .overlay {
+            if account.isSwitching {
+                ProgressView()
+                    .accessibilityIdentifier("review-monitor.account-row-switching")
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: account.isSwitching)
     }
 }
 
