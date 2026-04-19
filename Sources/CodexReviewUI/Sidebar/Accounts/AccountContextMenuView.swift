@@ -18,7 +18,7 @@ struct AccountContextMenuView: View {
             auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
         }
         .disabled(isCurrentAccount)
-        Menu("Rate limits"){
+        Menu("Rate limits", systemImage: "cylinder"){
             AccountRateLimitsSectionView(account:account)
             Divider()
             Button("Refresh", systemImage: "arrow.clockwise") {
