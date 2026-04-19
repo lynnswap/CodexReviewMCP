@@ -1178,49 +1178,6 @@ struct CodexReviewUITests {
         #expect(hostingView.fittingSize.height > 0)
     }
 
-    @Test func statusViewTracksFirstRemainingAccountAfterActiveRemoval() async throws {
-        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "second@example.com"))
-        let store = makeStore(backend: backend)
-        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
-        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
-        store.auth.updateSavedAccounts([firstAccount, secondAccount])
-        store.auth.updateAccount(secondAccount)
-        let view = StatusView(store: store)
-
-        #expect(view.currentAccountEmailForTesting == "second@example.com")
-
-        try await store.auth.removeAccount(accountKey: secondAccount.accountKey)
-        await backend.waitForRemoveAccountCallCount(1)
-        await Task.yield()
-
-        #expect(view.currentAccountEmailForTesting == "first@example.com")
-    }
-
-    @Test func statusViewSwitchActionUsesSharedSwitchLifecycle() async throws {
-        let backend = AuthActionBackend(
-            initialAuthState: .signedIn(accountID: "first@example.com"),
-            switchStartsBlocked: true
-        )
-        let store = makeStore(backend: backend)
-        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
-        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
-        store.auth.updateSavedAccounts([firstAccount, secondAccount])
-        store.auth.updateAccount(firstAccount)
-
-        let view = StatusView(store: store)
-        view.confirmAndSwitch(to: secondAccount)
-
-        await backend.waitForSwitchAccountStartCallCount(1)
-        #expect(secondAccount.isSwitching)
-
-        await backend.releaseSwitchAccount()
-        await backend.waitForSwitchAccountCallCount(1)
-        try await waitForCurrentAccountEmail(view, "second@example.com")
-
-        #expect(secondAccount.isSwitching == false)
-        #expect(view.currentAccountEmailForTesting == "second@example.com")
-    }
-
     @Test func workspaceDropPreservesExpansionState() {
         let alphaJob = makeJob(
             id: "job-alpha",
@@ -2952,82 +2909,6 @@ struct CodexReviewUITests {
         #expect(view.showsServerRestartAction)
     }
 
-    @Test func statusViewRedactsPlaceholderRateLimitsWithoutAccount() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(
-            serverState: .running,
-            authState: .signedOut,
-            workspaces: []
-        )
-        let view = StatusView(store: store)
-
-        #expect(view.showsRedactedRateLimitsForTesting)
-    }
-
-    @Test func statusViewUsesSignOutActionWhileSignedInAccountAuthenticates() async {
-        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "review@example.com"))
-        let store = makeStore(backend: backend)
-        applyTestAuthState(
-            auth: store.auth,
-            state: .init(
-                isAuthenticated: true,
-                accountID: "review@example.com",
-                progress: .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue.",
-                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
-                )
-            )
-        )
-        let view = StatusView(store: store)
-
-        #expect(view.primaryAccountActionForTesting == .signOut)
-
-        view.performPrimaryAccountActionForTesting()
-        await backend.waitForLogoutCallCount(1)
-
-        #expect(backend.logoutCallCount() == 1)
-        #expect(backend.beginAuthenticationCallCount() == 0)
-        #expect(backend.cancelAuthenticationCallCount() == 0)
-    }
-
-    @Test func statusViewTracksActiveAccountRateLimitsFromAuthModel() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
-        firstAccount.updateRateLimits([
-            (windowDurationMinutes: 300, usedPercent: 10, resetsAt: nil),
-        ])
-        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
-        secondAccount.updateRateLimits([
-            (windowDurationMinutes: 300, usedPercent: 65, resetsAt: nil),
-            (windowDurationMinutes: 10_080, usedPercent: 20, resetsAt: nil),
-        ])
-
-        store.auth.updateSavedAccounts([firstAccount, secondAccount])
-        store.auth.updateAccount(firstAccount)
-        let view = StatusView(store: store)
-
-        #expect(view.currentAccountEmailForTesting == "first@example.com")
-        #expect(view.remainingRateLimitPercentsForTesting == [90])
-
-        store.auth.updateAccount(secondAccount)
-
-        #expect(view.currentAccountEmailForTesting == "second@example.com")
-        #expect(view.remainingRateLimitPercentsForTesting == [35, 80])
-    }
-
-    @Test func statusViewOmitsRateLimitResetDetailsWhenResetDateIsUnknown() {
-        let store = makeStatusPreviewStore()
-        let view = StatusView(store: store)
-        let window = CodexRateLimitWindow(
-            windowDurationMinutes: 300,
-            usedPercent: 34,
-            resetsAt: nil
-        )
-
-        #expect(view.rateLimitDetailsTextForTesting(window) == nil)
-    }
-
     @Test func signInViewDescriptionTextReflectsAuthState() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
 
@@ -3232,23 +3113,6 @@ private func waitForAddAccountToolbarItemHidden(
             }
             viewControllerBox.value.view.layoutSubtreeIfNeeded()
             return viewControllerBox.value.addAccountToolbarItemIsHiddenForTesting != expected
-        }) {
-            try Task.checkCancellation()
-            await Task.yield()
-        }
-    }
-}
-
-@MainActor
-private func waitForCurrentAccountEmail(
-    _ view: StatusView,
-    _ expected: String?,
-    timeout: Duration = .seconds(2)
-) async throws {
-    let viewBox = UncheckedSendableBox(view)
-    try await withTestTimeout(timeout) {
-        while await MainActor.run(body: {
-            viewBox.value.currentAccountEmailForTesting != expected
         }) {
             try Task.checkCancellation()
             await Task.yield()

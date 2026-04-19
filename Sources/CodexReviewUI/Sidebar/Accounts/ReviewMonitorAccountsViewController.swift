@@ -35,17 +35,17 @@ private struct ReviewMonitorAccountsListView: View {
         }
         .accessibilityIdentifier("review-monitor.account-list")
         .alert(
-            "Switch Account?",
-            isPresented: $auth.isPresentingSwitchAccountConfirmation
+            auth.pendingAccountActionConfirmationTitle,
+            isPresented: $auth.isPresentingPendingAccountActionConfirmation
         ) {
-            Button("Switch") {
-                auth.confirmSwitchAccountRequest()
+            Button(auth.pendingAccountActionConfirmationButtonTitle) {
+                auth.confirmPendingAccountAction()
             }
             Button("Cancel", role: .cancel) {
-                auth.cancelSwitchAccountRequest()
+                auth.cancelPendingAccountAction()
             }
         } message: {
-            Text("Running review jobs may stop after the account change is applied.")
+            Text(auth.pendingAccountActionConfirmationMessage)
         }
         .alert(
             auth.accountActionAlertTitle,

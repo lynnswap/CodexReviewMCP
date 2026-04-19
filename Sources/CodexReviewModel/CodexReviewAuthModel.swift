@@ -4,6 +4,49 @@ import Observation
 @MainActor
 @Observable
 public final class CodexReviewAuthModel {
+    private enum PendingAccountAction {
+        case switchAccount(accountKey: String)
+        case signOutActiveAccount
+        case removeAccount(accountKey: String)
+
+        var confirmationTitle: String {
+            switch self {
+            case .switchAccount:
+                "Switch Account?"
+            case .signOutActiveAccount:
+                "Sign Out?"
+            case .removeAccount:
+                "Remove Account?"
+            }
+        }
+
+        var confirmationMessage: String {
+            "Running review jobs may stop after the account change is applied."
+        }
+
+        var confirmationButtonTitle: String {
+            switch self {
+            case .switchAccount:
+                "Switch"
+            case .signOutActiveAccount:
+                "Sign Out"
+            case .removeAccount:
+                "Remove"
+            }
+        }
+
+        var failureTitle: String {
+            switch self {
+            case .switchAccount:
+                "Failed to Switch Account"
+            case .signOutActiveAccount:
+                "Failed to Sign Out"
+            case .removeAccount:
+                "Failed to Remove Account"
+            }
+        }
+    }
+
     public struct Progress: Sendable, Equatable {
         public var title: String
         public var detail: String
@@ -31,13 +74,16 @@ public final class CodexReviewAuthModel {
     public package(set) var savedAccounts: [CodexAccount] = []
     public package(set) var authenticationFailureCount = 0
     public package(set) var warningMessage: String?
-    public package(set) var isPresentingSwitchAccountConfirmation = false
+    public package(set) var isPresentingPendingAccountActionConfirmation = false
+    public package(set) var pendingAccountActionConfirmationTitle = ""
+    public package(set) var pendingAccountActionConfirmationMessage = ""
+    public package(set) var pendingAccountActionConfirmationButtonTitle = ""
     public package(set) var isPresentingAccountActionAlert = false
     public package(set) var accountActionAlertTitle = ""
     public package(set) var accountActionAlertMessage = ""
 
     @ObservationIgnored private let controller: any CodexReviewAuthControlling
-    @ObservationIgnored private var pendingSwitchAccount: CodexAccount?
+    @ObservationIgnored private var pendingAccountAction: PendingAccountAction?
 
     public var progress: Progress? {
         guard case .signingIn(let progress) = phase else {
@@ -109,26 +155,42 @@ public final class CodexReviewAuthModel {
         guard self.account?.accountKey != account.accountKey else {
             return
         }
-        if requiresConfirmation {
-            pendingSwitchAccount = account
-            isPresentingSwitchAccountConfirmation = true
-            return
-        }
-        performSwitchAccountRequest(account)
+        requestAccountAction(
+            .switchAccount(accountKey: account.accountKey),
+            requiresConfirmation: requiresConfirmation
+        )
     }
 
-    package func confirmSwitchAccountRequest() {
-        guard let pendingSwitchAccount else {
+    package func requestSignOutActiveAccount(requiresConfirmation: Bool) {
+        guard account != nil else {
             return
         }
-        self.pendingSwitchAccount = nil
-        isPresentingSwitchAccountConfirmation = false
-        performSwitchAccountRequest(pendingSwitchAccount)
+        requestAccountAction(
+            .signOutActiveAccount,
+            requiresConfirmation: requiresConfirmation
+        )
     }
 
-    package func cancelSwitchAccountRequest() {
-        pendingSwitchAccount = nil
-        isPresentingSwitchAccountConfirmation = false
+    package func requestRemoveAccount(
+        _ account: CodexAccount,
+        requiresConfirmation: Bool
+    ) {
+        requestAccountAction(
+            .removeAccount(accountKey: account.accountKey),
+            requiresConfirmation: requiresConfirmation
+        )
+    }
+
+    package func confirmPendingAccountAction() {
+        guard let pendingAccountAction else {
+            return
+        }
+        clearPendingAccountActionConfirmation()
+        performAccountAction(pendingAccountAction)
+    }
+
+    package func cancelPendingAccountAction() {
+        clearPendingAccountActionConfirmation()
     }
 
     package func presentAccountActionAlert(
@@ -265,13 +327,37 @@ public final class CodexReviewAuthModel {
         savedAccounts.first(where: { $0.accountKey == accountKey })
     }
 
-    private func performSwitchAccountRequest(_ account: CodexAccount) {
+    private func requestAccountAction(
+        _ action: PendingAccountAction,
+        requiresConfirmation: Bool
+    ) {
+        if requiresConfirmation {
+            pendingAccountAction = action
+            pendingAccountActionConfirmationTitle = action.confirmationTitle
+            pendingAccountActionConfirmationMessage = action.confirmationMessage
+            pendingAccountActionConfirmationButtonTitle = action.confirmationButtonTitle
+            isPresentingPendingAccountActionConfirmation = true
+            return
+        }
+        clearPendingAccountActionConfirmation()
+        performAccountAction(action)
+    }
+
+    private func clearPendingAccountActionConfirmation() {
+        pendingAccountAction = nil
+        isPresentingPendingAccountActionConfirmation = false
+        pendingAccountActionConfirmationTitle = ""
+        pendingAccountActionConfirmationMessage = ""
+        pendingAccountActionConfirmationButtonTitle = ""
+    }
+
+    private func performAccountAction(_ action: PendingAccountAction) {
         Task { @MainActor [weak self] in
             guard let self else {
                 return
             }
             do {
-                try await switchAccount(account)
+                try await executeAccountAction(action)
                 if let warningMessage {
                     presentAccountActionAlert(
                         title: "Account Updated With Warning",
@@ -280,10 +366,24 @@ public final class CodexReviewAuthModel {
                 }
             } catch {
                 presentAccountActionAlert(
-                    title: "Failed to Switch Account",
+                    title: action.failureTitle,
                     message: error.localizedDescription
                 )
             }
+        }
+    }
+
+    private func executeAccountAction(_ action: PendingAccountAction) async throws {
+        switch action {
+        case .switchAccount(let accountKey):
+            guard let account = savedAccounts.first(where: { $0.accountKey == accountKey }) else {
+                return
+            }
+            try await switchAccount(account)
+        case .signOutActiveAccount:
+            try await signOutActiveAccount()
+        case .removeAccount(let accountKey):
+            try await removeAccount(accountKey: accountKey)
         }
     }
 }

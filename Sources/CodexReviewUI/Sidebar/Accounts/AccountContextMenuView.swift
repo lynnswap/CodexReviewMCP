@@ -14,10 +14,28 @@ struct AccountContextMenuView: View {
     }
 
     var body: some View {
-        Button("Switch") {
+        Button("Switch", systemImage: "arrow.triangle.swap") {
             auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
         }
         .disabled(isCurrentAccount)
+        Menu("Rate limits"){
+            AccountRateLimitsSectionView(account:account)
+            Divider()
+            Button("Refresh", systemImage: "arrow.clockwise") {
+                refreshRateLimits()
+            }
+        }
+        Section{
+            Button("Remove", systemImage: "trash", role:.destructive) {
+                auth.requestRemoveAccount(account, requiresConfirmation: false)
+            }
+        }
+    }
+
+    private func refreshRateLimits() {
+        Task {
+            await auth.refreshSavedAccountRateLimits(accountKey: account.accountKey)
+        }
     }
 }
 

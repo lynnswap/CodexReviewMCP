@@ -3358,8 +3358,16 @@ struct CodexReviewMCPTests {
 
         #expect(testAuthState(from: store.auth) == .signedOut)
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
-        #expect(await manager.prepareCount() == 2)
-        #expect(await manager.shutdownCount() == 1)
+        try await withTestTimeout {
+            while true {
+                let prepareCount = await manager.prepareCount()
+                let shutdownCount = await manager.shutdownCount()
+                if prepareCount == 2, shutdownCount == 1 {
+                    return
+                }
+                await Task.yield()
+            }
+        }
 
         await store.stop()
     }
