@@ -1481,9 +1481,7 @@ private final class ReviewMonitorJobCellView: NSTableCellView {
         objectValue = job
         toolTip = job.cwd
         if let hostingView {
-            var rootView = hostingView.rootView
-            rootView.job = job
-            hostingView.rootView = rootView
+            hostingView.rootView.job = job
         } else {
             let hostingView = NSHostingView(
                 rootView: ReviewMonitorJobRowView(job: job)
@@ -1509,8 +1507,54 @@ private final class ReviewMonitorJobCellView: NSTableCellView {
     var isHostingReviewMonitorJobRowViewForTesting: Bool {
         hostingView != nil
     }
+
+    var hostedJobIDForTesting: String? {
+        hostingView?.rootView.job.id
+    }
+
+    var hostingViewIdentityForTesting: ObjectIdentifier? {
+        hostingView.map(ObjectIdentifier.init)
+    }
     #endif
 }
+
+#if DEBUG
+@MainActor
+func makeReviewMonitorJobCellViewForTesting(job: CodexReviewJob) -> NSTableCellView {
+    let cellView = ReviewMonitorJobCellView()
+    cellView.configure(with: job)
+    return cellView
+}
+
+@MainActor
+func configureReviewMonitorJobCellViewForTesting(
+    _ cellView: NSTableCellView,
+    job: CodexReviewJob
+) {
+    guard let cellView = cellView as? ReviewMonitorJobCellView else {
+        fatalError("Expected ReviewMonitorJobCellView.")
+    }
+    cellView.configure(with: job)
+}
+
+@MainActor
+func reviewMonitorJobCellHostedJobIDForTesting(_ cellView: NSTableCellView) -> String? {
+    guard let cellView = cellView as? ReviewMonitorJobCellView else {
+        return nil
+    }
+    return cellView.hostedJobIDForTesting
+}
+
+@MainActor
+func reviewMonitorJobCellHostingViewIdentityForTesting(
+    _ cellView: NSTableCellView
+) -> ObjectIdentifier? {
+    guard let cellView = cellView as? ReviewMonitorJobCellView else {
+        return nil
+    }
+    return cellView.hostingViewIdentityForTesting
+}
+#endif
 
 @MainActor
 private final class ReviewMonitorWorkspaceCellView: NSTableCellView {

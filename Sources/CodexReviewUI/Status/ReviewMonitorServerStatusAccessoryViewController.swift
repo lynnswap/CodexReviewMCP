@@ -10,10 +10,6 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
     private var observationHandles: Set<ObservationHandle> = []
     private var shouldHideStatusAccessory = false
 
-    private var hostingView: NSHostingView<StatusView>? {
-        view as? NSHostingView<StatusView>
-    }
-
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
         self.store = store
         self.uiState = uiState
@@ -38,18 +34,6 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
             self.updateVisibility(animated: true)
         }
         .store(in: &observationHandles)
-        store.auth.observe(\.account) { [weak self] _ in
-            self?.refreshStatusView()
-        }
-        .store(in: &observationHandles)
-        store.auth.observe(\.savedAccounts) { [weak self] _ in
-            self?.refreshStatusView()
-        }
-        .store(in: &observationHandles)
-    }
-
-    private func refreshStatusView() {
-        hostingView?.rootView = StatusView(store: store)
     }
 
     private func updateVisibility(animated: Bool) {
@@ -84,6 +68,14 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
         }
     }
 }
+
+#if DEBUG
+extension ReviewMonitorServerStatusAccessoryViewController {
+    var observationHandleCountForTesting: Int {
+        observationHandles.count
+    }
+}
+#endif
 
 
 struct AccountRateLimitsSectionView: View {

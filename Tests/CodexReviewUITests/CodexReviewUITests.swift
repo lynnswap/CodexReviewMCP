@@ -88,6 +88,18 @@ struct CodexReviewUITests {
         #expect(viewController.sidebarPresentationForTesting == .jobList)
     }
 
+    @Test func statusAccessoryViewControllerObservesOnlySidebarSelection() {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let uiState = ReviewMonitorUIState()
+        let viewController = ReviewMonitorServerStatusAccessoryViewController(
+            store: store,
+            uiState: uiState
+        )
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.observationHandleCountForTesting == 1)
+    }
+
     @Test func contentPanePinsDisplayedContentToSafeArea() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
@@ -1166,6 +1178,38 @@ struct CodexReviewUITests {
         #expect(loadedHeight > 0)
         #expect(placeholderIsSwitching == false)
         #expect(loadedIsSwitching)
+    }
+
+    @Test func jobCellViewUpdatesHostedObservationReferenceWithoutReplacingHostingView() throws {
+        let placeholderJob = makeJob(
+            id: "job-placeholder",
+            status: .queued,
+            targetSummary: "Queued review"
+        )
+        let loadedJob = makeJob(
+            id: "job-loaded",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+
+        let cellView = makeReviewMonitorJobCellViewForTesting(job: placeholderJob)
+        let initialHostingViewIdentity = try #require(
+            reviewMonitorJobCellHostingViewIdentityForTesting(cellView)
+        )
+        let initialHostedJobID = reviewMonitorJobCellHostedJobIDForTesting(cellView)
+
+        configureReviewMonitorJobCellViewForTesting(cellView, job: loadedJob)
+
+        let updatedHostingViewIdentity = try #require(
+            reviewMonitorJobCellHostingViewIdentityForTesting(cellView)
+        )
+        let updatedHostedJobID = reviewMonitorJobCellHostedJobIDForTesting(cellView)
+
+        #expect(initialHostedJobID == placeholderJob.id)
+        #expect(updatedHostedJobID == loadedJob.id)
+        #expect(initialHostingViewIdentity == updatedHostingViewIdentity)
+        #expect(cellView.objectValue as? CodexReviewJob === loadedJob)
+        #expect(cellView.toolTip == loadedJob.cwd)
     }
 
     @Test func accountRowViewAlwaysDisplaysMaskedEmail() {
