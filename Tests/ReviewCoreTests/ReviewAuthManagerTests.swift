@@ -604,6 +604,11 @@ private final class JumpingReviewClock: @unchecked Sendable, ReviewClock {
     func sleep(until deadline: ContinuousClock.Instant, tolerance _: Duration?) async throws {
         lock.withLock {
             sleepCalls += 1
+        }
+        try Task.checkCancellation()
+        await Task.yield()
+        try Task.checkCancellation()
+        lock.withLock {
             current = deadline.advanced(by: .seconds(1))
         }
     }
