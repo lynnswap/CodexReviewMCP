@@ -174,8 +174,12 @@ struct CodexReviewUITests {
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
 
         viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
 
         #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
 
@@ -195,9 +199,12 @@ struct CodexReviewUITests {
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
 
         viewController.attach(to: window)
         let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
 
         try await waitForAddAccountToolbarItemHidden(viewController, false)
         sidebarItem.isCollapsed = true
@@ -782,6 +789,7 @@ struct CodexReviewUITests {
 
         try await withTestTimeout(.seconds(1)) {
             while await MainActor.run(body: { runningJob.reviewMonitorRevision }) == initialRevision {
+                try Task.checkCancellation()
                 await Task.yield()
             }
         }
@@ -1286,8 +1294,12 @@ struct CodexReviewUITests {
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
 
         viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
         try await waitForAddAccountToolbarItemHidden(viewController, false)
 
         viewController.performAddAccountToolbarItemForTesting()
@@ -3391,6 +3403,7 @@ private func waitForDisplayedContentKind(
         while await MainActor.run(body: {
             windowControllerBox.value.displayedContentKindForTesting != expected
         }) {
+            try Task.checkCancellation()
             await Task.yield()
         }
     }
@@ -3407,6 +3420,7 @@ private func waitForSidebarPresentation(
         while await MainActor.run(body: {
             viewControllerBox.value.sidebarPresentationForTesting != expected
         }) {
+            try Task.checkCancellation()
             await Task.yield()
         }
     }
@@ -3423,6 +3437,7 @@ private func waitForEmbeddedContentSubviewCount(
         while await MainActor.run(body: {
             windowControllerBox.value.embeddedContentSubviewCountForTesting != expected
         }) {
+            try Task.checkCancellation()
             await Task.yield()
         }
     }
@@ -3439,6 +3454,7 @@ private func waitForSidebarBottomAccessoryHidden(
         while await MainActor.run(body: {
             viewControllerBox.value.sidebarBottomAccessoryIsHiddenForTesting != expected
         }) {
+            try Task.checkCancellation()
             await Task.yield()
         }
     }
@@ -3453,8 +3469,13 @@ private func waitForAddAccountToolbarItemHidden(
     let viewControllerBox = UncheckedSendableBox(viewController)
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
-            viewControllerBox.value.addAccountToolbarItemIsHiddenForTesting != expected
+            if let window = viewControllerBox.value.view.window {
+                window.layoutIfNeeded()
+            }
+            viewControllerBox.value.view.layoutSubtreeIfNeeded()
+            return viewControllerBox.value.addAccountToolbarItemIsHiddenForTesting != expected
         }) {
+            try Task.checkCancellation()
             await Task.yield()
         }
     }
@@ -3471,6 +3492,7 @@ private func waitForSelectedAccountEmail(
         while await MainActor.run(body: {
             viewControllerBox.value.selectedAccountEmailForTesting != expected
         }) {
+            try Task.checkCancellation()
             await Task.yield()
         }
     }
@@ -3487,12 +3509,12 @@ private func waitForCurrentAccountEmail(
         while await MainActor.run(body: {
             viewBox.value.currentAccountEmailForTesting != expected
         }) {
+            try Task.checkCancellation()
             await Task.yield()
         }
     }
 }
 
-@MainActor
 private func withTestTimeout<T: Sendable>(
     _ timeout: Duration = .seconds(2),
     operation: @escaping @Sendable () async throws -> T
