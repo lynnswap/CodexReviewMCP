@@ -77,6 +77,23 @@ public final class CodexReviewAuthModel {
     }
 
     public func switchAccount(accountKey: String) async throws {
+        guard account?.accountKey != accountKey else {
+            return
+        }
+        let targetAccount = savedAccounts.first(where: { $0.accountKey == accountKey })
+        if savedAccounts.contains(where: { $0.isSwitching }) {
+            return
+        }
+        if let account,
+           account.isSwitching,
+           savedAccounts.contains(where: { $0 === account }) == false
+        {
+            return
+        }
+        targetAccount?.updateIsSwitching(true)
+        defer {
+            targetAccount?.updateIsSwitching(false)
+        }
         try await controller.switchAccount(auth: self, accountKey: accountKey)
     }
 
@@ -148,18 +165,53 @@ public final class CodexReviewAuthModel {
     }
 
     package func updateAccount(_ account: CodexAccount?) {
-        self.account = account
-        let activeAccountKey = account?.accountKey
+        if let account,
+           let savedAccount = savedAccounts.first(where: { $0.accountKey == account.accountKey })
+        {
+            self.account = savedAccount
+        } else {
+            self.account = account
+        }
+        let activeAccountKey = self.account?.accountKey
         for savedAccount in savedAccounts {
             savedAccount.updateIsActive(savedAccount.accountKey == activeAccountKey)
         }
     }
 
-    package func updateSavedAccounts(_ savedAccounts: [CodexAccount]) {
-        self.savedAccounts = savedAccounts
+    package func updateSavedAccounts(_ incomingSavedAccounts: [CodexAccount]) {
         let activeAccountKey = account?.accountKey
-        for savedAccount in savedAccounts {
-            savedAccount.updateIsActive(savedAccount.accountKey == activeAccountKey)
+        self.savedAccounts = incomingSavedAccounts.map { incomingAccount in
+            let reconciledAccount = reusableAccount(for: incomingAccount.accountKey) ?? incomingAccount
+            guard reconciledAccount !== incomingAccount else {
+                reconciledAccount.updateIsActive(reconciledAccount.accountKey == activeAccountKey)
+                return reconciledAccount
+            }
+            reconciledAccount.updateEmail(incomingAccount.email)
+            reconciledAccount.updatePlanType(incomingAccount.planType)
+            reconciledAccount.updateRateLimits(
+                incomingAccount.rateLimits.map {
+                    (
+                        windowDurationMinutes: $0.windowDurationMinutes,
+                        usedPercent: $0.usedPercent,
+                        resetsAt: $0.resetsAt
+                    )
+                }
+            )
+            reconciledAccount.updateRateLimitFetchMetadata(
+                fetchedAt: incomingAccount.lastRateLimitFetchAt,
+                error: incomingAccount.lastRateLimitError
+            )
+            reconciledAccount.updateIsActive(reconciledAccount.accountKey == activeAccountKey)
+            return reconciledAccount
         }
+        if let account,
+           let savedAccount = self.savedAccounts.first(where: { $0.accountKey == account.accountKey })
+        {
+            self.account = savedAccount
+        }
+    }
+
+    private func reusableAccount(for accountKey: String) -> CodexAccount? {
+        savedAccounts.first(where: { $0.accountKey == accountKey })
     }
 }

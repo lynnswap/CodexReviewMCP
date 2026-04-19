@@ -52,6 +52,7 @@ public final class CodexAccount {
     public var planType: String?
     public package(set) var rateLimits: [CodexRateLimitWindow] = []
     public package(set) var isActive = false
+    public package(set) var isSwitching = false
     public package(set) var lastRateLimitFetchAt: Date?
     public package(set) var lastRateLimitError: String?
 
@@ -95,6 +96,13 @@ public final class CodexAccount {
 
     package func updateIsActive(_ isActive: Bool) {
         self.isActive = isActive
+    }
+
+    package func updateIsSwitching(_ isSwitching: Bool) {
+        guard self.isSwitching != isSwitching else {
+            return
+        }
+        self.isSwitching = isSwitching
     }
 
     package func updateRateLimits(

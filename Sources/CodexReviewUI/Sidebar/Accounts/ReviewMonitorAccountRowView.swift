@@ -63,7 +63,7 @@ final class ReviewMonitorAccountCellView: NSTableCellView {
         objectValue = account
         toolTip = account.email
         if let hostingView {
-            hostingView.rootView = ReviewMonitorAccountRowView(account: account)
+            hostingView.rootView.account = account
         } else {
             let hostingView = NSHostingView(rootView: ReviewMonitorAccountRowView(account: account))
             hostingView.translatesAutoresizingMaskIntoConstraints = false
@@ -86,6 +86,10 @@ final class ReviewMonitorAccountCellView: NSTableCellView {
 
     var displayedEmailForTesting: String {
         hostingView?.rootView.displayedEmailForTesting ?? ""
+    }
+
+    var isSwitchingForTesting: Bool {
+        hostingView?.rootView.isSwitchingForTesting ?? false
     }
     #endif
 }
@@ -111,11 +115,27 @@ struct ReviewMonitorAccountRowView: View {
                 fullEmail: fullEmail
             )
         }
+        .overlay {
+            if let account{
+                ZStack{
+                    if account.isSwitching {
+                        ProgressView()
+                            .accessibilityIdentifier("review-monitor.account-row-switching")
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.22), value: account.isSwitching)
+            }
+        }
     }
 
     #if DEBUG
     var displayedEmailForTesting: String {
         displayedEmail
+    }
+
+    var isSwitchingForTesting: Bool {
+        account?.isSwitching == true
     }
     #endif
 }

@@ -759,6 +759,22 @@ extension ReviewMonitorAccountsViewController {
         accounts.map(\.email)
     }
 
+    var switchingAccountEmailsForTesting: [String] {
+        (0 ..< outlineView.numberOfRows).compactMap { row in
+            guard let cell = outlineView.view(
+                atColumn: 0,
+                row: row,
+                makeIfNecessary: true
+            ) as? ReviewMonitorAccountCellView,
+                cell.isSwitchingForTesting,
+                let account = outlineView.item(atRow: row) as? CodexAccount
+            else {
+                return nil
+            }
+            return account.email
+        }
+    }
+
     var selectedAccountEmailForTesting: String? {
         guard outlineView.selectedRow != -1,
               let account = outlineView.item(atRow: outlineView.selectedRow) as? CodexAccount
