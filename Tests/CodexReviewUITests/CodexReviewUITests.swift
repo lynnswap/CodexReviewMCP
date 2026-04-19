@@ -148,8 +148,17 @@ struct CodexReviewUITests {
 
         #expect(window.toolbar != nil)
         #expect(harness.windowController.displayedContentKindForTesting == .splitView)
-        #expect(viewController.toolbarIdentifiersForTesting.contains(.toggleSidebar))
-        #expect(viewController.toolbarIdentifiersForTesting.contains(.sidebarTrackingSeparator))
+        #expect(
+            viewController.toolbarIdentifiersForTesting ==
+                [
+                    .toggleSidebar,
+                    .flexibleSpace,
+                    viewController.addAccountToolbarItemIdentifierForTesting,
+                    .sidebarTrackingSeparator,
+                    .flexibleSpace,
+                ]
+        )
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .visible)
         #expect(window.title == "Untitled")
@@ -157,6 +166,47 @@ struct CodexReviewUITests {
         #expect(window.isMovableByWindowBackground == false)
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
+    }
+
+    @Test func splitViewShowsAddAccountToolbarItemOnlyForAccountSidebar() async throws {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let uiState = ReviewMonitorUIState()
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+
+        viewController.attach(to: window)
+
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
+
+        uiState.sidebarSelection = .account
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting == false)
+
+        uiState.sidebarSelection = .workspace
+        try await waitForAddAccountToolbarItemHidden(viewController, true)
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
+    }
+
+    @Test func splitViewHidesAddAccountToolbarItemWhileSidebarIsCollapsed() async throws {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+        sidebarItem.isCollapsed = true
+        try await waitForAddAccountToolbarItemHidden(viewController, true)
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
+
+        sidebarItem.isCollapsed = false
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting == false)
     }
 
     @Test func previewContentViewControllerConfiguresAttachedWindowLikeSplitPresentation() {
@@ -1114,6 +1164,24 @@ struct CodexReviewUITests {
 
         #expect(backend.lastSwitchedAccountKey() == secondAccount.accountKey)
         #expect(store.auth.account === secondAccount)
+    }
+
+    @Test func addAccountToolbarItemBeginsAuthentication() async throws {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+
+        viewController.attach(to: window)
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+
+        viewController.performAddAccountToolbarItemForTesting()
+        await backend.waitForBeginAuthenticationCallCount(1)
+
+        #expect(backend.beginAuthenticationCallCount() == 1)
     }
 
     @Test func accountCellConfigureReappliesHostedSwiftUIView() {
@@ -3177,6 +3245,22 @@ private func waitForSidebarBottomAccessoryHidden(
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
             viewControllerBox.value.sidebarBottomAccessoryIsHiddenForTesting != expected
+        }) {
+            await Task.yield()
+        }
+    }
+}
+
+@MainActor
+private func waitForAddAccountToolbarItemHidden(
+    _ viewController: ReviewMonitorSplitViewController,
+    _ expected: Bool,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let viewControllerBox = UncheckedSendableBox(viewController)
+    try await withTestTimeout(timeout) {
+        while await MainActor.run(body: {
+            viewControllerBox.value.addAccountToolbarItemIsHiddenForTesting != expected
         }) {
             await Task.yield()
         }

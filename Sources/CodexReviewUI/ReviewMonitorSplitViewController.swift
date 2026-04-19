@@ -1,11 +1,15 @@
 import AppKit
 import CodexReviewModel
+import Foundation
 import ObservationBridge
 import ReviewRuntime
 
 @MainActor
 final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDelegate {
     private static let autosaveName = NSSplitView.AutosaveName("CodexReviewMCP.ReviewMonitorSplitView")
+    private static let addAccountToolbarItemIdentifier = NSToolbarItem.Identifier(
+        "CodexReviewMCP.ReviewMonitor.Toolbar.AddAccount"
+    )
 
     private let store: CodexReviewStore
     private let uiState: ReviewMonitorUIState
@@ -15,6 +19,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var contentItem: NSSplitViewItem?
     private var toolbar: NSToolbar?
     private var observationHandles: Set<ObservationHandle> = []
+    private var sidebarCollapseObservation: NSKeyValueObservation?
     private weak var attachedWindow: NSWindow?
 
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState = ReviewMonitorUIState()) {
@@ -63,6 +68,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         self.transportViewController = transportViewController
         self.sidebarItem = sidebarItem
         self.contentItem = contentItem
+        sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                self?.updateAddAccountToolbarItemVisibility()
+            }
+        }
 
         sidebarViewController.loadViewIfNeeded()
         transportViewController.loadViewIfNeeded()
@@ -114,6 +124,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             window.subtitle = cwd ?? ""
         }
         .store(in: &observationHandles)
+
+        uiState.observe(\.sidebarSelection) { [weak self] _ in
+            self?.updateAddAccountToolbarItemVisibility()
+        }
+        .store(in: &observationHandles)
     }
 
     private func installToolbarIfNeeded(on window: NSWindow) {
@@ -134,11 +149,15 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             window.titlebarSeparatorStyle = .automatic
             window.toolbar = toolbar
         }
+
+        updateAddAccountToolbarItemVisibility()
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .toggleSidebar,
+            .flexibleSpace,
+            Self.addAccountToolbarItemIdentifier,
             .sidebarTrackingSeparator,
             .flexibleSpace,
         ]
@@ -147,6 +166,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .toggleSidebar,
+            Self.addAccountToolbarItemIdentifier,
             .sidebarTrackingSeparator,
             .space,
             .flexibleSpace,
@@ -164,6 +184,22 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             item.autovalidates = true
             return item
 
+        case Self.addAccountToolbarItemIdentifier:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            item.label = "Add Account"
+            item.paletteLabel = "Add Account"
+            item.toolTip = "Add Account"
+            item.image = NSImage(
+                systemSymbolName: "person.badge.plus",
+                accessibilityDescription: "Add Account"
+            )
+            item.isBordered = true
+            item.target = self
+            item.action = #selector(handleAddAccountToolbarItem(_:))
+            item.visibilityPriority = .high
+            item.isHidden = shouldHideAddAccountToolbarItem
+            return item
+
         case .sidebarTrackingSeparator:
             return NSTrackingSeparatorToolbarItem(
                 identifier: itemIdentifier,
@@ -174,6 +210,26 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         default:
             return nil
         }
+    }
+
+    @objc
+    private func handleAddAccountToolbarItem(_ sender: Any?) {
+        _ = sender
+        ReviewMonitorAddAccountAction.perform(store: store)
+    }
+
+    private func updateAddAccountToolbarItemVisibility() {
+        guard let toolbar else {
+            return
+        }
+
+        toolbar.items
+            .first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier })?
+            .isHidden = shouldHideAddAccountToolbarItem
+    }
+
+    private var shouldHideAddAccountToolbarItem: Bool {
+        uiState.sidebarSelection != .account || sidebarItem?.isCollapsed != false
     }
 }
 
@@ -248,6 +304,20 @@ extension ReviewMonitorSplitViewController {
 
     var toolbarIdentifiersForTesting: [NSToolbarItem.Identifier] {
         toolbar?.items.map(\.itemIdentifier) ?? []
+    }
+
+    var addAccountToolbarItemIdentifierForTesting: NSToolbarItem.Identifier {
+        Self.addAccountToolbarItemIdentifier
+    }
+
+    var addAccountToolbarItemIsHiddenForTesting: Bool {
+        toolbar?.items
+            .first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier })?
+            .isHidden ?? true
+    }
+
+    func performAddAccountToolbarItemForTesting() {
+        handleAddAccountToolbarItem(nil)
     }
 
     var sidebarAllowsFullHeightLayoutForTesting: Bool {

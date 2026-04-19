@@ -269,29 +269,7 @@ struct StatusView: View {
     }
 
     func addAccount() {
-        Task {
-            guard await confirmJobCancellationIfNeeded(
-                title: "Add Account?",
-                message: "If this sign-in becomes the active session, running review jobs may stop after the account change is applied."
-            ) else {
-                return
-            }
-            let previousFailureCount = auth.authenticationFailureCount
-            await auth.beginAuthentication()
-            if auth.authenticationFailureCount != previousFailureCount,
-               let message = auth.errorMessage
-            {
-                await presentAccountActionFailure(
-                    title: "Failed to Add Account",
-                    message: message
-                )
-            } else if let warningMessage = auth.warningMessage {
-                await presentAccountActionFailure(
-                    title: "Account Updated With Warning",
-                    message: warningMessage
-                )
-            }
-        }
+        ReviewMonitorAddAccountAction.perform(store: store)
     }
 
     func refreshRateLimits(for account: CodexAccount) {
