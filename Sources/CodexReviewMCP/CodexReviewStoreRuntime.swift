@@ -31,6 +31,7 @@ extension CodexReviewStore {
         authSessionFactory: (@Sendable () async throws -> any ReviewAuthSession)? = nil,
         rateLimitObservationClock: any ReviewClock = ContinuousClock(),
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
+        inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
         let sharedFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)?
@@ -59,6 +60,7 @@ extension CodexReviewStore {
             loginAuthSessionFactory: loginFactory,
             rateLimitObservationClock: rateLimitObservationClock,
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+            inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
         )
     }
@@ -71,6 +73,7 @@ extension CodexReviewStore {
         loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
         rateLimitObservationClock: any ReviewClock = ContinuousClock(),
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
+        inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
         let backend = CodexReviewEmbeddedServerBackend(
@@ -80,6 +83,7 @@ extension CodexReviewStore {
             loginAuthSessionFactory: loginAuthSessionFactory,
             rateLimitObservationClock: rateLimitObservationClock,
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+            inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
         )
         self.init(
@@ -1575,6 +1579,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     let initialActiveAccountKey: String?
     let rateLimitObservationClock: any ReviewClock
     let rateLimitStaleRefreshInterval: Duration
+    let inactiveRateLimitRefreshInterval: Duration
     lazy var liveSharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [weak self, appServerManager, configuration] environment in
         let makeCLISession = {
             CLIReviewAuthSession(
@@ -1637,7 +1642,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 }
             },
             rateLimitObservationClock: rateLimitObservationClock,
-            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval
+            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+            inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
         )
     }()
     lazy var executionCoordinator: ReviewExecutionCoordinator = {
@@ -1692,6 +1698,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
         rateLimitObservationClock: any ReviewClock = ContinuousClock(),
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
+        inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
         self.configuration = configuration
@@ -1706,6 +1713,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         self.loginAuthSessionFactory = loginAuthSessionFactory
         self.rateLimitObservationClock = rateLimitObservationClock
         self.rateLimitStaleRefreshInterval = rateLimitStaleRefreshInterval
+        self.inactiveRateLimitRefreshInterval = inactiveRateLimitRefreshInterval
         self.deferStartupAuthRefreshUntilPrepared = deferStartupAuthRefreshUntilPrepared
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
         var seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)

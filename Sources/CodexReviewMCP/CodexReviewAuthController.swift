@@ -23,6 +23,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     private let loginAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession
     private let probeAppServerManagerFactory: @Sendable ([String: String]) -> any AppServerManaging
     private let accountSessionController: CodexAccountSessionController
+    private let inactiveAccountRateLimitController: InactiveSavedAccountRateLimitController
     private let runtimeState: @MainActor @Sendable () -> CodexAuthRuntimeState
     private let recycleServerIfRunning: @MainActor @Sendable () async -> Void
     private let cancelRunningJobs: @MainActor @Sendable (String) async throws -> Void
@@ -45,7 +46,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void,
         cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in },
         rateLimitObservationClock: any ReviewClock = ContinuousClock(),
-        rateLimitStaleRefreshInterval: Duration = .seconds(60)
+        rateLimitStaleRefreshInterval: Duration = .seconds(60),
+        inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60)
     ) {
         self.configuration = configuration
         self.accountRegistryStore = accountRegistryStore
@@ -65,6 +67,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             accountRegistryStore: accountRegistryStore,
             clock: rateLimitObservationClock,
             staleRefreshInterval: rateLimitStaleRefreshInterval
+        )
+        inactiveAccountRateLimitController = InactiveSavedAccountRateLimitController(
+            clock: rateLimitObservationClock,
+            refreshInterval: inactiveRateLimitRefreshInterval
         )
         self.runtimeState = runtimeState
         self.recycleServerIfRunning = recycleServerIfRunning
@@ -329,6 +335,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
         } else {
             auth.updateWarning(message: nil)
+            let resolvedRuntimeState = runtimeState()
+            await reconcileRateLimitControllers(
+                auth: auth,
+                serverIsRunning: resolvedRuntimeState.serverIsRunning,
+                runtimeGeneration: resolvedRuntimeState.runtimeGeneration
+            )
         }
     }
 
@@ -342,6 +354,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             toIndex: toIndex
         )
         await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
+        let resolvedRuntimeState = runtimeState()
+        await reconcileRateLimitControllers(
+            auth: auth,
+            serverIsRunning: resolvedRuntimeState.serverIsRunning,
+            runtimeGeneration: resolvedRuntimeState.runtimeGeneration
+        )
     }
 
     package func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
@@ -616,12 +634,41 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         serverIsRunning: Bool,
         runtimeGeneration: Int
         ) async {
+        await reconcileRateLimitControllers(
+            auth: auth,
+            serverIsRunning: serverIsRunning,
+            runtimeGeneration: runtimeGeneration
+        )
+    }
+
+    private func reconcileRateLimitControllers(
+        auth: CodexReviewAuthModel,
+        serverIsRunning: Bool,
+        runtimeGeneration: Int
+    ) async {
         await accountSessionController.reconcile(
             serverIsRunning: serverIsRunning,
             accountKey: auth.account?.accountKey,
             runtimeGeneration: runtimeGeneration,
             accountResolver: { accountKey in
                 resolvedAccount(for: accountKey, in: auth)
+            }
+        )
+        await inactiveAccountRateLimitController.reconcile(
+            serverIsRunning: serverIsRunning,
+            activeAccountKey: auth.account?.accountKey,
+            runtimeGeneration: runtimeGeneration,
+            savedAccountsProvider: {
+                auth.savedAccounts
+            },
+            refreshRateLimits: { [weak self, weak auth] accountKey in
+                guard let self, let auth else {
+                    return
+                }
+                await self.refreshSavedAccountRateLimits(
+                    auth: auth,
+                    accountKey: accountKey
+                )
             }
         )
     }
@@ -699,13 +746,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 auth.updateWarning(message: nil)
                 hasResolvedAuthenticatedAccount = postRecycleState.isAuthenticated
                 let resolvedRuntimeState = runtimeState()
-                await accountSessionController.reconcile(
+                await reconcileRateLimitControllers(
+                    auth: auth,
                     serverIsRunning: resolvedRuntimeState.serverIsRunning,
-                    accountKey: auth.account?.accountKey,
-                    runtimeGeneration: resolvedRuntimeState.runtimeGeneration,
-                    accountResolver: { accountKey in
-                        resolvedAccount(for: accountKey, in: auth)
-                    }
+                    runtimeGeneration: resolvedRuntimeState.runtimeGeneration
                 )
             }
         } catch {
@@ -745,13 +789,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         if currentRuntimeState.serverIsRunning,
            identityChanged || forceRestartSession
         {
-            await accountSessionController.reconcile(
+            await reconcileRateLimitControllers(
+                auth: auth,
                 serverIsRunning: false,
-                accountKey: auth.account?.accountKey,
-                runtimeGeneration: currentRuntimeState.runtimeGeneration,
-                accountResolver: { accountKey in
-                    resolvedAccount(for: accountKey, in: auth)
-                }
+                runtimeGeneration: currentRuntimeState.runtimeGeneration
             )
             if identityChanged || forceRecycleServer {
                 await recycleServerIfRunning()
@@ -763,13 +804,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         }
 
         let resolvedRuntimeState = runtimeState()
-        await accountSessionController.reconcile(
+        await reconcileRateLimitControllers(
+            auth: auth,
             serverIsRunning: resolvedRuntimeState.serverIsRunning,
-            accountKey: auth.account?.accountKey,
-            runtimeGeneration: resolvedRuntimeState.runtimeGeneration,
-            accountResolver: { accountKey in
-                resolvedAccount(for: accountKey, in: auth)
-            }
+            runtimeGeneration: resolvedRuntimeState.runtimeGeneration
         )
     }
 
@@ -1441,6 +1479,185 @@ private final class CodexAccountSessionController {
 
     func checkoutActiveRateLimitTransport() async throws -> any AppServerSessionTransport {
         try await appServerManager.checkoutAuthTransport()
+    }
+}
+
+@MainActor
+private final class InactiveSavedAccountRateLimitController {
+    typealias SavedAccountsProvider = @MainActor @Sendable () -> [CodexAccount]
+    typealias RefreshRateLimitsAction = @MainActor @Sendable (String) async -> Void
+
+    private struct RefreshTarget: Equatable {
+        var runtimeGeneration: Int
+        var activeAccountKey: String?
+        var savedAccountKeys: [String]
+    }
+
+    private let clock: any ReviewClock
+    private let refreshInterval: Duration
+    private var activeTarget: RefreshTarget?
+    private var savedAccountsProvider: SavedAccountsProvider?
+    private var refreshRateLimitsAction: RefreshRateLimitsAction?
+    private var refreshTask: Task<Void, Never>?
+
+    init(
+        clock: any ReviewClock = ContinuousClock(),
+        refreshInterval: Duration = .seconds(15 * 60)
+    ) {
+        self.clock = clock
+        self.refreshInterval = refreshInterval
+    }
+
+    func reconcile(
+        serverIsRunning: Bool,
+        activeAccountKey: String?,
+        runtimeGeneration: Int,
+        savedAccountsProvider: @escaping SavedAccountsProvider,
+        refreshRateLimits: @escaping RefreshRateLimitsAction
+    ) async {
+        let desiredTarget = serverIsRunning
+            ? makeTarget(
+                savedAccountsProvider: savedAccountsProvider,
+                activeAccountKey: activeAccountKey,
+                runtimeGeneration: runtimeGeneration
+            )
+            : nil
+
+        if desiredTarget != activeTarget {
+            detach()
+            activeTarget = desiredTarget
+        }
+
+        self.savedAccountsProvider = desiredTarget == nil ? nil : savedAccountsProvider
+        refreshRateLimitsAction = desiredTarget == nil ? nil : refreshRateLimits
+
+        guard let target = activeTarget,
+              refreshTask == nil,
+              currentInactiveAccounts(for: target).isEmpty == false
+        else {
+            return
+        }
+
+        refreshTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await self.runRefreshLoop(target: target)
+        }
+    }
+
+    private func makeTarget(
+        savedAccountsProvider: SavedAccountsProvider,
+        activeAccountKey: String?,
+        runtimeGeneration: Int
+    ) -> RefreshTarget {
+        RefreshTarget(
+            runtimeGeneration: runtimeGeneration,
+            activeAccountKey: activeAccountKey,
+            savedAccountKeys: savedAccountsProvider().map(\.accountKey)
+        )
+    }
+
+    private func runRefreshLoop(
+        target: RefreshTarget
+    ) async {
+        defer {
+            finishRefreshLoop(target: target)
+        }
+
+        await refreshInactiveAccounts(
+            for: target,
+            shouldRefresh: { [weak self] account in
+                guard let self else {
+                    return false
+                }
+                return self.shouldImmediatelyCatchUp(account)
+            }
+        )
+
+        while isCurrent(target: target) {
+            do {
+                try await clock.sleep(for: refreshInterval)
+            } catch {
+                return
+            }
+
+            await refreshInactiveAccounts(
+                for: target,
+                shouldRefresh: { _ in true }
+            )
+        }
+    }
+
+    private func refreshInactiveAccounts(
+        for target: RefreshTarget,
+        shouldRefresh: (CodexAccount) -> Bool
+    ) async {
+        let inactiveAccounts = currentInactiveAccounts(for: target)
+
+        for account in inactiveAccounts where shouldRefresh(account) {
+            guard isCurrent(target: target),
+                  let refreshRateLimitsAction
+            else {
+                return
+            }
+            await refreshRateLimitsAction(account.accountKey)
+        }
+    }
+
+    private func currentInactiveAccounts(
+        for target: RefreshTarget
+    ) -> [CodexAccount] {
+        guard isCurrent(target: target),
+              let savedAccountsProvider
+        else {
+            return []
+        }
+
+        return savedAccountsProvider().filter {
+            $0.accountKey != target.activeAccountKey
+        }
+    }
+
+    private func shouldImmediatelyCatchUp(
+        _ account: CodexAccount
+    ) -> Bool {
+        guard let lastFetchAt = account.lastRateLimitFetchAt else {
+            return true
+        }
+        return Date().timeIntervalSince(lastFetchAt) > timeInterval(for: refreshInterval)
+    }
+
+    private func timeInterval(
+        for duration: Duration
+    ) -> TimeInterval {
+        let components = duration.components
+        return TimeInterval(components.seconds)
+            + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    private func finishRefreshLoop(
+        target: RefreshTarget
+    ) {
+        guard activeTarget == target else {
+            return
+        }
+
+        refreshTask = nil
+    }
+
+    private func isCurrent(
+        target: RefreshTarget
+    ) -> Bool {
+        activeTarget == target
+    }
+
+    private func detach() {
+        refreshTask?.cancel()
+        refreshTask = nil
+        activeTarget = nil
+        savedAccountsProvider = nil
+        refreshRateLimitsAction = nil
     }
 }
 

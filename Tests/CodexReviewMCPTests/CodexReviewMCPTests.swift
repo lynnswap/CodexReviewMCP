@@ -2584,6 +2584,559 @@ struct CodexReviewMCPTests {
         #expect(refreshedAccount.email == "updated@example.com")
     }
 
+    @Test func inactiveRateLimitRefreshImmediatelyRefreshesStaleSavedAccountsWhenRuntimeStarts() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 77,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 21,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+        )
+        inactiveAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date().addingTimeInterval(-3600),
+            error: nil
+        )
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+
+        await inactiveTransport.waitForRateLimitsReadCount(1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: inactiveAccount)?.usedPercent == 77
+        }
+
+        #expect(await inactiveTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 21)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshWaitsForIntervalWhenSavedAccountsAreFresh() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 66,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 44,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+        )
+        inactiveAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date(),
+            error: nil
+        )
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        await clock.sleepUntilSuspendedBy()
+
+        #expect(await inactiveTransport.rateLimitsReadCount() == 0)
+
+        clock.advance(by: .seconds(15 * 60))
+        await inactiveTransport.waitForRateLimitsReadCount(1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: inactiveAccount)?.usedPercent == 66
+        }
+
+        #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 44)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshSweepsOnlyInactiveAccounts() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive-one@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive-two@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 55,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 33,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccounts = auth.savedAccounts.filter { $0.accountKey != activeAccount.accountKey }
+        for account in inactiveAccounts {
+            account.updateRateLimitFetchMetadata(
+                fetchedAt: Date(),
+                error: nil
+            )
+        }
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        await clock.sleepUntilSuspendedBy()
+
+        clock.advance(by: .seconds(15 * 60))
+        await inactiveTransport.waitForRateLimitsReadCount(2)
+        try await waitForMainActorCondition {
+            inactiveAccounts.allSatisfy {
+                rateLimitWindow(duration: 300, in: $0)?.usedPercent == 55
+            }
+        }
+
+        #expect(await inactiveTransport.rateLimitsReadCount() == 2)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshRetargetsWhenActiveAccountChanges() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "next@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "other@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 88,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 61,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let initialActiveAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(initialActiveAccount)
+        for account in auth.savedAccounts where account.accountKey != initialActiveAccount.accountKey {
+            account.updateRateLimitFetchMetadata(
+                fetchedAt: Date(),
+                error: nil
+            )
+        }
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        await clock.sleepUntilSuspendedBy()
+
+        let newActiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.email == "next@example.com" })
+        )
+        auth.updateAccount(newActiveAccount)
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 2
+        )
+        await clock.sleepUntilSuspendedBy()
+
+        clock.advance(by: .seconds(15 * 60))
+        await inactiveTransport.waitForRateLimitsReadCount(2)
+        try await waitForMainActorCondition {
+            let otherAccount = auth.savedAccounts.first(where: { $0.email == "other@example.com" })
+            return rateLimitWindow(duration: 300, in: initialActiveAccount)?.usedPercent == 88
+                && rateLimitWindow(duration: 300, in: otherAccount)?.usedPercent == 88
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: newActiveAccount) == nil)
+        #expect(await inactiveTransport.rateLimitsReadCount() == 2)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 2
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshStopsWhenRuntimeDetaches() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+        )
+        inactiveAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date(),
+            error: nil
+        )
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        await clock.sleepUntilSuspendedBy()
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+        clock.advance(by: .seconds(15 * 60))
+        await Task.yield()
+
+        #expect(await inactiveTransport.rateLimitsReadCount() == 0)
+    }
+
+    @Test func inactiveRateLimitRefreshPreservesUnsavedCurrentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 58,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 34,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let currentAccount = CodexAccount(
+            email: "current@example.com",
+            planType: "pro"
+        )
+        auth.updateAccount(currentAccount)
+        let savedAccount = try #require(auth.savedAccounts.first)
+        savedAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date(),
+            error: nil
+        )
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        await clock.sleepUntilSuspendedBy()
+
+        clock.advance(by: .seconds(15 * 60))
+        await inactiveTransport.waitForRateLimitsReadCount(1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 58
+        }
+
+        #expect(auth.account?.email == "current@example.com")
+        #expect(rateLimitWindow(duration: 10_080, in: savedAccount)?.usedPercent == 34)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+    }
+
     @Test func startingStoreKeepsSeededAuthWhenBackgroundRefreshFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = MockAppServerManager { _ in .success() }
@@ -7734,6 +8287,7 @@ private func makeInjectedAuthSessionStore(
     authSessionFactory: @escaping @Sendable () async throws -> any ReviewAuthSession,
     rateLimitObservationClock: any ReviewClock = ContinuousClock(),
     rateLimitStaleRefreshInterval: Duration = .seconds(60),
+    inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
     deferStartupAuthRefreshUntilPrepared: Bool = false
 ) -> CodexReviewStore {
     let sessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { environment in
@@ -7751,6 +8305,7 @@ private func makeInjectedAuthSessionStore(
         loginAuthSessionFactory: sessionFactory,
         rateLimitObservationClock: rateLimitObservationClock,
         rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+        inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
         deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
     )
 }
@@ -7758,21 +8313,28 @@ private func makeInjectedAuthSessionStore(
 @MainActor
 private func makeAuthModel(
     configuration: ReviewServerConfiguration,
+    appServerManager: any AppServerManaging = MockAppServerManager { _ in .success() },
     sharedAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
     loginAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
     probeAppServerManagerFactory: (@Sendable ([String: String]) -> any AppServerManaging)? = nil,
+    rateLimitObservationClock: any ReviewClock = ContinuousClock(),
+    rateLimitStaleRefreshInterval: Duration = .seconds(60),
+    inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
     cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in }
 ) -> CodexReviewAuthModel {
     let controller = CodexAuthController(
         configuration: configuration,
         accountRegistryStore: ReviewAccountRegistryStore(environment: configuration.environment),
-        appServerManager: MockAppServerManager { _ in .success() },
+        appServerManager: appServerManager,
         sharedAuthSessionFactory: sharedAuthSessionFactory,
         loginAuthSessionFactory: loginAuthSessionFactory,
         probeAppServerManagerFactory: probeAppServerManagerFactory,
         runtimeState: { .stopped },
         recycleServerIfRunning: {},
-        cancelRunningJobs: cancelRunningJobs
+        cancelRunningJobs: cancelRunningJobs,
+        rateLimitObservationClock: rateLimitObservationClock,
+        rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+        inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
     )
     return CodexReviewAuthModel(controller: controller)
 }
@@ -7855,6 +8417,25 @@ private func writeReviewAuthSnapshot(
     ]
     let data = try JSONSerialization.data(withJSONObject: object)
     try data.write(to: authURL, options: .atomic)
+}
+
+@MainActor
+private func saveReviewAccount(
+    email: String,
+    planType: String? = "pro",
+    makeActive: Bool,
+    environment: [String: String],
+    registryStore: ReviewAccountRegistryStore
+) throws -> CodexAccount {
+    try writeReviewAuthSnapshot(
+        email: email,
+        planType: planType,
+        environment: environment
+    )
+    guard let savedAccount = try registryStore.saveSharedAuthAsSavedAccount(makeActive: makeActive) else {
+        throw TestFailure("expected saved account to be persisted")
+    }
+    return savedAccount
 }
 
 private func writeSavedAccountAuthSnapshot(
