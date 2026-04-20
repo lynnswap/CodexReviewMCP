@@ -736,6 +736,47 @@ struct CodexReviewMCPTests {
         ])
     }
 
+    @Test func standaloneSettingsUpdatesInheritedRootTierAtRoot() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        service_tier = "fast"
+        profile = "reviewer"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+        store.settings.loadForTesting(
+            snapshot: .init(
+                model: nil,
+                fallbackModel: "gpt-5.4",
+                reasoningEffort: nil,
+                serviceTier: .fast,
+                models: []
+            )
+        )
+
+        await store.settings.updateServiceTier(.flex)
+
+        #expect(await transport.recordedEditKeyPaths() == [
+            ["service_tier"],
+        ])
+    }
+
     @Test func standaloneSettingsClearsProfileTierToNormalAtProfileWhenRootTierExists() async throws {
         let environment = try isolatedHomeEnvironment()
         let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
