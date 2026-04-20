@@ -1904,11 +1904,20 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     ) async throws {
         let profile = loadActiveReviewProfile(environment: configuration.environment)
         let localConfig = try loadReviewLocalConfig(environment: configuration.environment)
-        let writeModelAtRoot = profile == nil || localConfig.reviewModel?.nilIfEmpty != nil
+        let hasRootReviewModel = localConfig.reviewModel?.nilIfEmpty != nil
+        let hasProfileReviewModelOverride = activeProfileHasReviewModelOverride(
+            environment: configuration.environment
+        )
+        let writeModelAtRoot = profile == nil
+            || (hasRootReviewModel && hasProfileReviewModelOverride == false)
+        let hasRootReasoningEffort = localConfig.modelReasoningEffort?
+            .nilIfEmpty
+            .flatMap(CodexReviewReasoningEffort.init(rawValue:)) != nil
+        let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
+            environment: configuration.environment
+        )
         let writeReasoningAtRoot = profile == nil
-            || localConfig.modelReasoningEffort?
-                .nilIfEmpty
-                .flatMap(CodexReviewReasoningEffort.init(rawValue:)) != nil
+            || (hasRootReasoningEffort && hasProfileReasoningEffortOverride == false)
         let hasRootServiceTier = localConfig.serviceTier?
             .nilIfEmpty
             .flatMap(CodexReviewServiceTier.init(rawValue:)) != nil
@@ -1958,10 +1967,14 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     ) async throws {
         let profile = loadActiveReviewProfile(environment: configuration.environment)
         let localConfig = try loadReviewLocalConfig(environment: configuration.environment)
+        let hasRootReasoningEffort = localConfig.modelReasoningEffort?
+            .nilIfEmpty
+            .flatMap(CodexReviewReasoningEffort.init(rawValue:)) != nil
+        let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
+            environment: configuration.environment
+        )
         let forceRoot = profile == nil
-            || localConfig.modelReasoningEffort?
-                .nilIfEmpty
-                .flatMap(CodexReviewReasoningEffort.init(rawValue:)) != nil
+            || (hasRootReasoningEffort && hasProfileReasoningEffortOverride == false)
         try await writeSettings(
             edits: [
                 .init(

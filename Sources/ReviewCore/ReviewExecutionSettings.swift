@@ -848,6 +848,20 @@ package func activeProfileClearsReasoningEffort(
         && profileOverrides.modelReasoningEffort == nil
 }
 
+package func activeProfileHasReasoningEffortOverride(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    codexHome: URL? = nil
+) -> Bool {
+    if codexHome == nil {
+        try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    }
+    let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
+    guard let profileOverrides = loadFallbackAppServerConfigDocument(at: configPath)?.activeProfile else {
+        return false
+    }
+    return profileOverrides.modelReasoningEffortOverride.isPresent
+}
+
 package func activeProfileClearsReviewModel(
     environment: [String: String] = ProcessInfo.processInfo.environment,
     codexHome: URL? = nil
@@ -861,6 +875,20 @@ package func activeProfileClearsReviewModel(
     }
     return profileOverrides.reviewModelOverride.isPresent
         && profileOverrides.reviewModel == nil
+}
+
+package func activeProfileHasReviewModelOverride(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    codexHome: URL? = nil
+) -> Bool {
+    if codexHome == nil {
+        try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    }
+    let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
+    guard let profileOverrides = loadFallbackAppServerConfigDocument(at: configPath)?.activeProfile else {
+        return false
+    }
+    return profileOverrides.reviewModelOverride.isPresent
 }
 
 package func activeProfileClearsServiceTier(
