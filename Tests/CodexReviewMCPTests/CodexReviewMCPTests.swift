@@ -520,7 +520,7 @@ struct CodexReviewMCPTests {
         await store.settings.updateServiceTier(.fast)
 
         #expect(await transport.recordedEditKeyPaths() == [
-            [#"profiles."qa.us".service_tier"#],
+            ["profiles.qa.us.service_tier"],
         ])
     }
 
@@ -725,6 +725,50 @@ struct CodexReviewMCPTests {
                 fallbackModel: "gpt-5.4",
                 reasoningEffort: nil,
                 serviceTier: .fast,
+                models: []
+            )
+        )
+
+        await store.settings.updateServiceTier(nil)
+
+        #expect(await transport.recordedEditKeyPaths() == [
+            ["service_tier"],
+        ])
+    }
+
+    @Test func standaloneSettingsClearsProfileTierToNormalAtRootWhenRootTierExists() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        service_tier = "fast"
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        service_tier = "flex"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+        store.settings.loadForTesting(
+            snapshot: .init(
+                model: nil,
+                fallbackModel: "gpt-5.4",
+                reasoningEffort: nil,
+                serviceTier: .flex,
                 models: []
             )
         )

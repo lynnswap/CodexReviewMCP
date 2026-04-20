@@ -735,7 +735,7 @@ import Testing
         #expect(activeProfileClearsServiceTier(environment: ["HOME": tempHome.path]))
     }
 
-    @Test func loadActiveReviewProfileDefaultsToDirectProfileKeyPathWhenSectionIsMissing() throws {
+    @Test func loadActiveReviewProfileUsesDottedWriteKeyPathForDottedProfileNames() throws {
         let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
         try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
@@ -750,7 +750,7 @@ import Testing
         let profile = loadActiveReviewProfile(environment: ["HOME": tempHome.path])
 
         #expect(profile?.name == "qa.us")
-        #expect(profile?.keyPathPrefix == #"profiles."qa.us""#)
+        #expect(profile?.keyPathPrefix == "profiles.qa.us")
     }
 
     @Test func mergeAppServerConfigUsesFallbackForMissingValuesOnly() {

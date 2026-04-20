@@ -1923,11 +1923,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         let hasRootServiceTier = localConfig.serviceTier?
             .nilIfEmpty
             .flatMap(CodexReviewServiceTier.init(rawValue:)) != nil
-        let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
-            environment: configuration.environment
-        )
         let writeServiceTierAtRoot = profile == nil
-            || (serviceTier == nil && hasRootServiceTier && hasProfileServiceTierOverride == false)
+            || (serviceTier == nil && hasRootServiceTier)
         var edits: [AppServerConfigEdit] = [
             .init(
                 keyPath: settingsKeyPath(
@@ -2004,11 +2001,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         let hasRootServiceTier = localConfig.serviceTier?
             .nilIfEmpty
             .flatMap(CodexReviewServiceTier.init(rawValue:)) != nil
-        let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
-            environment: configuration.environment
-        )
         let forceRoot = profile == nil
-            || (serviceTier == nil && hasRootServiceTier && hasProfileServiceTierOverride == false)
+            || (serviceTier == nil && hasRootServiceTier)
         try await writeSettings(
             edits: [
                 .init(

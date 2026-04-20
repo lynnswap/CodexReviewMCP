@@ -233,10 +233,7 @@ package func loadActiveReviewProfile(
     else {
         return nil
     }
-    let content = try? String(contentsOf: configPath, encoding: .utf8)
-    let keyPathPrefix = findActiveProfileKeyPathPrefix(content: content, profile: profile)
-        ?? "profiles.\(profileKeyPathComponent(forDirectKey: profile))"
-    return .init(name: profile, keyPathPrefix: keyPathPrefix)
+    return .init(name: profile, keyPathPrefix: profileWriteKeyPathPrefix(for: profile))
 }
 
 package func loadActiveReviewProfileConfig(
@@ -582,6 +579,13 @@ private func profileKeyPathComponent(forDirectKey profile: String) -> String {
         return profile
     }
     return quotedProfileKeyPathComponent(profile)
+}
+
+private func profileWriteKeyPathPrefix(for profile: String) -> String {
+    if profile.contains(".") {
+        return "profiles.\(profile.split(separator: ".").map(String.init).joined(separator: "."))"
+    }
+    return "profiles.\(profileKeyPathComponent(forDirectKey: profile))"
 }
 
 private enum TOMLIntegerLiteral: Decodable {
