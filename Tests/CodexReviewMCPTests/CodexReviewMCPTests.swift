@@ -736,7 +736,7 @@ struct CodexReviewMCPTests {
         ])
     }
 
-    @Test func standaloneSettingsClearsProfileTierToNormalAtRootWhenRootTierExists() async throws {
+    @Test func standaloneSettingsClearsProfileTierToNormalAtProfileWhenRootTierExists() async throws {
         let environment = try isolatedHomeEnvironment()
         let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
         try FileManager.default.createDirectory(
@@ -776,7 +776,7 @@ struct CodexReviewMCPTests {
         await store.settings.updateServiceTier(nil)
 
         #expect(await transport.recordedEditKeyPaths() == [
-            ["service_tier"],
+            ["profiles.reviewer.service_tier"],
         ])
     }
 
