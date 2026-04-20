@@ -515,7 +515,7 @@ struct CodexReviewMCPTests {
         #expect(firstWrite.first == "review_model")
     }
 
-    @Test func profileModelChangeDoesNotClearInheritedRootTier() async throws {
+    @Test func profileModelChangeClearsInheritedRootTierAtRoot() async throws {
         let environment = try isolatedHomeEnvironment()
         let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
         try FileManager.default.createDirectory(
@@ -580,7 +580,49 @@ struct CodexReviewMCPTests {
         await store.settings.updateModel("gpt-5.4-mini")
 
         let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.contains("profiles.reviewer.service_tier"))
+        #expect(firstWrite.contains("service_tier"))
+        #expect(firstWrite.contains("profiles.reviewer.service_tier") == false)
+    }
+
+    @Test func standaloneSettingsClearsInheritedRootTierAtRoot() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        service_tier = "fast"
+        profile = "reviewer"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+        store.settings.loadForTesting(
+            snapshot: .init(
+                model: nil,
+                fallbackModel: "gpt-5.4",
+                reasoningEffort: nil,
+                serviceTier: .fast,
+                models: []
+            )
+        )
+
+        await store.settings.updateServiceTier(nil)
+
+        #expect(await transport.recordedEditKeyPaths() == [
+            ["service_tier"],
+        ])
     }
 
     @Test func storeSkipsRegistryAccountsWithoutSavedAuthSnapshots() async throws {

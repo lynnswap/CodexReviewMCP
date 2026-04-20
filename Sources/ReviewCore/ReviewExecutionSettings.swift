@@ -877,3 +877,17 @@ package func activeProfileClearsServiceTier(
     return profileOverrides.serviceTierOverride.isPresent
         && profileOverrides.serviceTier == nil
 }
+
+package func activeProfileHasServiceTierOverride(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    codexHome: URL? = nil
+) -> Bool {
+    if codexHome == nil {
+        try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    }
+    let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
+    guard let profileOverrides = loadFallbackAppServerConfigDocument(at: configPath)?.activeProfile else {
+        return false
+    }
+    return profileOverrides.serviceTierOverride.isPresent
+}
