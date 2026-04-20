@@ -10,6 +10,16 @@ private struct ReviewMonitorAccountsListView: View {
         store.auth.savedAccounts
     }
 
+    private var unsavedCurrentAccount: CodexAccount? {
+        guard let currentAccount = store.auth.account else {
+            return nil
+        }
+        guard accounts.contains(where: { $0.accountKey == currentAccount.accountKey }) == false else {
+            return nil
+        }
+        return currentAccount
+    }
+
     private var shouldShowAuthenticationProgress: Bool {
         store.auth.isAuthenticating && (store.auth.account != nil || store.auth.hasSavedAccounts)
     }
@@ -22,51 +32,12 @@ private struct ReviewMonitorAccountsListView: View {
                let progress = auth.progress {
                 authenticationProgressRow(progress)
             }
+            if let unsavedCurrentAccount {
+                accountRow(unsavedCurrentAccount, auth: auth)
+                    .moveDisabled(true)
+            }
             ForEach(accounts) { account in
-                let isSelected :Bool = auth.account == account
-                Label{
-                    VStack{
-                        HStack{
-                            Text(account.maskedEmail)
-                                .textScale(.secondary)
-                                .foregroundStyle(.primary)
-                            Spacer(minLength: 0)
-                        }
-                        RowView(
-                            store:store,
-                            account:account
-                        )
-                    }
-                }icon:{
-                    FocusRingSelectionIndicator(
-                        isSelected: isSelected
-                    )
-                    .accessibilityHidden(true)
-                    .contentShape(.circle)
-                    .onTapGesture {
-                        if isSelected {
-                            return
-                        }
-                        auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
-                    }
-                }
-                .contextMenu{
-                    AccountContextMenuView(
-                        store: store,
-                        account: account
-                    )
-                }
-                .listRowBackground(
-                    RoundedRectangle(
-                        cornerRadius: 8,
-                        style: .continuous
-                    )
-                    .fill(isSelected
-                        ? AnyShapeStyle(.background)
-                        : AnyShapeStyle(.clear)
-                    )
-                    .padding(.horizontal,10)
-                )
+                accountRow(account, auth: auth)
             }
             .onMove(perform: handleMove)
         }
@@ -132,6 +103,56 @@ private struct ReviewMonitorAccountsListView: View {
         }
     }
 
+    @ViewBuilder
+    private func accountRow(
+        _ account: CodexAccount,
+        auth: CodexReviewAuthModel
+    ) -> some View {
+        let isSelected = auth.account == account
+        Label {
+            VStack {
+                HStack {
+                    Text(account.maskedEmail)
+                        .textScale(.secondary)
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 0)
+                }
+                RowView(
+                    store: store,
+                    account: account
+                )
+            }
+        } icon: {
+            FocusRingSelectionIndicator(
+                isSelected: isSelected
+            )
+            .accessibilityHidden(true)
+            .contentShape(.circle)
+            .onTapGesture {
+                if isSelected {
+                    return
+                }
+                auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+            }
+        }
+        .contextMenu {
+            AccountContextMenuView(
+                store: store,
+                account: account
+            )
+        }
+        .listRowBackground(
+            RoundedRectangle(
+                cornerRadius: 8,
+                style: .continuous
+            )
+            .fill(isSelected
+                ? AnyShapeStyle(.background)
+                : AnyShapeStyle(.clear)
+            )
+            .padding(.horizontal, 10)
+        )
+    }
     @ViewBuilder
     private func authenticationProgressRow(
         _ progress: CodexReviewAuthModel.Progress
