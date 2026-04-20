@@ -267,6 +267,117 @@ struct CodexReviewMCPTests {
         ])
     }
 
+    @Test func standaloneSettingsWritesModelOverrideToRootWhenRootOverrideExists() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        review_model = "gpt-5.4"
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        review_model = "gpt-5.3-codex"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+        let gpt54 = CodexReviewModelCatalogItem(
+            id: "gpt-5.4",
+            model: "gpt-5.4",
+            displayName: "GPT-5.4",
+            hidden: false,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .medium, description: "Balanced default."),
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: [.fast]
+        )
+        let gpt54Mini = CodexReviewModelCatalogItem(
+            id: "gpt-5.4-mini",
+            model: "gpt-5.4-mini",
+            displayName: "GPT-5.4 Mini",
+            hidden: false,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .low, description: "Quick pass."),
+                .init(reasoningEffort: .medium, description: "Balanced default."),
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: []
+        )
+        store.settings.loadForTesting(
+            snapshot: .init(
+                model: "gpt-5.4",
+                fallbackModel: nil,
+                reasoningEffort: nil,
+                serviceTier: nil,
+                models: [gpt54, gpt54Mini]
+            )
+        )
+
+        await store.settings.updateModel("gpt-5.4-mini")
+
+        let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
+        #expect(firstWrite.first == "review_model")
+        #expect(firstWrite.contains("profiles.reviewer.review_model") == false)
+    }
+
+    @Test func standaloneSettingsWritesReasoningOverrideToRootWhenRootOverrideExists() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        model_reasoning_effort = "high"
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        model_reasoning_effort = "low"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+        store.settings.loadForTesting(
+            snapshot: .init(
+                model: nil,
+                fallbackModel: "gpt-5.4",
+                reasoningEffort: .high,
+                serviceTier: nil,
+                models: []
+            )
+        )
+
+        await store.settings.updateReasoningEffort(.low)
+
+        #expect(await transport.recordedEditKeyPaths() == [
+            ["model_reasoning_effort"],
+        ])
+    }
+
     @Test func standaloneSettingsWritesTargetQuotedDottedActiveProfile() async throws {
         let environment = try isolatedHomeEnvironment()
         let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
@@ -336,7 +447,7 @@ struct CodexReviewMCPTests {
         ])
     }
 
-    @Test func standaloneSettingsClearsRootOverrideWhenActiveProfileHasNoOverride() async throws {
+    @Test func standaloneSettingsClearsRootOverrideAtRootWhenRootOverrideExists() async throws {
         let environment = try isolatedHomeEnvironment()
         let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
         try FileManager.default.createDirectory(
@@ -370,7 +481,7 @@ struct CodexReviewMCPTests {
         }
 
         let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.first == "profiles.reviewer.review_model")
+        #expect(firstWrite.first == "review_model")
     }
 
     @Test func profileModelChangeDoesNotClearInheritedRootTier() async throws {

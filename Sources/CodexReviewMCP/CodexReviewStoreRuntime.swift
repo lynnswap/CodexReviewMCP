@@ -1879,13 +1879,19 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         serviceTier: CodexReviewServiceTier?
     ) async throws {
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let forceRoot = profile == nil
+        let localConfig = try loadReviewLocalConfig(environment: configuration.environment)
+        let writeModelAtRoot = profile == nil || localConfig.reviewModel?.nilIfEmpty != nil
+        let writeReasoningAtRoot = profile == nil
+            || localConfig.modelReasoningEffort?
+                .nilIfEmpty
+                .flatMap(CodexReviewReasoningEffort.init(rawValue:)) != nil
+        let writeServiceTierAtRoot = profile == nil
         var edits: [AppServerConfigEdit] = [
             .init(
                 keyPath: settingsKeyPath(
                     "review_model",
                     profileKeyPath: profile?.keyPathPrefix,
-                    forceRoot: forceRoot
+                    forceRoot: writeModelAtRoot
                 ),
                 value: model.map(AppServerJSONValue.string) ?? .null,
                 mergeStrategy: .replace
@@ -1896,7 +1902,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 keyPath: settingsKeyPath(
                     "model_reasoning_effort",
                     profileKeyPath: profile?.keyPathPrefix,
-                    forceRoot: forceRoot
+                    forceRoot: writeReasoningAtRoot
                 ),
                 value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
                 mergeStrategy: .replace
@@ -1907,7 +1913,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 keyPath: settingsKeyPath(
                     "service_tier",
                     profileKeyPath: profile?.keyPathPrefix,
-                    forceRoot: forceRoot
+                    forceRoot: writeServiceTierAtRoot
                 ),
                 value: serviceTier.map { .string($0.rawValue) } ?? .null,
                 mergeStrategy: .replace
@@ -1920,7 +1926,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
         let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let localConfig = try loadReviewLocalConfig(environment: configuration.environment)
         let forceRoot = profile == nil
+            || localConfig.modelReasoningEffort?
+                .nilIfEmpty
+                .flatMap(CodexReviewReasoningEffort.init(rawValue:)) != nil
         try await writeSettings(
             edits: [
                 .init(
