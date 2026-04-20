@@ -1539,6 +1539,8 @@ private final class InactiveSavedAccountRateLimitController {
 
     private let clock: any ReviewClock
     private let refreshInterval: Duration
+    private let clockReferenceInstant: ContinuousClock.Instant
+    private let clockReferenceDate: Date
     private var activeTarget: RefreshTarget?
     private var savedAccountsProvider: SavedAccountsProvider?
     private var refreshRateLimitsAction: RefreshRateLimitsAction?
@@ -1550,6 +1552,8 @@ private final class InactiveSavedAccountRateLimitController {
     ) {
         self.clock = clock
         self.refreshInterval = refreshInterval
+        clockReferenceInstant = clock.now
+        clockReferenceDate = Date()
     }
 
     func reconcile(
@@ -1568,7 +1572,7 @@ private final class InactiveSavedAccountRateLimitController {
             : nil
 
         if desiredTarget != activeTarget {
-            detach()
+            await detach()
             activeTarget = desiredTarget
         }
 
@@ -1669,7 +1673,12 @@ private final class InactiveSavedAccountRateLimitController {
         guard let lastFetchAt = account.lastRateLimitFetchAt else {
             return true
         }
-        return Date().timeIntervalSince(lastFetchAt) > timeInterval(for: refreshInterval)
+        return currentDate().timeIntervalSince(lastFetchAt) > timeInterval(for: refreshInterval)
+    }
+
+    private func currentDate() -> Date {
+        let elapsed = clockReferenceInstant.duration(to: clock.now)
+        return clockReferenceDate.addingTimeInterval(timeInterval(for: elapsed))
     }
 
     private func timeInterval(
@@ -1696,12 +1705,14 @@ private final class InactiveSavedAccountRateLimitController {
         activeTarget == target
     }
 
-    private func detach() {
-        refreshTask?.cancel()
+    private func detach() async {
+        let task = refreshTask
         refreshTask = nil
         activeTarget = nil
         savedAccountsProvider = nil
         refreshRateLimitsAction = nil
+        task?.cancel()
+        _ = await task?.result
     }
 }
 

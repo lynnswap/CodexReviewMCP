@@ -1443,7 +1443,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.updateRateLimitsResponse(
             current: [
@@ -1462,7 +1462,7 @@ struct CodexReviewMCPTests {
         )
 
         clock.advance(by: .seconds(60))
-        await authTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 2)
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 65
         }
@@ -1503,7 +1503,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         clock.advance(by: .seconds(30))
         try await authTransport.sendRateLimitsUpdated(
@@ -1524,7 +1524,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.updateRateLimitsResponse(
             current: [
@@ -1548,7 +1548,7 @@ struct CodexReviewMCPTests {
         #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
 
         clock.advance(by: .seconds(30))
-        await authTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 2)
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 66
         }
@@ -1610,13 +1610,13 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await store.auth.refresh()
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 12
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await secondTransport.updateRateLimitsResponse(
             current: [
@@ -1635,7 +1635,7 @@ struct CodexReviewMCPTests {
         )
 
         clock.advance(by: .seconds(60))
-        await secondTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 2)
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 18
         }
@@ -1677,7 +1677,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await store.stop()
         clock.advance(by: .seconds(60))
@@ -1716,15 +1716,15 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.failNextRateLimitsRead(message: "temporary failure")
         clock.advance(by: .seconds(60))
-        await authTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 2)
         await Task.yield()
 
         #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.updateRateLimitsResponse(
             current: [
@@ -1743,7 +1743,7 @@ struct CodexReviewMCPTests {
         )
 
         clock.advance(by: .seconds(60))
-        await authTransport.waitForRateLimitsReadCount(3)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 3)
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 77
         }
@@ -1783,7 +1783,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.blockNextRateLimitsRead()
         await authTransport.updateRateLimitsResponse(
@@ -1825,7 +1825,7 @@ struct CodexReviewMCPTests {
         }
 
         await authTransport.resumeBlockedRateLimitsRead()
-        await authTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 2)
         await Task.yield()
 
         #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
@@ -2799,13 +2799,106 @@ struct CodexReviewMCPTests {
             runtimeGeneration: 1
         )
 
-        await inactiveTransport.waitForRateLimitsReadCount(1)
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 1)
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: inactiveAccount)?.usedPercent == 77
         }
 
         #expect(await inactiveTransport.rateLimitsReadCount() == 1)
         #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 21)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshImmediateCatchUpUsesInjectedClockTime() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 61,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 19,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+        )
+        inactiveAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date(),
+            error: nil
+        )
+
+        clock.advance(by: .seconds(24 * 60 * 60 + 60))
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: inactiveAccount)?.usedPercent == 61
+        }
+
+        #expect(await inactiveTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 19)
 
         await auth.reconcileAuthenticatedSession(
             serverIsRunning: false,
@@ -2889,12 +2982,12 @@ struct CodexReviewMCPTests {
             serverIsRunning: true,
             runtimeGeneration: 1
         )
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         #expect(await inactiveTransport.rateLimitsReadCount() == 0)
 
         clock.advance(by: .seconds(15 * 60))
-        await inactiveTransport.waitForRateLimitsReadCount(1)
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 1)
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: inactiveAccount)?.usedPercent == 66
         }
@@ -2989,10 +3082,10 @@ struct CodexReviewMCPTests {
             serverIsRunning: true,
             runtimeGeneration: 1
         )
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         clock.advance(by: .seconds(15 * 60))
-        await inactiveTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 2)
         try await waitForMainActorCondition {
             inactiveAccounts.allSatisfy {
                 rateLimitWindow(duration: 300, in: $0)?.usedPercent == 55
@@ -3088,7 +3181,7 @@ struct CodexReviewMCPTests {
             serverIsRunning: true,
             runtimeGeneration: 1
         )
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         let newActiveAccount = try #require(
             auth.savedAccounts.first(where: { $0.email == "next@example.com" })
@@ -3098,10 +3191,10 @@ struct CodexReviewMCPTests {
             serverIsRunning: true,
             runtimeGeneration: 2
         )
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         clock.advance(by: .seconds(15 * 60))
-        await inactiveTransport.waitForRateLimitsReadCount(3)
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 2)
         try await waitForMainActorCondition {
             let otherAccount = auth.savedAccounts.first(where: { $0.email == "other@example.com" })
             return rateLimitWindow(duration: 300, in: initialActiveAccount)?.usedPercent == 88
@@ -3109,7 +3202,7 @@ struct CodexReviewMCPTests {
         }
 
         #expect(rateLimitWindow(duration: 300, in: newActiveAccount) == nil)
-        #expect(await inactiveTransport.rateLimitsReadCount() == 3)
+        #expect(await inactiveTransport.rateLimitsReadCount() == 2)
 
         await auth.reconcileAuthenticatedSession(
             serverIsRunning: false,
@@ -3178,7 +3271,7 @@ struct CodexReviewMCPTests {
             serverIsRunning: true,
             runtimeGeneration: 1
         )
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await auth.reconcileAuthenticatedSession(
             serverIsRunning: false,
@@ -3258,10 +3351,10 @@ struct CodexReviewMCPTests {
             serverIsRunning: true,
             runtimeGeneration: 1
         )
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         clock.advance(by: .seconds(15 * 60))
-        await inactiveTransport.waitForRateLimitsReadCount(1)
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 1)
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 58
         }
@@ -8406,6 +8499,29 @@ private func waitForObservedValue<Value: Sendable>(
             }
         }
         throw TestFailure("observable probe ended before the expected value arrived")
+    }
+}
+
+private func waitForClockSuspension(
+    _ clock: ManualTestClock,
+    timeout: Duration = .seconds(2)
+) async throws {
+    try await withTestTimeout(timeout) {
+        while clock.hasSleepers == false {
+            await Task.yield()
+        }
+    }
+}
+
+private func waitForRateLimitsReadCount(
+    _ transport: AuthCapableAppServerSessionTransport,
+    expectedCount: Int,
+    timeout: Duration = .seconds(2)
+) async throws {
+    try await withTestTimeout(timeout) {
+        while await transport.rateLimitsReadCount() < expectedCount {
+            await Task.yield()
+        }
     }
 }
 
