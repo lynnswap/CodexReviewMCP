@@ -1900,7 +1900,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func updateSettingsModel(
         _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
-        serviceTier: CodexReviewServiceTier?
+        persistReasoningEffort: Bool,
+        serviceTier: CodexReviewServiceTier?,
+        persistServiceTier: Bool
     ) async throws {
         let profile = loadActiveReviewProfile(environment: configuration.environment)
         let localConfig = try loadReviewLocalConfig(environment: configuration.environment)
@@ -1937,28 +1939,32 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 mergeStrategy: .replace
             ),
         ]
-        edits.append(
-            .init(
-                keyPath: settingsKeyPath(
-                    "model_reasoning_effort",
-                    profileKeyPath: profile?.keyPathPrefix,
-                    forceRoot: writeReasoningAtRoot
-                ),
-                value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
-                mergeStrategy: .replace
+        if persistReasoningEffort {
+            edits.append(
+                .init(
+                    keyPath: settingsKeyPath(
+                        "model_reasoning_effort",
+                        profileKeyPath: profile?.keyPathPrefix,
+                        forceRoot: writeReasoningAtRoot
+                    ),
+                    value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                )
             )
-        )
-        edits.append(
-            .init(
-                keyPath: settingsKeyPath(
-                    "service_tier",
-                    profileKeyPath: profile?.keyPathPrefix,
-                    forceRoot: writeServiceTierAtRoot
-                ),
-                value: serviceTier.map { .string($0.rawValue) } ?? .null,
-                mergeStrategy: .replace
+        }
+        if persistServiceTier {
+            edits.append(
+                .init(
+                    keyPath: settingsKeyPath(
+                        "service_tier",
+                        profileKeyPath: profile?.keyPathPrefix,
+                        forceRoot: writeServiceTierAtRoot
+                    ),
+                    value: serviceTier.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                )
             )
-        )
+        }
         try await writeSettings(edits: edits)
     }
 

@@ -329,9 +329,9 @@ struct CodexReviewMCPTests {
 
         await store.settings.updateModel("gpt-5.4-mini")
 
-        let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.first == "review_model")
-        #expect(firstWrite.contains("profiles.reviewer.review_model") == false)
+        #expect(await transport.recordedEditKeyPaths() == [
+            ["review_model"],
+        ])
     }
 
     @Test func standaloneSettingsWritesModelOverrideToProfileWhenProfileClearsRootOverride() async throws {
@@ -396,8 +396,9 @@ struct CodexReviewMCPTests {
 
         await store.settings.updateModel("gpt-5.4-mini")
 
-        let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.first == "profiles.reviewer.review_model")
+        #expect(await transport.recordedEditKeyPaths() == [
+            ["profiles.reviewer.review_model"],
+        ])
     }
 
     @Test func standaloneSettingsWritesReasoningOverrideToRootWhenRootOverrideExists() async throws {

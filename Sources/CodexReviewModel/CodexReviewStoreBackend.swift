@@ -30,7 +30,9 @@ package protocol CodexReviewStoreBackend: AnyObject {
     func updateSettingsModel(
         _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
-        serviceTier: CodexReviewServiceTier?
+        persistReasoningEffort: Bool,
+        serviceTier: CodexReviewServiceTier?,
+        persistServiceTier: Bool
     ) async throws
 
     func updateSettingsReasoningEffort(
@@ -68,11 +70,15 @@ extension CodexReviewStoreBackend {
     package func updateSettingsModel(
         _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
-        serviceTier: CodexReviewServiceTier?
+        persistReasoningEffort: Bool,
+        serviceTier: CodexReviewServiceTier?,
+        persistServiceTier: Bool
     ) async throws {
         _ = model
         _ = reasoningEffort
+        _ = persistReasoningEffort
         _ = serviceTier
+        _ = persistServiceTier
     }
 
     package func updateSettingsReasoningEffort(

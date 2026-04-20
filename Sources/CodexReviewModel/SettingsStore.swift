@@ -525,13 +525,17 @@ package final class SettingsStore {
 
         switch trigger {
         case .model:
+            let persistReasoningEffort = previous.reasoningEffort != normalized.reasoningEffort
+            let persistServiceTier = previous.serviceTier != normalized.serviceTier
             await persist(
                 previous: snapshot(selection: previous),
                 operation: {
                     try await self.backend.updateSettingsModel(
                         normalized.model,
                         reasoningEffort: normalized.reasoningEffort,
-                        serviceTier: normalized.serviceTier
+                        persistReasoningEffort: persistReasoningEffort,
+                        serviceTier: normalized.serviceTier,
+                        persistServiceTier: persistServiceTier
                     )
                 }
             )

@@ -3886,7 +3886,9 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
     func updateSettingsModel(
         _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
-        serviceTier: CodexReviewServiceTier?
+        persistReasoningEffort: Bool,
+        serviceTier: CodexReviewServiceTier?,
+        persistServiceTier: Bool
     ) async throws {
         modelUpdateCalls.append(
             .init(
@@ -3896,8 +3898,12 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
             )
         )
         initialSettingsSnapshot.model = model
-        initialSettingsSnapshot.reasoningEffort = reasoningEffort
-        initialSettingsSnapshot.serviceTier = serviceTier
+        if persistReasoningEffort {
+            initialSettingsSnapshot.reasoningEffort = reasoningEffort
+        }
+        if persistServiceTier {
+            initialSettingsSnapshot.serviceTier = serviceTier
+        }
 
         if shouldBlockNextModelUpdate {
             shouldBlockNextModelUpdate = false
