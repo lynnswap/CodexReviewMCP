@@ -463,9 +463,12 @@ struct CodexReviewUITests {
         )
         defer { harness.window.close() }
 
-        applyTestAuthState(auth: store.auth, state: 
-            .signingIn(
-                .init(
+        applyTestAuthState(
+            auth: store.auth,
+            state: .init(
+                isAuthenticated: true,
+                accountID: "review@example.com",
+                progress: .init(
                     title: "Sign in with ChatGPT",
                     detail: "Open the browser to continue.",
                     browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
@@ -477,7 +480,7 @@ struct CodexReviewUITests {
         #expect(harness.windowController.displayedContentKindForTesting == .signInView)
     }
 
-    @Test func windowControllerShowsSignInViewWhileAuthenticatedRetryAuthenticates() async throws {
+    @Test func windowControllerKeepsSplitViewWhileAuthenticatedRetryAuthenticates() async throws {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let harness = makeWindowHarness(
             store: store,
@@ -503,12 +506,12 @@ struct CodexReviewUITests {
                 )
             )
         )
-        try await waitForDisplayedContentKind(harness.windowController, .signInView)
+        try await waitForDisplayedContentKind(harness.windowController, .splitView)
         try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
 
-        #expect(harness.windowController.displayedContentKindForTesting == .signInView)
-        #expect(harness.windowController.isSignInViewEmbeddedForTesting)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting == false)
+        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
+        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
+        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
     }
 
     @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {

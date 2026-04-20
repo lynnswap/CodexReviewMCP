@@ -126,8 +126,9 @@ public final class ReviewMonitorWindowController: NSWindowController {
         if forceSplitView {
             return .splitView
         }
-        if auth.isAuthenticating {
-            return .signInView
+        if auth.isAuthenticating,
+           displayedContentKind == .splitView {
+            return .splitView
         }
         if auth.account != nil {
             return .splitView
@@ -138,6 +139,9 @@ public final class ReviewMonitorWindowController: NSWindowController {
         if auth.errorMessage != nil,
            displayedContentKind == .splitView {
             return .splitView
+        }
+        if auth.isAuthenticating {
+            return .signInView
         }
         return .signInView
     }
