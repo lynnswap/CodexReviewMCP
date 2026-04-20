@@ -28,7 +28,7 @@ package protocol CodexReviewStoreBackend: AnyObject {
     func refreshSettings() async throws -> CodexReviewSettingsSnapshot
 
     func updateSettingsModel(
-        _ model: String,
+        _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?
     ) async throws
@@ -66,7 +66,7 @@ extension CodexReviewStoreBackend {
     }
 
     package func updateSettingsModel(
-        _ model: String,
+        _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?
     ) async throws {

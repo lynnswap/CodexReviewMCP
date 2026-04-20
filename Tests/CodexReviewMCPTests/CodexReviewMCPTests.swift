@@ -85,7 +85,9 @@ struct CodexReviewMCPTests {
             appServerManager: MockAppServerManager { _ in .success() }
         )
 
-        #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.selectedModel == nil)
+        #expect(store.settings.effectiveModel == "gpt-5.4-mini")
+        #expect(store.settings.currentModelDisplayText == "gpt-5.4-mini")
         #expect(store.settings.selectedReasoningEffort == .high)
         #expect(store.settings.selectedServiceTier == .flex)
     }
@@ -142,6 +144,7 @@ struct CodexReviewMCPTests {
         await store.settings.refresh()
 
         #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.fallbackModel == "gpt-5.4")
         #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-5.4-mini"])
         #expect(await transport.requestedModelListCursors() == [nil, "page-2"])
     }
@@ -182,6 +185,7 @@ struct CodexReviewMCPTests {
         await store.settings.refresh()
 
         #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.fallbackModel == "gpt-5.4")
         #expect(store.settings.selectedReasoningEffort == .high)
         #expect(store.settings.selectedServiceTier == .flex)
     }
@@ -221,6 +225,7 @@ struct CodexReviewMCPTests {
         await store.settings.refresh()
 
         #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.fallbackModel == "gpt-5.4")
     }
 
     @Test func standaloneSettingsWritesTargetActiveProfileWhenRootOverrideIsAbsent() async throws {
@@ -258,6 +263,41 @@ struct CodexReviewMCPTests {
         #expect(await transport.recordedEditKeyPaths() == [
             ["profiles.reviewer.model_reasoning_effort"],
             ["profiles.reviewer.service_tier"],
+        ])
+    }
+
+    @Test func standaloneSettingsWritesTargetQuotedDottedActiveProfile() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        profile = "qa.us"
+
+        [profiles."qa.us"]
+        model = "gpt-5.3-codex"
+        service_tier = "flex"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+
+        await store.settings.updateServiceTier(.fast)
+
+        #expect(await transport.recordedEditKeyPaths() == [
+            [#"profiles."qa.us".service_tier"#],
         ])
     }
 

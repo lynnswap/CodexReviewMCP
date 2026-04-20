@@ -147,17 +147,20 @@ package struct CodexReviewModelCatalogItem: Codable, Identifiable, Equatable, Se
 
 package struct CodexReviewSettingsSnapshot: Equatable, Sendable {
     package var model: String?
+    package var fallbackModel: String?
     package var reasoningEffort: CodexReviewReasoningEffort?
     package var serviceTier: CodexReviewServiceTier?
     package var models: [CodexReviewModelCatalogItem]
 
     package init(
         model: String? = nil,
+        fallbackModel: String? = nil,
         reasoningEffort: CodexReviewReasoningEffort? = nil,
         serviceTier: CodexReviewServiceTier? = nil,
         models: [CodexReviewModelCatalogItem] = []
     ) {
         self.model = model
+        self.fallbackModel = fallbackModel
         self.reasoningEffort = reasoningEffort
         self.serviceTier = serviceTier
         self.models = models
@@ -188,6 +191,7 @@ package final class SettingsStore {
             scheduleSelectionChange(trigger: .serviceTier)
         }
     }
+    package private(set) var fallbackModel: String?
     package private(set) var models: [CodexReviewModelCatalogItem]
     package private(set) var isLoading = false
     package private(set) var lastErrorMessage: String?
@@ -215,6 +219,7 @@ package final class SettingsStore {
     ) {
         self.backend = backend
         self.selectedModel = snapshot.model
+        self.fallbackModel = snapshot.fallbackModel
         self.selectedReasoningEffort = snapshot.reasoningEffort
         self.selectedServiceTier = snapshot.serviceTier
         self.models = snapshot.models
@@ -236,24 +241,28 @@ package final class SettingsStore {
 
     package var displayedModels: [CodexReviewModelCatalogItem] {
         models.filter { modelItem in
-            modelItem.hidden == false || modelItem.model == selectedModel
+            modelItem.hidden == false || modelItem.model == effectiveModel
         }
     }
 
-    package var selectedModelItem: CodexReviewModelCatalogItem? {
-        models.first(where: { $0.model == selectedModel })
+    package var effectiveModel: String? {
+        selectedModel ?? fallbackModel
+    }
+
+    package var effectiveModelItem: CodexReviewModelCatalogItem? {
+        models.first(where: { $0.model == effectiveModel })
     }
 
     package var availableReasoningOptions: [CodexReviewReasoningOption] {
-        selectedModelItem?.supportedReasoningEfforts ?? []
+        effectiveModelItem?.supportedReasoningEfforts ?? []
     }
 
     package var availableServiceTiers: [CodexReviewServiceTier] {
-        selectedModelItem?.supportedServiceTiers ?? []
+        effectiveModelItem?.supportedServiceTiers ?? []
     }
 
     package var currentModelDisplayText: String {
-        selectedModelItem?.displayName ?? selectedModel ?? "Model"
+        effectiveModelItem?.displayName ?? effectiveModel ?? "Model"
     }
 
     package var currentReasoningDisplayText: String {
@@ -265,7 +274,7 @@ package final class SettingsStore {
     }
 
     package var effectiveReasoningEffort: CodexReviewReasoningEffort? {
-        selectedReasoningEffort ?? selectedModelItem?.defaultReasoningEffort
+        selectedReasoningEffort ?? effectiveModelItem?.defaultReasoningEffort
     }
 
     package func refreshIfRunning(
@@ -301,6 +310,18 @@ package final class SettingsStore {
             previous: currentSelection(),
             candidate: .init(
                 model: model,
+                reasoningEffort: selectedReasoningEffort,
+                serviceTier: selectedServiceTier
+            )
+        )
+    }
+
+    package func clearModelOverride() async {
+        await applySelectionChange(
+            trigger: .model,
+            previous: currentSelection(),
+            candidate: .init(
+                model: nil,
                 reasoningEffort: selectedReasoningEffort,
                 serviceTier: selectedServiceTier
             )
@@ -358,6 +379,7 @@ package final class SettingsStore {
     }
 
     private func apply(snapshot: CodexReviewSettingsSnapshot) {
+        fallbackModel = snapshot.fallbackModel
         models = snapshot.models
         applyNormalizedSelection(
             normalizeSelection(
@@ -377,6 +399,7 @@ package final class SettingsStore {
     private func snapshot(selection: Selection) -> CodexReviewSettingsSnapshot {
         .init(
             model: selection.model,
+            fallbackModel: fallbackModel,
             reasoningEffort: selection.reasoningEffort,
             serviceTier: selection.serviceTier,
             models: models
@@ -402,14 +425,10 @@ package final class SettingsStore {
         serviceTier: CodexReviewServiceTier?,
         catalog: [CodexReviewModelCatalogItem]
     ) -> Selection {
-        guard let model else {
-            return .init(
-                model: nil,
-                reasoningEffort: nil,
-                serviceTier: nil
-            )
-        }
-        guard let selectedModel = catalog.first(where: { $0.model == model }) else {
+        let effectiveModel = model ?? fallbackModel
+        guard let effectiveModel,
+              let selectedModel = catalog.first(where: { $0.model == effectiveModel })
+        else {
             return .init(
                 model: model,
                 reasoningEffort: reasoningEffort,
@@ -499,14 +518,11 @@ package final class SettingsStore {
 
         switch trigger {
         case .model:
-            guard let model = normalized.model else {
-                return
-            }
             await persist(
                 previous: snapshot(selection: previous),
                 operation: {
                     try await self.backend.updateSettingsModel(
-                        model,
+                        normalized.model,
                         reasoningEffort: normalized.reasoningEffort,
                         serviceTier: normalized.serviceTier
                     )

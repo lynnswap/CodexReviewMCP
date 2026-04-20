@@ -3163,6 +3163,30 @@ struct CodexReviewUITests {
         #expect(store.settings.selectedServiceTier == .flex)
     }
 
+    @Test func settingsStoreClearsModelOverrideBackToFallbackModel() async throws {
+        let backend = BlockingSettingsBackend(
+            snapshot: makeSettingsSnapshot(
+                model: "gpt-5.4-mini",
+                fallbackModel: "gpt-5.4",
+                reasoningEffort: .low,
+                serviceTier: nil
+            )
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        store.settings.selectedModel = nil
+
+        try await waitForCondition {
+            backend.modelUpdateCalls == [
+                .init(model: nil, reasoningEffort: .low, serviceTier: nil)
+            ]
+        }
+
+        #expect(store.settings.selectedModel == nil)
+        #expect(store.settings.effectiveModel == "gpt-5.4")
+        #expect(store.settings.currentModelDisplayText == "GPT-5.4")
+    }
+
     @Test func settingsStoreClearsReasoningOverrideBackToModelDefault() async throws {
         let backend = BlockingSettingsBackend(
             snapshot: makeSettingsSnapshot(
@@ -3664,12 +3688,14 @@ private extension CodexReviewStore {
 
 @MainActor
 private func makeSettingsSnapshot(
-    model: String = "gpt-5.4",
+    model: String? = "gpt-5.4",
+    fallbackModel: String? = nil,
     reasoningEffort: CodexReviewReasoningEffort = .medium,
     serviceTier: CodexReviewServiceTier? = .fast
 ) -> CodexReviewSettingsSnapshot {
     .init(
         model: model,
+        fallbackModel: fallbackModel,
         reasoningEffort: reasoningEffort,
         serviceTier: serviceTier,
         models: ReviewMonitorPreviewContent.makePreviewModelCatalog()
@@ -3749,6 +3775,12 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
 
 @MainActor
 private final class BlockingSettingsBackend: CodexReviewStoreBackend {
+    struct ModelUpdateCall: Equatable {
+        let model: String?
+        let reasoningEffort: CodexReviewReasoningEffort?
+        let serviceTier: CodexReviewServiceTier?
+    }
+
     var isActive = false
     let shouldAutoStartEmbeddedServer = false
     let initialAccount: CodexAccount? = nil
@@ -3757,7 +3789,7 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
     var initialSettingsSnapshot: CodexReviewSettingsSnapshot
 
     private(set) var refreshCallCount = 0
-    private(set) var modelUpdateCalls: [(model: String, reasoningEffort: CodexReviewReasoningEffort?, serviceTier: CodexReviewServiceTier?)] = []
+    private(set) var modelUpdateCalls: [ModelUpdateCall] = []
     private(set) var reasoningUpdateCalls: [CodexReviewReasoningEffort?] = []
     private(set) var serviceTierUpdateCalls: [CodexReviewServiceTier?] = []
 
@@ -3812,12 +3844,12 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
     }
 
     func updateSettingsModel(
-        _ model: String,
+        _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?
     ) async throws {
         modelUpdateCalls.append(
-            (
+            .init(
                 model: model,
                 reasoningEffort: reasoningEffort,
                 serviceTier: serviceTier

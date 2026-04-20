@@ -176,21 +176,21 @@ import Testing
         #expect(
             settingsKeyPath(
                 "review_model",
-                profile: "qa.us",
+                profileKeyPath: #"profiles."qa.us""#,
                 forceRoot: false
-            ) == "profiles.qa.us.review_model"
+            ) == #"profiles."qa.us".review_model"#
         )
         #expect(
             settingsKeyPath(
                 "service_tier",
-                profile: "reviewer",
+                profileKeyPath: "profiles.reviewer",
                 forceRoot: false
             ) == "profiles.reviewer.service_tier"
         )
         #expect(
             settingsKeyPath(
                 "model_reasoning_effort",
-                profile: "reviewer",
+                profileKeyPath: "profiles.reviewer",
                 forceRoot: true
             ) == "model_reasoning_effort"
         )

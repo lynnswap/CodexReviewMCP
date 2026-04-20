@@ -150,6 +150,7 @@ struct StatusView: View {
             HStack{
                 Menu{
                     Picker("Model", selection: $settings.selectedModel) {
+                        Text("Default").tag(Optional<String>.none)
                         ForEach(settings.displayedModels) { item in
                             Text(item.displayName).tag(Optional(item.model))
                         }

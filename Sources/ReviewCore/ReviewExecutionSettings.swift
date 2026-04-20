@@ -41,6 +41,11 @@ package struct ResolvedReviewSettingsOverrides: Sendable, Equatable {
     package var serviceTier: CodexReviewServiceTier?
 }
 
+package struct ActiveReviewProfile: Sendable, Equatable {
+    package var name: String
+    package var keyPathPrefix: String
+}
+
 package struct ReviewExecutionSettingsBuilder: Sendable {
     package var codexCommand: String
     package var environment: [String: String]
@@ -146,6 +151,14 @@ package func resolveReviewModelSelection(
     )
 }
 
+package func resolveReviewModelOverride(
+    localConfig: ReviewLocalConfig,
+    resolvedConfig: AppServerConfigReadResponse.Config
+) -> String? {
+    localConfig.reviewModel?.nilIfEmpty
+        ?? resolvedConfig.reviewModel?.nilIfEmpty
+}
+
 package func resolveDisplayedSettingsOverrides(
     localConfig: ReviewLocalConfig,
     resolvedConfig: AppServerConfigReadResponse.Config
@@ -165,26 +178,26 @@ package func resolveDisplayedSettingsOverrides(
 package func loadActiveReviewProfile(
     environment: [String: String] = ProcessInfo.processInfo.environment,
     codexHome: URL? = nil
-) -> String? {
+) -> ActiveReviewProfile? {
     if codexHome == nil {
         try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
     }
     let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
-    return loadFallbackAppServerConfigDocument(at: configPath)?.profile?.nilIfEmpty
+    return loadFallbackAppServerConfigDocument(at: configPath)?.activeProfileInfo
 }
 
 package func settingsKeyPath(
     _ key: String,
-    profile: String?,
+    profileKeyPath: String?,
     forceRoot: Bool
 ) -> String {
     if forceRoot {
         return key
     }
-    guard let profile else {
+    guard let profileKeyPath else {
         return key
     }
-    return "profiles.\(profile).\(key)"
+    return "\(profileKeyPath).\(key)"
 }
 
 package func loadFallbackAppServerConfig(
@@ -366,29 +379,50 @@ private struct FallbackAppServerConfigDocument: Decodable {
     let modelAutoCompactTokenLimit: Int?
     let profiles: FallbackProfileNode?
 
-    var activeProfile: ProfileOverrides? {
+    var activeProfileInfo: ActiveReviewProfile? {
         guard let profile, let profiles else {
             return nil
         }
         if let directNode = profiles.children[profile],
            directNode.overrides.isEmpty == false
         {
-            return directNode.overrides
+            return .init(
+                name: profile,
+                keyPathPrefix: "profiles.\(profileKeyPathComponent(forDirectKey: profile))"
+            )
         }
 
         var currentNode: FallbackProfileNode? = profiles
+        var pathComponents = ["profiles"]
         for component in profile.split(separator: ".").map(String.init) {
             currentNode = currentNode?.children[component]
-            if currentNode == nil {
+            guard currentNode != nil else {
                 return nil
             }
+            pathComponents.append(component)
         }
         guard let currentNode,
               currentNode.overrides.isEmpty == false
         else {
             return nil
         }
-        return currentNode.overrides
+        return .init(
+            name: profile,
+            keyPathPrefix: pathComponents.joined(separator: ".")
+        )
+    }
+
+    var activeProfile: ProfileOverrides? {
+        activeProfileInfo.flatMap { info in
+            if let directNode = profiles?.children[info.name] {
+                return directNode.overrides
+            }
+            var currentNode = profiles
+            for component in info.name.split(separator: ".").map(String.init) {
+                currentNode = currentNode?.children[component]
+            }
+            return currentNode?.overrides
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -483,6 +517,20 @@ private struct DynamicCodingKey: CodingKey {
     init?(intValue: Int) {
         return nil
     }
+}
+
+private func quotedProfileKeyPathComponent(_ profile: String) -> String {
+    let escapedProfile = profile
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+    return "\"\(escapedProfile)\""
+}
+
+private func profileKeyPathComponent(forDirectKey profile: String) -> String {
+    if profile.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil {
+        return profile
+    }
+    return quotedProfileKeyPathComponent(profile)
 }
 
 private enum TOMLIntegerLiteral: Decodable {

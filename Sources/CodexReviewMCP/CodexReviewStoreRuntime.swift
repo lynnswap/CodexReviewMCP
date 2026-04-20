@@ -1665,10 +1665,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             resolvedConfig: fallbackConfig
         )
         return .init(
-            model: resolveReviewModelSelection(
+            model: resolveReviewModelOverride(
                 localConfig: localConfig,
                 resolvedConfig: fallbackConfig
-            ).reportedModelBeforeThreadStart,
+            ),
+            fallbackModel: fallbackConfig.model?.nilIfEmpty,
             reasoningEffort: displayedOverrides.reasoningEffort,
             serviceTier: displayedOverrides.serviceTier,
             models: []
@@ -1858,13 +1859,14 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             localConfig: localConfig,
             resolvedConfig: effectiveConfig
         )
-        let displayedModel = resolveReviewModelSelection(
+        let modelOverride = resolveReviewModelOverride(
             localConfig: localConfig,
             resolvedConfig: effectiveConfig
-        ).reportedModelBeforeThreadStart
+        )
 
         return .init(
-            model: displayedModel,
+            model: modelOverride,
+            fallbackModel: effectiveConfig.model?.nilIfEmpty,
             reasoningEffort: displayedOverrides.reasoningEffort,
             serviceTier: displayedOverrides.serviceTier,
             models: models
@@ -1872,7 +1874,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     }
 
     func updateSettingsModel(
-        _ model: String,
+        _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?
     ) async throws {
@@ -1883,16 +1885,16 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 .init(
                     keyPath: settingsKeyPath(
                         "review_model",
-                        profile: profile,
+                        profileKeyPath: profile?.keyPathPrefix,
                         forceRoot: localConfig.reviewModel?.nilIfEmpty != nil
                     ),
-                    value: .string(model),
+                    value: model.map(AppServerJSONValue.string) ?? .null,
                     mergeStrategy: .replace
                 ),
                 .init(
                     keyPath: settingsKeyPath(
                         "model_reasoning_effort",
-                        profile: profile,
+                        profileKeyPath: profile?.keyPathPrefix,
                         forceRoot: localConfig.modelReasoningEffort?.nilIfEmpty != nil
                     ),
                     value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
@@ -1901,7 +1903,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 .init(
                     keyPath: settingsKeyPath(
                         "service_tier",
-                        profile: profile,
+                        profileKeyPath: profile?.keyPathPrefix,
                         forceRoot: localConfig.serviceTier?.nilIfEmpty != nil
                     ),
                     value: serviceTier.map { .string($0.rawValue) } ?? .null,
@@ -1921,7 +1923,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 .init(
                     keyPath: settingsKeyPath(
                         "model_reasoning_effort",
-                        profile: profile,
+                        profileKeyPath: profile?.keyPathPrefix,
                         forceRoot: localConfig.modelReasoningEffort?.nilIfEmpty != nil
                     ),
                     value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
@@ -1941,7 +1943,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 .init(
                     keyPath: settingsKeyPath(
                         "service_tier",
-                        profile: profile,
+                        profileKeyPath: profile?.keyPathPrefix,
                         forceRoot: localConfig.serviceTier?.nilIfEmpty != nil
                     ),
                     value: serviceTier.map { .string($0.rawValue) } ?? .null,
