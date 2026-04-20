@@ -1660,9 +1660,13 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
         let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
+        let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
+            environment: configuration.environment
+        )
         let displayedOverrides = resolveDisplayedSettingsOverrides(
             localConfig: localConfig,
-            resolvedConfig: fallbackConfig
+            resolvedConfig: fallbackConfig,
+            profileClearsReasoningEffort: profileClearsReasoningEffort
         )
         return .init(
             model: resolveReviewModelOverride(
@@ -1855,9 +1859,13 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             primary: configResponse.config,
             fallback: fallbackConfig
         )
+        let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
+            environment: configuration.environment
+        )
         let displayedOverrides = resolveDisplayedSettingsOverrides(
             localConfig: localConfig,
-            resolvedConfig: effectiveConfig
+            resolvedConfig: effectiveConfig,
+            profileClearsReasoningEffort: profileClearsReasoningEffort
         )
         let modelOverride = resolveReviewModelOverride(
             localConfig: localConfig,

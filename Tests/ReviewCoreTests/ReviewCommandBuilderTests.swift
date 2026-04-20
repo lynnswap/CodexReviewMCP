@@ -103,6 +103,32 @@ import Testing
         #expect(config?["model_auto_compact_token_limit"] == .int(110_000))
     }
 
+    @Test func reviewExecutionSettingsBuilderHonorsProfileReasoningClearOverRootOverride() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        model_reasoning_effort = null
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = makeReviewThreadStartConfig(
+            reviewSpecificModel: nil,
+            localConfig: .init(modelReasoningEffort: "high"),
+            resolvedConfig: .init(modelReasoningEffort: nil),
+            clampModel: nil,
+            environment: ["HOME": tempHome.path]
+        )
+
+        #expect(config?["model_reasoning_effort"] == nil)
+    }
+
     @Test func reviewExecutionSettingsBuilderKeepsReasoningOverrideButOmitsNumericLimitsWithoutModel() {
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: nil,
@@ -192,6 +218,16 @@ import Testing
 
         #expect(overrides.reasoningEffort == .high)
         #expect(overrides.serviceTier == .flex)
+    }
+
+    @Test func resolveDisplayedSettingsOverridesHonorsProfileReasoningClear() {
+        let overrides = resolveDisplayedSettingsOverrides(
+            localConfig: .init(modelReasoningEffort: "high"),
+            resolvedConfig: .init(modelReasoningEffort: nil),
+            profileClearsReasoningEffort: true
+        )
+
+        #expect(overrides.reasoningEffort == nil)
     }
 
     @Test func resolveReviewModelSelectionPrefersLocalOverride() {
@@ -569,6 +605,24 @@ import Testing
         #expect(config.reviewModel == nil)
         #expect(config.modelReasoningEffort == nil)
         #expect(config.serviceTier == nil)
+    }
+
+    @Test func loadActiveReviewProfileDefaultsToDirectProfileKeyPathWhenSectionIsMissing() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        profile = "qa.us"
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let profile = loadActiveReviewProfile(environment: ["HOME": tempHome.path])
+
+        #expect(profile?.name == "qa.us")
+        #expect(profile?.keyPathPrefix == #"profiles."qa.us""#)
     }
 
     @Test func mergeAppServerConfigUsesFallbackForMissingValuesOnly() {

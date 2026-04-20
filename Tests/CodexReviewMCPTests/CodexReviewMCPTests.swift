@@ -447,6 +447,37 @@ struct CodexReviewMCPTests {
         ])
     }
 
+    @Test func standaloneSettingsWritesTargetActiveProfileWhenSectionIsMissing() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        profile = "reviewer"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+
+        await store.settings.updateReasoningEffort(.high)
+
+        #expect(await transport.recordedEditKeyPaths() == [
+            ["profiles.reviewer.model_reasoning_effort"],
+        ])
+    }
+
     @Test func standaloneSettingsClearsRootOverrideAtRootWhenRootOverrideExists() async throws {
         let environment = try isolatedHomeEnvironment()
         let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
