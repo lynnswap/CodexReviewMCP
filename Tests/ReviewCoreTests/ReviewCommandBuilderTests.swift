@@ -101,7 +101,7 @@ import Testing
         #expect(config?["model_auto_compact_token_limit"] == nil)
     }
 
-    @Test func reviewExecutionSettingsBuilderForwardsLocalServiceTierOverride() {
+    @Test func reviewExecutionSettingsBuilderPrefersResolvedServiceTierOverride() {
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: nil,
             localConfig: .init(serviceTier: "fast"),
@@ -110,7 +110,7 @@ import Testing
             environment: [:]
         )
 
-        #expect(config?["service_tier"] == .string("fast"))
+        #expect(config?["service_tier"] == .string("flex"))
     }
 
     @Test func reviewExecutionSettingsBuilderOmitsNumericLimitsWhenModelIsUnknown() {
@@ -156,7 +156,7 @@ import Testing
         #expect(fallbackResolved == nil)
     }
 
-    @Test func resolveDisplayedSettingsOverridesPrefersReviewLocalOverrides() {
+    @Test func resolveDisplayedSettingsOverridesPrefersResolvedOverrides() {
         let overrides = resolveDisplayedSettingsOverrides(
             localConfig: .init(
                 modelReasoningEffort: "high",
@@ -168,8 +168,20 @@ import Testing
             )
         )
 
-        #expect(overrides.reasoningEffort == .high)
-        #expect(overrides.serviceTier == .fast)
+        #expect(overrides.reasoningEffort == .low)
+        #expect(overrides.serviceTier == .flex)
+    }
+
+    @Test func resolveReviewModelSelectionPrefersResolvedProfileOverride() {
+        let selection = resolveReviewModelSelection(
+            localConfig: .init(reviewModel: "gpt-root"),
+            resolvedConfig: .init(
+                model: "gpt-base",
+                reviewModel: "gpt-profile"
+            )
+        )
+
+        #expect(selection.reportedModelBeforeThreadStart == "gpt-profile")
     }
 
     @Test func settingsKeyPathQuotesProfileNamesWhenNeeded() {

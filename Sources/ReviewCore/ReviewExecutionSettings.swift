@@ -87,15 +87,20 @@ package func makeReviewThreadStartConfig(
     if let reviewSpecificModel = reviewSpecificModel?.nilIfEmpty {
         config["review_model"] = .string(reviewSpecificModel)
     }
-    if let localReasoningEffort = localConfig.modelReasoningEffort?.nilIfEmpty {
-        config["model_reasoning_effort"] = .string(localReasoningEffort)
+    if let reasoningEffort = resolvedConfig.modelReasoningEffort
+        ?? localConfig.modelReasoningEffort?.nilIfEmpty.flatMap(CodexReviewReasoningEffort.init(rawValue:))
+    {
+        config["model_reasoning_effort"] = .string(reasoningEffort.rawValue)
     }
-    if let localServiceTier = localConfig.serviceTier?.nilIfEmpty {
-        config["service_tier"] = .string(localServiceTier)
+    if let serviceTier = resolvedConfig.serviceTier
+        ?? localConfig.serviceTier?.nilIfEmpty.flatMap(CodexReviewServiceTier.init(rawValue:))
+    {
+        config["service_tier"] = .string(serviceTier.rawValue)
     }
 
-    let baselineContextWindow = localConfig.modelContextWindow ?? resolvedConfig.modelContextWindow
-    let baselineAutoCompactTokenLimit = localConfig.modelAutoCompactTokenLimit ?? resolvedConfig.modelAutoCompactTokenLimit
+    let baselineContextWindow = resolvedConfig.modelContextWindow ?? localConfig.modelContextWindow
+    let baselineAutoCompactTokenLimit = resolvedConfig.modelAutoCompactTokenLimit
+        ?? localConfig.modelAutoCompactTokenLimit
 
     if let clampModel = clampModel?.nilIfEmpty {
         if let clampedContextWindow = computeForcedIntegerOverride(
@@ -140,8 +145,8 @@ package func resolveReviewModelSelection(
     localConfig: ReviewLocalConfig,
     resolvedConfig: AppServerConfigReadResponse.Config
 ) -> ResolvedReviewModelSelection {
-    let reviewSpecificModel = localConfig.reviewModel?.nilIfEmpty
-        ?? resolvedConfig.reviewModel?.nilIfEmpty
+    let reviewSpecificModel = resolvedConfig.reviewModel?.nilIfEmpty
+        ?? localConfig.reviewModel?.nilIfEmpty
     let reportedModel = reviewSpecificModel
         ?? resolvedConfig.model?.nilIfEmpty
     return .init(
@@ -155,8 +160,8 @@ package func resolveReviewModelOverride(
     localConfig: ReviewLocalConfig,
     resolvedConfig: AppServerConfigReadResponse.Config
 ) -> String? {
-    localConfig.reviewModel?.nilIfEmpty
-        ?? resolvedConfig.reviewModel?.nilIfEmpty
+    resolvedConfig.reviewModel?.nilIfEmpty
+        ?? localConfig.reviewModel?.nilIfEmpty
 }
 
 package func resolveDisplayedSettingsOverrides(
@@ -164,14 +169,14 @@ package func resolveDisplayedSettingsOverrides(
     resolvedConfig: AppServerConfigReadResponse.Config
 ) -> ResolvedReviewSettingsOverrides {
     .init(
-        reasoningEffort: localConfig.modelReasoningEffort?
-            .nilIfEmpty
-            .flatMap(CodexReviewReasoningEffort.init(rawValue:))
-            ?? resolvedConfig.modelReasoningEffort,
-        serviceTier: localConfig.serviceTier?
-            .nilIfEmpty
-            .flatMap(CodexReviewServiceTier.init(rawValue:))
-            ?? resolvedConfig.serviceTier
+        reasoningEffort: resolvedConfig.modelReasoningEffort
+            ?? localConfig.modelReasoningEffort?
+                .nilIfEmpty
+                .flatMap(CodexReviewReasoningEffort.init(rawValue:)),
+        serviceTier: resolvedConfig.serviceTier
+            ?? localConfig.serviceTier?
+                .nilIfEmpty
+                .flatMap(CodexReviewServiceTier.init(rawValue:))
     )
 }
 
@@ -183,7 +188,13 @@ package func loadActiveReviewProfile(
         try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
     }
     let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
-    return loadFallbackAppServerConfigDocument(at: configPath)?.activeProfileInfo
+    guard let profile = loadFallbackAppServerConfigDocument(at: configPath)?.profile,
+          let content = try? String(contentsOf: configPath, encoding: .utf8),
+          let keyPathPrefix = findActiveProfileKeyPathPrefix(content: content, profile: profile)
+    else {
+        return nil
+    }
+    return .init(name: profile, keyPathPrefix: keyPathPrefix)
 }
 
 package func settingsKeyPath(
@@ -370,6 +381,11 @@ private struct FallbackAppServerConfigDocument: Decodable {
         }
     }
 
+    struct ResolvedActiveProfile: Equatable, Sendable {
+        let profile: ActiveReviewProfile
+        let overrides: ProfileOverrides
+    }
+
     let profile: String?
     let model: String?
     let reviewModel: String?
@@ -377,52 +393,14 @@ private struct FallbackAppServerConfigDocument: Decodable {
     let serviceTier: String?
     let modelContextWindow: Int?
     let modelAutoCompactTokenLimit: Int?
-    let profiles: FallbackProfileNode?
+    let resolvedActiveProfile: ResolvedActiveProfile?
 
     var activeProfileInfo: ActiveReviewProfile? {
-        guard let profile, let profiles else {
-            return nil
-        }
-        if let directNode = profiles.children[profile],
-           directNode.overrides.isEmpty == false
-        {
-            return .init(
-                name: profile,
-                keyPathPrefix: "profiles.\(profileKeyPathComponent(forDirectKey: profile))"
-            )
-        }
-
-        var currentNode: FallbackProfileNode? = profiles
-        var pathComponents = ["profiles"]
-        for component in profile.split(separator: ".").map(String.init) {
-            currentNode = currentNode?.children[component]
-            guard currentNode != nil else {
-                return nil
-            }
-            pathComponents.append(component)
-        }
-        guard let currentNode,
-              currentNode.overrides.isEmpty == false
-        else {
-            return nil
-        }
-        return .init(
-            name: profile,
-            keyPathPrefix: pathComponents.joined(separator: ".")
-        )
+        resolvedActiveProfile?.profile
     }
 
     var activeProfile: ProfileOverrides? {
-        activeProfileInfo.flatMap { info in
-            if let directNode = profiles?.children[info.name] {
-                return directNode.overrides
-            }
-            var currentNode = profiles
-            for component in info.name.split(separator: ".").map(String.init) {
-                currentNode = currentNode?.children[component]
-            }
-            return currentNode?.overrides
-        }
+        resolvedActiveProfile?.overrides
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -454,68 +432,7 @@ private struct FallbackAppServerConfigDocument: Decodable {
             TOMLIntegerLiteral.self,
             forKey: .modelAutoCompactTokenLimit
         )?.value
-        profiles = try container.decodeIfPresent(FallbackProfileNode.self, forKey: .profiles)
-    }
-}
-
-private struct FallbackProfileNode: Decodable {
-    let overrides: FallbackAppServerConfigDocument.ProfileOverrides
-    let children: [String: FallbackProfileNode]
-
-    private enum OverrideCodingKeys: String, CodingKey, CaseIterable {
-        case model
-        case reviewModel = "review_model"
-        case modelReasoningEffort = "model_reasoning_effort"
-        case serviceTier = "service_tier"
-        case modelContextWindow = "model_context_window"
-        case modelAutoCompactTokenLimit = "model_auto_compact_token_limit"
-    }
-
-    init(from decoder: Decoder) throws {
-        let overrideContainer = try decoder.container(keyedBy: OverrideCodingKeys.self)
-        overrides = .init(
-            model: try overrideContainer.decodeIfPresent(String.self, forKey: .model)?.nilIfEmpty,
-            reviewModel: try overrideContainer.decodeIfPresent(String.self, forKey: .reviewModel)?.nilIfEmpty,
-            modelReasoningEffort: try overrideContainer.decodeIfPresent(
-                String.self,
-                forKey: .modelReasoningEffort
-            )?.nilIfEmpty,
-            serviceTier: try overrideContainer.decodeIfPresent(String.self, forKey: .serviceTier)?.nilIfEmpty,
-            modelContextWindow: try overrideContainer.decodeIfPresent(
-                TOMLIntegerLiteral.self,
-                forKey: .modelContextWindow
-            )?.value,
-            modelAutoCompactTokenLimit: try overrideContainer.decodeIfPresent(
-                TOMLIntegerLiteral.self,
-                forKey: .modelAutoCompactTokenLimit
-            )?.value
-        )
-
-        let dynamicContainer = try decoder.container(keyedBy: DynamicCodingKey.self)
-        var children: [String: FallbackProfileNode] = [:]
-        let overrideKeys = Set(OverrideCodingKeys.allCases.map(\.stringValue))
-        for key in dynamicContainer.allKeys where overrideKeys.contains(key.stringValue) == false {
-            if let child = try? dynamicContainer.decode(
-                FallbackProfileNode.self,
-                forKey: key
-            ) {
-                children[key.stringValue] = child
-            }
-        }
-        self.children = children
-    }
-}
-
-private struct DynamicCodingKey: CodingKey {
-    let stringValue: String
-    let intValue: Int? = nil
-
-    init?(stringValue: String) {
-        self.stringValue = stringValue
-    }
-
-    init?(intValue: Int) {
-        return nil
+        resolvedActiveProfile = nil
     }
 }
 
@@ -560,5 +477,172 @@ private func loadFallbackAppServerConfigDocument(at configPath: URL) -> Fallback
     guard let data = try? Data(contentsOf: configPath) else {
         return nil
     }
-    return try? TOMLDecoder().decode(FallbackAppServerConfigDocument.self, from: data)
+    let decoder = TOMLDecoder()
+    guard var document = try? decoder.decode(FallbackAppServerConfigDocument.self, from: data) else {
+        return nil
+    }
+    document = .init(
+        profile: document.profile,
+        model: document.model,
+        reviewModel: document.reviewModel,
+        modelReasoningEffort: document.modelReasoningEffort,
+        serviceTier: document.serviceTier,
+        modelContextWindow: document.modelContextWindow,
+        modelAutoCompactTokenLimit: document.modelAutoCompactTokenLimit,
+        resolvedActiveProfile: resolveActiveProfile(
+            content: String(data: data, encoding: .utf8),
+            profile: document.profile
+        )
+    )
+    return document
+}
+
+private extension FallbackAppServerConfigDocument {
+    init(
+        profile: String?,
+        model: String?,
+        reviewModel: String?,
+        modelReasoningEffort: String?,
+        serviceTier: String?,
+        modelContextWindow: Int?,
+        modelAutoCompactTokenLimit: Int?,
+        resolvedActiveProfile: ResolvedActiveProfile?
+    ) {
+        self.profile = profile
+        self.model = model
+        self.reviewModel = reviewModel
+        self.modelReasoningEffort = modelReasoningEffort
+        self.serviceTier = serviceTier
+        self.modelContextWindow = modelContextWindow
+        self.modelAutoCompactTokenLimit = modelAutoCompactTokenLimit
+        self.resolvedActiveProfile = resolvedActiveProfile
+    }
+}
+
+private func resolveActiveProfile(
+    content: String?,
+    profile: String?
+) -> FallbackAppServerConfigDocument.ResolvedActiveProfile? {
+    guard let profile,
+          let content,
+          let keyPathPrefix = findActiveProfileKeyPathPrefix(
+            content: content,
+            profile: profile
+          )
+    else {
+        return nil
+    }
+    return .init(
+        profile: .init(name: profile, keyPathPrefix: keyPathPrefix),
+        overrides: readProfileOverrides(
+            content: content,
+            keyPathPrefix: keyPathPrefix
+        )
+    )
+}
+
+private func findActiveProfileKeyPathPrefix(
+    content: String?,
+    profile: String
+) -> String? {
+    guard let content else {
+        return nil
+    }
+    let directCandidate = "profiles.\(profileKeyPathComponent(forDirectKey: profile))"
+    let dottedCandidate = "profiles.\(profile.split(separator: ".").map(String.init).joined(separator: "."))"
+    for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
+        let line = stripTOMLComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard line.hasPrefix("["),
+              line.hasSuffix("]")
+        else {
+            continue
+        }
+        let section = String(line.dropFirst().dropLast())
+        if section == directCandidate {
+            return directCandidate
+        }
+        if section == dottedCandidate {
+            return dottedCandidate
+        }
+    }
+    return nil
+}
+
+private func stripTOMLComment(_ line: String) -> String {
+    var isInsideSingleQuotes = false
+    var isInsideDoubleQuotes = false
+    var previousWasEscape = false
+
+    for index in line.indices {
+        let character = line[index]
+        if character == "\"", isInsideSingleQuotes == false, previousWasEscape == false {
+            isInsideDoubleQuotes.toggle()
+        } else if character == "'", isInsideDoubleQuotes == false {
+            isInsideSingleQuotes.toggle()
+        } else if character == "#", isInsideSingleQuotes == false, isInsideDoubleQuotes == false {
+            return String(line[..<index])
+        }
+        previousWasEscape = character == "\\" && isInsideDoubleQuotes && previousWasEscape == false
+    }
+    return line
+}
+
+private func readProfileOverrides(
+    content: String,
+    keyPathPrefix: String
+) -> FallbackAppServerConfigDocument.ProfileOverrides {
+    var isInsideTargetSection = false
+    var model: String?
+    var reviewModel: String?
+    var modelReasoningEffort: String?
+    var serviceTier: String?
+    var modelContextWindow: Int?
+    var modelAutoCompactTokenLimit: Int?
+
+    for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
+        let line = stripTOMLComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard line.isEmpty == false else {
+            continue
+        }
+        if line.hasPrefix("["),
+           line.hasSuffix("]")
+        {
+            let section = String(line.dropFirst().dropLast())
+            isInsideTargetSection = section == keyPathPrefix
+            continue
+        }
+        guard isInsideTargetSection,
+              let separator = line.range(of: "=")
+        else {
+            continue
+        }
+        let key = line[..<separator.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawValue = String(line[separator.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines))
+
+        switch key {
+        case "model":
+            model = trimMatchingQuotes(rawValue).nilIfEmpty
+        case "review_model":
+            reviewModel = trimMatchingQuotes(rawValue).nilIfEmpty
+        case "model_reasoning_effort":
+            modelReasoningEffort = trimMatchingQuotes(rawValue).nilIfEmpty
+        case "service_tier":
+            serviceTier = trimMatchingQuotes(rawValue).nilIfEmpty
+        case "model_context_window":
+            modelContextWindow = normalizeIntegerLiteral(rawValue)
+        case "model_auto_compact_token_limit":
+            modelAutoCompactTokenLimit = normalizeIntegerLiteral(rawValue)
+        default:
+            continue
+        }
+    }
+
+    return .init(
+        model: model,
+        reviewModel: reviewModel,
+        modelReasoningEffort: modelReasoningEffort,
+        serviceTier: serviceTier,
+        modelContextWindow: modelContextWindow,
+        modelAutoCompactTokenLimit: modelAutoCompactTokenLimit
+    )
 }

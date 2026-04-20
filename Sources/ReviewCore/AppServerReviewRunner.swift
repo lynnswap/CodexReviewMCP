@@ -329,8 +329,10 @@ package struct AppServerReviewRunner: Sendable {
             )))
         }
 
-        let reviewSpecificModel = localConfig.reviewModel?.nilIfEmpty
-            ?? resolvedConfig.reviewModel?.nilIfEmpty
+        let reviewSpecificModel = resolveReviewModelOverride(
+            localConfig: localConfig,
+            resolvedConfig: resolvedConfig
+        )
         let resolvedModels = resolveReviewModelSelection(
             localConfig: localConfig,
             resolvedConfig: resolvedConfig

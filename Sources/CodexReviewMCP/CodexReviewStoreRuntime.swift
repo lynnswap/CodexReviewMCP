@@ -1878,15 +1878,15 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?
     ) async throws {
-        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let forceRoot = profile == nil
         try await writeSettings(
             edits: [
                 .init(
                     keyPath: settingsKeyPath(
                         "review_model",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: localConfig.reviewModel?.nilIfEmpty != nil
+                        forceRoot: forceRoot
                     ),
                     value: model.map(AppServerJSONValue.string) ?? .null,
                     mergeStrategy: .replace
@@ -1895,7 +1895,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                     keyPath: settingsKeyPath(
                         "model_reasoning_effort",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: localConfig.modelReasoningEffort?.nilIfEmpty != nil
+                        forceRoot: forceRoot
                     ),
                     value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
@@ -1904,7 +1904,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                     keyPath: settingsKeyPath(
                         "service_tier",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: localConfig.serviceTier?.nilIfEmpty != nil
+                        forceRoot: forceRoot
                     ),
                     value: serviceTier.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
@@ -1916,15 +1916,15 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
-        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let forceRoot = profile == nil
         try await writeSettings(
             edits: [
                 .init(
                     keyPath: settingsKeyPath(
                         "model_reasoning_effort",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: localConfig.modelReasoningEffort?.nilIfEmpty != nil
+                        forceRoot: forceRoot
                     ),
                     value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
@@ -1936,15 +1936,15 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
-        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let forceRoot = profile == nil
         try await writeSettings(
             edits: [
                 .init(
                     keyPath: settingsKeyPath(
                         "service_tier",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: localConfig.serviceTier?.nilIfEmpty != nil
+                        forceRoot: forceRoot
                     ),
                     value: serviceTier.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace

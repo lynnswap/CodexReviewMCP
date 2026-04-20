@@ -301,6 +301,40 @@ struct CodexReviewMCPTests {
         ])
     }
 
+    @Test func standaloneSettingsWritesTargetActiveProfileBeforeTrackedKeysExist() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        sandbox_mode = "danger-full-access"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+
+        await store.settings.updateReasoningEffort(.high)
+
+        #expect(await transport.recordedEditKeyPaths() == [
+            ["profiles.reviewer.model_reasoning_effort"],
+        ])
+    }
+
     @Test func storeSkipsRegistryAccountsWithoutSavedAuthSnapshots() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
