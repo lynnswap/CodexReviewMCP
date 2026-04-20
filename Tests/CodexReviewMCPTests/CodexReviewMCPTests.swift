@@ -5,6 +5,7 @@ import Observation
 import Testing
 import ReviewTestSupport
 @_spi(Testing) @testable import CodexReviewMCP
+@testable import CodexReviewModel
 @testable import ReviewCore
 @testable import ReviewHTTPServer
 
@@ -370,6 +371,74 @@ struct CodexReviewMCPTests {
 
         let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
         #expect(firstWrite.first == "review_model")
+    }
+
+    @Test func profileModelChangeDoesNotClearInheritedRootTier() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        service_tier = "fast"
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        model = "gpt-5.3-codex"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+        let gpt54Mini = CodexReviewModelCatalogItem(
+            id: "gpt-5.4-mini",
+            model: "gpt-5.4-mini",
+            displayName: "GPT-5.4 Mini",
+            hidden: false,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .low, description: "Quick pass."),
+                .init(reasoningEffort: .medium, description: "Balanced default."),
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: []
+        )
+        let gpt53Codex = CodexReviewModelCatalogItem(
+            id: "gpt-5.3-codex",
+            model: "gpt-5.3-codex",
+            displayName: "GPT-5.3 Codex",
+            hidden: false,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .minimal, description: "Lowest overhead."),
+                .init(reasoningEffort: .low, description: "Faster iteration."),
+                .init(reasoningEffort: .medium, description: "Balanced default."),
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: [.fast, .flex]
+        )
+        store.settings.loadForTesting(
+            snapshot: .init(
+                model: nil,
+                fallbackModel: "gpt-5.3-codex",
+                reasoningEffort: nil,
+                serviceTier: .fast,
+                models: [gpt53Codex, gpt54Mini]
+            )
+        )
+
+        await store.settings.updateModel("gpt-5.4-mini")
+
+        let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
+        #expect(firstWrite.contains("service_tier") == false)
     }
 
     @Test func storeSkipsRegistryAccountsWithoutSavedAuthSnapshots() async throws {

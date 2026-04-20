@@ -233,7 +233,8 @@ package final class SettingsStore {
                 model: snapshot.model,
                 reasoningEffort: snapshot.reasoningEffort,
                 serviceTier: snapshot.serviceTier,
-                catalog: snapshot.models
+                catalog: snapshot.models,
+                clearIncompatibleOverrides: false
             ),
             catalog: snapshot.models
         )
@@ -386,7 +387,8 @@ package final class SettingsStore {
                 model: snapshot.model,
                 reasoningEffort: snapshot.reasoningEffort,
                 serviceTier: snapshot.serviceTier,
-                catalog: snapshot.models
+                catalog: snapshot.models,
+                clearIncompatibleOverrides: false
             ),
             catalog: snapshot.models
         )
@@ -423,7 +425,8 @@ package final class SettingsStore {
         model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?,
-        catalog: [CodexReviewModelCatalogItem]
+        catalog: [CodexReviewModelCatalogItem],
+        clearIncompatibleOverrides: Bool
     ) -> Selection {
         let effectiveModel = model ?? fallbackModel
         guard let effectiveModel,
@@ -441,16 +444,20 @@ package final class SettingsStore {
             nil
         } else if let reasoningEffort, supportedReasoningEfforts.contains(reasoningEffort) {
             reasoningEffort
-        } else {
+        } else if clearIncompatibleOverrides {
             nil
+        } else {
+            reasoningEffort
         }
 
         let resolvedServiceTier: CodexReviewServiceTier? = if let serviceTier,
             selectedModel.supportedServiceTiers.contains(serviceTier)
         {
             serviceTier
-        } else {
+        } else if clearIncompatibleOverrides {
             nil
+        } else {
+            serviceTier
         }
 
         return .init(
@@ -505,7 +512,8 @@ package final class SettingsStore {
             model: candidate.model,
             reasoningEffort: candidate.reasoningEffort,
             serviceTier: candidate.serviceTier,
-            catalog: models
+            catalog: models,
+            clearIncompatibleOverrides: trigger == .model
         )
         if normalized != currentSelection() {
             applyNormalizedSelection(normalized, catalog: models)

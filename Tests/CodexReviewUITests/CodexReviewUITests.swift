@@ -3096,6 +3096,21 @@ struct CodexReviewUITests {
         #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-hidden"])
     }
 
+    @Test func settingsStorePreservesIncompatiblePersistedOverridesUntilEdited() {
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = makeSettingsSnapshot(
+            model: "gpt-5.4-mini",
+            reasoningEffort: .high,
+            serviceTier: .fast
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        #expect(store.settings.selectedReasoningEffort == .high)
+        #expect(store.settings.selectedServiceTier == .fast)
+        #expect(store.settings.currentReasoningDisplayText == "High")
+        #expect(store.settings.currentServiceTierDisplayText == "Fast")
+    }
+
     @Test func settingsStoreAppliesPendingSelectionAfterInFlightSave() async throws {
         let backend = BlockingSettingsBackend(snapshot: makeSettingsSnapshot())
         backend.blockNextModelUpdate()
