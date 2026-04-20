@@ -2907,99 +2907,6 @@ struct CodexReviewMCPTests {
         )
     }
 
-    @Test func inactiveRateLimitRefreshContinuesWhenRuntimeStops() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let registryStore = ReviewAccountRegistryStore(environment: environment)
-        _ = try saveReviewAccount(
-            email: "active@example.com",
-            makeActive: true,
-            environment: environment,
-            registryStore: registryStore
-        )
-        _ = try saveReviewAccount(
-            email: "inactive@example.com",
-            makeActive: false,
-            environment: environment,
-            registryStore: registryStore
-        )
-        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
-
-        let clock = ManualTestClock()
-        let activeTransport = AuthCapableAppServerSessionTransport(
-            rateLimitsReadBehavior: .unsupported
-        )
-        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
-        let inactiveTransport = AuthCapableAppServerSessionTransport()
-        await inactiveTransport.updateRateLimitsResponse(
-            current: [
-                "limitId": "codex",
-                "primary": [
-                    "usedPercent": 61,
-                    "windowDurationMins": 300,
-                    "resetsAt": 1_735_776_000,
-                ],
-                "secondary": [
-                    "usedPercent": 19,
-                    "windowDurationMins": 10080,
-                    "resetsAt": 1_736_380_800,
-                ],
-            ]
-        )
-        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
-        let auth = makeAuthModel(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: activeManager,
-            sharedAuthSessionFactory: { _ in
-                SignedOutReviewAuthSession()
-            },
-            loginAuthSessionFactory: { _ in
-                SignedOutReviewAuthSession()
-            },
-            probeAppServerManagerFactory: { _ in
-                inactiveManager
-            },
-            rateLimitObservationClock: clock,
-            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
-        )
-        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
-        let activeAccount = try #require(
-            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
-        )
-        auth.updateSavedAccounts(loadedAccounts.accounts)
-        auth.updateAccount(activeAccount)
-        let inactiveAccount = try #require(
-            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
-        )
-        inactiveAccount.updateRateLimitFetchMetadata(
-            fetchedAt: Date(),
-            error: nil
-        )
-
-        await auth.reconcileAuthenticatedSession(
-            serverIsRunning: true,
-            runtimeGeneration: 1
-        )
-        await clock.sleepUntilSuspendedBy()
-
-        await auth.reconcileAuthenticatedSession(
-            serverIsRunning: false,
-            runtimeGeneration: 2
-        )
-        await clock.sleepUntilSuspendedBy()
-
-        clock.advance(by: .seconds(15 * 60))
-        await inactiveTransport.waitForRateLimitsReadCount(1)
-        try await waitForMainActorCondition {
-            rateLimitWindow(duration: 300, in: inactiveAccount)?.usedPercent == 61
-        }
-
-        #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 19)
-    }
-
     @Test func inactiveRateLimitRefreshSweepsOnlyInactiveAccounts() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
@@ -3865,7 +3772,7 @@ struct CodexReviewMCPTests {
         #expect(cancelledJob.errorMessage == "Account change requested.")
     }
 
-    @Test func terminateAllRunningJobsLocallyCancelsCancellationRequestedJobs() {
+    @Test func terminateAllRunningJobsLocallyKeepsCancellationRequestedJobsInFlight() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let requestedJob = CodexReviewJob.makeForTesting(
             id: "job-requested",
@@ -3895,11 +3802,11 @@ struct CodexReviewMCPTests {
             failureMessage: "Cancellation failed."
         )
 
-        #expect(requestedJob.status == .cancelled)
-        #expect(requestedJob.cancellationRequested == false)
-        #expect(requestedJob.summary == "Review cancelled.")
+        #expect(requestedJob.status == .running)
+        #expect(requestedJob.cancellationRequested)
+        #expect(requestedJob.summary == "Cancellation requested.")
         #expect(requestedJob.errorMessage == "Account change requested.")
-        #expect(requestedJob.endedAt != nil)
+        #expect(requestedJob.endedAt == nil)
 
         #expect(failedJob.status == .failed)
         #expect(failedJob.cancellationRequested == false)

@@ -1559,19 +1559,21 @@ private final class InactiveSavedAccountRateLimitController {
         savedAccountsProvider: @escaping SavedAccountsProvider,
         refreshRateLimits: @escaping RefreshRateLimitsAction
     ) async {
-        let desiredTarget = makeTarget(
-            savedAccountsProvider: savedAccountsProvider,
-            activeAccountKey: activeAccountKey,
-            runtimeGeneration: runtimeGeneration
-        )
+        let desiredTarget = serverIsRunning
+            ? makeTarget(
+                savedAccountsProvider: savedAccountsProvider,
+                activeAccountKey: activeAccountKey,
+                runtimeGeneration: runtimeGeneration
+            )
+            : nil
 
         if desiredTarget != activeTarget {
             detach()
             activeTarget = desiredTarget
         }
 
-        self.savedAccountsProvider = savedAccountsProvider
-        refreshRateLimitsAction = refreshRateLimits
+        self.savedAccountsProvider = desiredTarget == nil ? nil : savedAccountsProvider
+        refreshRateLimitsAction = desiredTarget == nil ? nil : refreshRateLimits
 
         guard let target = activeTarget,
               refreshTask == nil,

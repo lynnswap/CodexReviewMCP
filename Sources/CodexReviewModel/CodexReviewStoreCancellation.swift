@@ -110,12 +110,6 @@ extension CodexReviewStore {
         let resolvedError = failureMessage.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         for job in workspaces.flatMap(\.jobs) where job.isTerminal == false {
             if job.cancellationRequested {
-                job.cancellationRequested = false
-                job.status = .cancelled
-                job.summary = "Review cancelled."
-                job.hasFinalReview = false
-                job.errorMessage = reason.nilIfEmpty ?? job.errorMessage
-                job.endedAt = Date()
                 continue
             }
             job.cancellationRequested = false
