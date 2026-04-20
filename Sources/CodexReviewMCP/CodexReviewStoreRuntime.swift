@@ -1878,62 +1878,56 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?
     ) async throws {
-        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let profileConfig = loadActiveReviewProfileConfig(environment: configuration.environment)
+        let forceRoot = profile == nil
         var edits: [AppServerConfigEdit] = [
             .init(
                 keyPath: settingsKeyPath(
                     "review_model",
                     profileKeyPath: profile?.keyPathPrefix,
-                    forceRoot: shouldWriteRootValue(
-                        rootValuePresent: localConfig.reviewModel?.nilIfEmpty != nil,
-                        profileValuePresent: profileConfig.reviewModel?.nilIfEmpty != nil,
-                        activeProfile: profile
-                    )
+                    forceRoot: forceRoot
                 ),
                 value: model.map(AppServerJSONValue.string) ?? .null,
                 mergeStrategy: .replace
             ),
         ]
-        if let reasoningEdit = associatedModelChangeEdit(
-            key: "model_reasoning_effort",
-            value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
-            rootValuePresent: localConfig.modelReasoningEffort?.nilIfEmpty != nil,
-            profileValuePresent: profileConfig.modelReasoningEffort?.nilIfEmpty != nil,
-            activeProfile: profile
-        ) {
-            edits.append(reasoningEdit)
-        }
-        if let serviceTierEdit = associatedModelChangeEdit(
-            key: "service_tier",
-            value: serviceTier.map { .string($0.rawValue) } ?? .null,
-            rootValuePresent: localConfig.serviceTier?.nilIfEmpty != nil,
-            profileValuePresent: profileConfig.serviceTier?.nilIfEmpty != nil,
-            activeProfile: profile
-        ) {
-            edits.append(serviceTierEdit)
-        }
+        edits.append(
+            .init(
+                keyPath: settingsKeyPath(
+                    "model_reasoning_effort",
+                    profileKeyPath: profile?.keyPathPrefix,
+                    forceRoot: forceRoot
+                ),
+                value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
+                mergeStrategy: .replace
+            )
+        )
+        edits.append(
+            .init(
+                keyPath: settingsKeyPath(
+                    "service_tier",
+                    profileKeyPath: profile?.keyPathPrefix,
+                    forceRoot: forceRoot
+                ),
+                value: serviceTier.map { .string($0.rawValue) } ?? .null,
+                mergeStrategy: .replace
+            )
+        )
         try await writeSettings(edits: edits)
     }
 
     func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
-        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let profileConfig = loadActiveReviewProfileConfig(environment: configuration.environment)
+        let forceRoot = profile == nil
         try await writeSettings(
             edits: [
                 .init(
                     keyPath: settingsKeyPath(
                         "model_reasoning_effort",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: shouldWriteRootValue(
-                            rootValuePresent: localConfig.modelReasoningEffort?.nilIfEmpty != nil,
-                            profileValuePresent: profileConfig.modelReasoningEffort?.nilIfEmpty != nil,
-                            activeProfile: profile
-                        )
+                        forceRoot: forceRoot
                     ),
                     value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
@@ -1945,20 +1939,15 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
-        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let profileConfig = loadActiveReviewProfileConfig(environment: configuration.environment)
+        let forceRoot = profile == nil
         try await writeSettings(
             edits: [
                 .init(
                     keyPath: settingsKeyPath(
                         "service_tier",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: shouldWriteRootValue(
-                            rootValuePresent: localConfig.serviceTier?.nilIfEmpty != nil,
-                            profileValuePresent: profileConfig.serviceTier?.nilIfEmpty != nil,
-                            activeProfile: profile
-                        )
+                        forceRoot: forceRoot
                     ),
                     value: serviceTier.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
@@ -2316,47 +2305,6 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         )
     }
 
-    private func shouldWriteRootValue(
-        rootValuePresent: Bool,
-        profileValuePresent: Bool,
-        activeProfile: ActiveReviewProfile?
-    ) -> Bool {
-        guard activeProfile != nil else {
-            return true
-        }
-        if profileValuePresent {
-            return false
-        }
-        if rootValuePresent {
-            return true
-        }
-        return false
-    }
-
-    private func associatedModelChangeEdit(
-        key: String,
-        value: AppServerJSONValue,
-        rootValuePresent: Bool,
-        profileValuePresent: Bool,
-        activeProfile: ActiveReviewProfile?
-    ) -> AppServerConfigEdit? {
-        if activeProfile != nil, profileValuePresent == false, rootValuePresent {
-            return nil
-        }
-        return .init(
-            keyPath: settingsKeyPath(
-                key,
-                profileKeyPath: activeProfile?.keyPathPrefix,
-                forceRoot: shouldWriteRootValue(
-                    rootValuePresent: rootValuePresent,
-                    profileValuePresent: profileValuePresent,
-                    activeProfile: activeProfile
-                )
-            ),
-            value: value,
-            mergeStrategy: .replace
-        )
-    }
 }
 
 private struct ReviewQueuedJob {

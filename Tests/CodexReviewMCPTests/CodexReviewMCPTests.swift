@@ -370,7 +370,7 @@ struct CodexReviewMCPTests {
         }
 
         let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.first == "review_model")
+        #expect(firstWrite.first == "profiles.reviewer.review_model")
     }
 
     @Test func profileModelChangeDoesNotClearInheritedRootTier() async throws {
@@ -438,7 +438,7 @@ struct CodexReviewMCPTests {
         await store.settings.updateModel("gpt-5.4-mini")
 
         let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.contains("service_tier") == false)
+        #expect(firstWrite.contains("profiles.reviewer.service_tier"))
     }
 
     @Test func storeSkipsRegistryAccountsWithoutSavedAuthSnapshots() async throws {
