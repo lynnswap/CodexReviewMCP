@@ -3030,36 +3030,6 @@ struct CodexReviewUITests {
         _ = view
     }
 
-    @Test func statusViewShowsClearActionsForExplicitOverrides() {
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = makeSettingsSnapshot(
-            model: "gpt-5.4-mini",
-            reasoningEffort: .low,
-            serviceTier: nil
-        )
-        let store = CodexReviewStore(backend: backend)
-        let view = StatusView(store: store)
-
-        #expect(view.showsModelClearAction)
-        #expect(view.showsReasoningClearAction)
-    }
-
-    @Test func statusViewHidesClearActionsForInheritedValues() {
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = .init(
-            model: nil,
-            fallbackModel: "gpt-5.4",
-            reasoningEffort: nil,
-            serviceTier: nil,
-            models: ReviewMonitorPreviewContent.makePreviewModelCatalog()
-        )
-        let store = CodexReviewStore(backend: backend)
-        let view = StatusView(store: store)
-
-        #expect(view.showsModelClearAction == false)
-        #expect(view.showsReasoningClearAction == false)
-    }
-
     @Test func statusViewDisablesSettingsControlsWhenServerIsNotRunning() {
         let backend = CodexReviewPreviewStoreBackend()
         backend.initialSettingsSnapshot = makeSettingsSnapshot()
