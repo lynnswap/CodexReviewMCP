@@ -241,21 +241,37 @@ package func loadFallbackAppServerConfig(
     let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
     let document = loadFallbackAppServerConfigDocument(at: configPath)
     let profileOverrides = document?.activeProfile
+    let resolvedModel = resolveProfileOverride(profileOverrides?.modelOverride, inherited: document?.model)
+    let resolvedReviewModel = resolveProfileOverride(
+        profileOverrides?.reviewModelOverride,
+        inherited: document?.reviewModel
+    )
+    let resolvedReasoningEffort = resolveProfileOverride(
+        profileOverrides?.modelReasoningEffortOverride,
+        inherited: document?.modelReasoningEffort
+    )
+    let resolvedServiceTier = resolveProfileOverride(
+        profileOverrides?.serviceTierOverride,
+        inherited: document?.serviceTier
+    )
+    let resolvedModelContextWindow = resolveProfileOverride(
+        profileOverrides?.modelContextWindowOverride,
+        inherited: document?.modelContextWindow
+    )
+    let resolvedModelAutoCompactTokenLimit = resolveProfileOverride(
+        profileOverrides?.modelAutoCompactTokenLimitOverride,
+        inherited: document?.modelAutoCompactTokenLimit
+    )
 
     return .init(
-        model: profileOverrides?.model ?? document?.model,
-        reviewModel: profileOverrides?.reviewModel ?? document?.reviewModel,
-        modelReasoningEffort: profileOverrides?.modelReasoningEffort
-            .flatMap(CodexReviewReasoningEffort.init(rawValue:))
-            ?? document?.modelReasoningEffort
+        model: resolvedModel,
+        reviewModel: resolvedReviewModel,
+        modelReasoningEffort: resolvedReasoningEffort
             .flatMap(CodexReviewReasoningEffort.init(rawValue:)),
-        serviceTier: profileOverrides?.serviceTier
-            .flatMap(CodexReviewServiceTier.init(rawValue:))
-            ?? document?.serviceTier
+        serviceTier: resolvedServiceTier
             .flatMap(CodexReviewServiceTier.init(rawValue:)),
-        modelContextWindow: profileOverrides?.modelContextWindow ?? document?.modelContextWindow,
-        modelAutoCompactTokenLimit: profileOverrides?.modelAutoCompactTokenLimit
-            ?? document?.modelAutoCompactTokenLimit
+        modelContextWindow: resolvedModelContextWindow,
+        modelAutoCompactTokenLimit: resolvedModelAutoCompactTokenLimit
     )
 }
 
@@ -382,22 +398,78 @@ private func trimMatchingQuotes(_ value: String) -> String {
     return value
 }
 
+private enum ParsedProfileOverride<Value: Equatable & Sendable>: Equatable, Sendable {
+    case missing
+    case value(Value?)
+
+    var isPresent: Bool {
+        switch self {
+        case .missing:
+            false
+        case .value:
+            true
+        }
+    }
+
+    var value: Value? {
+        switch self {
+        case .missing:
+            nil
+        case .value(let value):
+            value
+        }
+    }
+
+    func resolved(over inherited: Value?) -> Value? {
+        switch self {
+        case .missing:
+            inherited
+        case .value(let value):
+            value
+        }
+    }
+}
+
 private struct FallbackAppServerConfigDocument: Decodable {
     struct ProfileOverrides: Equatable, Sendable {
-        let model: String?
-        let reviewModel: String?
-        let modelReasoningEffort: String?
-        let serviceTier: String?
-        let modelContextWindow: Int?
-        let modelAutoCompactTokenLimit: Int?
+        let modelOverride: ParsedProfileOverride<String>
+        let reviewModelOverride: ParsedProfileOverride<String>
+        let modelReasoningEffortOverride: ParsedProfileOverride<String>
+        let serviceTierOverride: ParsedProfileOverride<String>
+        let modelContextWindowOverride: ParsedProfileOverride<Int>
+        let modelAutoCompactTokenLimitOverride: ParsedProfileOverride<Int>
+
+        var model: String? {
+            modelOverride.value
+        }
+
+        var reviewModel: String? {
+            reviewModelOverride.value
+        }
+
+        var modelReasoningEffort: String? {
+            modelReasoningEffortOverride.value
+        }
+
+        var serviceTier: String? {
+            serviceTierOverride.value
+        }
+
+        var modelContextWindow: Int? {
+            modelContextWindowOverride.value
+        }
+
+        var modelAutoCompactTokenLimit: Int? {
+            modelAutoCompactTokenLimitOverride.value
+        }
 
         var isEmpty: Bool {
-            model == nil
-                && reviewModel == nil
-                && modelReasoningEffort == nil
-                && serviceTier == nil
-                && modelContextWindow == nil
-                && modelAutoCompactTokenLimit == nil
+            modelOverride.isPresent == false
+                && reviewModelOverride.isPresent == false
+                && modelReasoningEffortOverride.isPresent == false
+                && serviceTierOverride.isPresent == false
+                && modelContextWindowOverride.isPresent == false
+                && modelAutoCompactTokenLimitOverride.isPresent == false
         }
     }
 
@@ -612,12 +684,12 @@ private func readProfileOverrides(
     keyPathPrefix: String
 ) -> FallbackAppServerConfigDocument.ProfileOverrides {
     var isInsideTargetSection = false
-    var model: String?
-    var reviewModel: String?
-    var modelReasoningEffort: String?
-    var serviceTier: String?
-    var modelContextWindow: Int?
-    var modelAutoCompactTokenLimit: Int?
+    var modelOverride: ParsedProfileOverride<String> = .missing
+    var reviewModelOverride: ParsedProfileOverride<String> = .missing
+    var modelReasoningEffortOverride: ParsedProfileOverride<String> = .missing
+    var serviceTierOverride: ParsedProfileOverride<String> = .missing
+    var modelContextWindowOverride: ParsedProfileOverride<Int> = .missing
+    var modelAutoCompactTokenLimitOverride: ParsedProfileOverride<Int> = .missing
 
     for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
         let line = stripTOMLComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -641,28 +713,54 @@ private func readProfileOverrides(
 
         switch key {
         case "model":
-            model = trimMatchingQuotes(rawValue).nilIfEmpty
+            modelOverride = parseNullableProfileStringOverride(rawValue)
         case "review_model":
-            reviewModel = trimMatchingQuotes(rawValue).nilIfEmpty
+            reviewModelOverride = parseNullableProfileStringOverride(rawValue)
         case "model_reasoning_effort":
-            modelReasoningEffort = trimMatchingQuotes(rawValue).nilIfEmpty
+            modelReasoningEffortOverride = parseNullableProfileStringOverride(rawValue)
         case "service_tier":
-            serviceTier = trimMatchingQuotes(rawValue).nilIfEmpty
+            serviceTierOverride = parseNullableProfileStringOverride(rawValue)
         case "model_context_window":
-            modelContextWindow = normalizeIntegerLiteral(rawValue)
+            modelContextWindowOverride = parseNullableProfileIntegerOverride(rawValue)
         case "model_auto_compact_token_limit":
-            modelAutoCompactTokenLimit = normalizeIntegerLiteral(rawValue)
+            modelAutoCompactTokenLimitOverride = parseNullableProfileIntegerOverride(rawValue)
         default:
             continue
         }
     }
 
     return .init(
-        model: model,
-        reviewModel: reviewModel,
-        modelReasoningEffort: modelReasoningEffort,
-        serviceTier: serviceTier,
-        modelContextWindow: modelContextWindow,
-        modelAutoCompactTokenLimit: modelAutoCompactTokenLimit
+        modelOverride: modelOverride,
+        reviewModelOverride: reviewModelOverride,
+        modelReasoningEffortOverride: modelReasoningEffortOverride,
+        serviceTierOverride: serviceTierOverride,
+        modelContextWindowOverride: modelContextWindowOverride,
+        modelAutoCompactTokenLimitOverride: modelAutoCompactTokenLimitOverride
     )
+}
+
+private func parseNullableProfileStringOverride(_ rawValue: String) -> ParsedProfileOverride<String> {
+    let trimmedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedValue == "null" {
+        return .value(nil)
+    }
+    return .value(trimMatchingQuotes(trimmedValue).nilIfEmpty)
+}
+
+private func parseNullableProfileIntegerOverride(_ rawValue: String) -> ParsedProfileOverride<Int> {
+    let trimmedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedValue == "null" {
+        return .value(nil)
+    }
+    return .value(normalizeIntegerLiteral(trimmedValue))
+}
+
+private func resolveProfileOverride<Value>(
+    _ override: ParsedProfileOverride<Value>?,
+    inherited: Value?
+) -> Value? where Value: Equatable & Sendable {
+    guard let override else {
+        return inherited
+    }
+    return override.resolved(over: inherited)
 }

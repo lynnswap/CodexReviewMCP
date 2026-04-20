@@ -507,6 +507,36 @@ import Testing
         #expect(config.modelAutoCompactTokenLimit == 110_000)
     }
 
+    @Test func fallbackAppServerConfigPreservesClearedProfileOverridesOverRootValues() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        model = "gpt-5.4"
+        review_model = "gpt-5.4-mini"
+        model_reasoning_effort = "high"
+        service_tier = "flex"
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        model = null
+        review_model = null
+        model_reasoning_effort = null
+        service_tier = null
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = loadFallbackAppServerConfig(environment: ["HOME": tempHome.path])
+
+        #expect(config.model == nil)
+        #expect(config.reviewModel == nil)
+        #expect(config.modelReasoningEffort == nil)
+        #expect(config.serviceTier == nil)
+    }
+
     @Test func mergeAppServerConfigUsesFallbackForMissingValuesOnly() {
         let merged = mergeAppServerConfig(
             primary: .init(

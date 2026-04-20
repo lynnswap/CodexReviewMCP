@@ -149,6 +149,12 @@ struct StatusView: View {
             .buttonStyle(.plain)
             HStack{
                 Menu{
+                    if showsModelClearAction {
+                        Button("Use Inherited Model") {
+                            settings.selectedModel = nil
+                        }
+                        Divider()
+                    }
                     Picker("Model", selection: $settings.selectedModel) {
                         ForEach(settings.displayedModels) { item in
                             Text(item.displayName).tag(Optional(item.model))
@@ -167,6 +173,12 @@ struct StatusView: View {
                     Text(settings.currentModelDisplayText)
                 }
                 Menu{
+                    if showsReasoningClearAction {
+                        Button("Use Model Default") {
+                            settings.selectedReasoningEffort = nil
+                        }
+                        Divider()
+                    }
                     Picker("Reasoning", selection: $settings.selectedReasoningEffort) {
                         ForEach(settings.availableReasoningOptions) { item in
                             Text(item.reasoningEffort.displayText)
@@ -196,6 +208,14 @@ struct StatusView: View {
         case .running:
             false
         }
+    }
+
+    var showsModelClearAction: Bool {
+        store.settings.selectedModel != nil
+    }
+
+    var showsReasoningClearAction: Bool {
+        store.settings.selectedReasoningEffort != nil
     }
 }
 
