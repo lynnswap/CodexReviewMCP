@@ -415,11 +415,14 @@ private struct FallbackAppServerConfigDocument: Decodable {
             forKey: .modelReasoningEffort
         )
         serviceTier = try container.decodeIfPresent(String.self, forKey: .serviceTier)
-        modelContextWindow = try container.decodeIfPresent(Int.self, forKey: .modelContextWindow)
+        modelContextWindow = try container.decodeIfPresent(
+            TOMLIntegerLiteral.self,
+            forKey: .modelContextWindow
+        )?.value
         modelAutoCompactTokenLimit = try container.decodeIfPresent(
-            Int.self,
+            TOMLIntegerLiteral.self,
             forKey: .modelAutoCompactTokenLimit
-        )
+        )?.value
         profiles = try container.decodeIfPresent(FallbackProfileNode.self, forKey: .profiles)
     }
 }
@@ -447,11 +450,14 @@ private struct FallbackProfileNode: Decodable {
                 forKey: .modelReasoningEffort
             )?.nilIfEmpty,
             serviceTier: try overrideContainer.decodeIfPresent(String.self, forKey: .serviceTier)?.nilIfEmpty,
-            modelContextWindow: try overrideContainer.decodeIfPresent(Int.self, forKey: .modelContextWindow),
+            modelContextWindow: try overrideContainer.decodeIfPresent(
+                TOMLIntegerLiteral.self,
+                forKey: .modelContextWindow
+            )?.value,
             modelAutoCompactTokenLimit: try overrideContainer.decodeIfPresent(
-                Int.self,
+                TOMLIntegerLiteral.self,
                 forKey: .modelAutoCompactTokenLimit
-            )
+            )?.value
         )
 
         let dynamicContainer = try decoder.container(keyedBy: DynamicCodingKey.self)
@@ -479,6 +485,29 @@ private struct DynamicCodingKey: CodingKey {
 
     init?(intValue: Int) {
         return nil
+    }
+}
+
+private enum TOMLIntegerLiteral: Decodable {
+    case int(Int)
+    case string(String)
+
+    var value: Int? {
+        switch self {
+        case .int(let value):
+            return value
+        case .string(let value):
+            return normalizeIntegerLiteral(value)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Int.self) {
+            self = .int(value)
+            return
+        }
+        self = .string(try container.decode(String.self))
     }
 }
 

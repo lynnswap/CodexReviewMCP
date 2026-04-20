@@ -3056,8 +3056,9 @@ struct CodexReviewUITests {
         await store.settings.updateModel("gpt-5.4-mini")
 
         #expect(store.settings.selectedModel == "gpt-5.4-mini")
-        #expect(store.settings.selectedReasoningEffort == .medium)
+        #expect(store.settings.selectedReasoningEffort == nil)
         #expect(store.settings.selectedServiceTier == nil)
+        #expect(store.settings.currentReasoningDisplayText == "Medium")
     }
 
     @Test func settingsStoreKeepsCurrentHiddenModelVisible() {
@@ -3160,6 +3161,26 @@ struct CodexReviewUITests {
         #expect(backend.modelUpdateCalls.isEmpty)
         #expect(store.settings.selectedReasoningEffort == .minimal)
         #expect(store.settings.selectedServiceTier == .flex)
+    }
+
+    @Test func settingsStoreClearsReasoningOverrideBackToModelDefault() async throws {
+        let backend = BlockingSettingsBackend(
+            snapshot: makeSettingsSnapshot(
+                model: "gpt-5.4",
+                reasoningEffort: .high,
+                serviceTier: .fast
+            )
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        store.settings.selectedReasoningEffort = nil
+
+        try await waitForCondition {
+            backend.reasoningUpdateCalls == [nil]
+        }
+
+        #expect(store.settings.selectedReasoningEffort == nil)
+        #expect(store.settings.currentReasoningDisplayText == "Medium")
     }
 
     @Test func signInViewDescriptionTextReflectsAuthState() {

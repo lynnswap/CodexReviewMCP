@@ -422,10 +422,8 @@ package final class SettingsStore {
             nil
         } else if let reasoningEffort, supportedReasoningEfforts.contains(reasoningEffort) {
             reasoningEffort
-        } else if supportedReasoningEfforts.contains(selectedModel.defaultReasoningEffort) {
-            selectedModel.defaultReasoningEffort
         } else {
-            supportedReasoningEfforts.first
+            nil
         }
 
         let resolvedServiceTier: CodexReviewServiceTier? = if let serviceTier,

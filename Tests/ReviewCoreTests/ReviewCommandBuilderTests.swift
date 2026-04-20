@@ -463,6 +463,25 @@ import Testing
         #expect(config.serviceTier == .flex)
     }
 
+    @Test func fallbackAppServerConfigAcceptsQuotedNumericLimits() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        model_context_window = "120_000"
+        model_auto_compact_token_limit = "110_000"
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = loadFallbackAppServerConfig(environment: ["HOME": tempHome.path])
+
+        #expect(config.modelContextWindow == 120_000)
+        #expect(config.modelAutoCompactTokenLimit == 110_000)
+    }
+
     @Test func mergeAppServerConfigUsesFallbackForMissingValuesOnly() {
         let merged = mergeAppServerConfig(
             primary: .init(
