@@ -2302,6 +2302,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 appServerRuntimeState: runtimeState
             )
             appServerRuntimeGeneration += 1
+            if let store = attachedStore {
+                await store.settings.refreshIfRunning(serverState: store.serverState)
+            }
         } catch {
             let endpointRecord = server.currentEndpointRecord()
             removeRuntimeState(endpointRecord: endpointRecord)

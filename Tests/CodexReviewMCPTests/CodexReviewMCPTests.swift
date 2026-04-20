@@ -2933,6 +2933,115 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func switchingAccountsRefreshesSettingsAfterAppServerRecycle() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let oldTransport = SettingsRefreshTransport(
+            config: .init(model: "gpt-5.4", reviewModel: "gpt-old"),
+            firstPage: .init(
+                data: [
+                    .init(
+                        id: "gpt-old",
+                        model: "gpt-old",
+                        displayName: "GPT Old",
+                        hidden: false,
+                        supportedReasoningEfforts: [
+                            .init(reasoningEffort: .medium, description: "Balanced default.")
+                        ],
+                        defaultReasoningEffort: .medium,
+                        supportedServiceTiers: []
+                    )
+                ],
+                nextCursor: nil
+            ),
+            secondPage: .init(data: [], nextCursor: nil)
+        )
+        let newTransport = SettingsRefreshTransport(
+            config: .init(model: "gpt-5.4", reviewModel: "gpt-new"),
+            firstPage: .init(
+                data: [
+                    .init(
+                        id: "gpt-new",
+                        model: "gpt-new",
+                        displayName: "GPT New",
+                        hidden: false,
+                        supportedReasoningEfforts: [
+                            .init(reasoningEffort: .medium, description: "Balanced default.")
+                        ],
+                        defaultReasoningEffort: .medium,
+                        supportedServiceTiers: []
+                    )
+                ],
+                nextCursor: nil
+            ),
+            secondPage: .init(data: [], nextCursor: nil)
+        )
+        let manager = PreparedSettingsRefreshAppServerManager(
+            initialAuthTransport: oldTransport,
+            recycledAuthTransport: newTransport
+        )
+        let authSession = SequencedReadAccountReviewAuthSession(
+            responses: [
+                .init(
+                    account: .chatGPT(email: "active@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+                .init(
+                    account: .chatGPT(email: "other@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+            ]
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        try await waitForMainActorCondition {
+            store.auth.account?.email == "active@example.com"
+                && store.settings.selectedModel == "gpt-old"
+        }
+
+        let savedAccount = try #require(store.auth.savedAccounts.first(where: { $0.email == "other@example.com" }))
+        try await store.auth.switchAccount(savedAccount)
+
+        try await waitForMainActorCondition {
+            store.auth.account?.email == "other@example.com"
+                && store.settings.selectedModel == "gpt-new"
+        }
+
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
+
+        await store.stop()
+    }
+
     @Test func rateLimitObserverRetriesAfterInitialReadDisconnect() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager(
@@ -8430,6 +8539,66 @@ private actor AuthCapableAppServerManager: AppServerManaging {
 
     func prepareCount() -> Int {
         prepareCountStorage
+    }
+}
+
+private actor PreparedSettingsRefreshAppServerManager: AppServerManaging {
+    private let runtimeState = AppServerRuntimeState(
+        pid: 200,
+        startTime: .init(seconds: 2, microseconds: 0),
+        processGroupLeaderPID: 200,
+        processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
+    )
+    private let initialAuthTransport: any AppServerSessionTransport
+    private let recycledAuthTransport: any AppServerSessionTransport
+    private var prepareCountStorage = 0
+    private var shutdownCountStorage = 0
+
+    init(
+        initialAuthTransport: any AppServerSessionTransport,
+        recycledAuthTransport: any AppServerSessionTransport
+    ) {
+        self.initialAuthTransport = initialAuthTransport
+        self.recycledAuthTransport = recycledAuthTransport
+    }
+
+    func prepare() async throws -> AppServerRuntimeState {
+        prepareCountStorage += 1
+        return runtimeState
+    }
+
+    func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
+    func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        prepareCountStorage >= 2 ? recycledAuthTransport : initialAuthTransport
+    }
+
+    func currentRuntimeState() async -> AppServerRuntimeState? {
+        runtimeState
+    }
+
+    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
+    }
+
+    func diagnosticsTail() async -> String {
+        ""
+    }
+
+    func shutdown() async {
+        shutdownCountStorage += 1
+    }
+
+    func prepareCount() -> Int {
+        prepareCountStorage
+    }
+
+    func shutdownCount() -> Int {
+        shutdownCountStorage
     }
 }
 
