@@ -582,9 +582,6 @@ private func profileKeyPathComponent(forDirectKey profile: String) -> String {
 }
 
 private func profileWriteKeyPathPrefix(for profile: String) -> String {
-    if profile.contains(".") {
-        return "profiles.\(profile.split(separator: ".").map(String.init).joined(separator: "."))"
-    }
     return "profiles.\(profileKeyPathComponent(forDirectKey: profile))"
 }
 

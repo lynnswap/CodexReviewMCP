@@ -520,7 +520,7 @@ struct CodexReviewMCPTests {
         await store.settings.updateServiceTier(.fast)
 
         #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.qa.us.service_tier"],
+            [#"profiles."qa.us".service_tier"#],
         ])
     }
 
