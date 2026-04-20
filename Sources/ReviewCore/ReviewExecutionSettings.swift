@@ -86,6 +86,10 @@ package func makeReviewThreadStartConfig(
         environment: environment,
         codexHome: codexHome
     )
+    let profileClearsServiceTier = activeProfileClearsServiceTier(
+        environment: environment,
+        codexHome: codexHome
+    )
     var config: [String: AppServerJSONValue] = [:]
 
     if let reviewSpecificModel = reviewSpecificModel?.nilIfEmpty {
@@ -102,7 +106,11 @@ package func makeReviewThreadStartConfig(
         config["model_reasoning_effort"] = .string(reasoningEffort.rawValue)
     }
     if let serviceTier = resolvedConfig.serviceTier
-        ?? localConfig.serviceTier?.nilIfEmpty.flatMap(CodexReviewServiceTier.init(rawValue:))
+        ?? (
+            profileClearsServiceTier
+                ? nil
+                : localConfig.serviceTier?.nilIfEmpty.flatMap(CodexReviewServiceTier.init(rawValue:))
+        )
     {
         config["service_tier"] = .string(serviceTier.rawValue)
     }
@@ -176,7 +184,8 @@ package func resolveReviewModelOverride(
 package func resolveDisplayedSettingsOverrides(
     localConfig: ReviewLocalConfig,
     resolvedConfig: AppServerConfigReadResponse.Config,
-    profileClearsReasoningEffort: Bool = false
+    profileClearsReasoningEffort: Bool = false,
+    profileClearsServiceTier: Bool = false
 ) -> ResolvedReviewSettingsOverrides {
     .init(
         reasoningEffort: (
@@ -187,9 +196,13 @@ package func resolveDisplayedSettingsOverrides(
                     .flatMap(CodexReviewReasoningEffort.init(rawValue:))
         ) ?? resolvedConfig.modelReasoningEffort,
         serviceTier: resolvedConfig.serviceTier
-            ?? localConfig.serviceTier?
-                .nilIfEmpty
-                .flatMap(CodexReviewServiceTier.init(rawValue:))
+            ?? (
+                profileClearsServiceTier
+                    ? nil
+                    : localConfig.serviceTier?
+                        .nilIfEmpty
+                        .flatMap(CodexReviewServiceTier.init(rawValue:))
+            )
     )
 }
 
@@ -792,4 +805,19 @@ package func activeProfileClearsReasoningEffort(
     }
     return profileOverrides.modelReasoningEffortOverride.isPresent
         && profileOverrides.modelReasoningEffort == nil
+}
+
+package func activeProfileClearsServiceTier(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    codexHome: URL? = nil
+) -> Bool {
+    if codexHome == nil {
+        try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    }
+    let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
+    guard let profileOverrides = loadFallbackAppServerConfigDocument(at: configPath)?.activeProfile else {
+        return false
+    }
+    return profileOverrides.serviceTierOverride.isPresent
+        && profileOverrides.serviceTier == nil
 }

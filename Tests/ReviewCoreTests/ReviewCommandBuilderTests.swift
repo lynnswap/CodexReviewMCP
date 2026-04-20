@@ -129,6 +129,32 @@ import Testing
         #expect(config?["model_reasoning_effort"] == nil)
     }
 
+    @Test func reviewExecutionSettingsBuilderHonorsProfileServiceTierClearOverRootFallback() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        service_tier = null
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = makeReviewThreadStartConfig(
+            reviewSpecificModel: nil,
+            localConfig: .init(serviceTier: "fast"),
+            resolvedConfig: .init(serviceTier: nil),
+            clampModel: nil,
+            environment: ["HOME": tempHome.path]
+        )
+
+        #expect(config?["service_tier"] == nil)
+    }
+
     @Test func reviewExecutionSettingsBuilderKeepsReasoningOverrideButOmitsNumericLimitsWithoutModel() {
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: nil,
@@ -228,6 +254,16 @@ import Testing
         )
 
         #expect(overrides.reasoningEffort == nil)
+    }
+
+    @Test func resolveDisplayedSettingsOverridesHonorsProfileServiceTierClear() {
+        let overrides = resolveDisplayedSettingsOverrides(
+            localConfig: .init(serviceTier: "fast"),
+            resolvedConfig: .init(serviceTier: nil),
+            profileClearsServiceTier: true
+        )
+
+        #expect(overrides.serviceTier == nil)
     }
 
     @Test func resolveReviewModelSelectionPrefersLocalOverride() {

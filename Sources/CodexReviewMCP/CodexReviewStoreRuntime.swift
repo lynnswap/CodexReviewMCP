@@ -1663,10 +1663,14 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
             environment: configuration.environment
         )
+        let profileClearsServiceTier = activeProfileClearsServiceTier(
+            environment: configuration.environment
+        )
         let displayedOverrides = resolveDisplayedSettingsOverrides(
             localConfig: localConfig,
             resolvedConfig: fallbackConfig,
-            profileClearsReasoningEffort: profileClearsReasoningEffort
+            profileClearsReasoningEffort: profileClearsReasoningEffort,
+            profileClearsServiceTier: profileClearsServiceTier
         )
         return .init(
             model: resolveReviewModelOverride(
@@ -1862,10 +1866,14 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
             environment: configuration.environment
         )
+        let profileClearsServiceTier = activeProfileClearsServiceTier(
+            environment: configuration.environment
+        )
         let displayedOverrides = resolveDisplayedSettingsOverrides(
             localConfig: localConfig,
             resolvedConfig: effectiveConfig,
-            profileClearsReasoningEffort: profileClearsReasoningEffort
+            profileClearsReasoningEffort: profileClearsReasoningEffort,
+            profileClearsServiceTier: profileClearsServiceTier
         )
         let modelOverride = resolveReviewModelOverride(
             localConfig: localConfig,
