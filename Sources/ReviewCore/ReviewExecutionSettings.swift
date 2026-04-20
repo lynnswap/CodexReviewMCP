@@ -152,18 +152,27 @@ package func resolveInitialReviewModel(
 ) -> String? {
     let localConfig = (try? loadReviewLocalConfig(environment: environment)) ?? .init()
     let fallbackConfig = loadFallbackAppServerConfig(environment: environment, codexHome: codexHome)
+    let profileClearsReviewModel = activeProfileClearsReviewModel(
+        environment: environment,
+        codexHome: codexHome
+    )
     return resolveReviewModelSelection(
         localConfig: localConfig,
-        resolvedConfig: fallbackConfig
+        resolvedConfig: fallbackConfig,
+        profileClearsReviewModel: profileClearsReviewModel
     ).reportedModelBeforeThreadStart
 }
 
 package func resolveReviewModelSelection(
     localConfig: ReviewLocalConfig,
-    resolvedConfig: AppServerConfigReadResponse.Config
+    resolvedConfig: AppServerConfigReadResponse.Config,
+    profileClearsReviewModel: Bool = false
 ) -> ResolvedReviewModelSelection {
-    let reviewSpecificModel = localConfig.reviewModel?.nilIfEmpty
-        ?? resolvedConfig.reviewModel?.nilIfEmpty
+    let reviewSpecificModel = (
+        profileClearsReviewModel
+            ? nil
+            : localConfig.reviewModel?.nilIfEmpty
+    ) ?? resolvedConfig.reviewModel?.nilIfEmpty
     let reportedModel = reviewSpecificModel
         ?? resolvedConfig.model?.nilIfEmpty
     return .init(
@@ -175,10 +184,14 @@ package func resolveReviewModelSelection(
 
 package func resolveReviewModelOverride(
     localConfig: ReviewLocalConfig,
-    resolvedConfig: AppServerConfigReadResponse.Config
+    resolvedConfig: AppServerConfigReadResponse.Config,
+    profileClearsReviewModel: Bool = false
 ) -> String? {
-    localConfig.reviewModel?.nilIfEmpty
-        ?? resolvedConfig.reviewModel?.nilIfEmpty
+    (
+        profileClearsReviewModel
+            ? nil
+            : localConfig.reviewModel?.nilIfEmpty
+    ) ?? resolvedConfig.reviewModel?.nilIfEmpty
 }
 
 package func resolveDisplayedSettingsOverrides(
@@ -668,6 +681,7 @@ private func findActiveProfileKeyPathPrefix(
         return nil
     }
     let directCandidate = "profiles.\(profileKeyPathComponent(forDirectKey: profile))"
+    let quotedCandidate = "profiles.\(quotedProfileKeyPathComponent(profile))"
     let dottedCandidate = "profiles.\(profile.split(separator: ".").map(String.init).joined(separator: "."))"
     for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
         let line = stripTOMLComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -679,6 +693,9 @@ private func findActiveProfileKeyPathPrefix(
         let section = String(line.dropFirst().dropLast())
         if section == directCandidate {
             return directCandidate
+        }
+        if section == quotedCandidate {
+            return quotedCandidate
         }
         if section == dottedCandidate {
             return dottedCandidate
@@ -805,6 +822,21 @@ package func activeProfileClearsReasoningEffort(
     }
     return profileOverrides.modelReasoningEffortOverride.isPresent
         && profileOverrides.modelReasoningEffort == nil
+}
+
+package func activeProfileClearsReviewModel(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    codexHome: URL? = nil
+) -> Bool {
+    if codexHome == nil {
+        try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    }
+    let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
+    guard let profileOverrides = loadFallbackAppServerConfigDocument(at: configPath)?.activeProfile else {
+        return false
+    }
+    return profileOverrides.reviewModelOverride.isPresent
+        && profileOverrides.reviewModel == nil
 }
 
 package func activeProfileClearsServiceTier(

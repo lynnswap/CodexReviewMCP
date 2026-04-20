@@ -278,6 +278,19 @@ import Testing
         #expect(selection.reportedModelBeforeThreadStart == "gpt-root")
     }
 
+    @Test func resolveReviewModelSelectionHonorsProfileReviewModelClear() {
+        let selection = resolveReviewModelSelection(
+            localConfig: .init(reviewModel: "gpt-root"),
+            resolvedConfig: .init(
+                model: "gpt-base",
+                reviewModel: nil
+            ),
+            profileClearsReviewModel: true
+        )
+
+        #expect(selection.reportedModelBeforeThreadStart == "gpt-base")
+    }
+
     @Test func resolveReviewModelOverridePrefersLocalOverride() {
         let reviewModelOverride = resolveReviewModelOverride(
             localConfig: .init(reviewModel: "gpt-root"),
@@ -288,6 +301,16 @@ import Testing
         )
 
         #expect(reviewModelOverride == "gpt-root")
+    }
+
+    @Test func resolveReviewModelOverrideHonorsProfileReviewModelClear() {
+        let reviewModelOverride = resolveReviewModelOverride(
+            localConfig: .init(reviewModel: "gpt-root"),
+            resolvedConfig: .init(reviewModel: nil),
+            profileClearsReviewModel: true
+        )
+
+        #expect(reviewModelOverride == nil)
     }
 
     @Test func settingsKeyPathQuotesProfileNamesWhenNeeded() {
@@ -547,6 +570,28 @@ import Testing
 
         #expect(config.reviewModel == "gpt-5.4-mini")
         #expect(config.serviceTier == .flex)
+    }
+
+    @Test func fallbackAppServerConfigReadsQuotedBareSafeProfileScopedValues() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        profile = "reviewer"
+
+        [profiles."reviewer"]
+        review_model = "gpt-5.4-mini"
+        model_reasoning_effort = "high"
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = loadFallbackAppServerConfig(environment: ["HOME": tempHome.path])
+
+        #expect(config.reviewModel == "gpt-5.4-mini")
+        #expect(config.modelReasoningEffort == .high)
     }
 
     @Test func fallbackAppServerConfigReadsDottedProfileScopedValues() throws {

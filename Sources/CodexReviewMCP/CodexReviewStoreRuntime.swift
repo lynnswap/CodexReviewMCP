@@ -1660,6 +1660,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
         let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
+        let profileClearsReviewModel = activeProfileClearsReviewModel(
+            environment: configuration.environment
+        )
         let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
             environment: configuration.environment
         )
@@ -1675,7 +1678,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         return .init(
             model: resolveReviewModelOverride(
                 localConfig: localConfig,
-                resolvedConfig: fallbackConfig
+                resolvedConfig: fallbackConfig,
+                profileClearsReviewModel: profileClearsReviewModel
             ),
             fallbackModel: fallbackConfig.model?.nilIfEmpty,
             reasoningEffort: displayedOverrides.reasoningEffort,
@@ -1863,6 +1867,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             primary: configResponse.config,
             fallback: fallbackConfig
         )
+        let profileClearsReviewModel = activeProfileClearsReviewModel(
+            environment: configuration.environment
+        )
         let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
             environment: configuration.environment
         )
@@ -1877,7 +1884,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         )
         let modelOverride = resolveReviewModelOverride(
             localConfig: localConfig,
-            resolvedConfig: effectiveConfig
+            resolvedConfig: effectiveConfig,
+            profileClearsReviewModel: profileClearsReviewModel
         )
 
         return .init(
