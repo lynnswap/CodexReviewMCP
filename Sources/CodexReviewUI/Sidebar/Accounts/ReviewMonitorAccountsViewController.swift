@@ -10,10 +10,18 @@ private struct ReviewMonitorAccountsListView: View {
         store.auth.savedAccounts
     }
 
+    private var shouldShowAuthenticationProgress: Bool {
+        store.auth.isAuthenticating && (store.auth.account != nil || store.auth.hasSavedAccounts)
+    }
+
     var body: some View {
         @Bindable var auth = store.auth
         
         List {
+            if shouldShowAuthenticationProgress,
+               let progress = auth.progress {
+                authenticationProgressRow(progress)
+            }
             ForEach(accounts) { account in
                 let isSelected :Bool = auth.account == account
                 Label{
@@ -122,6 +130,30 @@ private struct ReviewMonitorAccountsListView: View {
                 )
             }
         }
+    }
+
+    @ViewBuilder
+    private func authenticationProgressRow(
+        _ progress: CodexReviewAuthModel.Progress
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(progress.title)
+                .font(.headline)
+                .foregroundStyle(.primary)
+            Text(progress.detail)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Button("Cancel", role: .cancel) {
+                Task { @MainActor in
+                    await store.auth.cancelAuthentication()
+                }
+            }
+            .controlSize(.small)
+        }
+        .padding(.vertical, 6)
+        .accessibilityIdentifier("review-monitor.account-auth-progress")
+        .listRowBackground(Color.clear)
+        .moveDisabled(true)
     }
 }
 
