@@ -1878,15 +1878,20 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?
     ) async throws {
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let forceRoot = profile == nil
+        let profileConfig = loadActiveReviewProfileConfig(environment: configuration.environment)
         try await writeSettings(
             edits: [
                 .init(
                     keyPath: settingsKeyPath(
                         "review_model",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: forceRoot
+                        forceRoot: shouldWriteRootValue(
+                            rootValuePresent: localConfig.reviewModel?.nilIfEmpty != nil,
+                            profileValuePresent: profileConfig.reviewModel?.nilIfEmpty != nil,
+                            activeProfile: profile
+                        )
                     ),
                     value: model.map(AppServerJSONValue.string) ?? .null,
                     mergeStrategy: .replace
@@ -1895,7 +1900,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                     keyPath: settingsKeyPath(
                         "model_reasoning_effort",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: forceRoot
+                        forceRoot: shouldWriteRootValue(
+                            rootValuePresent: localConfig.modelReasoningEffort?.nilIfEmpty != nil,
+                            profileValuePresent: profileConfig.modelReasoningEffort?.nilIfEmpty != nil,
+                            activeProfile: profile
+                        )
                     ),
                     value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
@@ -1904,7 +1913,11 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                     keyPath: settingsKeyPath(
                         "service_tier",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: forceRoot
+                        forceRoot: shouldWriteRootValue(
+                            rootValuePresent: localConfig.serviceTier?.nilIfEmpty != nil,
+                            profileValuePresent: profileConfig.serviceTier?.nilIfEmpty != nil,
+                            activeProfile: profile
+                        )
                     ),
                     value: serviceTier.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
@@ -1916,15 +1929,20 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let forceRoot = profile == nil
+        let profileConfig = loadActiveReviewProfileConfig(environment: configuration.environment)
         try await writeSettings(
             edits: [
                 .init(
                     keyPath: settingsKeyPath(
                         "model_reasoning_effort",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: forceRoot
+                        forceRoot: shouldWriteRootValue(
+                            rootValuePresent: localConfig.modelReasoningEffort?.nilIfEmpty != nil,
+                            profileValuePresent: profileConfig.modelReasoningEffort?.nilIfEmpty != nil,
+                            activeProfile: profile
+                        )
                     ),
                     value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
@@ -1936,15 +1954,20 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let forceRoot = profile == nil
+        let profileConfig = loadActiveReviewProfileConfig(environment: configuration.environment)
         try await writeSettings(
             edits: [
                 .init(
                     keyPath: settingsKeyPath(
                         "service_tier",
                         profileKeyPath: profile?.keyPathPrefix,
-                        forceRoot: forceRoot
+                        forceRoot: shouldWriteRootValue(
+                            rootValuePresent: localConfig.serviceTier?.nilIfEmpty != nil,
+                            profileValuePresent: profileConfig.serviceTier?.nilIfEmpty != nil,
+                            activeProfile: profile
+                        )
                     ),
                     value: serviceTier.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
@@ -2300,6 +2323,23 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             ),
             responseType: AppServerConfigWriteResponse.self
         )
+    }
+
+    private func shouldWriteRootValue(
+        rootValuePresent: Bool,
+        profileValuePresent: Bool,
+        activeProfile: ActiveReviewProfile?
+    ) -> Bool {
+        guard activeProfile != nil else {
+            return true
+        }
+        if profileValuePresent {
+            return false
+        }
+        if rootValuePresent {
+            return true
+        }
+        return false
     }
 }
 

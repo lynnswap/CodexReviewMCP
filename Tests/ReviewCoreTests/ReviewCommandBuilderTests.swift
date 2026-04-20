@@ -381,6 +381,19 @@ import Testing
         }
     }
 
+    @Test func reviewLocalConfigAcceptsQuotedNumericLimits() throws {
+        let config = try parseReviewLocalConfig(
+            """
+            model_context_window = "120_000"
+            model_auto_compact_token_limit = "110_000"
+            """,
+            sourcePath: "/tmp/.codex_review/config.toml"
+        )
+
+        #expect(config.modelContextWindow == 120_000)
+        #expect(config.modelAutoCompactTokenLimit == 110_000)
+    }
+
     @Test func fallbackAppServerConfigReadsProfileScopedValues() throws {
         let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)

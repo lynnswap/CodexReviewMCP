@@ -141,15 +141,7 @@ private func parseReviewConfigInteger(
     key: String,
     sourcePath: String
 ) throws -> Int? {
-    guard rawValue.hasPrefix("\"") == false, rawValue.hasPrefix("'") == false else {
-        throw ReviewLocalConfigError.invalidValue(
-            path: sourcePath,
-            key: key,
-            expected: "an integer"
-        )
-    }
-
-    let normalized = rawValue
+    let normalized = trimReviewConfigMatchingQuotes(rawValue)
         .replacingOccurrences(of: "_", with: "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
     guard normalized.isEmpty == false,

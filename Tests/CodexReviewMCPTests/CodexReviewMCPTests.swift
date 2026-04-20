@@ -335,6 +335,43 @@ struct CodexReviewMCPTests {
         ])
     }
 
+    @Test func standaloneSettingsClearsRootOverrideWhenActiveProfileHasNoOverride() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        review_model = "gpt-5.4-mini"
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        model = "gpt-5.4"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+
+        store.settings.selectedModel = nil
+        try await waitForMainActorCondition {
+            store.settings.selectedModel == nil
+        }
+
+        let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
+        #expect(firstWrite.first == "review_model")
+    }
+
     @Test func storeSkipsRegistryAccountsWithoutSavedAuthSnapshots() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)

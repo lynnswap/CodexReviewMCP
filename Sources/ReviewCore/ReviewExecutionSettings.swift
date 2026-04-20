@@ -197,6 +197,26 @@ package func loadActiveReviewProfile(
     return .init(name: profile, keyPathPrefix: keyPathPrefix)
 }
 
+package func loadActiveReviewProfileConfig(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    codexHome: URL? = nil
+) -> ReviewLocalConfig {
+    if codexHome == nil {
+        try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    }
+    let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
+    guard let activeProfile = loadFallbackAppServerConfigDocument(at: configPath)?.activeProfile else {
+        return .init()
+    }
+    return .init(
+        reviewModel: activeProfile.reviewModel,
+        modelReasoningEffort: activeProfile.modelReasoningEffort,
+        serviceTier: activeProfile.serviceTier,
+        modelContextWindow: activeProfile.modelContextWindow,
+        modelAutoCompactTokenLimit: activeProfile.modelAutoCompactTokenLimit
+    )
+}
+
 package func settingsKeyPath(
     _ key: String,
     profileKeyPath: String?,
