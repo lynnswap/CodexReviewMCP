@@ -81,6 +81,28 @@ import Testing
         #expect(config?["model_auto_compact_token_limit"] == .int(110_000))
     }
 
+    @Test func reviewExecutionSettingsBuilderPrefersLocalReasoningAndLimitsOverResolvedConfig() {
+        let config = makeReviewThreadStartConfig(
+            reviewSpecificModel: "custom-review-model",
+            localConfig: .init(
+                modelReasoningEffort: "high",
+                modelContextWindow: 120_000,
+                modelAutoCompactTokenLimit: 110_000
+            ),
+            resolvedConfig: .init(
+                modelReasoningEffort: .low,
+                modelContextWindow: 999_999,
+                modelAutoCompactTokenLimit: 888_888
+            ),
+            clampModel: "custom-review-model",
+            environment: [:]
+        )
+
+        #expect(config?["model_reasoning_effort"] == .string("high"))
+        #expect(config?["model_context_window"] == .int(120_000))
+        #expect(config?["model_auto_compact_token_limit"] == .int(110_000))
+    }
+
     @Test func reviewExecutionSettingsBuilderKeepsReasoningOverrideButOmitsNumericLimitsWithoutModel() {
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: nil,
@@ -156,7 +178,7 @@ import Testing
         #expect(fallbackResolved == nil)
     }
 
-    @Test func resolveDisplayedSettingsOverridesPrefersResolvedOverrides() {
+    @Test func resolveDisplayedSettingsOverridesPrefersLocalReasoningAndResolvedServiceTier() {
         let overrides = resolveDisplayedSettingsOverrides(
             localConfig: .init(
                 modelReasoningEffort: "high",
@@ -168,11 +190,11 @@ import Testing
             )
         )
 
-        #expect(overrides.reasoningEffort == .low)
+        #expect(overrides.reasoningEffort == .high)
         #expect(overrides.serviceTier == .flex)
     }
 
-    @Test func resolveReviewModelSelectionPrefersResolvedProfileOverride() {
+    @Test func resolveReviewModelSelectionPrefersLocalOverride() {
         let selection = resolveReviewModelSelection(
             localConfig: .init(reviewModel: "gpt-root"),
             resolvedConfig: .init(
@@ -181,7 +203,19 @@ import Testing
             )
         )
 
-        #expect(selection.reportedModelBeforeThreadStart == "gpt-profile")
+        #expect(selection.reportedModelBeforeThreadStart == "gpt-root")
+    }
+
+    @Test func resolveReviewModelOverridePrefersLocalOverride() {
+        let reviewModelOverride = resolveReviewModelOverride(
+            localConfig: .init(reviewModel: "gpt-root"),
+            resolvedConfig: .init(
+                model: "gpt-base",
+                reviewModel: "gpt-profile"
+            )
+        )
+
+        #expect(reviewModelOverride == "gpt-root")
     }
 
     @Test func settingsKeyPathQuotesProfileNamesWhenNeeded() {

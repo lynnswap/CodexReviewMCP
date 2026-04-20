@@ -87,8 +87,9 @@ package func makeReviewThreadStartConfig(
     if let reviewSpecificModel = reviewSpecificModel?.nilIfEmpty {
         config["review_model"] = .string(reviewSpecificModel)
     }
-    if let reasoningEffort = resolvedConfig.modelReasoningEffort
-        ?? localConfig.modelReasoningEffort?.nilIfEmpty.flatMap(CodexReviewReasoningEffort.init(rawValue:))
+    if let reasoningEffort = localConfig.modelReasoningEffort?.nilIfEmpty
+        .flatMap(CodexReviewReasoningEffort.init(rawValue:))
+        ?? resolvedConfig.modelReasoningEffort
     {
         config["model_reasoning_effort"] = .string(reasoningEffort.rawValue)
     }
@@ -98,9 +99,9 @@ package func makeReviewThreadStartConfig(
         config["service_tier"] = .string(serviceTier.rawValue)
     }
 
-    let baselineContextWindow = resolvedConfig.modelContextWindow ?? localConfig.modelContextWindow
-    let baselineAutoCompactTokenLimit = resolvedConfig.modelAutoCompactTokenLimit
-        ?? localConfig.modelAutoCompactTokenLimit
+    let baselineContextWindow = localConfig.modelContextWindow ?? resolvedConfig.modelContextWindow
+    let baselineAutoCompactTokenLimit = localConfig.modelAutoCompactTokenLimit
+        ?? resolvedConfig.modelAutoCompactTokenLimit
 
     if let clampModel = clampModel?.nilIfEmpty {
         if let clampedContextWindow = computeForcedIntegerOverride(
@@ -145,8 +146,8 @@ package func resolveReviewModelSelection(
     localConfig: ReviewLocalConfig,
     resolvedConfig: AppServerConfigReadResponse.Config
 ) -> ResolvedReviewModelSelection {
-    let reviewSpecificModel = resolvedConfig.reviewModel?.nilIfEmpty
-        ?? localConfig.reviewModel?.nilIfEmpty
+    let reviewSpecificModel = localConfig.reviewModel?.nilIfEmpty
+        ?? resolvedConfig.reviewModel?.nilIfEmpty
     let reportedModel = reviewSpecificModel
         ?? resolvedConfig.model?.nilIfEmpty
     return .init(
@@ -160,8 +161,8 @@ package func resolveReviewModelOverride(
     localConfig: ReviewLocalConfig,
     resolvedConfig: AppServerConfigReadResponse.Config
 ) -> String? {
-    resolvedConfig.reviewModel?.nilIfEmpty
-        ?? localConfig.reviewModel?.nilIfEmpty
+    localConfig.reviewModel?.nilIfEmpty
+        ?? resolvedConfig.reviewModel?.nilIfEmpty
 }
 
 package func resolveDisplayedSettingsOverrides(
@@ -169,10 +170,10 @@ package func resolveDisplayedSettingsOverrides(
     resolvedConfig: AppServerConfigReadResponse.Config
 ) -> ResolvedReviewSettingsOverrides {
     .init(
-        reasoningEffort: resolvedConfig.modelReasoningEffort
-            ?? localConfig.modelReasoningEffort?
-                .nilIfEmpty
-                .flatMap(CodexReviewReasoningEffort.init(rawValue:)),
+        reasoningEffort: localConfig.modelReasoningEffort?
+            .nilIfEmpty
+            .flatMap(CodexReviewReasoningEffort.init(rawValue:))
+            ?? resolvedConfig.modelReasoningEffort,
         serviceTier: resolvedConfig.serviceTier
             ?? localConfig.serviceTier?
                 .nilIfEmpty
