@@ -6,6 +6,11 @@ import SwiftUI
 private struct ReviewMonitorAccountsListView: View {
     let store: CodexReviewStore
 
+    private enum PresentedAlert {
+        case pendingAction
+        case actionResult
+    }
+
     private var savedAccounts: [CodexAccount] {
         store.auth.savedAccounts
     }
@@ -18,6 +23,50 @@ private struct ReviewMonitorAccountsListView: View {
             return nil
         }
         return currentAccount
+    }
+
+    private var presentedAlert: PresentedAlert? {
+        if store.auth.isPresentingPendingAccountActionConfirmation {
+            return .pendingAction
+        }
+        if store.auth.isPresentingAccountActionAlert {
+            return .actionResult
+        }
+        return nil
+    }
+
+    private var isPresentingAlert: Binding<Bool> {
+        Binding(
+            get: { presentedAlert != nil },
+            set: { newValue in
+                guard newValue == false else {
+                    return
+                }
+                dismissPresentedAlert()
+            }
+        )
+    }
+
+    private var alertTitle: String {
+        switch presentedAlert {
+        case .pendingAction:
+            store.auth.pendingAccountActionConfirmationTitle
+        case .actionResult:
+            store.auth.accountActionAlertTitle
+        case nil:
+            ""
+        }
+    }
+
+    private var alertMessage: String {
+        switch presentedAlert {
+        case .pendingAction:
+            store.auth.pendingAccountActionConfirmationMessage
+        case .actionResult:
+            store.auth.accountActionAlertMessage
+        case nil:
+            ""
+        }
     }
 
     var body: some View {
@@ -35,27 +84,12 @@ private struct ReviewMonitorAccountsListView: View {
         .animation(.default, value: savedAccounts)
         .accessibilityIdentifier("review-monitor.account-list")
         .alert(
-            auth.pendingAccountActionConfirmationTitle,
-            isPresented: $auth.isPresentingPendingAccountActionConfirmation
+            alertTitle,
+            isPresented: isPresentingAlert
         ) {
-            Button(auth.pendingAccountActionConfirmationButtonTitle) {
-                auth.confirmPendingAccountAction()
-            }
-            Button("Cancel", role: .cancel) {
-                auth.cancelPendingAccountAction()
-            }
+            alertButtons(auth: auth)
         } message: {
-            Text(auth.pendingAccountActionConfirmationMessage)
-        }
-        .alert(
-            auth.accountActionAlertTitle,
-            isPresented: $auth.isPresentingAccountActionAlert
-        ) {
-            Button("OK", role: .cancel) {
-                auth.dismissAccountActionAlert()
-            }
-        } message: {
-            Text(auth.accountActionAlertMessage)
+            Text(alertMessage)
         }
     }
 
@@ -149,6 +183,38 @@ private struct ReviewMonitorAccountsListView: View {
                     message: error.localizedDescription
                 )
             }
+        }
+    }
+
+    @ViewBuilder
+    private func alertButtons(
+        auth: CodexReviewAuthModel
+    ) -> some View {
+        switch presentedAlert {
+        case .pendingAction:
+            Button(auth.pendingAccountActionConfirmationButtonTitle) {
+                auth.confirmPendingAccountAction()
+            }
+            Button("Cancel", role: .cancel) {
+                auth.cancelPendingAccountAction()
+            }
+        case .actionResult:
+            Button("OK", role: .cancel) {
+                auth.dismissAccountActionAlert()
+            }
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func dismissPresentedAlert() {
+        switch presentedAlert {
+        case .pendingAction:
+            store.auth.cancelPendingAccountAction()
+        case .actionResult:
+            store.auth.dismissAccountActionAlert()
+        case nil:
+            return
         }
     }
 }
