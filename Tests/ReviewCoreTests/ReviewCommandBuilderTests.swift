@@ -753,6 +753,27 @@ import Testing
         #expect(profile?.keyPathPrefix == #"profiles."qa.us""#)
     }
 
+    @Test func loadActiveReviewProfilePreservesExistingDottedSectionPrefix() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        profile = "qa.us"
+
+        [profiles.qa.us]
+        service_tier = "fast"
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let profile = loadActiveReviewProfile(environment: ["HOME": tempHome.path])
+
+        #expect(profile?.name == "qa.us")
+        #expect(profile?.keyPathPrefix == "profiles.qa.us")
+    }
+
     @Test func mergeAppServerConfigUsesFallbackForMissingValuesOnly() {
         let merged = mergeAppServerConfig(
             primary: .init(

@@ -233,7 +233,10 @@ package func loadActiveReviewProfile(
     else {
         return nil
     }
-    return .init(name: profile, keyPathPrefix: profileWriteKeyPathPrefix(for: profile))
+    let content = try? String(contentsOf: configPath, encoding: .utf8)
+    let keyPathPrefix = findActiveProfileKeyPathPrefix(content: content, profile: profile)
+        ?? profileWriteKeyPathPrefix(for: profile)
+    return .init(name: profile, keyPathPrefix: keyPathPrefix)
 }
 
 package func loadActiveReviewProfileConfig(
