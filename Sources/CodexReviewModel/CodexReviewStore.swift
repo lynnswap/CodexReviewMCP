@@ -26,7 +26,9 @@ public final class CodexReviewStore {
         self.auth = CodexReviewAuthModel(
             controller: authController ?? CodexReviewPreviewAuthController()
         )
+        self.auth.updateSavedAccounts(backend.initialAccounts)
         self.auth.updateAccount(backend.initialAccount)
+        backend.attachStore(self)
     }
 
     public func start(forceRestartIfNeeded: Bool = false) async {
@@ -128,5 +130,17 @@ public final class CodexReviewStore {
 
     private func resetReviews() {
         workspaces = []
+    }
+
+    public var hasRunningJobs: Bool {
+        workspaces.contains { workspace in
+            workspace.jobs.contains(where: { $0.isTerminal == false })
+        }
+    }
+
+    public var runningJobCount: Int {
+        workspaces.reduce(into: 0) { count, workspace in
+            count += workspace.jobs.filter { $0.isTerminal == false }.count
+        }
     }
 }

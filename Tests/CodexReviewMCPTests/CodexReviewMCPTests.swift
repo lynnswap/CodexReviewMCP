@@ -31,13 +31,16 @@ struct CodexReviewMCPTests {
             processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
         )
         let manager = MockAppServerManager(modeProvider: { _ in .success() }, runtimeState: runtimeState)
-        let store = makeTestStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
                 environment: environment
             ),
-            appServerManager: manager
+            appServerManager: manager,
+            authSessionFactory: {
+                SignedOutReviewAuthSession()
+            }
         )
 
         await store.start()
@@ -53,11 +56,593 @@ struct CodexReviewMCPTests {
         #expect(FileManager.default.fileExists(atPath: reviewAgentsURL.path))
     }
 
+    @Test func storeSkipsRegistryAccountsWithoutSavedAuthSnapshots() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: registryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let registry = ReviewAccountRegistryRecord(
+            activeAccountKey: nil,
+            accounts: [
+                .init(
+                    accountKey: "saved@example.com",
+                    email: "saved@example.com",
+                    planType: "pro",
+                    lastActivatedAt: nil,
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                )
+            ]
+        )
+        let registryData = try JSONEncoder().encode(registry)
+        try registryData.write(to: registryURL, options: Data.WritingOptions.atomic)
+
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() }
+        )
+
+        #expect(store.auth.account == nil)
+        #expect(store.auth.savedAccounts.isEmpty)
+    }
+
+    @Test func storePrefersSharedAuthAccountOverStaleRegistryActiveAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "stale@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        try writeReviewAuthSnapshot(
+            email: "current@example.com",
+            planType: "plus",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() }
+        )
+
+        #expect(store.auth.account?.email == "current@example.com")
+        #expect(store.auth.savedAccounts.first(where: \.isActive)?.email == "current@example.com")
+        #expect(store.auth.savedAccounts.map(\.email) == ["stale@example.com", "current@example.com"])
+    }
+
+    @Test func savingDifferentActiveAccountPreservesExistingSavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let firstSavedAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "plus",
+            environment: environment
+        )
+        let secondSavedAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+
+        #expect(firstSavedAccount.accountKey != secondSavedAccount.accountKey)
+        #expect(loadedAccounts.activeAccountKey == secondSavedAccount.accountKey)
+        #expect(loadedAccounts.accounts.map(\.email) == ["active@example.com", "other@example.com"])
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.savedAccountAuthURL(
+                    accountKey: firstSavedAccount.accountKey,
+                    environment: environment
+                ).path
+            )
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.savedAccountAuthURL(
+                    accountKey: secondSavedAccount.accountKey,
+                    environment: environment
+                ).path
+            )
+        )
+    }
+
+    @Test func savingSavedAccountRollsBackAuthFilesWhenRegistryPersistenceFails() throws {
+        let environment = try isolatedHomeEnvironment()
+        let probeEnvironment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        let originalSavedAccount = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let originalRegistry = loadRegisteredReviewAccounts(environment: environment)
+        let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: environment)
+        let originalSavedAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: originalSavedAccount.accountKey,
+            environment: environment
+        )
+        let originalSharedAuthData = try Data(contentsOf: sharedAuthURL)
+        let originalSavedAuthData = try Data(contentsOf: originalSavedAuthURL)
+        let sourceAuthURL = ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
+
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "plus",
+            environment: probeEnvironment
+        )
+        ReviewAccountRegistryStore.saveRegistryRecordFailureMessageForTesting = "Registry write failed."
+        defer {
+            ReviewAccountRegistryStore.saveRegistryRecordFailureMessageForTesting = nil
+        }
+
+        #expect(throws: Error.self) {
+            try registryStore.saveAuthSnapshot(sourceAuthURL: sourceAuthURL, makeActive: true)
+        }
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(loadedAccounts.activeAccountKey == originalRegistry.activeAccountKey)
+        #expect(loadedAccounts.accounts.map(\.email) == originalRegistry.accounts.map(\.email))
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
+        #expect((try? Data(contentsOf: sharedAuthURL)) == originalSharedAuthData)
+        #expect((try? Data(contentsOf: originalSavedAuthURL)) == originalSavedAuthData)
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.savedAccountAuthURL(
+                    accountKey: "other@example.com",
+                    environment: environment
+                ).path
+            ) == false
+        )
+    }
+
+    @Test func removeAccountRollsBackDeletedSavedSnapshotsWhenDirectoryDeletionFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let savedAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        )
+        try writeSavedAccountAuthSnapshot(
+            email: savedAccount.email,
+            planType: savedAccount.planType,
+            accountKey: savedAccount.accountKey,
+            environment: environment,
+            useLegacyDirectory: true
+        )
+        let firstDirectory = ReviewHomePaths.savedAccountDirectoryURL(
+            accountKey: savedAccount.accountKey,
+            environment: environment
+        )
+        let secondDirectory = ReviewHomePaths.legacySavedAccountDirectoryURL(
+            accountKey: savedAccount.accountKey,
+            environment: environment
+        )
+        ReviewAccountRegistryStore.savedAccountDirectoryDeleteFailurePathComponentForTesting = secondDirectory.lastPathComponent
+        defer {
+            ReviewAccountRegistryStore.savedAccountDirectoryDeleteFailurePathComponentForTesting = nil
+        }
+
+        await #expect(throws: Error.self) {
+            try await registryStore.removeAccount(savedAccount.accountKey)
+        }
+
+        #expect(FileManager.default.fileExists(atPath: firstDirectory.appendingPathComponent("auth.json").path))
+        #expect(FileManager.default.fileExists(atPath: secondDirectory.appendingPathComponent("auth.json").path))
+    }
+
+    @Test func removingUnknownAccountDoesNotPromoteReplacementAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "current@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let savedAccount = ReviewSavedAccountRecord(
+            accountKey: "saved@example.com",
+            email: "saved@example.com",
+            planType: "pro",
+            lastActivatedAt: nil,
+            lastRateLimitFetchAt: nil,
+            lastRateLimitError: nil,
+            cachedRateLimits: []
+        )
+        try writeSavedAccountAuthSnapshot(
+            email: savedAccount.email,
+            planType: savedAccount.planType,
+            accountKey: savedAccount.accountKey,
+            environment: environment,
+            useLegacyDirectory: false
+        )
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try JSONEncoder().encode(
+            ReviewAccountRegistryRecord(
+                activeAccountKey: nil,
+                accounts: [savedAccount]
+            )
+        ).write(to: registryURL, options: .atomic)
+        let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: environment)
+        let originalSharedAuthData = try Data(contentsOf: sharedAuthURL)
+        let initialRegistry = try JSONDecoder().decode(
+            ReviewAccountRegistryRecord.self,
+            from: Data(contentsOf: registryURL)
+        )
+        #expect(initialRegistry.activeAccountKey == nil)
+
+        _ = try await registryStore.removeAccount("missing@example.com")
+
+        let persistedRegistry = try JSONDecoder().decode(
+            ReviewAccountRegistryRecord.self,
+            from: Data(contentsOf: registryURL)
+        )
+        #expect(persistedRegistry.activeAccountKey == nil)
+        #expect(persistedRegistry.accounts.map(\.accountKey) == [savedAccount.accountKey])
+        #expect(try Data(contentsOf: sharedAuthURL) == originalSharedAuthData)
+    }
+
+    @Test func activatingSavedAccountPreservesAccountOrder() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "first@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let firstAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+
+        try writeReviewAuthSnapshot(
+            email: "second@example.com",
+            planType: "plus",
+            environment: environment
+        )
+        let secondAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+
+        try await registryStore.activateAccount(firstAccount.accountKey)
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+
+        #expect(loadedAccounts.activeAccountKey == firstAccount.accountKey)
+        #expect(firstAccount.accountKey != secondAccount.accountKey)
+        #expect(loadedAccounts.accounts.map(\.email) == ["first@example.com", "second@example.com"])
+    }
+
+    @Test func reorderingSavedAccountPersistsOrderAndPreservesActiveAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "first@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let firstAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+
+        try writeReviewAuthSnapshot(
+            email: "second@example.com",
+            planType: "plus",
+            environment: environment
+        )
+        let secondAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        )
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first { $0.accountKey == initialAccounts.activeAccountKey })
+
+        try await auth.reorderSavedAccount(accountKey: firstAccount.accountKey, toIndex: 1)
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(loadedAccounts.activeAccountKey == secondAccount.accountKey)
+        #expect(auth.account?.accountKey == secondAccount.accountKey)
+        #expect(auth.savedAccounts.map(\.email) == ["second@example.com", "first@example.com"])
+        #expect(loadedAccounts.accounts.map(\.email) == ["second@example.com", "first@example.com"])
+    }
+
+    @Test func storeSeedsSharedAccountWhenRegistryPersistenceFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: registryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("not-json".utf8).write(to: registryURL, options: .atomic)
+
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() }
+        )
+
+        #expect(store.auth.account?.email == "review@example.com")
+        #expect(store.auth.savedAccounts.first?.email == "review@example.com")
+    }
+
+    @Test func registryMigrationDoesNotRewriteKeysWhenSavedAccountDirectoryIsBlocked() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: registryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let legacyAccountKey = "8D0A808B-7DA5-47BE-B5C2-2262783BBF20"
+        let registry = ReviewAccountRegistryRecord(
+            activeAccountKey: legacyAccountKey,
+            accounts: [
+                .init(
+                    accountKey: legacyAccountKey,
+                    email: "saved@example.com",
+                    planType: "pro",
+                    lastActivatedAt: Date(timeIntervalSince1970: 100),
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                )
+            ]
+        )
+        try JSONEncoder().encode(registry).write(to: registryURL, options: .atomic)
+        try writeSavedAccountAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            accountKey: legacyAccountKey,
+            environment: environment,
+            useLegacyDirectory: true
+        )
+
+        let blockedDestinationURL = ReviewHomePaths.savedAccountDirectoryURL(
+            accountKey: "saved@example.com",
+            environment: environment
+        )
+        try FileManager.default.createDirectory(
+            at: blockedDestinationURL,
+            withIntermediateDirectories: true
+        )
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let persistedRegistry = try JSONDecoder().decode(
+            ReviewAccountRegistryRecord.self,
+            from: Data(contentsOf: registryURL)
+        )
+
+        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
+        #expect(loadedAccounts.accounts.map(\.accountKey) == ["saved@example.com"])
+        #expect(persistedRegistry.activeAccountKey == legacyAccountKey)
+        #expect(persistedRegistry.accounts.map(\.accountKey) == [legacyAccountKey])
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.legacySavedAccountDirectoryURL(
+                    accountKey: legacyAccountKey,
+                    environment: environment
+                )
+                .appendingPathComponent("auth.json")
+                .path
+            )
+        )
+    }
+
+    @Test func registryMigrationMovesCanonicalDuplicateSavedAccountDirectory() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: registryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let staleAccountKey = "96E5D11C-55E1-41DF-9A8B-5D7D1317A337"
+        let canonicalAccountKey = "D2095F6A-E0C4-45D3-8FD7-FA31D11A4B76"
+        let registry = ReviewAccountRegistryRecord(
+            activeAccountKey: canonicalAccountKey,
+            accounts: [
+                .init(
+                    accountKey: staleAccountKey,
+                    email: "Saved@example.com",
+                    planType: "pro",
+                    lastActivatedAt: Date(timeIntervalSince1970: 10),
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                ),
+                .init(
+                    accountKey: canonicalAccountKey,
+                    email: "saved@example.com",
+                    planType: "plus",
+                    lastActivatedAt: Date(timeIntervalSince1970: 20),
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                ),
+            ]
+        )
+        try JSONEncoder().encode(registry).write(to: registryURL, options: .atomic)
+        try writeSavedAccountAuthSnapshot(
+            email: "saved@example.com",
+            planType: "plus",
+            accountKey: canonicalAccountKey,
+            environment: environment,
+            useLegacyDirectory: true
+        )
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(loadedAccounts.accounts.count == 1)
+        let migratedAccount = try #require(loadedAccounts.accounts.first)
+        let migratedAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: migratedAccount.accountKey,
+            environment: environment
+        )
+
+        #expect(migratedAccount.accountKey == "saved@example.com")
+        #expect(migratedAccount.planType == "plus")
+        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
+        #expect(FileManager.default.fileExists(atPath: migratedAuthURL.path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.legacySavedAccountDirectoryURL(
+                    accountKey: canonicalAccountKey,
+                    environment: environment
+                )
+                .appendingPathComponent("auth.json")
+                .path
+            )
+        )
+    }
+
+    @Test func registryMigrationKeepsNewerEncodedAuthSnapshotWhenLegacyCopyIsOlder() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: registryURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let registry = ReviewAccountRegistryRecord(
+            activeAccountKey: "saved@example.com",
+            accounts: [
+                .init(
+                    accountKey: "saved@example.com",
+                    email: "saved@example.com",
+                    planType: "pro",
+                    lastActivatedAt: Date(timeIntervalSince1970: 20),
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                )
+            ]
+        )
+        try JSONEncoder().encode(registry).write(to: registryURL, options: .atomic)
+        try writeSavedAccountAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            accountKey: "saved@example.com",
+            environment: environment,
+            useLegacyDirectory: true
+        )
+        try writeSavedAccountAuthSnapshot(
+            email: "saved@example.com",
+            planType: "plus",
+            accountKey: "saved@example.com",
+            environment: environment,
+            useLegacyDirectory: false
+        )
+
+        let legacyAuthURL = ReviewHomePaths.legacySavedAccountDirectoryURL(
+            accountKey: "saved@example.com",
+            environment: environment
+        ).appendingPathComponent("auth.json")
+        let encodedAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: "saved@example.com",
+            environment: environment
+        )
+        let encodedAuthDataBeforeLoad = try Data(contentsOf: encodedAuthURL)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 10)],
+            ofItemAtPath: legacyAuthURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 20)],
+            ofItemAtPath: encodedAuthURL.path
+        )
+
+        _ = loadRegisteredReviewAccounts(environment: environment)
+        #expect(try Data(contentsOf: encodedAuthURL) == encodedAuthDataBeforeLoad)
+    }
+
+    @Test func storePrefersSharedAuthWhenRegistryUpdateFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "stale@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        try writeReviewAuthSnapshot(
+            email: "current@example.com",
+            planType: "plus",
+            environment: environment
+        )
+
+        let accountsDirectoryURL = ReviewHomePaths.accountsDirectoryURL(environment: environment)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: accountsDirectoryURL.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: accountsDirectoryURL.path)
+        }
+
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() }
+        )
+
+        #expect(store.auth.account?.email == "current@example.com")
+    }
+
     @Test func startingStoreRefreshesAuthStateInBackgroundWithoutBlockingStartup() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = MockAppServerManager { _ in .success() }
         let authSession = SlowReadAccountReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -95,7 +680,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -114,6 +699,39 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
         }
+
+        await store.stop()
+    }
+
+    @Test func authRefreshPreservesSeededAccountWhenRunningAuthTransportCheckoutFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: FailingAuthCheckoutAppServerManager()
+        )
+
+        await store.start()
+        await store.auth.refresh()
+
+        #expect(
+            testAuthState(from: store.auth) == .failed(
+                "Auth transport checkout failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
 
         await store.stop()
     }
@@ -167,6 +785,37 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func reviewMonitorStoreRefreshDoesNotStartSharedRuntimeWhileStopped() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(requirePrepareBeforeAuthCheckout: true)
+        let recorder = TestWebAuthenticationSessionRecorder()
+        let store = CodexReviewStore.makeReviewMonitorStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "/usr/bin/false",
+                environment: environment
+            ),
+            appServerManager: manager,
+            nativeAuthenticationConfiguration: .init(
+                callbackScheme: "lynnpd.codexreviewmonitor.auth",
+                browserSessionPolicy: .ephemeral,
+                presentationAnchorProvider: { NSWindow() }
+            ),
+            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
+                recorder: recorder,
+                autoResult: .failure(.cancelled)
+            )
+        )
+
+        #expect(store.serverState == .stopped)
+
+        await store.auth.refresh()
+
+        #expect(store.serverState == .stopped)
+        #expect(await manager.prepareCount() == 0)
+        #expect(await manager.authTransportCheckoutCount() == 0)
+    }
+
     @Test func reviewMonitorStoreStartupFailureStillRefreshesAuthState() async throws {
         let environment = try isolatedHomeEnvironment()
         let authTransport = AuthCapableAppServerSessionTransport()
@@ -210,7 +859,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedOut
         }
-        #expect(await manager.authTransportCheckoutCount() > 0)
+        #expect(await manager.authTransportCheckoutCount() == 1)
     }
 
     @Test func startingStoreLoadsCodexRateLimitsForAuthenticatedAccount() async throws {
@@ -222,7 +871,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -287,7 +936,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -347,7 +996,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -397,7 +1046,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -448,7 +1097,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -543,7 +1192,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -578,7 +1227,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -641,7 +1290,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -714,7 +1363,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -784,7 +1433,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -826,7 +1475,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -845,7 +1494,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.updateRateLimitsResponse(
             current: [
@@ -864,7 +1513,7 @@ struct CodexReviewMCPTests {
         )
 
         clock.advance(by: .seconds(60))
-        await authTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 2)
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 65
         }
@@ -886,7 +1535,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -905,7 +1554,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         clock.advance(by: .seconds(30))
         try await authTransport.sendRateLimitsUpdated(
@@ -926,7 +1575,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.updateRateLimitsResponse(
             current: [
@@ -950,7 +1599,7 @@ struct CodexReviewMCPTests {
         #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
 
         clock.advance(by: .seconds(30))
-        await authTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 2)
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 66
         }
@@ -993,7 +1642,7 @@ struct CodexReviewMCPTests {
                 ),
             ]
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1012,13 +1661,13 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await store.auth.refresh()
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 12
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 12
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await secondTransport.updateRateLimitsResponse(
             current: [
@@ -1037,9 +1686,9 @@ struct CodexReviewMCPTests {
         )
 
         clock.advance(by: .seconds(60))
-        await secondTransport.waitForRateLimitsReadCount(2)
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 18
+        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 2)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 18
         }
 
         #expect(await firstTransport.rateLimitsReadCount() == 1)
@@ -1060,7 +1709,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1079,7 +1728,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await store.stop()
         clock.advance(by: .seconds(60))
@@ -1099,7 +1748,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1118,15 +1767,15 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.failNextRateLimitsRead(message: "temporary failure")
         clock.advance(by: .seconds(60))
-        await authTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 2)
         await Task.yield()
 
         #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40)
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.updateRateLimitsResponse(
             current: [
@@ -1145,7 +1794,7 @@ struct CodexReviewMCPTests {
         )
 
         clock.advance(by: .seconds(60))
-        await authTransport.waitForRateLimitsReadCount(3)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 3)
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 77
         }
@@ -1166,7 +1815,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1185,7 +1834,7 @@ struct CodexReviewMCPTests {
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
-        await clock.sleepUntilSuspendedBy()
+        try await waitForClockSuspension(clock)
 
         await authTransport.blockNextRateLimitsRead()
         await authTransport.updateRateLimitsResponse(
@@ -1227,7 +1876,7 @@ struct CodexReviewMCPTests {
         }
 
         await authTransport.resumeBlockedRateLimitsRead()
-        await authTransport.waitForRateLimitsReadCount(2)
+        try await waitForRateLimitsReadCount(authTransport, expectedCount: 2)
         await Task.yield()
 
         #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 85)
@@ -1251,7 +1900,7 @@ struct CodexReviewMCPTests {
                 ),
             ]
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1306,8 +1955,8 @@ struct CodexReviewMCPTests {
 
         await store.auth.refresh()
 
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 12
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 12
         }
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "new@example.com"))
@@ -1334,7 +1983,7 @@ struct CodexReviewMCPTests {
                 ),
             ]
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1345,20 +1994,10 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
-        defer { fiveHourProbe.cancel() }
-
         await store.start()
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 40
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
         }
-
-        let initialSessionWindow = try #require(
-            rateLimitWindow(duration: 300, in: store.auth.account)
-        )
-        let initialWeeklyWindow = try #require(
-            rateLimitWindow(duration: 10_080, in: store.auth.account)
-        )
 
         let authTransport = try #require(await manager.authTransportForTesting())
         await authTransport.updateRateLimitsResponse(
@@ -1396,13 +2035,12 @@ struct CodexReviewMCPTests {
 
         await store.auth.refresh()
 
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 18
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 18
         }
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) === initialSessionWindow)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) === initialWeeklyWindow)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 18)
         #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 14)
 
         await store.stop()
@@ -1428,7 +2066,7 @@ struct CodexReviewMCPTests {
                 ),
             ]
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1500,7 +2138,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1544,7 +2182,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1576,7 +2214,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -1780,6 +2418,1005 @@ struct CodexReviewMCPTests {
         #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 41)
 
         await store.stop()
+    }
+
+    @Test func refreshingActiveRateLimitsWhileServerIsStoppedDoesNotStartSharedRuntime() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        let manager = AuthCapableAppServerManager()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "/usr/bin/false",
+                environment: environment
+            ),
+            appServerManager: manager
+        )
+        let activeAccount = try #require(store.auth.account)
+
+        #expect(store.serverState == .stopped)
+
+        await store.auth.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
+
+        #expect(store.serverState == .stopped)
+        #expect(await manager.prepareCount() == 0)
+    }
+
+    @Test func refreshingUnsavedActiveRateLimitsWhileServerIsStoppedPreservesCurrentAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "/usr/bin/false",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        let activeAccount = CodexAccount(
+            email: "review@example.com",
+            planType: "pro"
+        )
+        auth.updateSavedAccounts([])
+        auth.updatePhase(.signedOut)
+        auth.updateAccount(activeAccount)
+
+        await auth.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
+
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.savedAccounts.isEmpty)
+    }
+
+    @Test func refreshingActiveRateLimitsWhileServerIsStoppedCleansUpProbeHomeOnStartupFailure() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "/usr/bin/false",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() }
+        )
+        let activeAccount = try #require(store.auth.account)
+
+        await store.auth.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
+
+        let probeRootURL = ReviewHomePaths.makeProbeRootURL(environment: environment)
+        let remainingProbeEntries = (try? FileManager.default.contentsOfDirectory(
+            at: probeRootURL,
+            includingPropertiesForKeys: nil
+        )) ?? []
+        #expect(remainingProbeEntries.isEmpty)
+    }
+
+    @Test func refreshingInactiveSavedAccountRateLimitsDoesNotClearUnsavedCurrentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "/usr/bin/false",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        let currentAccount = CodexAccount(
+            email: "current@example.com",
+            planType: "pro"
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updatePhase(.signedOut)
+        auth.updateAccount(currentAccount)
+        let savedAccount = try #require(auth.savedAccounts.first)
+
+        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+
+        #expect(auth.account?.email == "current@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["saved@example.com"])
+    }
+
+    @Test func refreshingInactiveRateLimitsUpdatesSavedAccountModel() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "/usr/bin/false",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() }
+        )
+        let savedAccount = try #require(store.auth.savedAccounts.first)
+
+        await store.auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+
+        let refreshedAccount = try #require(
+            store.auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
+        )
+        #expect(refreshedAccount.lastRateLimitFetchAt != nil)
+        #expect(refreshedAccount.lastRateLimitError?.isEmpty == false)
+    }
+
+    @Test func refreshingInactiveRateLimitsUpdatesExistingSavedAccountRateLimits() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let rateLimitTransport = AuthCapableAppServerSessionTransport()
+        let rateLimitManager = AuthCapableAppServerManager(authTransport: rateLimitTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                rateLimitManager
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.savedAccounts.first)
+
+        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+
+        let refreshedAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
+        )
+        #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 300, in: refreshedAccount)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: refreshedAccount)?.usedPercent == 20)
+    }
+
+    @Test func refreshingInactiveRateLimitsMutatesExistingSavedAccountObject() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let rateLimitTransport = AuthCapableAppServerSessionTransport()
+        let rateLimitManager = AuthCapableAppServerManager(authTransport: rateLimitTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                rateLimitManager
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.savedAccounts.first)
+
+        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+
+        #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: savedAccount)?.usedPercent == 20)
+    }
+
+    @Test func refreshingInactiveRateLimitsKeepsInMemoryStateWhenPersistenceFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let rateLimitTransport = AuthCapableAppServerSessionTransport()
+        let rateLimitManager = AuthCapableAppServerManager(authTransport: rateLimitTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                rateLimitManager
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.savedAccounts.first)
+        ReviewAccountRegistryStore.saveRegistryRecordFailureMessageForTesting = "Registry write failed."
+        defer {
+            ReviewAccountRegistryStore.saveRegistryRecordFailureMessageForTesting = nil
+        }
+
+        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+
+        let refreshedAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
+        )
+        #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 300, in: refreshedAccount)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: refreshedAccount)?.usedPercent == 20)
+    }
+
+    @Test func refreshingInactiveRateLimitsReplacesSavedAccountWhenPersistedEmailChanges() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        let initialSavedAccount = try #require(
+            try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        )
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "/usr/bin/false",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.savedAccounts.first)
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        let updatedRegistry = ReviewAccountRegistryRecord(
+            activeAccountKey: nil,
+            accounts: [
+                .init(
+                    accountKey: "updated@example.com",
+                    email: "updated@example.com",
+                    planType: "pro",
+                    lastActivatedAt: nil,
+                    lastRateLimitFetchAt: nil,
+                    lastRateLimitError: nil,
+                    cachedRateLimits: []
+                )
+            ]
+        )
+        let previousAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: initialSavedAccount.accountKey,
+            environment: environment
+        )
+        let updatedAuthURL = ReviewHomePaths.savedAccountAuthURL(
+            accountKey: "updated@example.com",
+            environment: environment
+        )
+        try FileManager.default.createDirectory(
+            at: updatedAuthURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.moveItem(at: previousAuthURL, to: updatedAuthURL)
+        try JSONEncoder().encode(updatedRegistry).write(
+            to: registryURL,
+            options: Data.WritingOptions.atomic
+        )
+
+        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+
+        let refreshedAccount = try #require(auth.savedAccounts.first)
+        #expect(refreshedAccount !== savedAccount)
+        #expect(refreshedAccount.email == "updated@example.com")
+    }
+
+    @Test func inactiveRateLimitRefreshImmediatelyRefreshesStaleSavedAccountsWhenRuntimeStarts() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 77,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 21,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+        )
+        inactiveAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date().addingTimeInterval(-3600),
+            error: nil
+        )
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: inactiveAccount)?.usedPercent == 77
+        }
+
+        #expect(await inactiveTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 21)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshImmediateCatchUpUsesInjectedClockTime() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 61,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 19,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+        )
+        inactiveAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date(),
+            error: nil
+        )
+
+        clock.advance(by: .seconds(24 * 60 * 60 + 60))
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: inactiveAccount)?.usedPercent == 61
+        }
+
+        #expect(await inactiveTransport.rateLimitsReadCount() == 1)
+        #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 19)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshWaitsForIntervalWhenSavedAccountsAreFresh() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 66,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 44,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+        )
+        inactiveAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date(),
+            error: nil
+        )
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        try await waitForClockSuspension(clock)
+
+        #expect(await inactiveTransport.rateLimitsReadCount() == 0)
+
+        clock.advance(by: .seconds(15 * 60))
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: inactiveAccount)?.usedPercent == 66
+        }
+
+        #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 44)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshSweepsOnlyInactiveAccounts() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive-one@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive-two@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 55,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 33,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccounts = auth.savedAccounts.filter { $0.accountKey != activeAccount.accountKey }
+        for account in inactiveAccounts {
+            account.updateRateLimitFetchMetadata(
+                fetchedAt: Date(),
+                error: nil
+            )
+        }
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        try await waitForClockSuspension(clock)
+
+        clock.advance(by: .seconds(15 * 60))
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 2)
+        try await waitForMainActorCondition {
+            inactiveAccounts.allSatisfy {
+                rateLimitWindow(duration: 300, in: $0)?.usedPercent == 55
+            }
+        }
+
+        #expect(await inactiveTransport.rateLimitsReadCount() >= 2)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshRetargetsWhenActiveAccountChanges() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "next@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "other@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 88,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 61,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let initialActiveAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(initialActiveAccount)
+        for account in auth.savedAccounts where account.accountKey != initialActiveAccount.accountKey {
+            account.updateRateLimitFetchMetadata(
+                fetchedAt: Date(),
+                error: nil
+            )
+        }
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        try await waitForClockSuspension(clock)
+
+        let newActiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.email == "next@example.com" })
+        )
+        auth.updateAccount(newActiveAccount)
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 2
+        )
+        try await waitForClockSuspension(clock)
+
+        clock.advance(by: .seconds(15 * 60))
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 2)
+        try await waitForMainActorCondition {
+            let otherAccount = auth.savedAccounts.first(where: { $0.email == "other@example.com" })
+            return rateLimitWindow(duration: 300, in: initialActiveAccount)?.usedPercent == 88
+                && rateLimitWindow(duration: 300, in: otherAccount)?.usedPercent == 88
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: newActiveAccount) == nil)
+        #expect(await inactiveTransport.rateLimitsReadCount() >= 2)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 2
+        )
+    }
+
+    @Test func inactiveRateLimitRefreshStopsWhenRuntimeDetaches() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "inactive@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let activeAccount = try #require(
+            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+        )
+        auth.updateSavedAccounts(loadedAccounts.accounts)
+        auth.updateAccount(activeAccount)
+        let inactiveAccount = try #require(
+            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+        )
+        inactiveAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date(),
+            error: nil
+        )
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        try await waitForClockSuspension(clock)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
+        clock.advance(by: .seconds(15 * 60))
+        await Task.yield()
+
+        #expect(await inactiveTransport.rateLimitsReadCount() == 0)
+    }
+
+    @Test func inactiveRateLimitRefreshPreservesUnsavedCurrentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try? FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let clock = ManualTestClock()
+        let activeTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let activeManager = AuthCapableAppServerManager(authTransport: activeTransport)
+        let inactiveTransport = AuthCapableAppServerSessionTransport()
+        await inactiveTransport.updateRateLimitsResponse(
+            current: [
+                "limitId": "codex",
+                "primary": [
+                    "usedPercent": 58,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 34,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+        let inactiveManager = AuthCapableAppServerManager(authTransport: inactiveTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: activeManager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { _ in
+                inactiveManager
+            },
+            rateLimitObservationClock: clock,
+            rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let currentAccount = CodexAccount(
+            email: "current@example.com",
+            planType: "pro"
+        )
+        auth.updateAccount(currentAccount)
+        let savedAccount = try #require(auth.savedAccounts.first)
+        savedAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date(),
+            error: nil
+        )
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+        try await waitForClockSuspension(clock)
+
+        clock.advance(by: .seconds(15 * 60))
+        try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 58
+        }
+
+        #expect(auth.account?.email == "current@example.com")
+        #expect(rateLimitWindow(duration: 10_080, in: savedAccount)?.usedPercent == 34)
+
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: false,
+            runtimeGeneration: 1
+        )
     }
 
     @Test func startingStoreKeepsSeededAuthWhenBackgroundRefreshFails() async throws {
@@ -2237,11 +3874,96 @@ struct CodexReviewMCPTests {
         #expect(await transport.isClosed())
     }
 
+    @Test func cancelAllRunningJobsThrowsWhenAnyReviewCancellationFails() async throws {
+        let store = CodexReviewStore(
+            backend: CancellationFailureStoreBackend(
+                failingSessionIDs: ["session-a"],
+                error: NSError(
+                    domain: "CodexReviewMCPTests.CancellationFailureStoreBackend",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Cancellation failed."]
+                )
+            )
+        )
+        let failedJob = CodexReviewJob.makeForTesting(
+            id: "job-a",
+            sessionID: "session-a",
+            targetSummary: "target-a",
+            status: .running,
+            summary: "Running"
+        )
+        let cancelledJob = CodexReviewJob.makeForTesting(
+            id: "job-b",
+            sessionID: "session-b",
+            targetSummary: "target-b",
+            status: .running,
+            summary: "Running"
+        )
+        store.workspaces = [
+            CodexReviewWorkspace(
+                cwd: "/tmp/repo",
+                jobs: [failedJob, cancelledJob]
+            )
+        ]
+
+        await #expect(throws: Error.self) {
+            try await store.cancelAllRunningJobs(reason: "Account change requested.")
+        }
+
+        #expect(failedJob.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(failedJob.errorMessage == "Cancellation failed.")
+        #expect(cancelledJob.status == .cancelled)
+        #expect(cancelledJob.errorMessage == "Account change requested.")
+    }
+
+    @Test func terminateAllRunningJobsLocallyFinalizesCancellationRequestedJobs() {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let requestedJob = CodexReviewJob.makeForTesting(
+            id: "job-requested",
+            sessionID: "session-a",
+            targetSummary: "target-a",
+            status: .running,
+            summary: "Cancellation requested."
+        )
+        requestedJob.cancellationRequested = true
+        requestedJob.errorMessage = "Account change requested."
+        let failedJob = CodexReviewJob.makeForTesting(
+            id: "job-failed",
+            sessionID: "session-b",
+            targetSummary: "target-b",
+            status: .running,
+            summary: "Running"
+        )
+        store.workspaces = [
+            CodexReviewWorkspace(
+                cwd: "/tmp/repo",
+                jobs: [requestedJob, failedJob]
+            )
+        ]
+
+        store.terminateAllRunningJobsLocally(
+            reason: "Account change requested.",
+            failureMessage: "Cancellation failed."
+        )
+
+        #expect(requestedJob.status == .failed)
+        #expect(requestedJob.cancellationRequested == false)
+        #expect(requestedJob.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(requestedJob.errorMessage == "Cancellation failed.")
+        #expect(requestedJob.endedAt != nil)
+
+        #expect(failedJob.status == .failed)
+        #expect(failedJob.cancellationRequested == false)
+        #expect(failedJob.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(failedJob.errorMessage == "Cancellation failed.")
+        #expect(failedJob.endedAt != nil)
+    }
+
     @Test func cancelAuthenticationClosesStateWithoutStartingAnotherAuthSession() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
         let authFactory = CountingReviewAuthSessionFactory(session: authSession)
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2267,11 +3989,106 @@ struct CodexReviewMCPTests {
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
     }
 
+    @Test func cancelAuthenticationPreservesExistingWarningMessage() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = BlockingLoginReviewAuthSession()
+        let authFactory = CountingReviewAuthSessionFactory(session: authSession)
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                try await authFactory.makeSession()
+            }
+        )
+        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
+        store.auth.updateWarning(message: "Cancellation failed.")
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        await authSession.waitForLoginStart()
+        await store.auth.cancelAuthentication()
+        _ = await beginTask.value
+
+        #expect(store.auth.warningMessage == "Cancellation failed.")
+    }
+
+    @Test func cancelAuthenticationRemovesPreparedLoginProbeHome() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = BlockingLoginReviewAuthSession()
+        let authFactory = CountingReviewAuthSessionFactory(session: authSession)
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                try await authFactory.makeSession()
+            }
+        )
+
+        let beginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        await authSession.waitForLoginStart()
+        await store.auth.cancelAuthentication()
+        _ = await beginTask.value
+
+        let probeRootURL = ReviewHomePaths.makeProbeRootURL(environment: environment)
+        let remainingProbeEntries = (try? FileManager.default.contentsOfDirectory(
+            at: probeRootURL,
+            includingPropertiesForKeys: nil
+        )) ?? []
+        #expect(remainingProbeEntries.isEmpty)
+    }
+
+    @Test func beginAuthenticationIgnoresConcurrentRetryWhileLoginIsInProgress() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = BlockingLoginReviewAuthSession()
+        let authFactory = CountingReviewAuthSessionFactory(session: authSession)
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                try await authFactory.makeSession()
+            }
+        )
+
+        let firstBeginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+
+        await authSession.waitForLoginStart()
+
+        let secondBeginTask = Task {
+            await store.auth.beginAuthentication()
+        }
+        _ = await secondBeginTask.value
+
+        #expect(await authFactory.creationCount() == 1)
+
+        await store.auth.cancelAuthentication()
+        _ = await firstBeginTask.value
+        #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
+    }
+
     @Test func cancelAuthenticationPreservesAuthenticatedRetryState() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
         let authFactory = CountingReviewAuthSessionFactory(session: authSession)
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2310,12 +4127,50 @@ struct CodexReviewMCPTests {
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
     }
 
+    @Test func beginAuthenticationActivatesNewLoginWhenCurrentAuthIsFailed() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "stale@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        let sharedSession = SuccessfulLoginReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: sharedSession,
+                    environment: environment
+                )
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.updatePhase(.failed(message: "Authentication failed."))
+
+        await auth.beginAuthentication()
+
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+    }
+
     @Test func logoutDuringAuthenticatedRetryCancelsLoginAndSignsOut() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
         let authFactory = CountingReviewAuthSessionFactory(session: authSession)
         let manager = AuthCapableAppServerManager()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2350,7 +4205,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let authSession = DeferredCloseLoginReviewAuthSession()
         let manager = AuthCapableAppServerManager()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2381,17 +4236,474 @@ struct CodexReviewMCPTests {
 
         #expect(testAuthState(from: store.auth) == .signedOut)
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
-        #expect(await manager.prepareCount() == 2)
-        #expect(await manager.shutdownCount() == 1)
+        try await withTestTimeout {
+            while true {
+                let prepareCount = await manager.prepareCount()
+                let shutdownCount = await manager.shutdownCount()
+                if prepareCount == 2, shutdownCount == 1 {
+                    return
+                }
+                await Task.yield()
+            }
+        }
 
         await store.stop()
+    }
+
+    @Test func signOutRemovesSavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        let sharedSession = SuccessfulLogoutReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let savedAccountKey = try #require(initialAccounts.activeAccountKey)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        try await auth.signOutActiveAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(loadedAccounts.activeAccountKey == nil)
+        #expect(loadedAccounts.accounts.isEmpty)
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.savedAccountAuthURL(
+                    accountKey: savedAccountKey,
+                    environment: environment
+                ).path
+            ) == false
+        )
+    }
+
+    @Test func signOutSavedActiveAccountDoesNotPromoteFallbackSavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let sharedSession = SuccessfulLogoutReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        try await auth.signOutActiveAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.account == nil)
+        #expect(auth.savedAccounts.map(\.email) == ["other@example.com"])
+        #expect(loadedAccounts.activeAccountKey == nil)
+        #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com"])
+        #expect(loadSharedReviewAccount(environment: environment) == nil)
+    }
+
+    @Test func signOutUnsavedCurrentAccountRemovesSharedAuthSnapshot() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let sharedSession = SuccessfulLogoutReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            }
+        )
+        let currentAccount = CodexAccount(
+            email: "review@example.com",
+            planType: "pro"
+        )
+        auth.updateSavedAccounts([])
+        auth.updatePhase(.signedOut)
+        auth.updateAccount(currentAccount)
+
+        try await auth.signOutActiveAccount()
+
+        #expect(auth.account == nil)
+        #expect(
+            FileManager.default.fileExists(
+                atPath: ReviewHomePaths.reviewAuthURL(environment: environment).path
+            ) == false
+        )
+    }
+
+    @Test func refreshKeepsUnsavedAuthenticatedSessionOutOfSavedAccounts() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let sharedSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            }
+        )
+
+        await auth.refresh()
+
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.savedAccounts.isEmpty)
+    }
+
+    @Test func failedInitialAuthenticationPersistenceDoesNotCancelRunningJobs() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let loginSession = NonPersistentSuccessfulLoginReviewAuthSession()
+        let sharedSession = SignedOutReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: loginSession,
+                    environment: environment
+                )
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+
+        await auth.beginAuthentication()
+
+        #expect(testAuthState(from: auth) == .failed(reviewAuthPersistenceFailureMessage))
+        #expect(cancelCallCount == 0)
+    }
+
+    @Test func refreshSameEmailDoesNotRecycleSharedAppServerWhenSavedIdentityReplacesUnsavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        store.auth.updateSavedAccounts([])
+        store.auth.updatePhase(.signedOut)
+        store.auth.updateAccount(
+            CodexAccount(
+                email: "review@example.com",
+                planType: "pro"
+            )
+        )
+
+        await store.start()
+        try await waitForMainActorCondition {
+            store.auth.savedAccounts.map(\.email) == ["review@example.com"]
+        }
+
+        #expect(store.auth.account?.email == "review@example.com")
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 0)
+
+        await store.stop()
+    }
+
+    @Test func recoveredSignOutCancelsRunningJobs() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        let sharedSession = FailingLogoutReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        try await auth.signOutActiveAccount()
+
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(cancelCallCount == 1)
+    }
+
+    @Test func recoveredSignOutDoesNotPromoteFallbackSavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let sharedSession = FailingLogoutReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        try await auth.signOutActiveAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.account == nil)
+        #expect(auth.savedAccounts.map(\.email) == ["other@example.com"])
+        #expect(loadedAccounts.activeAccountKey == nil)
+        #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com"])
+        #expect(loadSharedReviewAccount(environment: environment) == nil)
+    }
+
+    @Test func signOutKeepsCommittedStateAndRecordsCleanupWarning() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        let sharedSession = SuccessfulLogoutReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+                throw NSError(
+                    domain: "CodexReviewMCPTests.signOutKeepsCommittedStateAndRecordsCleanupWarning",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Cancellation failed."]
+                )
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        try await auth.signOutActiveAccount()
+
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(cancelCallCount == 1)
+        #expect(auth.warningMessage == "Cancellation failed.")
+    }
+
+    @Test func logoutReportsCleanupFailureAfterSuccessfulLogout() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        let sharedSession = SuccessfulLogoutReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            },
+            cancelRunningJobs: { _ in
+                throw NSError(
+                    domain: "CodexReviewMCPTests.logoutReportsCleanupFailureAfterSuccessfulLogout",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Cancellation failed."]
+                )
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        await auth.logout()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(auth.errorMessage == nil)
+        #expect(auth.account == nil)
+        #expect(loadedAccounts.accounts.isEmpty)
+        #expect(auth.warningMessage == "Cancellation failed.")
+    }
+
+    @Test func logoutClearsAccountWhenCleanupRecoveryIsUnavailable() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        let sharedSession = FailingReadAccountReviewAuthSession(message: "refresh failed")
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+                throw NSError(
+                    domain: "CodexReviewMCPTests.logoutClearsAccountWhenCleanupRecoveryIsUnavailable",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Cancellation failed."]
+                )
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        await auth.logout()
+
+        #expect(auth.account == nil)
+        #expect(auth.errorMessage == nil)
+        #expect(cancelCallCount == 1)
     }
 
     @Test func beginAuthenticationUsesInjectedAuthSessionWithoutAuthTransportCheckout() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = BlockingLoginReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2430,7 +4742,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SuccessfulLoginReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2456,7 +4768,7 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SameAccountSuccessfulLoginReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2478,11 +4790,482 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func successfulAuthenticationClearsSigningInPhaseWhenResolvedRefreshFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = SuccessfulLoginThenFailingRefreshReviewAuthSession()
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        await store.auth.beginAuthentication()
+
+        #expect(store.auth.isAuthenticating == false)
+        #expect(
+            testAuthState(from: store.auth) == .failed(
+                "refresh failed",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+
+        await store.stop()
+    }
+
+    @Test func cancellingAuthenticationAfterCommittedLoginDoesNotRollbackActivatedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let sharedSession = SuccessfulLoginReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: sharedSession,
+                    environment: environment
+                )
+            }
+        )
+
+        await auth.beginAuthentication()
+        await auth.cancelAuthentication()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
+        #expect(loadedAccounts.activeAccountKey == loadedAccounts.accounts.first?.accountKey)
+        #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
+    }
+
+    @Test func beginAuthenticationRefreshesInactiveSavedAccountRateLimits() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        let loginSession = SuccessfulLoginReviewAuthSession()
+        let rateLimitTransport = AuthCapableAppServerSessionTransport()
+        let rateLimitManager = AuthCapableAppServerManager(authTransport: rateLimitTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: loginSession,
+                    environment: environment
+                )
+            },
+            probeAppServerManagerFactory: { _ in
+                rateLimitManager
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        await auth.beginAuthentication()
+
+        let addedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
+        #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
+        #expect(auth.account?.email == "active@example.com")
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(rateLimitWindow(duration: 300, in: addedAccount)?.usedPercent == 40)
+        #expect(rateLimitWindow(duration: 10_080, in: addedAccount)?.usedPercent == 20)
+    }
+
+    @Test func beginAuthenticationRetryAfterFailedAddAccountKeepsCurrentActiveAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let loginSession = SuccessfulLoginReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                ImmediateReadAccountReviewAuthSession(
+                    response: .init(
+                        account: .chatGPT(email: "active@example.com", planType: "pro"),
+                        requiresOpenAIAuth: false
+                    )
+                )
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: loginSession,
+                    environment: environment
+                )
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        await auth.refresh()
+        auth.updatePhase(.failed(message: "Previous add-account failed."))
+
+        await auth.beginAuthentication()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(auth.account?.email == "active@example.com")
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
+    }
+
+    @Test func switchingToMissingAccountDoesNotCancelRunningJobs() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let sharedSession = SignedOutReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+
+        let missingAccount = CodexAccount(email: "missing@example.com")
+        await #expect(throws: Error.self) {
+            try await auth.switchAccount(missingAccount)
+        }
+        #expect(cancelCallCount == 0)
+    }
+
+    @Test func switchingSavedAccountWhileServerStoppedValidatesSharedAuthState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.savedAccounts.first)
+
+        try await auth.switchAccount(savedAccount)
+
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.account == nil)
+    }
+
+    @Test func removingActiveAccountSwitchesToFirstRemainingSavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let sharedSession = SignedOutReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        let activeAccount = try #require(auth.account)
+
+        try await auth.removeAccount(accountKey: activeAccount.accountKey)
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "other@example.com"))
+        #expect(loadedAccounts.activeAccountKey == "other@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com"])
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "other@example.com")
+    }
+
+    @Test func removingInactiveSavedAccountDoesNotClearUnsavedCurrentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try FileManager.default.removeItem(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let currentAccount = CodexAccount(
+            email: "current@example.com",
+            planType: "pro"
+        )
+        auth.updatePhase(.signedOut)
+        auth.updateAccount(currentAccount)
+        let savedAccount = try #require(auth.savedAccounts.first)
+
+        try await auth.removeAccount(accountKey: savedAccount.accountKey)
+
+        #expect(auth.account?.email == "current@example.com")
+        #expect(auth.savedAccounts.isEmpty)
+    }
+
+    @Test func removingActiveAccountKeepsReplacementWhenSharedAuthReadFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let sharedSession = FailingReadAccountReviewAuthSession(message: "refresh failed")
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        let activeAccount = try #require(auth.account)
+
+        try await auth.removeAccount(accountKey: activeAccount.accountKey)
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "other@example.com"))
+        #expect(auth.account?.email == "other@example.com")
+        #expect(loadedAccounts.activeAccountKey == "other@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com"])
+    }
+
+    @Test func removingActiveAccountDoesNotRecreateDeletedAccountWhenForcedRefreshFallsBack() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let sharedSession = SequencedReadAccountThenFailingReviewAuthSession(
+            responses: [
+                .init(
+                    account: .chatGPT(email: "active@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                )
+            ],
+            failureMessage: "refresh failed"
+        )
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        let activeAccount = try #require(auth.account)
+
+        try await auth.removeAccount(accountKey: activeAccount.accountKey)
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(auth.account?.email == "other@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["other@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "other@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com"])
+    }
+
+    @Test func removingActiveAccountWhileServerIsRunningRecyclesToReplacementAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: false)
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let manager = AuthCapableAppServerManager()
+        let controller = CodexAuthController(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            accountRegistryStore: registryStore,
+            appServerManager: manager,
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
+            },
+            recycleServerIfRunning: {
+                await manager.shutdown()
+                _ = try? await manager.prepare()
+            }
+        )
+        let auth = CodexReviewAuthModel(controller: controller)
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        try await auth.removeAccount(accountKey: "active@example.com")
+
+        try await withTestTimeout(.seconds(2)) {
+            while await manager.authTransportCheckoutCount() == 0 {
+                await Task.yield()
+            }
+        }
+
+        #expect(auth.account?.email == "other@example.com")
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 1)
+        #expect(await manager.authTransportCheckoutCount() > 0)
+    }
+
     @Test func failedAuthenticationWithoutPersistedDedicatedHomeAuthDoesNotRecycleSharedAppServer() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = NonPersistentSuccessfulLoginReviewAuthSession()
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2500,6 +5283,98 @@ struct CodexReviewMCPTests {
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
         #expect(await manager.prepareCount() == 1)
         #expect(await manager.shutdownCount() == 0)
+
+        await store.stop()
+    }
+
+    @Test func legacyAuthSessionFactoryFailsLoginWithoutPersistedSharedAuth() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = SuccessfulLoginReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        await store.auth.beginAuthentication()
+
+        #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
+
+        await store.stop()
+    }
+
+    @Test func legacyAuthSessionFactorySupportsSameAccountReauthenticationWithPersistedSharedAuth() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let manager = AuthCapableAppServerManager()
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        await store.auth.beginAuthentication()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
+        #expect(loadedAccounts.activeAccountKey == loadedAccounts.accounts.first?.accountKey)
+        #expect(loadedAccounts.accounts.first?.email == "review@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
+
+        await store.stop()
+    }
+
+    @Test func legacyAuthSessionFactoryDoesNotReplaceStaleSharedAuthSnapshotWithoutPersistedLogin() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "stale@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let manager = AuthCapableAppServerManager()
+        let authSession = SuccessfulLoginReviewAuthSession()
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        await store.auth.beginAuthentication()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(
+            testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage)
+        )
+        #expect(loadedAccounts.activeAccountKey == nil)
+        #expect(loadedAccounts.accounts.first?.email == "stale@example.com")
+        #expect(loadSharedReviewAccount(environment: environment) == nil)
 
         await store.stop()
     }
@@ -2674,6 +5549,15 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2681,14 +5565,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2710,6 +5592,15 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .failure(.cancelled)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2717,14 +5608,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .failure(.cancelled)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2740,6 +5629,15 @@ struct CodexReviewMCPTests {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .failure(.cancelled)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2747,14 +5645,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .failure(.cancelled)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
         applyTestAuthState(auth: store.auth, state: 
@@ -2774,6 +5670,37 @@ struct CodexReviewMCPTests {
                 accountID: "review@example.com"
             )
         )
+    }
+
+    @Test func reviewMonitorLoginAuthSessionFactoryShutsDownManagerWhenStartupFails() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager(requirePrepareBeforeAuthCheckout: true)
+        let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder
+        )
+        let factory = CodexReviewStore.makeReviewMonitorLoginAuthSessionFactory(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            runtimeManagerFactory: { _ in manager }
+        )
+
+        await #expect(throws: Error.self) {
+            _ = try await factory(environment)
+        }
+
+        #expect(await manager.shutdownCount() == 1)
+        #expect(await recorder.lastAuthenticateRequest() == nil)
     }
 
     @Test func reviewMonitorStorePreservesAccountMetadataWhileAuthenticatedRetryIsInProgress() async throws {
@@ -2835,6 +5762,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2842,14 +5778,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
         applyTestAuthState(auth: store.auth, state: 
@@ -2876,6 +5810,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2883,14 +5826,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2911,6 +5852,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2918,14 +5868,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2944,6 +5892,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2951,14 +5908,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -2980,6 +5935,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -2987,14 +5951,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -3011,6 +5973,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -3018,14 +5989,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -3048,6 +6017,15 @@ struct CodexReviewMCPTests {
             )
         )
         let recorder = TestWebAuthenticationSessionRecorder()
+        let nativeAuthenticationConfiguration = ReviewMonitorNativeAuthenticationConfiguration(
+            callbackScheme: "lynnpd.codexreviewmonitor.auth",
+            browserSessionPolicy: .ephemeral,
+            presentationAnchorProvider: { NSWindow() }
+        )
+        let webAuthenticationSessionFactory = makeWebAuthenticationSessionFactory(
+            recorder: recorder,
+            autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+        )
         let store = CodexReviewStore.makeReviewMonitorStore(
             configuration: .init(
                 port: 0,
@@ -3055,14 +6033,12 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             appServerManager: manager,
-            nativeAuthenticationConfiguration: .init(
-                callbackScheme: "lynnpd.codexreviewmonitor.auth",
-                browserSessionPolicy: .ephemeral,
-                presentationAnchorProvider: { NSWindow() }
-            ),
-            webAuthenticationSessionFactory: makeWebAuthenticationSessionFactory(
-                recorder: recorder,
-                autoResult: .success(URL(string: "lynnpd.codexreviewmonitor.auth://callback?code=123")!)
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+            webAuthenticationSessionFactory: webAuthenticationSessionFactory,
+            loginAuthSessionFactoryOverride: makeInjectedNativeLoginAuthSessionFactory(
+                manager: manager,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
             )
         )
 
@@ -4088,6 +7064,67 @@ private actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
+private actor SignedOutReviewAuthSession: ReviewAuthSession {
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+}
+
+private actor BlockingReadAccountReviewAuthSession: ReviewAuthSession {
+    private let readStartedSignal = AsyncSignal()
+    private let finishReadSignal = AsyncSignal()
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        await readStartedSignal.signal()
+        await finishReadSignal.wait()
+        return .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+
+    func waitForReadStart() async {
+        await readStartedSignal.wait()
+    }
+
+    func finishRead() async {
+        await finishReadSignal.signal()
+    }
+}
+
 private actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
     private var responses: [AppServerAccountReadResponse]
 
@@ -4099,6 +7136,48 @@ private actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         if responses.count == 1 {
             return responses[0]
+        }
+        return responses.removeFirst()
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+}
+
+private actor SequencedReadAccountThenFailingReviewAuthSession: ReviewAuthSession {
+    private var responses: [AppServerAccountReadResponse]
+    private let failureMessage: String
+
+    init(
+        responses: [AppServerAccountReadResponse],
+        failureMessage: String
+    ) {
+        self.responses = responses
+        self.failureMessage = failureMessage
+    }
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        if responses.isEmpty {
+            throw NSError(
+                domain: "CodexReviewMCPTests.SequencedReadAccountThenFailingReviewAuthSession",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: failureMessage]
+            )
         }
         return responses.removeFirst()
     }
@@ -4220,6 +7299,76 @@ private actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
 
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
         _ = params
+        buffer(.accountUpdated(.init(authMode: .chatGPT, planType: "pro")))
+        buffer(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
+        return .init(stream: stream, cancel: {})
+    }
+
+    func close() async {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    private func setContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
+    ) {
+        self.continuation = continuation
+        let bufferedNotifications = self.bufferedNotifications
+        self.bufferedNotifications.removeAll(keepingCapacity: false)
+        for notification in bufferedNotifications {
+            continuation.yield(notification)
+        }
+    }
+
+    private func buffer(_ notification: AppServerServerNotification) {
+        if let continuation {
+            continuation.yield(notification)
+        } else {
+            bufferedNotifications.append(notification)
+        }
+    }
+}
+
+private actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSession {
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var bufferedNotifications: [AppServerServerNotification] = []
+    private var didLogin = false
+    private var didReturnPostLoginAccount = false
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        if didLogin == false {
+            return .init(account: nil, requiresOpenAIAuth: true)
+        }
+        if didReturnPostLoginAccount == false {
+            didReturnPostLoginAccount = true
+            return .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        }
+        throw NSError(
+            domain: "CodexReviewMCPTests.SuccessfulLoginThenFailingRefreshReviewAuthSession",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "refresh failed"]
+        )
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        didLogin = true
         buffer(.accountUpdated(.init(authMode: .chatGPT, planType: "pro")))
         buffer(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
         return .chatGPT(
@@ -4516,6 +7665,92 @@ private actor AuthCapableAppServerManager: AppServerManaging {
 
     func prepareCount() -> Int {
         prepareCountStorage
+    }
+}
+
+private actor FailingAuthCheckoutAppServerManager: AppServerManaging {
+    private let runtimeState = AppServerRuntimeState(
+        pid: 200,
+        startTime: .init(seconds: 2, microseconds: 0),
+        processGroupLeaderPID: 200,
+        processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
+    )
+
+    func prepare() async throws -> AppServerRuntimeState {
+        runtimeState
+    }
+
+    func checkoutTransport(sessionID _: String) async throws -> any AppServerSessionTransport {
+        MockAppServerSessionTransport(mode: .success())
+    }
+
+    func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
+        throw NSError(
+            domain: "CodexReviewMCPTests.FailingAuthCheckoutAppServerManager",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Auth transport checkout failed."]
+        )
+    }
+
+    func currentRuntimeState() async -> AppServerRuntimeState? {
+        runtimeState
+    }
+
+    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        continuation.finish()
+        return .init(stream: stream, cancel: {})
+    }
+
+    func diagnosticsTail() async -> String {
+        ""
+    }
+
+    func shutdown() async {}
+}
+
+@MainActor
+private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
+    let isActive = true
+    let shouldAutoStartEmbeddedServer = false
+    let initialAccount: CodexAccount? = nil
+    let initialAccounts: [CodexAccount] = []
+    let initialActiveAccountKey: String? = nil
+
+    private let failingSessionIDs: Set<String>
+    private let error: any Error
+
+    init(
+        failingSessionIDs: Set<String>,
+        error: any Error
+    ) {
+        self.failingSessionIDs = failingSessionIDs
+        self.error = error
+    }
+
+    func start(
+        store _: CodexReviewStore,
+        forceRestartIfNeeded _: Bool
+    ) async {}
+
+    func stop(store _: CodexReviewStore) async {}
+
+    func waitUntilStopped() async {}
+
+    func cancelReview(
+        jobID: String,
+        sessionID: String,
+        reason: String,
+        store: CodexReviewStore
+    ) async throws {
+        if failingSessionIDs.contains(sessionID) {
+            throw error
+        }
+        try store.completeCancellationLocally(
+            jobID: jobID,
+            sessionID: sessionID,
+            reason: reason
+        )
     }
 }
 
@@ -5189,6 +8424,27 @@ private func makeWebAuthenticationSessionFactory(
     }
 }
 
+private func makeInjectedNativeLoginAuthSessionFactory(
+    manager: any AppServerManaging,
+    nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
+    webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
+) -> @Sendable ([String: String]) async throws -> any ReviewAuthSession {
+    { environment in
+        let transport = try await manager.checkoutAuthTransport()
+        let session = await MainActor.run {
+            NativeWebAuthenticationReviewSession(
+                sharedSession: SharedAppServerReviewAuthSession(transport: transport),
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
+                webAuthenticationSessionFactory: webAuthenticationSessionFactory
+            )
+        }
+        return PersistingReviewAuthSession(
+            base: session,
+            environment: environment
+        )
+    }
+}
+
 private func runWithRestartClock(
     _ clock: TestRestartClock,
     maxSteps: Int = 40,
@@ -5294,6 +8550,29 @@ private func waitForObservedValue<Value: Sendable>(
             }
         }
         throw TestFailure("observable probe ended before the expected value arrived")
+    }
+}
+
+private func waitForClockSuspension(
+    _ clock: ManualTestClock,
+    timeout: Duration = .seconds(2)
+) async throws {
+    try await withTestTimeout(timeout) {
+        while clock.hasSleepers == false {
+            await Task.yield()
+        }
+    }
+}
+
+private func waitForRateLimitsReadCount(
+    _ transport: AuthCapableAppServerSessionTransport,
+    expectedCount: Int,
+    timeout: Duration = .seconds(2)
+) async throws {
+    try await withTestTimeout(timeout) {
+        while await transport.rateLimitsReadCount() < expectedCount {
+            await Task.yield()
+        }
     }
 }
 
@@ -5452,6 +8731,20 @@ private final class FakeForcedRestartEnvironment: @unchecked Sendable {
     }
 }
 
+private func waitForMainActorCondition(
+    timeout: Duration = .seconds(2),
+    condition: @escaping @MainActor @Sendable () -> Bool
+) async throws {
+    try await withTestTimeout(timeout) {
+        while true {
+            if await MainActor.run(body: condition) {
+                return
+            }
+            await Task.yield()
+        }
+    }
+}
+
 private extension NSLock {
     func withLock<T>(_ body: () -> T) -> T {
         lock()
@@ -5480,6 +8773,213 @@ private func makeTestStore(
         appServerManager: appServerManager,
         authSessionFactory: makeStubReviewAuthSessionFactory()
     )
+}
+
+@MainActor
+private func makeInjectedAuthSessionStore(
+    configuration: ReviewServerConfiguration,
+    diagnosticsURL: URL? = nil,
+    appServerManager: any AppServerManaging,
+    authSessionFactory: @escaping @Sendable () async throws -> any ReviewAuthSession,
+    rateLimitObservationClock: any ReviewClock = ContinuousClock(),
+    rateLimitStaleRefreshInterval: Duration = .seconds(60),
+    inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
+    deferStartupAuthRefreshUntilPrepared: Bool = false
+) -> CodexReviewStore {
+    let sessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { environment in
+        let baseSession = try await authSessionFactory()
+        return PersistingReviewAuthSession(
+            base: baseSession,
+            environment: environment
+        )
+    }
+    return CodexReviewStore(
+        configuration: configuration,
+        diagnosticsURL: diagnosticsURL,
+        appServerManager: appServerManager,
+        sharedAuthSessionFactory: sessionFactory,
+        loginAuthSessionFactory: sessionFactory,
+        rateLimitObservationClock: rateLimitObservationClock,
+        rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+        inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
+        deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
+    )
+}
+
+@MainActor
+private func makeAuthModel(
+    configuration: ReviewServerConfiguration,
+    appServerManager: any AppServerManaging = MockAppServerManager { _ in .success() },
+    sharedAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
+    loginAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
+    probeAppServerManagerFactory: (@Sendable ([String: String]) -> any AppServerManaging)? = nil,
+    rateLimitObservationClock: any ReviewClock = ContinuousClock(),
+    rateLimitStaleRefreshInterval: Duration = .seconds(60),
+    inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
+    cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in }
+) -> CodexReviewAuthModel {
+    let controller = CodexAuthController(
+        configuration: configuration,
+        accountRegistryStore: ReviewAccountRegistryStore(environment: configuration.environment),
+        appServerManager: appServerManager,
+        sharedAuthSessionFactory: sharedAuthSessionFactory,
+        loginAuthSessionFactory: loginAuthSessionFactory,
+        probeAppServerManagerFactory: probeAppServerManagerFactory,
+        runtimeState: { .stopped },
+        recycleServerIfRunning: {},
+        cancelRunningJobs: cancelRunningJobs,
+        rateLimitObservationClock: rateLimitObservationClock,
+        rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+        inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
+    )
+    return CodexReviewAuthModel(controller: controller)
+}
+
+private actor PersistingReviewAuthSession: ReviewAuthSession {
+    private let base: any ReviewAuthSession
+    private let environment: [String: String]
+
+    init(
+        base: any ReviewAuthSession,
+        environment: [String: String]
+    ) {
+        self.base = base
+        self.environment = environment
+    }
+
+    func readAccount(refreshToken: Bool) async throws -> AppServerAccountReadResponse {
+        let response = try await base.readAccount(refreshToken: refreshToken)
+        if case .chatGPT(let email, let planType)? = response.account {
+            try? writeReviewAuthSnapshot(
+                email: email,
+                planType: planType,
+                environment: environment
+            )
+        } else {
+            try? FileManager.default.removeItem(
+                at: ReviewHomePaths.reviewAuthURL(environment: environment)
+            )
+        }
+        return response
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        try await base.startLogin(params)
+    }
+
+    func cancelLogin(loginID: String) async throws {
+        try await base.cancelLogin(loginID: loginID)
+    }
+
+    func logout() async throws {
+        try await base.logout()
+        try? FileManager.default.removeItem(
+            at: ReviewHomePaths.reviewAuthURL(environment: environment)
+        )
+    }
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        await base.notificationStream()
+    }
+
+    func close() async {
+        await base.close()
+    }
+}
+
+private func writeReviewAuthSnapshot(
+    email: String,
+    planType: String?,
+    environment: [String: String]
+) throws {
+    let authURL = ReviewHomePaths.reviewAuthURL(environment: environment)
+    try FileManager.default.createDirectory(
+        at: authURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    var authPayload: [String: Any] = [:]
+    if let planType {
+        authPayload["chatgpt_plan_type"] = planType
+    }
+    let payload: [String: Any] = [
+        "email": email,
+        "https://api.openai.com/auth": authPayload,
+    ]
+    let object: [String: Any] = [
+        "auth_mode": "chatgpt",
+        "tokens": [
+            "id_token": makeReviewAuthTestJWT(payload: payload)
+        ],
+    ]
+    let data = try JSONSerialization.data(withJSONObject: object)
+    try data.write(to: authURL, options: .atomic)
+}
+
+@MainActor
+private func saveReviewAccount(
+    email: String,
+    planType: String? = "pro",
+    makeActive: Bool,
+    environment: [String: String],
+    registryStore: ReviewAccountRegistryStore
+) throws -> CodexAccount {
+    try writeReviewAuthSnapshot(
+        email: email,
+        planType: planType,
+        environment: environment
+    )
+    guard let savedAccount = try registryStore.saveSharedAuthAsSavedAccount(makeActive: makeActive) else {
+        throw TestFailure("expected saved account to be persisted")
+    }
+    return savedAccount
+}
+
+private func writeSavedAccountAuthSnapshot(
+    email: String,
+    planType: String?,
+    accountKey: String,
+    environment: [String: String],
+    useLegacyDirectory: Bool
+) throws {
+    try writeReviewAuthSnapshot(
+        email: email,
+        planType: planType,
+        environment: environment
+    )
+    let destinationDirectoryURL = useLegacyDirectory
+        ? ReviewHomePaths.legacySavedAccountDirectoryURL(
+            accountKey: accountKey,
+            environment: environment
+        )
+        : ReviewHomePaths.savedAccountDirectoryURL(
+            accountKey: accountKey,
+            environment: environment
+        )
+    try FileManager.default.createDirectory(
+        at: destinationDirectoryURL,
+        withIntermediateDirectories: true
+    )
+    try Data(contentsOf: ReviewHomePaths.reviewAuthURL(environment: environment))
+        .write(
+            to: destinationDirectoryURL.appendingPathComponent("auth.json"),
+            options: .atomic
+        )
+}
+
+private func makeReviewAuthTestJWT(payload: [String: Any]) -> String {
+    let header = ["alg": "none", "typ": "JWT"]
+    let headerData = try? JSONSerialization.data(withJSONObject: header)
+    let payloadData = try? JSONSerialization.data(withJSONObject: payload)
+    let headerComponent = makeReviewAuthJWTComponent(headerData ?? Data())
+    let payloadComponent = makeReviewAuthJWTComponent(payloadData ?? Data())
+    return "\(headerComponent).\(payloadComponent)."
+}
+
+private func makeReviewAuthJWTComponent(_ data: Data) -> String {
+    data.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
 }
 
 private struct StoreDiagnosticsSnapshot: Decodable {
@@ -5589,13 +9089,14 @@ private func applyTestAuthState(
 ) {
     auth.updatePhase(state.phase)
     if let accountEmail = state.accountEmail {
-        auth.updateAccount(
-            CodexAccount(
-                email: accountEmail,
-                planType: state.accountPlanType ?? "pro"
-            )
+        let account = CodexAccount(
+            email: accountEmail,
+            planType: state.accountPlanType ?? "pro"
         )
+        auth.updateSavedAccounts([account])
+        auth.updateAccount(account)
     } else {
+        auth.updateSavedAccounts([])
         auth.updateAccount(nil)
     }
 }

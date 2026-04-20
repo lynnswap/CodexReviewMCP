@@ -47,6 +47,13 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
             self.onAuthenticationStateChanged?()
         }
         .store(in: &observationHandles)
+        auth.observe(\.savedAccounts) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.onAuthenticationStateChanged?()
+        }
+        .store(in: &observationHandles)
 
         emitCurrentState()
     }
@@ -77,9 +84,6 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
                     self.isRestarting = false
                 }
                 await self.store.restart()
-                guard self.store.serverState == .running else {
-                    return
-                }
             }
             guard self.auth.isAuthenticated == false,
                   self.auth.isAuthenticating == false

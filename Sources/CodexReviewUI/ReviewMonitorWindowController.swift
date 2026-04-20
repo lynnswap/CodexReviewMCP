@@ -126,18 +126,22 @@ public final class ReviewMonitorWindowController: NSWindowController {
         if forceSplitView {
             return .splitView
         }
+        if auth.isAuthenticating,
+           displayedContentKind == .splitView {
+            return .splitView
+        }
         if auth.account != nil {
             return .splitView
         }
-        if auth.isAuthenticating {
-            if displayedContentKind == .splitView {
-                return .splitView
-            }
-            return .signInView
+        if auth.hasSavedAccounts {
+            return .splitView
         }
         if auth.errorMessage != nil,
            displayedContentKind == .splitView {
             return .splitView
+        }
+        if auth.isAuthenticating {
+            return .signInView
         }
         return .signInView
     }
@@ -322,7 +326,7 @@ func makeReviewMonitorPreviewContentViewController() -> NSViewController {
 @MainActor
 func makeReviewMonitorPreviewContentViewControllerForPreview(
     authPhase: CodexReviewAuthModel.Phase = .signedOut,
-    account: CodexAccount? = makeStatusPreviewAccount(),
+    account: CodexAccount? = nil,
     serverState: CodexReviewServerState = .running
 ) -> NSViewController {
     let store: CodexReviewStore
@@ -334,8 +338,11 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
         store.serverState = serverState
         store.serverURL = nil
     }
+    let previewAccounts = ReviewMonitorPreviewContent.makePreviewAccounts()
+    let resolvedAccount = account ?? previewAccounts.first
     store.auth.updatePhase(authPhase)
-    store.auth.updateAccount(account)
+    store.auth.updateSavedAccounts(previewAccounts)
+    store.auth.updateAccount(resolvedAccount)
     let splitViewController = ReviewMonitorSplitViewController(store: store)
     splitViewController.loadViewIfNeeded()
     let contentViewController = ReviewMonitorWindowContentViewController { window in

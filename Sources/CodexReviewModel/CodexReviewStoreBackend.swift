@@ -5,6 +5,8 @@ package protocol CodexReviewStoreBackend: AnyObject {
     var isActive: Bool { get }
     var shouldAutoStartEmbeddedServer: Bool { get }
     var initialAccount: CodexAccount? { get }
+    var initialAccounts: [CodexAccount] { get }
+    var initialActiveAccountKey: String? { get }
 
     func start(
         store: CodexReviewStore,
@@ -21,6 +23,22 @@ package protocol CodexReviewStoreBackend: AnyObject {
         reason: String,
         store: CodexReviewStore
     ) async throws
+
+    func attachStore(_ store: CodexReviewStore)
+}
+
+extension CodexReviewStoreBackend {
+    package var initialAccounts: [CodexAccount] {
+        initialAccount.map { [$0] } ?? []
+    }
+
+    package var initialActiveAccountKey: String? {
+        initialAccount?.accountKey
+    }
+
+    package func attachStore(_ store: CodexReviewStore) {
+        _ = store
+    }
 }
 
 @MainActor
@@ -28,6 +46,8 @@ package final class CodexReviewPreviewStoreBackend: CodexReviewStoreBackend {
     package private(set) var isActive = false
     package let shouldAutoStartEmbeddedServer = false
     package let initialAccount: CodexAccount? = nil
+    package let initialAccounts: [CodexAccount] = []
+    package let initialActiveAccountKey: String? = nil
 
     package init() {}
 

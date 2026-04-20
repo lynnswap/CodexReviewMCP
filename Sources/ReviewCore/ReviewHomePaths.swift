@@ -1,6 +1,12 @@
 import Foundation
 
 package enum ReviewHomePaths {
+    private static let encodedAccountKeyAllowedCharacters: CharacterSet = {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return allowed
+    }()
+
     package static func reviewHomeURL(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
@@ -26,6 +32,59 @@ package enum ReviewHomePaths {
     ) -> URL {
         reviewHomeURL(environment: environment)
             .appendingPathComponent("auth.json")
+    }
+
+    package static func accountsDirectoryURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        reviewHomeURL(environment: environment)
+            .appendingPathComponent("accounts", isDirectory: true)
+    }
+
+    package static func accountsRegistryURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        accountsDirectoryURL(environment: environment)
+            .appendingPathComponent("registry.json")
+    }
+
+    package static func savedAccountDirectoryURL(
+        accountKey: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        accountsDirectoryURL(environment: environment)
+            .appendingPathComponent(
+                encodedSavedAccountPathComponent(accountKey: accountKey),
+                isDirectory: true
+            )
+    }
+
+    package static func savedAccountAuthURL(
+        accountKey: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        savedAccountDirectoryURL(accountKey: accountKey, environment: environment)
+            .appendingPathComponent("auth.json")
+    }
+
+    package static func legacySavedAccountDirectoryURL(
+        accountKey: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        accountsDirectoryURL(environment: environment)
+            .appendingPathComponent(accountKey, isDirectory: true)
+    }
+
+    private static func encodedSavedAccountPathComponent(accountKey: String) -> String {
+        accountKey.addingPercentEncoding(withAllowedCharacters: encodedAccountKeyAllowedCharacters)
+            ?? accountKey.replacingOccurrences(of: "/", with: "%2F")
+    }
+
+    package static func makeProbeRootURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> URL {
+        accountsDirectoryURL(environment: environment)
+            .appendingPathComponent("probes", isDirectory: true)
     }
 
     package static func reviewAgentsURL(
