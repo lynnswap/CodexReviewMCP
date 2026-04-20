@@ -23,6 +23,14 @@ package struct ReviewLocalConfig: Sendable, Equatable {
     }
 }
 
+package struct ReviewLocalConfigPresence: Sendable, Equatable {
+    package var hasReviewModel = false
+    package var hasModelReasoningEffort = false
+    package var hasServiceTier = false
+    package var hasModelContextWindow = false
+    package var hasModelAutoCompactTokenLimit = false
+}
+
 package enum ReviewLocalConfigError: LocalizedError {
     case unreadable(path: String, message: String)
     case invalidValue(path: String, key: String, expected: String)
@@ -40,6 +48,20 @@ package enum ReviewLocalConfigError: LocalizedError {
 package func loadReviewLocalConfig(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) throws -> ReviewLocalConfig {
+    let (fileURL, content) = try loadReviewLocalConfigContent(environment: environment)
+    return try parseReviewLocalConfig(content, sourcePath: fileURL.path)
+}
+
+package func loadReviewLocalConfigPresence(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) throws -> ReviewLocalConfigPresence {
+    let (_, content) = try loadReviewLocalConfigContent(environment: environment)
+    return parseReviewLocalConfigPresence(content)
+}
+
+private func loadReviewLocalConfigContent(
+    environment: [String: String]
+) throws -> (URL, String) {
     let fileURL = ReviewHomePaths.reviewConfigURL(environment: environment)
     do {
         try ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
@@ -53,8 +75,7 @@ package func loadReviewLocalConfig(
     } catch {
         throw ReviewLocalConfigError.unreadable(path: fileURL.path, message: error.localizedDescription)
     }
-
-    return try parseReviewLocalConfig(content, sourcePath: fileURL.path)
+    return (fileURL, content)
 }
 
 package func parseReviewLocalConfig(
@@ -117,6 +138,45 @@ package func parseReviewLocalConfig(
     }
 
     return config
+}
+
+package func parseReviewLocalConfigPresence(
+    _ content: String
+) -> ReviewLocalConfigPresence {
+    var presence = ReviewLocalConfigPresence()
+    var inRoot = true
+
+    for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
+        let trimmed = stripReviewConfigComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            continue
+        }
+        if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+            inRoot = false
+            continue
+        }
+        guard inRoot, let separator = trimmed.range(of: "=") else {
+            continue
+        }
+
+        let key = trimmed[..<separator.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        switch key {
+        case "review_model":
+            presence.hasReviewModel = true
+        case "model_reasoning_effort":
+            presence.hasModelReasoningEffort = true
+        case "service_tier":
+            presence.hasServiceTier = true
+        case "model_context_window":
+            presence.hasModelContextWindow = true
+        case "model_auto_compact_token_limit":
+            presence.hasModelAutoCompactTokenLimit = true
+        default:
+            continue
+        }
+    }
+
+    return presence
 }
 
 private func parseReviewConfigString(

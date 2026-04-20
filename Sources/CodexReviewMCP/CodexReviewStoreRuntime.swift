@@ -1905,24 +1905,20 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         persistServiceTier: Bool
     ) async throws {
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let localConfig = try loadReviewLocalConfig(environment: configuration.environment)
-        let hasRootReviewModel = localConfig.reviewModel?.nilIfEmpty != nil
+        let localConfigPresence = try loadReviewLocalConfigPresence(environment: configuration.environment)
+        let hasRootReviewModel = localConfigPresence.hasReviewModel
         let hasProfileReviewModelOverride = activeProfileHasReviewModelOverride(
             environment: configuration.environment
         )
         let writeModelAtRoot = profile == nil
             || (hasRootReviewModel && hasProfileReviewModelOverride == false)
-        let hasRootReasoningEffort = localConfig.modelReasoningEffort?
-            .nilIfEmpty
-            .flatMap(CodexReviewReasoningEffort.init(rawValue:)) != nil
+        let hasRootReasoningEffort = localConfigPresence.hasModelReasoningEffort
         let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
             environment: configuration.environment
         )
         let writeReasoningAtRoot = profile == nil
             || (hasRootReasoningEffort && hasProfileReasoningEffortOverride == false)
-        let hasRootServiceTier = localConfig.serviceTier?
-            .nilIfEmpty
-            .flatMap(CodexReviewServiceTier.init(rawValue:)) != nil
+        let hasRootServiceTier = localConfigPresence.hasServiceTier
         let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
             environment: configuration.environment
         )
@@ -1972,10 +1968,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let localConfig = try loadReviewLocalConfig(environment: configuration.environment)
-        let hasRootReasoningEffort = localConfig.modelReasoningEffort?
-            .nilIfEmpty
-            .flatMap(CodexReviewReasoningEffort.init(rawValue:)) != nil
+        let localConfigPresence = try loadReviewLocalConfigPresence(environment: configuration.environment)
+        let hasRootReasoningEffort = localConfigPresence.hasModelReasoningEffort
         let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
             environment: configuration.environment
         )
@@ -2000,10 +1994,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
         let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let localConfig = try loadReviewLocalConfig(environment: configuration.environment)
-        let hasRootServiceTier = localConfig.serviceTier?
-            .nilIfEmpty
-            .flatMap(CodexReviewServiceTier.init(rawValue:)) != nil
+        let localConfigPresence = try loadReviewLocalConfigPresence(environment: configuration.environment)
+        let hasRootServiceTier = localConfigPresence.hasServiceTier
         let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
             environment: configuration.environment
         )

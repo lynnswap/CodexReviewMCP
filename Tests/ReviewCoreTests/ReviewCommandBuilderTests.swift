@@ -391,6 +391,24 @@ import Testing
         #expect(config.modelAutoCompactTokenLimit == nil)
     }
 
+    @Test func reviewLocalConfigPresenceTracksRootNullClears() {
+        let presence = parseReviewLocalConfigPresence(
+            """
+            review_model = null
+            model_reasoning_effort = null
+            service_tier = null
+            model_context_window = null
+            model_auto_compact_token_limit = null
+            """
+        )
+
+        #expect(presence.hasReviewModel)
+        #expect(presence.hasModelReasoningEffort)
+        #expect(presence.hasServiceTier)
+        #expect(presence.hasModelContextWindow)
+        #expect(presence.hasModelAutoCompactTokenLimit)
+    }
+
     @Test func configReadResponseDecodesReasoningEffortAndServiceTier() throws {
         let data = Data(
             """
