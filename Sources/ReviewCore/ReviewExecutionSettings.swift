@@ -85,6 +85,9 @@ package func makeReviewThreadStartConfig(
     if let localReasoningEffort = localConfig.modelReasoningEffort?.nilIfEmpty {
         config["model_reasoning_effort"] = .string(localReasoningEffort)
     }
+    if let localServiceTier = localConfig.serviceTier?.nilIfEmpty {
+        config["service_tier"] = .string(localServiceTier)
+    }
 
     let baselineContextWindow = localConfig.modelContextWindow ?? resolvedConfig.modelContextWindow
     let baselineAutoCompactTokenLimit = localConfig.modelAutoCompactTokenLimit ?? resolvedConfig.modelAutoCompactTokenLimit

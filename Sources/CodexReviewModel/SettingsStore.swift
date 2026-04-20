@@ -77,6 +77,11 @@ package struct CodexReviewModelCatalogItem: Codable, Identifiable, Equatable, Se
         case supportedServiceTiers = "additionalSpeedTiers"
     }
 
+    private struct RawReasoningOption: Decodable {
+        let reasoningEffort: String
+        let description: String
+    }
+
     package init(
         id: String,
         model: String,
@@ -101,14 +106,23 @@ package struct CodexReviewModelCatalogItem: Codable, Identifiable, Equatable, Se
         model = try container.decode(String.self, forKey: .model)
         displayName = try container.decode(String.self, forKey: .displayName)
         hidden = try container.decode(Bool.self, forKey: .hidden)
-        supportedReasoningEfforts = try container.decode(
-            [CodexReviewReasoningOption].self,
+        let rawReasoningEfforts = try container.decode(
+            [RawReasoningOption].self,
             forKey: .supportedReasoningEfforts
         )
-        defaultReasoningEffort = try container.decode(
-            CodexReviewReasoningEffort.self,
+        supportedReasoningEfforts = rawReasoningEfforts.compactMap { item in
+            guard let reasoningEffort = CodexReviewReasoningEffort(rawValue: item.reasoningEffort) else {
+                return nil
+            }
+            return .init(reasoningEffort: reasoningEffort, description: item.description)
+        }
+        let decodedDefaultReasoningEffort = try container.decodeIfPresent(
+            String.self,
             forKey: .defaultReasoningEffort
-        )
+        ).flatMap(CodexReviewReasoningEffort.init(rawValue:))
+        defaultReasoningEffort = decodedDefaultReasoningEffort
+            ?? supportedReasoningEfforts.first?.reasoningEffort
+            ?? .medium
         supportedServiceTiers = (try container.decodeIfPresent(
             [String].self,
             forKey: .supportedServiceTiers

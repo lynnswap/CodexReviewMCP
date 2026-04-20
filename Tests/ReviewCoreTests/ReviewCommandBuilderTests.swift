@@ -101,6 +101,18 @@ import Testing
         #expect(config?["model_auto_compact_token_limit"] == nil)
     }
 
+    @Test func reviewExecutionSettingsBuilderForwardsLocalServiceTierOverride() {
+        let config = makeReviewThreadStartConfig(
+            reviewSpecificModel: nil,
+            localConfig: .init(serviceTier: "fast"),
+            resolvedConfig: .init(serviceTier: .flex),
+            clampModel: nil,
+            environment: [:]
+        )
+
+        #expect(config?["service_tier"] == .string("fast"))
+    }
+
     @Test func reviewExecutionSettingsBuilderOmitsNumericLimitsWhenModelIsUnknown() {
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: nil,
@@ -281,6 +293,50 @@ import Testing
         ])
         #expect(model.defaultReasoningEffort == .medium)
         #expect(model.supportedServiceTiers == [.fast, .flex])
+    }
+
+    @Test func modelListResponseIgnoresUnknownReasoningMetadata() throws {
+        let data = Data(
+            """
+            {
+              "data": [
+                {
+                  "id": "gpt-next",
+                  "model": "gpt-next",
+                  "displayName": "GPT Next",
+                  "hidden": false,
+                  "supportedReasoningEfforts": [
+                    {
+                      "reasoningEffort": "ultra",
+                      "description": "Unknown future tier."
+                    },
+                    {
+                      "reasoningEffort": "medium",
+                      "description": "Balanced default."
+                    }
+                  ],
+                  "defaultReasoningEffort": "ultra",
+                  "inputModalities": ["text"],
+                  "supportsPersonality": true,
+                  "additionalSpeedTiers": ["fast"],
+                  "isDefault": false,
+                  "upgrade": null,
+                  "upgradeInfo": null,
+                  "availabilityNux": null
+                }
+              ],
+              "nextCursor": null
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AppServerModelListResponse.self, from: data)
+        let model = try #require(response.data.first)
+
+        #expect(model.supportedReasoningEfforts == [
+            .init(reasoningEffort: .medium, description: "Balanced default.")
+        ])
+        #expect(model.defaultReasoningEffort == .medium)
     }
 
     @Test func reviewLocalConfigScaffoldCreatesConfigAndAgentsFiles() throws {
