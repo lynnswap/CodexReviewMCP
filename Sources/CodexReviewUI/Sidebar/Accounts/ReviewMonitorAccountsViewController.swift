@@ -6,149 +6,87 @@ import SwiftUI
 private struct ReviewMonitorAccountsListView: View {
     let store: CodexReviewStore
 
-    private enum PresentedAlert {
-        case pendingAction
-        case actionResult
-    }
-
-    private var savedAccounts: [CodexAccount] {
+    private var accounts: [CodexAccount] {
         store.auth.savedAccounts
-    }
-
-    private var unsavedCurrentAccount: CodexAccount? {
-        guard let currentAccount = store.auth.account else {
-            return nil
-        }
-        guard savedAccounts.contains(where: { $0.accountKey == currentAccount.accountKey }) == false else {
-            return nil
-        }
-        return currentAccount
-    }
-
-    private var presentedAlert: PresentedAlert? {
-        if store.auth.isPresentingPendingAccountActionConfirmation {
-            return .pendingAction
-        }
-        if store.auth.isPresentingAccountActionAlert {
-            return .actionResult
-        }
-        return nil
-    }
-
-    private var isPresentingAlert: Binding<Bool> {
-        Binding(
-            get: { presentedAlert != nil },
-            set: { newValue in
-                guard newValue == false else {
-                    return
-                }
-                dismissPresentedAlert()
-            }
-        )
-    }
-
-    private var alertTitle: String {
-        switch presentedAlert {
-        case .pendingAction:
-            store.auth.pendingAccountActionConfirmationTitle
-        case .actionResult:
-            store.auth.accountActionAlertTitle
-        case nil:
-            ""
-        }
-    }
-
-    private var alertMessage: String {
-        switch presentedAlert {
-        case .pendingAction:
-            store.auth.pendingAccountActionConfirmationMessage
-        case .actionResult:
-            store.auth.accountActionAlertMessage
-        case nil:
-            ""
-        }
     }
 
     var body: some View {
         @Bindable var auth = store.auth
         
         List {
-            if let unsavedCurrentAccount {
-                accountRow(unsavedCurrentAccount, auth: auth)
-            }
-            ForEach(savedAccounts) { account in
-                accountRow(account, auth: auth)
+            ForEach(accounts) { account in
+                let isSelected :Bool = auth.account == account
+                Label{
+                    VStack{
+                        HStack{
+                            Text(account.maskedEmail)
+                                .textScale(.secondary)
+                                .foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                        }
+                        RowView(
+                            store:store,
+                            account:account
+                        )
+                    }
+                }icon:{
+                    FocusRingSelectionIndicator(
+                        isSelected: isSelected
+                    )
+                    .accessibilityHidden(true)
+                    .contentShape(.circle)
+                    .onTapGesture {
+                        if isSelected {
+                            return
+                        }
+                        auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+                    }
+                }
+                .contextMenu{
+                    AccountContextMenuView(
+                        store: store,
+                        account: account
+                    )
+                }
+                .listRowBackground(
+                    RoundedRectangle(
+                        cornerRadius: 8,
+                        style: .continuous
+                    )
+                    .fill(isSelected
+                        ? AnyShapeStyle(.background)
+                        : AnyShapeStyle(.clear)
+                    )
+                    .padding(.horizontal,10)
+                )
             }
             .onMove(perform: handleMove)
         }
-        .animation(.default, value: savedAccounts)
+        .animation(.default,value:accounts)
         .accessibilityIdentifier("review-monitor.account-list")
         .alert(
-            alertTitle,
-            isPresented: isPresentingAlert
+            auth.pendingAccountActionConfirmationTitle,
+            isPresented: $auth.isPresentingPendingAccountActionConfirmation
         ) {
-            alertButtons(auth: auth)
+            Button(auth.pendingAccountActionConfirmationButtonTitle) {
+                auth.confirmPendingAccountAction()
+            }
+            Button("Cancel", role: .cancel) {
+                auth.cancelPendingAccountAction()
+            }
         } message: {
-            Text(alertMessage)
+            Text(auth.pendingAccountActionConfirmationMessage)
         }
-    }
-
-    @ViewBuilder
-    private func accountRow(
-        _ account: CodexAccount,
-        auth: CodexReviewAuthModel
-    ) -> some View {
-        let isSelected: Bool = auth.account == account
-        Label {
-            VStack {
-                HStack {
-                    Text(account.maskedEmail)
-                        .textScale(.secondary)
-                        .foregroundStyle(.primary)
-                    Spacer(minLength: 0)
-                }
-                RowView(
-                    store: store,
-                    account: account
-                )
+        .alert(
+            auth.accountActionAlertTitle,
+            isPresented: $auth.isPresentingAccountActionAlert
+        ) {
+            Button("OK", role: .cancel) {
+                auth.dismissAccountActionAlert()
             }
-        } icon: {
-            FocusRingSelectionIndicator(
-                isSelected: isSelected
-            )
-            .accessibilityHidden(true)
-            .contentShape(.circle)
-            .onTapGesture {
-                if isSelected {
-                    return
-                }
-                auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
-            }
+        } message: {
+            Text(auth.accountActionAlertMessage)
         }
-        .contentShape(.rect)
-        .onTapGesture {
-            if isSelected {
-                return
-            }
-            auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
-        }
-        .contextMenu {
-            AccountContextMenuView(
-                store: store,
-                account: account
-            )
-        }
-        .listRowBackground(
-            RoundedRectangle(
-                cornerRadius: 8,
-                style: .continuous
-            )
-            .fill(isSelected
-                ? AnyShapeStyle(.background)
-                : AnyShapeStyle(.clear)
-            )
-            .padding(.horizontal, 10)
-        )
     }
 
     private func handleMove(
@@ -157,7 +95,7 @@ private struct ReviewMonitorAccountsListView: View {
     ) {
         guard sourceOffsets.count == 1,
               let sourceIndex = sourceOffsets.first,
-              savedAccounts.indices.contains(sourceIndex)
+              accounts.indices.contains(sourceIndex)
         else {
             return
         }
@@ -166,14 +104,14 @@ private struct ReviewMonitorAccountsListView: View {
             0,
             min(
                 destination > sourceIndex ? destination - 1 : destination,
-                savedAccounts.count - 1
+                accounts.count - 1
             )
         )
         guard destinationIndex != sourceIndex else {
             return
         }
 
-        let accountKey = savedAccounts[sourceIndex].accountKey
+        let accountKey = accounts[sourceIndex].accountKey
         Task { @MainActor in
             do {
                 try await store.auth.reorderSavedAccount(accountKey: accountKey, toIndex: destinationIndex)
@@ -183,38 +121,6 @@ private struct ReviewMonitorAccountsListView: View {
                     message: error.localizedDescription
                 )
             }
-        }
-    }
-
-    @ViewBuilder
-    private func alertButtons(
-        auth: CodexReviewAuthModel
-    ) -> some View {
-        switch presentedAlert {
-        case .pendingAction:
-            Button(auth.pendingAccountActionConfirmationButtonTitle) {
-                auth.confirmPendingAccountAction()
-            }
-            Button("Cancel", role: .cancel) {
-                auth.cancelPendingAccountAction()
-            }
-        case .actionResult:
-            Button("OK", role: .cancel) {
-                auth.dismissAccountActionAlert()
-            }
-        case nil:
-            EmptyView()
-        }
-    }
-
-    private func dismissPresentedAlert() {
-        switch presentedAlert {
-        case .pendingAction:
-            store.auth.cancelPendingAccountAction()
-        case .actionResult:
-            store.auth.dismissAccountActionAlert()
-        case nil:
-            return
         }
     }
 }
