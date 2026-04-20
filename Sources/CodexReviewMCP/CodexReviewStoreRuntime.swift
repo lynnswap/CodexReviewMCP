@@ -1657,6 +1657,20 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         )
     }
 
+    var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
+        return .init(
+            model: localConfig.reviewModel?.nilIfEmpty,
+            reasoningEffort: localConfig.modelReasoningEffort?
+                .nilIfEmpty
+                .flatMap(CodexReviewReasoningEffort.init(rawValue:)),
+            serviceTier: localConfig.serviceTier?
+                .nilIfEmpty
+                .flatMap(CodexReviewServiceTier.init(rawValue:)),
+            models: []
+        )
+    }
+
     var isActive: Bool {
         server != nil || waitTask != nil || startupTask != nil
     }
@@ -1803,6 +1817,88 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         if let waitTask {
             _ = await waitTask.value
         }
+    }
+
+    func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
+        let transport = try await appServerManager.checkoutAuthTransport()
+        let configResponse: AppServerConfigReadResponse = try await transport.request(
+            method: "config/read",
+            params: AppServerConfigReadParams(
+                cwd: nil,
+                includeLayers: false
+            ),
+            responseType: AppServerConfigReadResponse.self
+        )
+        let modelResponse: AppServerModelListResponse = try await transport.request(
+            method: "model/list",
+            params: AppServerModelListParams(
+                cursor: nil,
+                limit: nil,
+                includeHidden: true
+            ),
+            responseType: AppServerModelListResponse.self
+        )
+        return .init(
+            model: configResponse.config.reviewModel?.nilIfEmpty
+                ?? configResponse.config.model?.nilIfEmpty,
+            reasoningEffort: configResponse.config.modelReasoningEffort,
+            serviceTier: configResponse.config.serviceTier,
+            models: modelResponse.data
+        )
+    }
+
+    func updateSettingsModel(
+        _ model: String,
+        reasoningEffort: CodexReviewReasoningEffort?,
+        serviceTier: CodexReviewServiceTier?
+    ) async throws {
+        try await writeSettings(
+            edits: [
+                .init(
+                    keyPath: "review_model",
+                    value: .string(model),
+                    mergeStrategy: .replace
+                ),
+                .init(
+                    keyPath: "model_reasoning_effort",
+                    value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                ),
+                .init(
+                    keyPath: "service_tier",
+                    value: serviceTier.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                ),
+            ]
+        )
+    }
+
+    func updateSettingsReasoningEffort(
+        _ reasoningEffort: CodexReviewReasoningEffort?
+    ) async throws {
+        try await writeSettings(
+            edits: [
+                .init(
+                    keyPath: "model_reasoning_effort",
+                    value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                ),
+            ]
+        )
+    }
+
+    func updateSettingsServiceTier(
+        _ serviceTier: CodexReviewServiceTier?
+    ) async throws {
+        try await writeSettings(
+            edits: [
+                .init(
+                    keyPath: "service_tier",
+                    value: serviceTier.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                ),
+            ]
+        )
     }
 
     func cancelReview(
@@ -2135,6 +2231,22 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             serverPID: endpointRecord.pid,
             serverStartTime: endpointRecord.serverStartTime,
             at: runtimeStateFileURL
+        )
+    }
+
+    private func writeSettings(
+        edits: [AppServerConfigEdit]
+    ) async throws {
+        let transport = try await appServerManager.checkoutAuthTransport()
+        let _: AppServerConfigWriteResponse = try await transport.request(
+            method: "config/batchWrite",
+            params: AppServerConfigBatchWriteParams(
+                edits: edits,
+                filePath: nil,
+                expectedVersion: nil,
+                reloadUserConfig: true
+            ),
+            responseType: AppServerConfigWriteResponse.self
         )
     }
 }

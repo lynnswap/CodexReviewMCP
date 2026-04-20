@@ -13,14 +13,14 @@ extension CodexReviewStore {
         set { requestCancellationDelay = newValue }
     }
 
-    @_spi(Testing)
-    public func loadForTesting(
+    package func loadForTesting(
         serverState: CodexReviewServerState,
         authPhase: CodexReviewAuthModel.Phase = .signedOut,
         account: CodexAccount? = nil,
         savedAccounts: [CodexAccount] = [],
         serverURL: URL? = nil,
-        workspaces: [CodexReviewWorkspace]
+        workspaces: [CodexReviewWorkspace],
+        settingsSnapshot: CodexReviewSettingsSnapshot? = nil
     ) {
         precondition(
             backend.isActive == false,
@@ -50,6 +50,9 @@ extension CodexReviewStore {
         }
 
         self.workspaces = resolvedWorkspaces
+        if let settingsSnapshot {
+            settings.loadForTesting(snapshot: settingsSnapshot)
+        }
         writeDiagnosticsIfNeeded()
     }
 }

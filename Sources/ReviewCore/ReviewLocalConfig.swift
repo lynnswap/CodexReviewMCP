@@ -4,17 +4,20 @@ import ReviewJobs
 package struct ReviewLocalConfig: Sendable, Equatable {
     package var reviewModel: String?
     package var modelReasoningEffort: String?
+    package var serviceTier: String?
     package var modelContextWindow: Int?
     package var modelAutoCompactTokenLimit: Int?
 
     package init(
         reviewModel: String? = nil,
         modelReasoningEffort: String? = nil,
+        serviceTier: String? = nil,
         modelContextWindow: Int? = nil,
         modelAutoCompactTokenLimit: Int? = nil
     ) {
         self.reviewModel = reviewModel
         self.modelReasoningEffort = modelReasoningEffort
+        self.serviceTier = serviceTier
         self.modelContextWindow = modelContextWindow
         self.modelAutoCompactTokenLimit = modelAutoCompactTokenLimit
     }
@@ -86,6 +89,12 @@ package func parseReviewLocalConfig(
             )
         case "model_reasoning_effort":
             config.modelReasoningEffort = try parseReviewConfigString(
+                rawValue,
+                key: key,
+                sourcePath: sourcePath
+            )
+        case "service_tier":
+            config.serviceTier = try parseReviewConfigString(
                 rawValue,
                 key: key,
                 sourcePath: sourcePath

@@ -85,7 +85,9 @@ public enum ReviewMonitorPreviewContent {
     public static func makeStore(
         streamInterval: Duration = .seconds(1)
     ) -> CodexReviewStore {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = makePreviewSettingsSnapshot()
+        let store = CodexReviewStore(backend: backend)
         let accounts = makePreviewAccounts()
         store.loadForTesting(
             serverState: .running,
@@ -140,6 +142,58 @@ public enum ReviewMonitorPreviewContent {
             ]
         )
         return account
+    }
+
+    static func makePreviewSettingsSnapshot() -> CodexReviewSettingsSnapshot {
+        .init(
+            model: "gpt-5.4",
+            reasoningEffort: .medium,
+            serviceTier: .fast,
+            models: makePreviewModelCatalog()
+        )
+    }
+
+    static func makePreviewModelCatalog() -> [CodexReviewModelCatalogItem] {
+        [
+            .init(
+                id: "gpt-5.4",
+                model: "gpt-5.4",
+                displayName: "GPT-5.4",
+                hidden: false,
+                supportedReasoningEfforts: [
+                    .init(reasoningEffort: .low, description: "Lower latency."),
+                    .init(reasoningEffort: .medium, description: "Balanced default."),
+                    .init(reasoningEffort: .high, description: "More deliberation."),
+                ],
+                defaultReasoningEffort: .medium,
+                supportedServiceTiers: [.fast]
+            ),
+            .init(
+                id: "gpt-5.4-mini",
+                model: "gpt-5.4-mini",
+                displayName: "GPT-5.4 Mini",
+                hidden: false,
+                supportedReasoningEfforts: [
+                    .init(reasoningEffort: .low, description: "Quick pass."),
+                    .init(reasoningEffort: .medium, description: "Balanced default."),
+                ],
+                defaultReasoningEffort: .medium,
+                supportedServiceTiers: []
+            ),
+            .init(
+                id: "gpt-5.3-codex",
+                model: "gpt-5.3-codex",
+                displayName: "GPT-5.3 Codex",
+                hidden: false,
+                supportedReasoningEfforts: [
+                    .init(reasoningEffort: .minimal, description: "Lowest overhead."),
+                    .init(reasoningEffort: .low, description: "Faster iteration."),
+                    .init(reasoningEffort: .medium, description: "Balanced default."),
+                ],
+                defaultReasoningEffort: .medium,
+                supportedServiceTiers: [.fast, .flex]
+            ),
+        ]
     }
 
     private static func makeWorkspaces() -> [CodexReviewWorkspace] {

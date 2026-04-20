@@ -1,4 +1,5 @@
 import Foundation
+import CodexReviewModel
 import ReviewJobs
 
 package struct AppServerCommand: Sendable {
@@ -151,6 +152,17 @@ package func loadFallbackAppServerConfig(
             ?? readTopLevelString(from: configPath, key: "model"),
         reviewModel: readProfileString(from: configPath, profile: profile, key: "review_model")
             ?? readTopLevelString(from: configPath, key: "review_model"),
+        modelReasoningEffort: readProfileString(
+            from: configPath,
+            profile: profile,
+            key: "model_reasoning_effort"
+        ).flatMap(CodexReviewReasoningEffort.init(rawValue:))
+            ?? readTopLevelString(from: configPath, key: "model_reasoning_effort")
+            .flatMap(CodexReviewReasoningEffort.init(rawValue:)),
+        serviceTier: readProfileString(from: configPath, profile: profile, key: "service_tier")
+            .flatMap(CodexReviewServiceTier.init(rawValue:))
+            ?? readTopLevelString(from: configPath, key: "service_tier")
+            .flatMap(CodexReviewServiceTier.init(rawValue:)),
         modelContextWindow: readProfileInteger(from: configPath, profile: profile, key: "model_context_window")
             ?? readTopLevelInteger(from: configPath, key: "model_context_window"),
         modelAutoCompactTokenLimit: readProfileInteger(
@@ -168,6 +180,8 @@ package func mergeAppServerConfig(
     .init(
         model: primary.model?.nilIfEmpty ?? fallback.model?.nilIfEmpty,
         reviewModel: primary.reviewModel?.nilIfEmpty ?? fallback.reviewModel?.nilIfEmpty,
+        modelReasoningEffort: primary.modelReasoningEffort ?? fallback.modelReasoningEffort,
+        serviceTier: primary.serviceTier ?? fallback.serviceTier,
         modelContextWindow: primary.modelContextWindow ?? fallback.modelContextWindow,
         modelAutoCompactTokenLimit: primary.modelAutoCompactTokenLimit ?? fallback.modelAutoCompactTokenLimit
     )

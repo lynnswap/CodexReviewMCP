@@ -4,8 +4,16 @@ import Observation
 @MainActor
 @Observable
 public final class CodexReviewStore {
-    public package(set) var serverState: CodexReviewServerState = .stopped
+    public package(set) var serverState: CodexReviewServerState = .stopped {
+        didSet {
+            guard serverState != oldValue else {
+                return
+            }
+            scheduleSettingsRefreshIfNeeded()
+        }
+    }
     public let auth: CodexReviewAuthModel
+    package let settings: SettingsStore
     public package(set) var serverURL: URL?
     public package(set) var workspaces: [CodexReviewWorkspace] = []
     package var shouldAutoStartEmbeddedServer: Bool {
@@ -26,6 +34,13 @@ public final class CodexReviewStore {
         self.auth = CodexReviewAuthModel(
             controller: authController ?? CodexReviewPreviewAuthController()
         )
+        self.settings = SettingsStore(
+            backend: backend,
+            snapshot: backend.initialSettingsSnapshot
+        )
+        self.auth.onAccountDidChange = { [weak self] in
+            self?.scheduleSettingsRefreshIfNeeded()
+        }
         self.auth.updateSavedAccounts(backend.initialAccounts)
         self.auth.updateAccount(backend.initialAccount)
         backend.attachStore(self)
@@ -130,6 +145,15 @@ public final class CodexReviewStore {
 
     private func resetReviews() {
         workspaces = []
+    }
+
+    private func scheduleSettingsRefreshIfNeeded() {
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await self.settings.refreshIfRunning(serverState: self.serverState)
+        }
     }
 
     public var hasRunningJobs: Bool {

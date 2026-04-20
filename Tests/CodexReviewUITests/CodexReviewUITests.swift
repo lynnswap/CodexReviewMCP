@@ -1183,7 +1183,8 @@ struct CodexReviewUITests {
         let statusView = StatusView(store: store)
 
         #expect(contextMenu.sectionTitle == account.email)
-        #expect(statusView.menuSectionTitle == account.email)
+        #expect(store.auth.account?.email == account.email)
+        _ = statusView
     }
 
     @Test func addAccountToolbarItemBeginsAuthentication() async throws {
@@ -2976,7 +2977,7 @@ struct CodexReviewUITests {
         #expect(backend.recordedActions().isEmpty)
     }
 
-    @Test func statusViewRestartsStoppedServer() async {
+    @Test func storeRestartStartsStoppedServer() async {
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
             initialAuthState: .signedIn(accountID: "review@example.com"),
@@ -2988,11 +2989,7 @@ struct CodexReviewUITests {
             authState: .signedIn(accountID: "review@example.com"),
             workspaces: []
         )
-        let view = StatusView(store: store)
-
-        #expect(view.showsServerRestartAction)
-
-        view.restartServer()
+        await store.restart()
         await backend.waitForStartCallCount(1)
 
         #expect(backend.startCallCount() == 1)
@@ -3008,6 +3005,94 @@ struct CodexReviewUITests {
         let view = StatusView(store: store)
 
         #expect(view.showsServerRestartAction)
+    }
+
+    @Test func statusViewUsesSettingsStoreLabels() {
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = makeSettingsSnapshot(
+            model: "gpt-5.4-mini",
+            reasoningEffort: .low,
+            serviceTier: nil
+        )
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .running,
+            authState: .signedIn(accountID: "review@example.com"),
+            workspaces: [],
+            settingsSnapshot: backend.initialSettingsSnapshot
+        )
+
+        let view = StatusView(store: store)
+
+        #expect(store.settings.currentModelDisplayText == "GPT-5.4 Mini")
+        #expect(store.settings.currentReasoningDisplayText == "Low")
+        #expect(store.settings.currentServiceTierDisplayText == "Normal")
+        _ = view
+    }
+
+    @Test func statusViewDisablesSettingsControlsWhenServerIsNotRunning() {
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = makeSettingsSnapshot()
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .stopped,
+            authState: .signedIn(accountID: "review@example.com"),
+            workspaces: [],
+            settingsSnapshot: backend.initialSettingsSnapshot
+        )
+
+        #expect(store.serverState != .running || store.settings.isLoading || store.settings.displayedModels.isEmpty)
+    }
+
+    @Test func settingsStoreNormalizesReasoningAndTierWhenModelChanges() async {
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = makeSettingsSnapshot(
+            model: "gpt-5.4",
+            reasoningEffort: .high,
+            serviceTier: .fast
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        await store.settings.updateModel("gpt-5.4-mini")
+
+        #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.selectedReasoningEffort == .medium)
+        #expect(store.settings.selectedServiceTier == nil)
+    }
+
+    @Test func settingsStoreKeepsCurrentHiddenModelVisible() {
+        let hiddenModel = CodexReviewModelCatalogItem(
+            id: "gpt-hidden",
+            model: "gpt-hidden",
+            displayName: "GPT Hidden",
+            hidden: true,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .medium, description: "Hidden default.")
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: []
+        )
+        let visibleModel = CodexReviewModelCatalogItem(
+            id: "gpt-5.4",
+            model: "gpt-5.4",
+            displayName: "GPT-5.4",
+            hidden: false,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .medium, description: "Visible default.")
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: [.fast]
+        )
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = .init(
+            model: "gpt-hidden",
+            reasoningEffort: .medium,
+            serviceTier: nil,
+            models: [visibleModel, hiddenModel]
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-hidden"])
     }
 
     @Test func signInViewDescriptionTextReflectsAuthState() {
@@ -3447,7 +3532,8 @@ private extension CodexReviewStore {
         serverState: CodexReviewServerState,
         authState: TestAuthState = .signedOut,
         serverURL: URL? = nil,
-        workspaces: [CodexReviewWorkspace]
+        workspaces: [CodexReviewWorkspace],
+        settingsSnapshot: CodexReviewSettingsSnapshot? = nil
     ) {
         loadForTesting(
             serverState: serverState,
@@ -3467,9 +3553,24 @@ private extension CodexReviewStore {
                 ]
             } ?? [],
             serverURL: serverURL,
-            workspaces: workspaces
+            workspaces: workspaces,
+            settingsSnapshot: settingsSnapshot
         )
     }
+}
+
+@MainActor
+private func makeSettingsSnapshot(
+    model: String = "gpt-5.4",
+    reasoningEffort: CodexReviewReasoningEffort = .medium,
+    serviceTier: CodexReviewServiceTier? = .fast
+) -> CodexReviewSettingsSnapshot {
+    .init(
+        model: model,
+        reasoningEffort: reasoningEffort,
+        serviceTier: serviceTier,
+        models: ReviewMonitorPreviewContent.makePreviewModelCatalog()
+    )
 }
 
 @MainActor

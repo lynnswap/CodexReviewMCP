@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import CodexReviewModel
 @testable import ReviewCore
 @testable import ReviewJobs
 
@@ -150,6 +151,7 @@ import Testing
         try """
         review_model = "gpt-5.4-mini"
         model_reasoning_effort = "high"
+        service_tier = "fast"
         model_context_window = 120_000
         model_auto_compact_token_limit = 110_000
 
@@ -166,8 +168,79 @@ import Testing
 
         #expect(config.reviewModel == "gpt-5.4-mini")
         #expect(config.modelReasoningEffort == "high")
+        #expect(config.serviceTier == "fast")
         #expect(config.modelContextWindow == 120_000)
         #expect(config.modelAutoCompactTokenLimit == 110_000)
+    }
+
+    @Test func configReadResponseDecodesReasoningEffortAndServiceTier() throws {
+        let data = Data(
+            """
+            {
+              "config": {
+                "model": "gpt-5.4",
+                "review_model": "gpt-5.4-mini",
+                "model_reasoning_effort": "high",
+                "service_tier": "fast",
+                "model_context_window": "120_000",
+                "model_auto_compact_token_limit": 110000
+              }
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AppServerConfigReadResponse.self, from: data)
+
+        #expect(response.config.model == "gpt-5.4")
+        #expect(response.config.reviewModel == "gpt-5.4-mini")
+        #expect(response.config.modelReasoningEffort == .high)
+        #expect(response.config.serviceTier == .fast)
+        #expect(response.config.modelContextWindow == 120_000)
+        #expect(response.config.modelAutoCompactTokenLimit == 110_000)
+    }
+
+    @Test func modelListResponseDecodesCatalogMetadata() throws {
+        let data = Data(
+            """
+            {
+              "data": [
+                {
+                  "id": "gpt-5.4",
+                  "model": "gpt-5.4",
+                  "displayName": "GPT-5.4",
+                  "description": "Balanced model",
+                  "hidden": false,
+                  "supportedReasoningEfforts": [
+                    {
+                      "reasoningEffort": "medium",
+                      "description": "Balanced default."
+                    }
+                  ],
+                  "defaultReasoningEffort": "medium",
+                  "inputModalities": ["text"],
+                  "supportsPersonality": true,
+                  "additionalSpeedTiers": ["fast", "flex"],
+                  "isDefault": true,
+                  "upgrade": null,
+                  "upgradeInfo": null,
+                  "availabilityNux": null
+                }
+              ],
+              "nextCursor": null
+            }
+            """.utf8
+        )
+
+        let response = try JSONDecoder().decode(AppServerModelListResponse.self, from: data)
+        let model = try #require(response.data.first)
+
+        #expect(model.id == "gpt-5.4")
+        #expect(model.displayName == "GPT-5.4")
+        #expect(model.supportedReasoningEfforts == [
+            .init(reasoningEffort: .medium, description: "Balanced default.")
+        ])
+        #expect(model.defaultReasoningEffort == .medium)
+        #expect(model.supportedServiceTiers == [.fast, .flex])
     }
 
     @Test func reviewLocalConfigScaffoldCreatesConfigAndAgentsFiles() throws {
