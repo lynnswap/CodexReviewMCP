@@ -688,6 +688,28 @@ import Testing
         #expect(config.serviceTier == nil)
     }
 
+    @Test func activeProfileClearDetectorsSurviveProfileNullAssignments() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        review_model = null
+        model_reasoning_effort = null
+        service_tier = null
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        #expect(activeProfileClearsReviewModel(environment: ["HOME": tempHome.path]))
+        #expect(activeProfileClearsReasoningEffort(environment: ["HOME": tempHome.path]))
+        #expect(activeProfileClearsServiceTier(environment: ["HOME": tempHome.path]))
+    }
+
     @Test func loadActiveReviewProfileDefaultsToDirectProfileKeyPathWhenSectionIsMissing() throws {
         let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)

@@ -609,8 +609,12 @@ private func loadFallbackAppServerConfigDocument(at configPath: URL) -> Fallback
     guard let data = try? Data(contentsOf: configPath) else {
         return nil
     }
+    let originalContent = String(data: data, encoding: .utf8)
+    let decoderContent = originalContent.map(sanitizeNullAssignmentsForTOMLDecoder)
     let decoder = TOMLDecoder()
-    guard var document = try? decoder.decode(FallbackAppServerConfigDocument.self, from: data) else {
+    guard let decoderData = decoderContent?.data(using: .utf8),
+          var document = try? decoder.decode(FallbackAppServerConfigDocument.self, from: decoderData)
+    else {
         return nil
     }
     document = .init(
@@ -622,7 +626,7 @@ private func loadFallbackAppServerConfigDocument(at configPath: URL) -> Fallback
         modelContextWindow: document.modelContextWindow,
         modelAutoCompactTokenLimit: document.modelAutoCompactTokenLimit,
         resolvedActiveProfile: resolveActiveProfile(
-            content: String(data: data, encoding: .utf8),
+            content: originalContent,
             profile: document.profile
         )
     )
@@ -797,6 +801,24 @@ private func parseNullableProfileIntegerOverride(_ rawValue: String) -> ParsedPr
         return .value(nil)
     }
     return .value(normalizeIntegerLiteral(trimmedValue))
+}
+
+private func sanitizeNullAssignmentsForTOMLDecoder(_ content: String) -> String {
+    content
+        .split(separator: "\n", omittingEmptySubsequences: false)
+        .map { rawLine in
+            let line = String(rawLine)
+            let trimmed = stripTOMLComment(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let separator = trimmed.range(of: "=") else {
+                return line
+            }
+            let rawValue = trimmed[separator.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+            if rawValue == "null" {
+                return ""
+            }
+            return line
+        }
+        .joined(separator: "\n")
 }
 
 private func resolveProfileOverride<Value>(
