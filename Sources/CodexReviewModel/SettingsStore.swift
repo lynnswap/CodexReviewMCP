@@ -488,7 +488,6 @@ package final class SettingsStore {
             pendingSelection = candidate
             return
         }
-        lastObservedSelection = candidate
         Task { @MainActor in
             await self.applySelectionChange(
                 trigger: trigger,

@@ -3178,6 +3178,31 @@ struct CodexReviewUITests {
         #expect(store.settings.selectedServiceTier == .flex)
     }
 
+    @Test func settingsStorePersistsBackToBackObservedSelectionChanges() async throws {
+        let backend = BlockingSettingsBackend(
+            snapshot: makeSettingsSnapshot(
+                model: "gpt-5.3-codex",
+                reasoningEffort: .low,
+                serviceTier: .fast
+            )
+        )
+        backend.blockNextReasoningUpdate()
+        let store = CodexReviewStore(backend: backend)
+
+        store.settings.selectedReasoningEffort = .medium
+        store.settings.selectedServiceTier = .flex
+        await backend.waitForBlockedReasoningUpdateToStart()
+        await backend.resumeBlockedReasoningUpdate()
+
+        try await waitForCondition {
+            backend.reasoningUpdateCalls == [.medium]
+                && backend.serviceTierUpdateCalls == [.flex]
+        }
+
+        #expect(store.settings.selectedReasoningEffort == .medium)
+        #expect(store.settings.selectedServiceTier == .flex)
+    }
+
     @Test func settingsStoreClearsModelOverrideBackToFallbackModel() async throws {
         let backend = BlockingSettingsBackend(
             snapshot: makeSettingsSnapshot(

@@ -95,13 +95,14 @@ package func makeReviewThreadStartConfig(
     if let reviewSpecificModel = reviewSpecificModel?.nilIfEmpty {
         config["review_model"] = .string(reviewSpecificModel)
     }
-    if let reasoningEffort = (
-        profileClearsReasoningEffort
-            ? nil
-            : localConfig.modelReasoningEffort?
-                .nilIfEmpty
-                .flatMap(CodexReviewReasoningEffort.init(rawValue:))
-    ) ?? resolvedConfig.modelReasoningEffort
+    if let reasoningEffort = resolvedConfig.modelReasoningEffort
+        ?? (
+            profileClearsReasoningEffort
+                ? nil
+                : localConfig.modelReasoningEffort?
+                    .nilIfEmpty
+                    .flatMap(CodexReviewReasoningEffort.init(rawValue:))
+        )
     {
         config["model_reasoning_effort"] = .string(reasoningEffort.rawValue)
     }
@@ -201,13 +202,14 @@ package func resolveDisplayedSettingsOverrides(
     profileClearsServiceTier: Bool = false
 ) -> ResolvedReviewSettingsOverrides {
     .init(
-        reasoningEffort: (
-            profileClearsReasoningEffort
-                ? nil
-                : localConfig.modelReasoningEffort?
-                    .nilIfEmpty
-                    .flatMap(CodexReviewReasoningEffort.init(rawValue:))
-        ) ?? resolvedConfig.modelReasoningEffort,
+        reasoningEffort: resolvedConfig.modelReasoningEffort
+            ?? (
+                profileClearsReasoningEffort
+                    ? nil
+                    : localConfig.modelReasoningEffort?
+                        .nilIfEmpty
+                        .flatMap(CodexReviewReasoningEffort.init(rawValue:))
+            ),
         serviceTier: resolvedConfig.serviceTier
             ?? (
                 profileClearsServiceTier

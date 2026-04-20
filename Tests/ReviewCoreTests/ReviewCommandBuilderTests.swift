@@ -81,7 +81,7 @@ import Testing
         #expect(config?["model_auto_compact_token_limit"] == .int(110_000))
     }
 
-    @Test func reviewExecutionSettingsBuilderPrefersLocalReasoningAndLimitsOverResolvedConfig() {
+    @Test func reviewExecutionSettingsBuilderPrefersResolvedReasoningAndLocalLimits() {
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: "custom-review-model",
             localConfig: .init(
@@ -98,7 +98,7 @@ import Testing
             environment: [:]
         )
 
-        #expect(config?["model_reasoning_effort"] == .string("high"))
+        #expect(config?["model_reasoning_effort"] == .string("low"))
         #expect(config?["model_context_window"] == .int(120_000))
         #expect(config?["model_auto_compact_token_limit"] == .int(110_000))
     }
@@ -230,7 +230,7 @@ import Testing
         #expect(fallbackResolved == nil)
     }
 
-    @Test func resolveDisplayedSettingsOverridesPrefersLocalReasoningAndResolvedServiceTier() {
+    @Test func resolveDisplayedSettingsOverridesPrefersResolvedValues() {
         let overrides = resolveDisplayedSettingsOverrides(
             localConfig: .init(
                 modelReasoningEffort: "high",
@@ -242,7 +242,7 @@ import Testing
             )
         )
 
-        #expect(overrides.reasoningEffort == .high)
+        #expect(overrides.reasoningEffort == .low)
         #expect(overrides.serviceTier == .flex)
     }
 
