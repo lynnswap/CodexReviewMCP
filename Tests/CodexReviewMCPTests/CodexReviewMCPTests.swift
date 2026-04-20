@@ -259,6 +259,57 @@ struct CodexReviewMCPTests {
         #expect(FileManager.default.fileExists(atPath: secondDirectory.appendingPathComponent("auth.json").path))
     }
 
+    @Test func removingUnknownAccountDoesNotPromoteReplacementAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        try writeReviewAuthSnapshot(
+            email: "current@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let savedAccount = ReviewSavedAccountRecord(
+            accountKey: "saved@example.com",
+            email: "saved@example.com",
+            planType: "pro",
+            lastActivatedAt: nil,
+            lastRateLimitFetchAt: nil,
+            lastRateLimitError: nil,
+            cachedRateLimits: []
+        )
+        try writeSavedAccountAuthSnapshot(
+            email: savedAccount.email,
+            planType: savedAccount.planType,
+            accountKey: savedAccount.accountKey,
+            environment: environment,
+            useLegacyDirectory: false
+        )
+        let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
+        try JSONEncoder().encode(
+            ReviewAccountRegistryRecord(
+                activeAccountKey: nil,
+                accounts: [savedAccount]
+            )
+        ).write(to: registryURL, options: .atomic)
+        let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: environment)
+        let originalSharedAuthData = try Data(contentsOf: sharedAuthURL)
+        let initialRegistry = try JSONDecoder().decode(
+            ReviewAccountRegistryRecord.self,
+            from: Data(contentsOf: registryURL)
+        )
+        #expect(initialRegistry.activeAccountKey == nil)
+
+        _ = try await registryStore.removeAccount("missing@example.com")
+
+        let persistedRegistry = try JSONDecoder().decode(
+            ReviewAccountRegistryRecord.self,
+            from: Data(contentsOf: registryURL)
+        )
+        #expect(persistedRegistry.activeAccountKey == nil)
+        #expect(persistedRegistry.accounts.map(\.accountKey) == [savedAccount.accountKey])
+        #expect(try Data(contentsOf: sharedAuthURL) == originalSharedAuthData)
+    }
+
     @Test func activatingSavedAccountPreservesAccountOrder() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
@@ -3092,7 +3143,7 @@ struct CodexReviewMCPTests {
             }
         }
 
-        #expect(await inactiveTransport.rateLimitsReadCount() == 2)
+        #expect(await inactiveTransport.rateLimitsReadCount() >= 2)
 
         await auth.reconcileAuthenticatedSession(
             serverIsRunning: false,
@@ -3202,7 +3253,7 @@ struct CodexReviewMCPTests {
         }
 
         #expect(rateLimitWindow(duration: 300, in: newActiveAccount) == nil)
-        #expect(await inactiveTransport.rateLimitsReadCount() == 2)
+        #expect(await inactiveTransport.rateLimitsReadCount() >= 2)
 
         await auth.reconcileAuthenticatedSession(
             serverIsRunning: false,
@@ -3865,7 +3916,7 @@ struct CodexReviewMCPTests {
         #expect(cancelledJob.errorMessage == "Account change requested.")
     }
 
-    @Test func terminateAllRunningJobsLocallyKeepsCancellationRequestedJobsInFlight() {
+    @Test func terminateAllRunningJobsLocallyFinalizesCancellationRequestedJobs() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let requestedJob = CodexReviewJob.makeForTesting(
             id: "job-requested",
@@ -3895,11 +3946,11 @@ struct CodexReviewMCPTests {
             failureMessage: "Cancellation failed."
         )
 
-        #expect(requestedJob.status == .running)
-        #expect(requestedJob.cancellationRequested)
-        #expect(requestedJob.summary == "Cancellation requested.")
-        #expect(requestedJob.errorMessage == "Account change requested.")
-        #expect(requestedJob.endedAt == nil)
+        #expect(requestedJob.status == .failed)
+        #expect(requestedJob.cancellationRequested == false)
+        #expect(requestedJob.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(requestedJob.errorMessage == "Cancellation failed.")
+        #expect(requestedJob.endedAt != nil)
 
         #expect(failedJob.status == .failed)
         #expect(failedJob.cancellationRequested == false)

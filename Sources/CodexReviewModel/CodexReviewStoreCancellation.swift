@@ -109,9 +109,6 @@ extension CodexReviewStore {
     ) {
         let resolvedError = failureMessage.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         for job in workspaces.flatMap(\.jobs) where job.isTerminal == false {
-            if job.cancellationRequested {
-                continue
-            }
             job.cancellationRequested = false
             job.status = .failed
             if let resolvedError {

@@ -310,9 +310,11 @@ package actor ReviewAccountRegistryStore {
             matchingRuntimeAccountKey: accountKey,
             environment: environment
         )
-        let removedActive = originalRegistry.activeAccountKey == storedAccount?.accountKey
+        let removedAccountKey = storedAccount?.accountKey
+        let removedActive = removedAccountKey != nil
+            && originalRegistry.activeAccountKey == removedAccountKey
         registry.accounts.removeAll { account in
-            account.accountKey == storedAccount?.accountKey
+            account.accountKey == removedAccountKey
         }
         if removedActive,
            let replacementIndex = registry.accounts.firstIndex(where: { account in
