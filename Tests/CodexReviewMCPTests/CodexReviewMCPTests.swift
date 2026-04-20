@@ -186,6 +186,43 @@ struct CodexReviewMCPTests {
         #expect(store.settings.selectedServiceTier == .flex)
     }
 
+    @Test func refreshSettingsPrefersReviewLocalModelOverrideOverProfileModel() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        review_model = "gpt-5.4-mini"
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        model = "gpt-5.4"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsRefreshTransport(
+            config: .init(model: "gpt-5.4"),
+            firstPage: .init(data: [], nextCursor: nil),
+            secondPage: .init(data: [], nextCursor: nil)
+        )
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+
+        await store.settings.refresh()
+
+        #expect(store.settings.selectedModel == "gpt-5.4-mini")
+    }
+
     @Test func standaloneSettingsWritesTargetActiveProfileWhenRootOverrideIsAbsent() async throws {
         let environment = try isolatedHomeEnvironment()
         let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)

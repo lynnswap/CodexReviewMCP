@@ -168,6 +168,7 @@ struct StatusView: View {
                 }
                 Menu{
                     Picker("Reasoning", selection: $settings.selectedReasoningEffort) {
+                        Text("Default").tag(Optional<CodexReviewReasoningEffort>.none)
                         ForEach(settings.availableReasoningOptions) { item in
                             Text(item.reasoningEffort.displayText)
                                 .tag(Optional(item.reasoningEffort))

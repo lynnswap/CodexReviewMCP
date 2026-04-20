@@ -1858,10 +1858,13 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             localConfig: localConfig,
             resolvedConfig: effectiveConfig
         )
+        let displayedModel = resolveReviewModelSelection(
+            localConfig: localConfig,
+            resolvedConfig: effectiveConfig
+        ).reportedModelBeforeThreadStart
 
         return .init(
-            model: effectiveConfig.reviewModel?.nilIfEmpty
-                ?? effectiveConfig.model?.nilIfEmpty,
+            model: displayedModel,
             reasoningEffort: displayedOverrides.reasoningEffort,
             serviceTier: displayedOverrides.serviceTier,
             models: models
