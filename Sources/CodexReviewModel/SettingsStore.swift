@@ -184,6 +184,10 @@ package final class SettingsStore {
     private var suppressSelectionObservation = false
     @ObservationIgnored
     private var lastObservedSelection: Selection
+    @ObservationIgnored
+    private var pendingRefresh = false
+    @ObservationIgnored
+    private var pendingSelection: Selection?
 
     private enum SelectionTrigger {
         case model
@@ -261,10 +265,10 @@ package final class SettingsStore {
 
     package func refresh() async {
         guard isLoading == false else {
+            pendingRefresh = true
             return
         }
         isLoading = true
-        defer { isLoading = false }
 
         do {
             let snapshot = try await backend.refreshSettings()
@@ -273,6 +277,8 @@ package final class SettingsStore {
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+        isLoading = false
+        await drainPendingWorkIfNeeded()
     }
 
     package func updateModel(_ model: String) async {
@@ -325,7 +331,6 @@ package final class SettingsStore {
             return
         }
         isLoading = true
-        defer { isLoading = false }
 
         do {
             try await operation()
@@ -334,6 +339,8 @@ package final class SettingsStore {
             apply(snapshot: previous)
             lastErrorMessage = error.localizedDescription
         }
+        isLoading = false
+        await drainPendingWorkIfNeeded()
     }
 
     private func apply(snapshot: CodexReviewSettingsSnapshot) {
@@ -439,6 +446,10 @@ package final class SettingsStore {
         guard candidate != previous else {
             return
         }
+        guard isLoading == false else {
+            pendingSelection = candidate
+            return
+        }
         lastObservedSelection = candidate
         Task { @MainActor in
             await self.applySelectionChange(
@@ -455,6 +466,7 @@ package final class SettingsStore {
         candidate: Selection
     ) async {
         guard isLoading == false else {
+            pendingSelection = candidate
             return
         }
 
@@ -505,6 +517,81 @@ package final class SettingsStore {
                         normalized.serviceTier
                     )
                 }
+            )
+        }
+    }
+
+    private func drainPendingWorkIfNeeded() async {
+        if pendingRefresh {
+            pendingRefresh = false
+            await refresh()
+            return
+        }
+        guard let pendingSelection else {
+            return
+        }
+        self.pendingSelection = nil
+
+        let previous = lastObservedSelection
+        let triggers = selectionTriggers(previous: previous, candidate: pendingSelection)
+        guard triggers.isEmpty == false else {
+            return
+        }
+        var appliedSelection = previous
+
+        for trigger in triggers {
+            await applySelectionChange(
+                trigger: trigger,
+                previous: appliedSelection,
+                candidate: pendingSelection
+            )
+            guard currentSelection() == pendingSelection else {
+                return
+            }
+            appliedSelection = selectionAfterPersisting(
+                trigger: trigger,
+                previous: appliedSelection,
+                candidate: pendingSelection
+            )
+        }
+    }
+
+    private func selectionTriggers(
+        previous: Selection,
+        candidate: Selection
+    ) -> [SelectionTrigger] {
+        if previous.model != candidate.model {
+            return [.model]
+        }
+        var triggers: [SelectionTrigger] = []
+        if previous.reasoningEffort != candidate.reasoningEffort {
+            triggers.append(.reasoningEffort)
+        }
+        if previous.serviceTier != candidate.serviceTier {
+            triggers.append(.serviceTier)
+        }
+        return triggers
+    }
+
+    private func selectionAfterPersisting(
+        trigger: SelectionTrigger,
+        previous: Selection,
+        candidate: Selection
+    ) -> Selection {
+        switch trigger {
+        case .model:
+            return candidate
+        case .reasoningEffort:
+            return .init(
+                model: previous.model,
+                reasoningEffort: candidate.reasoningEffort,
+                serviceTier: previous.serviceTier
+            )
+        case .serviceTier:
+            return .init(
+                model: previous.model,
+                reasoningEffort: previous.reasoningEffort,
+                serviceTier: candidate.serviceTier
             )
         }
     }

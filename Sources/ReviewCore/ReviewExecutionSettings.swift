@@ -1,6 +1,7 @@
 import Foundation
 import CodexReviewModel
 import ReviewJobs
+import TOMLDecoder
 
 package struct AppServerCommand: Sendable {
     package var executable: String
@@ -33,6 +34,11 @@ package struct ResolvedReviewModelSelection: Sendable, Equatable {
     package var reportedModelBeforeThreadStart: String?
     package var threadStartModelHint: String?
     package var clampModel: String?
+}
+
+package struct ResolvedReviewSettingsOverrides: Sendable, Equatable {
+    package var reasoningEffort: CodexReviewReasoningEffort?
+    package var serviceTier: CodexReviewServiceTier?
 }
 
 package struct ReviewExecutionSettingsBuilder: Sendable {
@@ -137,6 +143,50 @@ package func resolveReviewModelSelection(
     )
 }
 
+package func resolveDisplayedSettingsOverrides(
+    localConfig: ReviewLocalConfig,
+    resolvedConfig: AppServerConfigReadResponse.Config
+) -> ResolvedReviewSettingsOverrides {
+    .init(
+        reasoningEffort: localConfig.modelReasoningEffort?
+            .nilIfEmpty
+            .flatMap(CodexReviewReasoningEffort.init(rawValue:))
+            ?? resolvedConfig.modelReasoningEffort,
+        serviceTier: localConfig.serviceTier?
+            .nilIfEmpty
+            .flatMap(CodexReviewServiceTier.init(rawValue:))
+            ?? resolvedConfig.serviceTier
+    )
+}
+
+package func loadActiveReviewProfile(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    codexHome: URL? = nil
+) -> String? {
+    if codexHome == nil {
+        try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
+    }
+    let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
+    return loadFallbackAppServerConfigDocument(at: configPath)?.profile?.nilIfEmpty
+}
+
+package func settingsKeyPath(
+    _ key: String,
+    profile: String?,
+    forceRoot: Bool
+) -> String {
+    if forceRoot {
+        return key
+    }
+    guard let profile else {
+        return key
+    }
+    let escapedProfile = profile
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+    return "profiles.\"\(escapedProfile)\".\(key)"
+}
+
 package func loadFallbackAppServerConfig(
     environment: [String: String] = ProcessInfo.processInfo.environment,
     codexHome: URL? = nil
@@ -145,31 +195,23 @@ package func loadFallbackAppServerConfig(
         try? ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
     }
     let configPath = ReviewHomePaths.codexConfigURL(environment: environment, codexHome: codexHome)
-    let profile = readTopLevelString(from: configPath, key: "profile")
+    let document = loadFallbackAppServerConfigDocument(at: configPath)
+    let profileOverrides = document?.activeProfile
 
     return .init(
-        model: readProfileString(from: configPath, profile: profile, key: "model")
-            ?? readTopLevelString(from: configPath, key: "model"),
-        reviewModel: readProfileString(from: configPath, profile: profile, key: "review_model")
-            ?? readTopLevelString(from: configPath, key: "review_model"),
-        modelReasoningEffort: readProfileString(
-            from: configPath,
-            profile: profile,
-            key: "model_reasoning_effort"
-        ).flatMap(CodexReviewReasoningEffort.init(rawValue:))
-            ?? readTopLevelString(from: configPath, key: "model_reasoning_effort")
+        model: profileOverrides?.model ?? document?.model,
+        reviewModel: profileOverrides?.reviewModel ?? document?.reviewModel,
+        modelReasoningEffort: profileOverrides?.modelReasoningEffort
+            .flatMap(CodexReviewReasoningEffort.init(rawValue:))
+            ?? document?.modelReasoningEffort
             .flatMap(CodexReviewReasoningEffort.init(rawValue:)),
-        serviceTier: readProfileString(from: configPath, profile: profile, key: "service_tier")
+        serviceTier: profileOverrides?.serviceTier
             .flatMap(CodexReviewServiceTier.init(rawValue:))
-            ?? readTopLevelString(from: configPath, key: "service_tier")
+            ?? document?.serviceTier
             .flatMap(CodexReviewServiceTier.init(rawValue:)),
-        modelContextWindow: readProfileInteger(from: configPath, profile: profile, key: "model_context_window")
-            ?? readTopLevelInteger(from: configPath, key: "model_context_window"),
-        modelAutoCompactTokenLimit: readProfileInteger(
-            from: configPath,
-            profile: profile,
-            key: "model_auto_compact_token_limit"
-        ) ?? readTopLevelInteger(from: configPath, key: "model_auto_compact_token_limit")
+        modelContextWindow: profileOverrides?.modelContextWindow ?? document?.modelContextWindow,
+        modelAutoCompactTokenLimit: profileOverrides?.modelAutoCompactTokenLimit
+            ?? document?.modelAutoCompactTokenLimit
     )
 }
 
@@ -270,103 +312,6 @@ private func computeForcedIntegerOverride(
     return clampLimit
 }
 
-private func stripTOMLComment(_ line: String) -> String {
-    var isInsideSingleQuotes = false
-    var isInsideDoubleQuotes = false
-    var previousWasEscape = false
-
-    for index in line.indices {
-        let character = line[index]
-        if character == "\"", isInsideSingleQuotes == false, previousWasEscape == false {
-            isInsideDoubleQuotes.toggle()
-        } else if character == "'", isInsideDoubleQuotes == false {
-            isInsideSingleQuotes.toggle()
-        } else if character == "#", isInsideSingleQuotes == false, isInsideDoubleQuotes == false {
-            return String(line[..<index])
-        }
-        previousWasEscape = character == "\\" && isInsideDoubleQuotes && previousWasEscape == false
-    }
-    return line
-}
-
-private func readTopLevelValue(from configPath: URL?, key: String) -> String? {
-    guard let configPath, let content = try? String(contentsOf: configPath, encoding: .utf8) else {
-        return nil
-    }
-    var inRoot = true
-    for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
-        let line = String(rawLine)
-        if line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[") {
-            inRoot = false
-            continue
-        }
-        guard inRoot else {
-            continue
-        }
-        let stripped = stripTOMLComment(line)
-        guard let range = stripped.range(of: "=") else {
-            continue
-        }
-        let currentKey = stripped[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-        if currentKey == key {
-            return stripped[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-    return nil
-}
-
-private func readProfileValue(from configPath: URL?, profile: String, key: String) -> String? {
-    guard let configPath, let content = try? String(contentsOf: configPath, encoding: .utf8) else {
-        return nil
-    }
-    let bareSection = "profiles.\(profile)"
-    let quotedSection = "profiles.\"\(profile)\""
-    var inTarget = false
-
-    for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
-        let stripped = stripTOMLComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
-        if stripped.hasPrefix("[") && stripped.hasSuffix("]") {
-            let sectionName = stripped.dropFirst().dropLast()
-            inTarget = sectionName == bareSection || sectionName == quotedSection
-            continue
-        }
-        guard inTarget, let range = stripped.range(of: "=") else {
-            continue
-        }
-        let currentKey = stripped[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
-        if currentKey == key {
-            return stripped[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-    }
-    return nil
-}
-
-private func readTopLevelString(from configPath: URL?, key: String) -> String? {
-    readTopLevelValue(from: configPath, key: key)
-        .map(trimMatchingQuotes)
-        .flatMap { $0.nilIfEmpty }
-}
-
-private func readTopLevelInteger(from configPath: URL?, key: String) -> Int? {
-    normalizeIntegerLiteral(readTopLevelValue(from: configPath, key: key))
-}
-
-private func readProfileString(from configPath: URL?, profile: String?, key: String) -> String? {
-    guard let profile else {
-        return nil
-    }
-    return readProfileValue(from: configPath, profile: profile, key: key)
-        .map(trimMatchingQuotes)
-        .flatMap { $0.nilIfEmpty }
-}
-
-private func readProfileInteger(from configPath: URL?, profile: String?, key: String) -> Int? {
-    guard let profile else {
-        return nil
-    }
-    return normalizeIntegerLiteral(readProfileValue(from: configPath, profile: profile, key: key))
-}
-
 private func normalizeIntegerLiteral(_ rawValue: String?) -> Int? {
     guard let rawValue else {
         return nil
@@ -391,4 +336,152 @@ private func trimMatchingQuotes(_ value: String) -> String {
         return String(value.dropFirst().dropLast())
     }
     return value
+}
+
+private struct FallbackAppServerConfigDocument: Decodable {
+    struct ProfileOverrides: Equatable, Sendable {
+        let model: String?
+        let reviewModel: String?
+        let modelReasoningEffort: String?
+        let serviceTier: String?
+        let modelContextWindow: Int?
+        let modelAutoCompactTokenLimit: Int?
+
+        var isEmpty: Bool {
+            model == nil
+                && reviewModel == nil
+                && modelReasoningEffort == nil
+                && serviceTier == nil
+                && modelContextWindow == nil
+                && modelAutoCompactTokenLimit == nil
+        }
+    }
+
+    let profile: String?
+    let model: String?
+    let reviewModel: String?
+    let modelReasoningEffort: String?
+    let serviceTier: String?
+    let modelContextWindow: Int?
+    let modelAutoCompactTokenLimit: Int?
+    let profiles: FallbackProfileNode?
+
+    var activeProfile: ProfileOverrides? {
+        guard let profile, let profiles else {
+            return nil
+        }
+        if let directNode = profiles.children[profile],
+           directNode.overrides.isEmpty == false
+        {
+            return directNode.overrides
+        }
+
+        var currentNode: FallbackProfileNode? = profiles
+        for component in profile.split(separator: ".").map(String.init) {
+            currentNode = currentNode?.children[component]
+            if currentNode == nil {
+                return nil
+            }
+        }
+        guard let currentNode,
+              currentNode.overrides.isEmpty == false
+        else {
+            return nil
+        }
+        return currentNode.overrides
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case profile
+        case model
+        case reviewModel = "review_model"
+        case modelReasoningEffort = "model_reasoning_effort"
+        case serviceTier = "service_tier"
+        case modelContextWindow = "model_context_window"
+        case modelAutoCompactTokenLimit = "model_auto_compact_token_limit"
+        case profiles
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        profile = try container.decodeIfPresent(String.self, forKey: .profile)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
+        reviewModel = try container.decodeIfPresent(String.self, forKey: .reviewModel)
+        modelReasoningEffort = try container.decodeIfPresent(
+            String.self,
+            forKey: .modelReasoningEffort
+        )
+        serviceTier = try container.decodeIfPresent(String.self, forKey: .serviceTier)
+        modelContextWindow = try container.decodeIfPresent(Int.self, forKey: .modelContextWindow)
+        modelAutoCompactTokenLimit = try container.decodeIfPresent(
+            Int.self,
+            forKey: .modelAutoCompactTokenLimit
+        )
+        profiles = try container.decodeIfPresent(FallbackProfileNode.self, forKey: .profiles)
+    }
+}
+
+private struct FallbackProfileNode: Decodable {
+    let overrides: FallbackAppServerConfigDocument.ProfileOverrides
+    let children: [String: FallbackProfileNode]
+
+    private enum OverrideCodingKeys: String, CodingKey, CaseIterable {
+        case model
+        case reviewModel = "review_model"
+        case modelReasoningEffort = "model_reasoning_effort"
+        case serviceTier = "service_tier"
+        case modelContextWindow = "model_context_window"
+        case modelAutoCompactTokenLimit = "model_auto_compact_token_limit"
+    }
+
+    init(from decoder: Decoder) throws {
+        let overrideContainer = try decoder.container(keyedBy: OverrideCodingKeys.self)
+        overrides = .init(
+            model: try overrideContainer.decodeIfPresent(String.self, forKey: .model)?.nilIfEmpty,
+            reviewModel: try overrideContainer.decodeIfPresent(String.self, forKey: .reviewModel)?.nilIfEmpty,
+            modelReasoningEffort: try overrideContainer.decodeIfPresent(
+                String.self,
+                forKey: .modelReasoningEffort
+            )?.nilIfEmpty,
+            serviceTier: try overrideContainer.decodeIfPresent(String.self, forKey: .serviceTier)?.nilIfEmpty,
+            modelContextWindow: try overrideContainer.decodeIfPresent(Int.self, forKey: .modelContextWindow),
+            modelAutoCompactTokenLimit: try overrideContainer.decodeIfPresent(
+                Int.self,
+                forKey: .modelAutoCompactTokenLimit
+            )
+        )
+
+        let dynamicContainer = try decoder.container(keyedBy: DynamicCodingKey.self)
+        var children: [String: FallbackProfileNode] = [:]
+        let overrideKeys = Set(OverrideCodingKeys.allCases.map(\.stringValue))
+        for key in dynamicContainer.allKeys where overrideKeys.contains(key.stringValue) == false {
+            if let child = try? dynamicContainer.decode(
+                FallbackProfileNode.self,
+                forKey: key
+            ) {
+                children[key.stringValue] = child
+            }
+        }
+        self.children = children
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue: Int) {
+        return nil
+    }
+}
+
+private func loadFallbackAppServerConfigDocument(at configPath: URL) -> FallbackAppServerConfigDocument? {
+    guard let data = try? Data(contentsOf: configPath) else {
+        return nil
+    }
+    return try? TOMLDecoder().decode(FallbackAppServerConfigDocument.self, from: data)
 }

@@ -56,6 +56,174 @@ struct CodexReviewMCPTests {
         #expect(FileManager.default.fileExists(atPath: reviewAgentsURL.path))
     }
 
+    @Test func initialSettingsSnapshotUsesEffectiveFallbackModelWhenReviewModelIsUnset() throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        model = "gpt-5.4-mini"
+        model_reasoning_effort = "high"
+        service_tier = "flex"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() }
+        )
+
+        #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.selectedReasoningEffort == .high)
+        #expect(store.settings.selectedServiceTier == .flex)
+    }
+
+    @Test func refreshSettingsPagesThroughEntireModelCatalog() async throws {
+        let transport = SettingsRefreshTransport(
+            config: .init(
+                model: "gpt-5.4",
+                reviewModel: "gpt-5.4-mini"
+            ),
+            firstPage: .init(
+                data: [
+                    .init(
+                        id: "gpt-5.4",
+                        model: "gpt-5.4",
+                        displayName: "GPT-5.4",
+                        hidden: false,
+                        supportedReasoningEfforts: [
+                            .init(reasoningEffort: .medium, description: "Balanced default.")
+                        ],
+                        defaultReasoningEffort: .medium,
+                        supportedServiceTiers: [.fast]
+                    )
+                ],
+                nextCursor: "page-2"
+            ),
+            secondPage: .init(
+                data: [
+                    .init(
+                        id: "gpt-5.4-mini",
+                        model: "gpt-5.4-mini",
+                        displayName: "GPT-5.4 Mini",
+                        hidden: false,
+                        supportedReasoningEfforts: [
+                            .init(reasoningEffort: .low, description: "Quick pass."),
+                            .init(reasoningEffort: .medium, description: "Balanced default.")
+                        ],
+                        defaultReasoningEffort: .medium,
+                        supportedServiceTiers: []
+                    )
+                ],
+                nextCursor: nil
+            )
+        )
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: try isolatedHomeEnvironment()
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+
+        await store.settings.refresh()
+
+        #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-5.4-mini"])
+        #expect(await transport.requestedModelListCursors() == [nil, "page-2"])
+    }
+
+    @Test func refreshSettingsMergesFallbackConfigWhenConfigReadOmitsOverrides() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        review_model = "gpt-5.4-mini"
+        model_reasoning_effort = "high"
+        service_tier = "flex"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsRefreshTransport(
+            config: .init(model: "gpt-5.4"),
+            firstPage: .init(data: [], nextCursor: nil),
+            secondPage: .init(data: [], nextCursor: nil)
+        )
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+
+        await store.settings.refresh()
+
+        #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.selectedReasoningEffort == .high)
+        #expect(store.settings.selectedServiceTier == .flex)
+    }
+
+    @Test func standaloneSettingsWritesTargetActiveProfileWhenRootOverrideIsAbsent() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: configURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try """
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        model = "gpt-5.3-codex"
+        model_reasoning_effort = "low"
+        service_tier = "flex"
+        """.write(
+            to: configURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let transport = SettingsWriteTransport()
+        let store = makeTestStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: AuthCapableAppServerManager(authTransport: transport)
+        )
+
+        await store.settings.updateReasoningEffort(.high)
+        await store.settings.updateServiceTier(.fast)
+
+        #expect(await transport.recordedEditKeyPaths() == [
+            [#"profiles."reviewer".model_reasoning_effort"#],
+            [#"profiles."reviewer".service_tier"#],
+        ])
+    }
+
     @Test func storeSkipsRegistryAccountsWithoutSavedAuthSnapshots() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
@@ -7860,6 +8028,124 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
         for waiter in waiters {
             waiter.resume()
         }
+    }
+}
+
+private actor SettingsRefreshTransport: AppServerSessionTransport {
+    private let config: AppServerConfigReadResponse.Config
+    private let firstPage: AppServerModelListResponse
+    private let secondPage: AppServerModelListResponse
+    private var requestedModelListCursorsStorage: [String?] = []
+    private var closedStorage = false
+
+    init(
+        config: AppServerConfigReadResponse.Config,
+        firstPage: AppServerModelListResponse,
+        secondPage: AppServerModelListResponse
+    ) {
+        self.config = config
+        self.firstPage = firstPage
+        self.secondPage = secondPage
+    }
+
+    func initializeResponse() async -> AppServerInitializeResponse {
+        .init(
+            userAgent: nil,
+            codexHome: nil,
+            platformFamily: "macOS",
+            platformOs: "Darwin"
+        )
+    }
+
+    func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
+        method: String,
+        params: Params,
+        responseType _: Response.Type
+    ) async throws -> Response {
+        switch method {
+        case "config/read":
+            return AppServerConfigReadResponse(config: config) as! Response
+        case "model/list":
+            guard let params = params as? AppServerModelListParams else {
+                throw TestFailure("unexpected model/list params type")
+            }
+            requestedModelListCursorsStorage.append(params.cursor)
+            switch params.cursor {
+            case nil:
+                return firstPage as! Response
+            case "page-2":
+                return secondPage as! Response
+            default:
+                throw TestFailure("unexpected model/list cursor: \(params.cursor ?? "nil")")
+            }
+        default:
+            throw TestFailure("unexpected settings refresh request: \(method)")
+        }
+    }
+
+    func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func isClosed() async -> Bool {
+        closedStorage
+    }
+
+    func close() async {
+        closedStorage = true
+    }
+
+    func requestedModelListCursors() -> [String?] {
+        requestedModelListCursorsStorage
+    }
+}
+
+private actor SettingsWriteTransport: AppServerSessionTransport {
+    private var recordedEditKeyPathsStorage: [[String]] = []
+    private var closedStorage = false
+
+    func initializeResponse() async -> AppServerInitializeResponse {
+        .init(
+            userAgent: nil,
+            codexHome: nil,
+            platformFamily: "macOS",
+            platformOs: "Darwin"
+        )
+    }
+
+    func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
+        method: String,
+        params: Params,
+        responseType _: Response.Type
+    ) async throws -> Response {
+        guard method == "config/batchWrite" else {
+            throw TestFailure("unexpected settings write request: \(method)")
+        }
+        guard let params = params as? AppServerConfigBatchWriteParams else {
+            throw TestFailure("unexpected config/batchWrite params type")
+        }
+        recordedEditKeyPathsStorage.append(params.edits.map(\.keyPath))
+        return AppServerConfigWriteResponse(status: "ok") as! Response
+    }
+
+    func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func isClosed() async -> Bool {
+        closedStorage
+    }
+
+    func close() async {
+        closedStorage = true
+    }
+
+    func recordedEditKeyPaths() -> [[String]] {
+        recordedEditKeyPathsStorage
     }
 }
 

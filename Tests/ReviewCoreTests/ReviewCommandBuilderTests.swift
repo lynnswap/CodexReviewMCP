@@ -144,6 +144,46 @@ import Testing
         #expect(fallbackResolved == nil)
     }
 
+    @Test func resolveDisplayedSettingsOverridesPrefersReviewLocalOverrides() {
+        let overrides = resolveDisplayedSettingsOverrides(
+            localConfig: .init(
+                modelReasoningEffort: "high",
+                serviceTier: "fast"
+            ),
+            resolvedConfig: .init(
+                modelReasoningEffort: .low,
+                serviceTier: .flex
+            )
+        )
+
+        #expect(overrides.reasoningEffort == .high)
+        #expect(overrides.serviceTier == .fast)
+    }
+
+    @Test func settingsKeyPathQuotesProfileNamesWhenNeeded() {
+        #expect(
+            settingsKeyPath(
+                "review_model",
+                profile: "qa.us",
+                forceRoot: false
+            ) == #"profiles."qa.us".review_model"#
+        )
+        #expect(
+            settingsKeyPath(
+                "service_tier",
+                profile: #"team "alpha""#,
+                forceRoot: false
+            ) == #"profiles."team \"alpha\"".service_tier"#
+        )
+        #expect(
+            settingsKeyPath(
+                "model_reasoning_effort",
+                profile: "reviewer",
+                forceRoot: true
+            ) == "model_reasoning_effort"
+        )
+    }
+
     @Test func reviewLocalConfigReadsRootLevelValuesAndIgnoresSections() throws {
         let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let configDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
@@ -298,6 +338,73 @@ import Testing
         #expect(config.reviewModel == "gpt-5.4-mini")
         #expect(config.modelContextWindow == 999_999)
         #expect(config.modelAutoCompactTokenLimit == 888_888)
+    }
+
+    @Test func fallbackAppServerConfigReadsQuotedProfileScopedValues() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        profile = "team \\\"alpha\\\""
+
+        [profiles."team \\\"alpha\\\""]
+        review_model = "gpt-5.4-mini"
+        service_tier = "flex"
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = loadFallbackAppServerConfig(environment: ["HOME": tempHome.path])
+
+        #expect(config.reviewModel == "gpt-5.4-mini")
+        #expect(config.serviceTier == .flex)
+    }
+
+    @Test func fallbackAppServerConfigReadsDottedProfileScopedValues() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        profile = "qa.us"
+
+        [profiles.qa.us]
+        review_model = "gpt-5.4-mini"
+        model_reasoning_effort = "high"
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = loadFallbackAppServerConfig(environment: ["HOME": tempHome.path])
+
+        #expect(config.reviewModel == "gpt-5.4-mini")
+        #expect(config.modelReasoningEffort == .high)
+    }
+
+    @Test func fallbackAppServerConfigIgnoresUnrelatedProfileScalarKeys() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
+        try """
+        profile = "reviewer"
+
+        [profiles.reviewer]
+        sandbox_mode = "danger-full-access"
+        review_model = "gpt-5.4-mini"
+        service_tier = "flex"
+        """.write(
+            to: codexDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = loadFallbackAppServerConfig(environment: ["HOME": tempHome.path])
+
+        #expect(config.reviewModel == "gpt-5.4-mini")
+        #expect(config.serviceTier == .flex)
     }
 
     @Test func mergeAppServerConfigUsesFallbackForMissingValuesOnly() {

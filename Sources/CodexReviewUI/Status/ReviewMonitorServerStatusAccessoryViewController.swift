@@ -175,7 +175,7 @@ struct StatusView: View {
                     }
                     .pickerStyle(.inline)
                 }label:{
-                    Text(settings.selectedReasoningEffort?.displayText ?? "")
+                    Text(settings.currentReasoningDisplayText)
                 }
                 Spacer(minLength: 0)
             }

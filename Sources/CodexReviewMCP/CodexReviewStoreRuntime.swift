@@ -1659,14 +1659,18 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
         let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
+        let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
+        let displayedOverrides = resolveDisplayedSettingsOverrides(
+            localConfig: localConfig,
+            resolvedConfig: fallbackConfig
+        )
         return .init(
-            model: localConfig.reviewModel?.nilIfEmpty,
-            reasoningEffort: localConfig.modelReasoningEffort?
-                .nilIfEmpty
-                .flatMap(CodexReviewReasoningEffort.init(rawValue:)),
-            serviceTier: localConfig.serviceTier?
-                .nilIfEmpty
-                .flatMap(CodexReviewServiceTier.init(rawValue:)),
+            model: resolveReviewModelSelection(
+                localConfig: localConfig,
+                resolvedConfig: fallbackConfig
+            ).reportedModelBeforeThreadStart,
+            reasoningEffort: displayedOverrides.reasoningEffort,
+            serviceTier: displayedOverrides.serviceTier,
             models: []
         )
     }
@@ -1821,6 +1825,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
         let transport = try await appServerManager.checkoutAuthTransport()
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
+        let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
         let configResponse: AppServerConfigReadResponse = try await transport.request(
             method: "config/read",
             params: AppServerConfigReadParams(
@@ -1829,21 +1835,36 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             ),
             responseType: AppServerConfigReadResponse.self
         )
-        let modelResponse: AppServerModelListResponse = try await transport.request(
-            method: "model/list",
-            params: AppServerModelListParams(
-                cursor: nil,
-                limit: nil,
-                includeHidden: true
-            ),
-            responseType: AppServerModelListResponse.self
+        var models: [CodexReviewModelCatalogItem] = []
+        var cursor: String?
+        repeat {
+            let modelResponse: AppServerModelListResponse = try await transport.request(
+                method: "model/list",
+                params: AppServerModelListParams(
+                    cursor: cursor,
+                    limit: nil,
+                    includeHidden: true
+                ),
+                responseType: AppServerModelListResponse.self
+            )
+            models.append(contentsOf: modelResponse.data)
+            cursor = modelResponse.nextCursor?.nilIfEmpty
+        } while cursor != nil
+        let effectiveConfig = mergeAppServerConfig(
+            primary: configResponse.config,
+            fallback: fallbackConfig
         )
+        let displayedOverrides = resolveDisplayedSettingsOverrides(
+            localConfig: localConfig,
+            resolvedConfig: effectiveConfig
+        )
+
         return .init(
-            model: configResponse.config.reviewModel?.nilIfEmpty
-                ?? configResponse.config.model?.nilIfEmpty,
-            reasoningEffort: configResponse.config.modelReasoningEffort,
-            serviceTier: configResponse.config.serviceTier,
-            models: modelResponse.data
+            model: effectiveConfig.reviewModel?.nilIfEmpty
+                ?? effectiveConfig.model?.nilIfEmpty,
+            reasoningEffort: displayedOverrides.reasoningEffort,
+            serviceTier: displayedOverrides.serviceTier,
+            models: models
         )
     }
 
@@ -1852,20 +1873,34 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?
     ) async throws {
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
+        let profile = loadActiveReviewProfile(environment: configuration.environment)
         try await writeSettings(
             edits: [
                 .init(
-                    keyPath: "review_model",
+                    keyPath: settingsKeyPath(
+                        "review_model",
+                        profile: profile,
+                        forceRoot: localConfig.reviewModel?.nilIfEmpty != nil
+                    ),
                     value: .string(model),
                     mergeStrategy: .replace
                 ),
                 .init(
-                    keyPath: "model_reasoning_effort",
+                    keyPath: settingsKeyPath(
+                        "model_reasoning_effort",
+                        profile: profile,
+                        forceRoot: localConfig.modelReasoningEffort?.nilIfEmpty != nil
+                    ),
                     value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
                 ),
                 .init(
-                    keyPath: "service_tier",
+                    keyPath: settingsKeyPath(
+                        "service_tier",
+                        profile: profile,
+                        forceRoot: localConfig.serviceTier?.nilIfEmpty != nil
+                    ),
                     value: serviceTier.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
                 ),
@@ -1876,10 +1911,16 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
+        let profile = loadActiveReviewProfile(environment: configuration.environment)
         try await writeSettings(
             edits: [
                 .init(
-                    keyPath: "model_reasoning_effort",
+                    keyPath: settingsKeyPath(
+                        "model_reasoning_effort",
+                        profile: profile,
+                        forceRoot: localConfig.modelReasoningEffort?.nilIfEmpty != nil
+                    ),
                     value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
                 ),
@@ -1890,10 +1931,16 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
+        let profile = loadActiveReviewProfile(environment: configuration.environment)
         try await writeSettings(
             edits: [
                 .init(
-                    keyPath: "service_tier",
+                    keyPath: settingsKeyPath(
+                        "service_tier",
+                        profile: profile,
+                        forceRoot: localConfig.serviceTier?.nilIfEmpty != nil
+                    ),
                     value: serviceTier.map { .string($0.rawValue) } ?? .null,
                     mergeStrategy: .replace
                 ),
