@@ -318,6 +318,8 @@ package final class SettingsStore {
     }
 
     package func clearModelOverride() async {
+        // Retained for programmatic/config-sync paths even though the status menu
+        // intentionally mirrors upstream pickers and does not add a synthetic clear row.
         await applySelectionChange(
             trigger: .model,
             previous: currentSelection(),

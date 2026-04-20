@@ -149,6 +149,8 @@ struct StatusView: View {
             .buttonStyle(.plain)
             HStack{
                 Menu{
+                    // Keep this picker aligned with Codex CLI/App behavior and avoid
+                    // inventing a synthetic inherited/default row that those clients do not expose.
                     Picker("Model", selection: $settings.selectedModel) {
                         ForEach(settings.displayedModels) { item in
                             Text(item.displayName).tag(Optional(item.model))
@@ -167,6 +169,8 @@ struct StatusView: View {
                     Text(settings.currentModelDisplayText)
                 }
                 Menu{
+                    // Deliberately mirror the concrete reasoning choices from the model catalog
+                    // instead of adding an extra "default" menu row that upstream clients lack.
                     Picker("Reasoning", selection: $settings.selectedReasoningEffort) {
                         ForEach(settings.availableReasoningOptions) { item in
                             Text(item.reasoningEffort.displayText)
