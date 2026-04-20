@@ -150,7 +150,6 @@ struct StatusView: View {
             HStack{
                 Menu{
                     Picker("Model", selection: $settings.selectedModel) {
-                        Text("Default").tag(Optional<String>.none)
                         ForEach(settings.displayedModels) { item in
                             Text(item.displayName).tag(Optional(item.model))
                         }
@@ -169,7 +168,6 @@ struct StatusView: View {
                 }
                 Menu{
                     Picker("Reasoning", selection: $settings.selectedReasoningEffort) {
-                        Text("Default").tag(Optional<CodexReviewReasoningEffort>.none)
                         ForEach(settings.availableReasoningOptions) { item in
                             Text(item.reasoningEffort.displayText)
                                 .tag(Optional(item.reasoningEffort))
