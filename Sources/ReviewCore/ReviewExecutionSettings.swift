@@ -184,10 +184,7 @@ package func settingsKeyPath(
     guard let profile else {
         return key
     }
-    let escapedProfile = profile
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
-    return "profiles.\"\(escapedProfile)\".\(key)"
+    return "profiles.\(profile).\(key)"
 }
 
 package func loadFallbackAppServerConfig(

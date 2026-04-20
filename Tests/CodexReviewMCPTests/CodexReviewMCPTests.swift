@@ -256,8 +256,8 @@ struct CodexReviewMCPTests {
         await store.settings.updateServiceTier(.fast)
 
         #expect(await transport.recordedEditKeyPaths() == [
-            [#"profiles."reviewer".model_reasoning_effort"#],
-            [#"profiles."reviewer".service_tier"#],
+            ["profiles.reviewer.model_reasoning_effort"],
+            ["profiles.reviewer.service_tier"],
         ])
     }
 

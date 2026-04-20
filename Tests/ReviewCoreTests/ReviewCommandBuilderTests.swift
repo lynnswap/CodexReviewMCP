@@ -178,14 +178,14 @@ import Testing
                 "review_model",
                 profile: "qa.us",
                 forceRoot: false
-            ) == #"profiles."qa.us".review_model"#
+            ) == "profiles.qa.us.review_model"
         )
         #expect(
             settingsKeyPath(
                 "service_tier",
-                profile: #"team "alpha""#,
+                profile: "reviewer",
                 forceRoot: false
-            ) == #"profiles."team \"alpha\"".service_tier"#
+            ) == "profiles.reviewer.service_tier"
         )
         #expect(
             settingsKeyPath(
