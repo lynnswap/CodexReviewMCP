@@ -366,6 +366,31 @@ import Testing
         #expect(config.modelAutoCompactTokenLimit == 110_000)
     }
 
+    @Test func reviewLocalConfigAcceptsRootNullClears() throws {
+        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let configDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        try """
+        review_model = null
+        model_reasoning_effort = null
+        service_tier = null
+        model_context_window = null
+        model_auto_compact_token_limit = null
+        """.write(
+            to: configDirectory.appendingPathComponent("config.toml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let config = try loadReviewLocalConfig(environment: ["HOME": tempHome.path])
+
+        #expect(config.reviewModel == nil)
+        #expect(config.modelReasoningEffort == nil)
+        #expect(config.serviceTier == nil)
+        #expect(config.modelContextWindow == nil)
+        #expect(config.modelAutoCompactTokenLimit == nil)
+    }
+
     @Test func configReadResponseDecodesReasoningEffortAndServiceTier() throws {
         let data = Data(
             """

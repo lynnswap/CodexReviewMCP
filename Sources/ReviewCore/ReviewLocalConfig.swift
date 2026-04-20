@@ -124,6 +124,10 @@ private func parseReviewConfigString(
     key: String,
     sourcePath: String
 ) throws -> String? {
+    let trimmedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedValue == "null" {
+        return nil
+    }
     guard rawValue.hasPrefix("\"") && rawValue.hasSuffix("\"")
             || rawValue.hasPrefix("'") && rawValue.hasSuffix("'")
     else {
@@ -144,6 +148,9 @@ private func parseReviewConfigInteger(
     let normalized = trimReviewConfigMatchingQuotes(rawValue)
         .replacingOccurrences(of: "_", with: "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized == "null" {
+        return nil
+    }
     guard normalized.isEmpty == false,
           normalized.allSatisfy({ $0.isNumber }),
           let value = Int(normalized)
