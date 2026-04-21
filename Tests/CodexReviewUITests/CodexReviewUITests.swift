@@ -3111,6 +3111,30 @@ struct CodexReviewUITests {
         #expect(store.settings.currentServiceTierDisplayText == "Fast")
     }
 
+    @Test func settingsStorePreservesReasoningOverrideWhenModelCatalogOmitsOptions() {
+        let modelWithoutReasoningOptions = CodexReviewModelCatalogItem(
+            id: "gpt-no-options",
+            model: "gpt-no-options",
+            displayName: "GPT No Options",
+            hidden: false,
+            supportedReasoningEfforts: [],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: []
+        )
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = .init(
+            model: "gpt-no-options",
+            fallbackModel: nil,
+            reasoningEffort: .high,
+            serviceTier: nil,
+            models: [modelWithoutReasoningOptions]
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        #expect(store.settings.selectedReasoningEffort == .high)
+        #expect(store.settings.currentReasoningDisplayText == "High")
+    }
+
     @Test func settingsStoreAppliesPendingSelectionAfterInFlightSave() async throws {
         let backend = BlockingSettingsBackend(snapshot: makeSettingsSnapshot())
         backend.blockNextModelUpdate()

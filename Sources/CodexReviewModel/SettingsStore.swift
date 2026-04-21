@@ -443,7 +443,7 @@ package final class SettingsStore {
 
         let supportedReasoningEfforts = selectedModel.supportedReasoningEfforts.map(\.reasoningEffort)
         let resolvedReasoningEffort: CodexReviewReasoningEffort? = if supportedReasoningEfforts.isEmpty {
-            nil
+            clearIncompatibleOverrides ? nil : reasoningEffort
         } else if let reasoningEffort, supportedReasoningEfforts.contains(reasoningEffort) {
             reasoningEffort
         } else if clearIncompatibleOverrides {

@@ -806,7 +806,10 @@ private func parseNullableProfileIntegerOverride(_ rawValue: String) -> ParsedPr
     if trimmedValue == "null" {
         return .value(nil)
     }
-    return .value(normalizeIntegerLiteral(trimmedValue))
+    guard let value = normalizeIntegerLiteral(trimmedValue) else {
+        return .missing
+    }
+    return .value(value)
 }
 
 private func sanitizeNullAssignmentsForTOMLDecoder(_ content: String) -> String {
