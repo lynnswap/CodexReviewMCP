@@ -809,7 +809,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     ) -> Bool {
         accountSessionController.requiresAuthenticationRecoveryForCurrentSession()
             && runtimeState().serverIsRunning
-            && auth.savedAccounts.first(where: \.isActive)?.accountKey == accountKey
+            && auth.account?.accountKey == accountKey
+            && auth.savedAccounts.contains(where: { $0.accountKey == accountKey })
     }
 
     package func reconcileAuthenticatedSession(
@@ -1063,6 +1064,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
             } else if removesSavedSignedOutAccount, let priorAccountKey {
                 try? await accountRegistryStore.clearActiveAccount(accountKey: priorAccountKey)
+            } else {
+                try? FileManager.default.removeItem(
+                    at: ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
+                )
             }
             await refreshSavedAccounts(
                 auth: auth,

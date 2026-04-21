@@ -8660,6 +8660,51 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func logoutFailureRecoveredToSignedOutRemovesSharedAuthForInactiveCurrentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let currentSavedAccount = try saveReviewAccount(
+            email: "review@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let authSession = FailingLogoutReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { _ in
+                authSession
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateAccount(currentSavedAccount)
+
+        await auth.logout()
+
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(loadSharedReviewAccount(environment: environment) == nil)
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+    }
+
     @Test func logoutFailurePreservesResolvedAuthenticatedState() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
