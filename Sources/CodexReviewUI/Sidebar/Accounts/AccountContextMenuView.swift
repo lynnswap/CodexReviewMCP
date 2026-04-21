@@ -40,7 +40,10 @@ struct AccountContextMenuView: View {
     var body: some View {
         Section(sectionTitle){
             Button("Switch", systemImage: "arrow.triangle.swap") {
-                auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+                auth.requestSwitchAccount(
+                    account,
+                    requiresConfirmation: store.hasRunningJobs && auth.account?.accountKey != account.accountKey
+                )
             }
             .disabled(isPersistedActiveAccount)
             

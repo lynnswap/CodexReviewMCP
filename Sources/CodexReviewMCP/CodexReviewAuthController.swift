@@ -70,6 +70,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         var presentationEffect: AuthenticationPresentationEffect
         var sharedAuthUpdate: SharedAuthUpdate
         var runtimeEffect: CodexAuthRuntimeEffect
+        var shouldMarkCommittedSavedAccountActive: Bool
         var shouldCancelRunningJobs: Bool
     }
 
@@ -249,7 +250,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             do {
                 savedAccount = try accountRegistryStore.saveAuthSnapshot(
                     sourceAuthURL: ReviewHomePaths.reviewAuthURL(environment: commitProbe.environment),
-                    makeActive: commitOutcome.presentationEffect.activatesCommittedAccount,
+                    makeActive: commitOutcome.presentationEffect.activatesCommittedAccount
+                        || commitOutcome.shouldMarkCommittedSavedAccountActive,
                     refreshSharedAuth: commitOutcome.sharedAuthUpdate.shouldRefreshSharedAuthSnapshot
                 )
             } catch {
@@ -273,7 +275,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
 
             await refreshSavedAccounts(auth: auth)
-            await refreshSavedAccountRateLimits(auth: auth, accountKey: savedAccount.accountKey)
+            switch commitOutcome.runtimeEffect {
+            case .none:
+                await refreshSavedAccountRateLimits(auth: auth, accountKey: savedAccount.accountKey)
+            case .recycleNow, .deferRecycleUntilJobsDrain:
+                break
+            }
             restoreNonActivatingAccountAdditionState(
                 auth: auth,
                 priorSnapshot: priorSnapshot,
@@ -294,6 +301,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 identityChanged: false
             )
             await applyAddAccountRuntimeEffect(commitOutcome.runtimeEffect, auth)
+            if case .recycleNow = commitOutcome.runtimeEffect {
+                await refreshSavedAccountRateLimits(auth: auth, accountKey: savedAccount.accountKey)
+            }
         } catch ReviewAuthError.cancelled {
             if let restoreState = authenticationCancellationRestoreState {
                 hasResolvedAuthenticatedAccount = restoreState.isResolvedAuthenticated
@@ -360,18 +370,23 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         let priorAccount = auth.account
         let isCurrentSessionTarget = priorAccount?.accountKey == accountKey
         let isPersistedActiveTarget = loadedAccounts.activeAccountKey == accountKey
+        let shouldHydratePersistedActiveTarget =
+            isPersistedActiveTarget && priorAccount == nil
         guard isPersistedActiveTarget == false || isCurrentSessionTarget == false else {
             return
         }
-        if isPersistedActiveTarget == false {
+        if isPersistedActiveTarget == false || shouldHydratePersistedActiveTarget {
             try await accountRegistryStore.activateAccount(accountKey)
         }
-        if isCurrentSessionTarget {
+        if isCurrentSessionTarget || shouldHydratePersistedActiveTarget {
             await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
             if let resolvedSavedAccount = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
                 auth.updateAccount(resolvedSavedAccount)
             }
+            accountSessionController.resetAuthenticationRequiredCapabilityForAuthRecovery()
+            auth.updatePhase(.signedOut)
             auth.updateWarning(message: nil)
+            hasResolvedAuthenticatedAccount = auth.account != nil
             let resolvedRuntimeState = runtimeState()
             await reconcileRateLimitControllers(
                 auth: auth,
@@ -406,17 +421,29 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             await cancelAuthentication(auth: auth)
         }
         let priorAccount = auth.account
-        let removedActive = auth.account?.accountKey == accountKey
+        let removedCurrentSession = priorAccount?.accountKey == accountKey
+        let startedWithoutCurrentSession = priorAccount == nil
         let priorUnsavedCurrentAccount = unsavedCurrentAccount(in: auth)
         _ = try await accountRegistryStore.removeAccount(accountKey)
         var replacementSavedAccount: CodexAccount?
         if let loaded = try? accountRegistryStore.loadAccounts() {
             auth.updateSavedAccounts(loaded.accounts)
-            if preserveUnsavedCurrentAccount(
+            if let priorAccount,
+               let resolvedCurrentSavedAccount = auth.savedAccounts.first(where: {
+                   $0.accountKey == priorAccount.accountKey
+               })
+            {
+                auth.updateAccount(resolvedCurrentSavedAccount)
+                replacementSavedAccount = resolvedCurrentSavedAccount.isActive
+                    ? resolvedCurrentSavedAccount
+                    : auth.savedAccounts.first(where: \.isActive)
+            } else if preserveUnsavedCurrentAccount(
                 priorUnsavedCurrentAccount,
                 in: auth
             ) {
                 replacementSavedAccount = auth.savedAccounts.first(where: \.isActive)
+            } else if startedWithoutCurrentSession {
+                auth.updateAccount(nil)
             } else if let activeAccountKey = loaded.activeAccountKey,
                let activeAccount = loaded.accounts.first(where: { $0.accountKey == activeAccountKey })
             {
@@ -426,7 +453,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 auth.updateAccount(nil)
             }
         }
-        if removedActive {
+        if removedCurrentSession {
             auth.updatePhase(.signedOut)
             hasResolvedAuthenticatedAccount = replacementSavedAccount != nil
             let warningMessage = await performCommittedJobCleanupIfNeeded(shouldCancelJobs: true)
@@ -1122,6 +1149,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 ),
                 sharedAuthUpdate: .none,
                 runtimeEffect: .none,
+                shouldMarkCommittedSavedAccountActive: true,
                 shouldCancelRunningJobs: true
             )
         case .addAccount:
@@ -1135,6 +1163,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 sharedAuthUpdate: sharedAuthUpdate,
                 runtimeEffect: addAccountRuntimeEffect(
                     sharedAuthUpdate: sharedAuthUpdate,
+                    priorCurrentAccount: priorCurrentAccount
+                ),
+                shouldMarkCommittedSavedAccountActive: shouldMarkCommittedSavedAccountActiveForAddAccount(
+                    priorSnapshot: priorSnapshot,
                     priorCurrentAccount: priorCurrentAccount
                 ),
                 shouldCancelRunningJobs: false
@@ -1160,6 +1192,16 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             return .none
         }
         return .refreshCurrentAccountSnapshot
+    }
+
+    private func shouldMarkCommittedSavedAccountActiveForAddAccount(
+        priorSnapshot: AuthPresentationSnapshot,
+        priorCurrentAccount: CodexAccount?
+    ) -> Bool {
+        guard priorCurrentAccount == nil else {
+            return false
+        }
+        return priorSnapshot.savedAccounts.contains(where: \.isActive) == false
     }
 
     private func addAccountRuntimeEffect(
@@ -1320,13 +1362,6 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
             let priorAccountKey = priorAccount?.accountKey
             auth.updateSavedAccounts(loadedAccounts)
-            if let activeAccountKey = loaded.activeAccountKey,
-               let loadedActiveAccount = loadedAccounts.first(where: { $0.accountKey == activeAccountKey })
-            {
-                auth.updateAccount(loadedActiveAccount)
-                return
-            }
-
             if let priorAccountKey,
                let resolvedSavedAccount = loadedAccounts.first(where: { $0.accountKey == priorAccountKey })
             {
@@ -1423,11 +1458,15 @@ private final class CodexAccountSessionController {
                 runtimeGeneration: runtimeGeneration
             )
         }
+        let targetChanged = desiredTarget != activeTarget
 
         let shouldAttach = serverIsRunning && desiredTarget != nil
-        if shouldAttach == false || desiredTarget != activeTarget {
+        if shouldAttach == false || targetChanged {
             await detach()
             activeTarget = shouldAttach ? desiredTarget : nil
+            if targetChanged {
+                rateLimitsReadCapability = .unknown
+            }
         }
         self.accountResolver = shouldAttach ? accountResolver : nil
 

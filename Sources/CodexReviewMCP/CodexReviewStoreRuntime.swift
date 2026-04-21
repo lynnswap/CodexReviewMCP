@@ -1706,6 +1706,14 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 deferredAddAccountRuntimeEffect = nil
                 return
             }
+            guard store.hasRunningJobs == false else {
+                deferredAddAccountRuntimeEffect = .init(
+                    accountKey: accountKey,
+                    runtimeGeneration: runtimeGeneration
+                )
+                scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
+                return
+            }
             deferredAddAccountRuntimeEffect = nil
             await recycleSharedAppServerAfterAuthChange()
             await auth.reconcileAuthenticatedSession(

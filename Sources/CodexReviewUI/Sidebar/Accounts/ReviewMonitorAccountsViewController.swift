@@ -124,7 +124,10 @@ private struct ReviewMonitorAccountsListView: View {
                 if isSelected {
                     return
                 }
-                auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+                auth.requestSwitchAccount(
+                    account,
+                    requiresConfirmation: store.hasRunningJobs && auth.account?.accountKey != account.accountKey
+                )
             }
         }
         .contextMenu {

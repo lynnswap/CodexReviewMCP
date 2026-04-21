@@ -1173,6 +1173,32 @@ struct CodexReviewUITests {
         #expect(backend.lastRemovedAccountKey() == otherAccount.accountKey)
     }
 
+    @Test func metadataOnlySwitchDoesNotPresentRunningJobsConfirmation() async {
+        let backend = AuthActionBackend()
+        let store = makeStore(backend: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let currentSavedAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        let currentSession = CodexAccount(email: "current@example.com", planType: "plus")
+        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: currentSession,
+            savedAccounts: [activeSavedAccount, currentSavedAccount],
+            workspaces: makeWorkspaces(from: [runningJob])
+        )
+
+        store.auth.requestSwitchAccount(
+            currentSavedAccount,
+            requiresConfirmation: store.hasRunningJobs && store.auth.account?.accountKey != currentSavedAccount.accountKey
+        )
+        await backend.waitForSwitchAccountCallCount(1)
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
+        #expect(backend.lastSwitchedAccountKey() == currentSavedAccount.accountKey)
+    }
+
     @Test func accountMenusUseFullEmailForSectionTitles() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let account = CodexAccount(email: "masked.user@example.com", planType: "pro")
