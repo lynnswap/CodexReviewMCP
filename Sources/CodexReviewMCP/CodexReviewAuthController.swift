@@ -216,6 +216,11 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
 
             if commitDisposition.shouldActivateAuthenticatedAccount {
+                if activationPolicy == .keepCurrentActiveAccount {
+                    _ = await synchronizeSharedRuntimeAuthenticationIfNeeded(
+                        expectedEmail: completedAccount
+                    )
+                }
                 let warningMessage = await performCommittedJobCleanupIfNeeded(
                     shouldCancelJobs: commitDisposition.shouldCancelRunningJobs
                 )
@@ -1058,7 +1063,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             return .init(
                 shouldActivateAuthenticatedAccount: true,
                 shouldCancelRunningJobs: false,
-                forceRecycleServer: runtimeState().serverIsRunning
+                forceRecycleServer: false
             )
         }
 
@@ -1077,6 +1082,31 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             shouldCancelRunningJobs: false,
             forceRecycleServer: false
         )
+    }
+
+    private func synchronizeSharedRuntimeAuthenticationIfNeeded(
+        expectedEmail: ReviewAuthAccount
+    ) async -> Bool {
+        guard runtimeState().serverIsRunning else {
+            return true
+        }
+
+        do {
+            let session = try await sharedAuthSessionFactory(configuration.environment)
+            defer {
+                Task {
+                    await session.close()
+                }
+            }
+            let response = try await session.readAccount(refreshToken: true)
+            guard case .chatGPT(let email, _)? = response.account else {
+                return false
+            }
+            return normalizedReviewAccountEmail(email: email)
+                == normalizedReviewAccountEmail(email: expectedEmail.email)
+        } catch {
+            return false
+        }
     }
 
     private func applyCommittedActiveAccount(

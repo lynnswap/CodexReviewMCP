@@ -5810,6 +5810,56 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func addAccountWithoutActiveSessionRefreshesSharedRuntimeWithoutRecycle() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = SuccessfulLoginReviewAuthSession()
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        await store.auth.addAccount()
+
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
+
+        await store.stop()
+    }
+
+    @Test func addAccountSameAccountReauthenticationRefreshesSharedRuntimeWithoutRecycle() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        await store.auth.addAccount()
+
+        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 0)
+
+        await store.stop()
+    }
+
     @Test func successfulAuthenticationClearsSigningInPhaseWhenResolvedRefreshFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
