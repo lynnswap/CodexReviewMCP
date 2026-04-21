@@ -838,6 +838,24 @@ import Testing
         #expect(merged.modelAutoCompactTokenLimit == 110_000)
     }
 
+    @Test func mergeAppServerConfigPreservesExplicitNullClearsForReasoningAndServiceTier() {
+        let merged = mergeAppServerConfig(
+            primary: .init(
+                modelReasoningEffort: nil,
+                serviceTier: nil,
+                hasModelReasoningEffort: true,
+                hasServiceTier: true
+            ),
+            fallback: .init(
+                modelReasoningEffort: .high,
+                serviceTier: .fast
+            )
+        )
+
+        #expect(merged.modelReasoningEffort == nil)
+        #expect(merged.serviceTier == nil)
+    }
+
     @Test func modelsCachePathFollowsCodexHomeResolution() {
         #expect(
             ReviewHomePaths.modelsCacheURL(

@@ -241,9 +241,25 @@ package final class SettingsStore {
     }
 
     package var displayedModels: [CodexReviewModelCatalogItem] {
-        models.filter { modelItem in
+        var displayedModels = models.filter { modelItem in
             modelItem.hidden == false || modelItem.model == effectiveModel
         }
+        if let effectiveModel,
+           displayedModels.contains(where: { $0.model == effectiveModel }) == false
+        {
+            displayedModels.append(
+                .init(
+                    id: effectiveModel,
+                    model: effectiveModel,
+                    displayName: effectiveModel,
+                    hidden: false,
+                    supportedReasoningEfforts: [],
+                    defaultReasoningEffort: .medium,
+                    supportedServiceTiers: []
+                )
+            )
+        }
+        return displayedModels
     }
 
     package var effectiveModel: String? {

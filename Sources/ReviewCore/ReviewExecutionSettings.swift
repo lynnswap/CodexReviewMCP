@@ -324,10 +324,16 @@ package func mergeAppServerConfig(
     .init(
         model: primary.model?.nilIfEmpty ?? fallback.model?.nilIfEmpty,
         reviewModel: primary.reviewModel?.nilIfEmpty ?? fallback.reviewModel?.nilIfEmpty,
-        modelReasoningEffort: primary.modelReasoningEffort ?? fallback.modelReasoningEffort,
-        serviceTier: primary.serviceTier ?? fallback.serviceTier,
+        modelReasoningEffort: primary.hasModelReasoningEffort
+            ? primary.modelReasoningEffort
+            : fallback.modelReasoningEffort,
+        serviceTier: primary.hasServiceTier
+            ? primary.serviceTier
+            : fallback.serviceTier,
         modelContextWindow: primary.modelContextWindow ?? fallback.modelContextWindow,
-        modelAutoCompactTokenLimit: primary.modelAutoCompactTokenLimit ?? fallback.modelAutoCompactTokenLimit
+        modelAutoCompactTokenLimit: primary.modelAutoCompactTokenLimit ?? fallback.modelAutoCompactTokenLimit,
+        hasModelReasoningEffort: primary.hasModelReasoningEffort || fallback.hasModelReasoningEffort,
+        hasServiceTier: primary.hasServiceTier || fallback.hasServiceTier
     )
 }
 

@@ -3096,6 +3096,31 @@ struct CodexReviewUITests {
         #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-hidden"])
     }
 
+    @Test func settingsStoreKeepsConfiguredMissingModelVisible() {
+        let visibleModel = CodexReviewModelCatalogItem(
+            id: "gpt-5.4",
+            model: "gpt-5.4",
+            displayName: "GPT-5.4",
+            hidden: false,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .medium, description: "Visible default.")
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: [.fast]
+        )
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = .init(
+            model: "gpt-missing",
+            reasoningEffort: nil,
+            serviceTier: nil,
+            models: [visibleModel]
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-missing"])
+        #expect(store.settings.currentModelDisplayText == "gpt-missing")
+    }
+
     @Test func settingsStorePreservesIncompatiblePersistedOverridesUntilEdited() {
         let backend = CodexReviewPreviewStoreBackend()
         backend.initialSettingsSnapshot = makeSettingsSnapshot(

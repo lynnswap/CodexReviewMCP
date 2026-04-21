@@ -225,6 +225,8 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
         package var serviceTier: CodexReviewServiceTier?
         package var modelContextWindow: Int?
         package var modelAutoCompactTokenLimit: Int?
+        package var hasModelReasoningEffort: Bool
+        package var hasServiceTier: Bool
 
         package enum CodingKeys: String, CodingKey {
             case model
@@ -241,7 +243,9 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
             modelReasoningEffort: CodexReviewReasoningEffort? = nil,
             serviceTier: CodexReviewServiceTier? = nil,
             modelContextWindow: Int? = nil,
-            modelAutoCompactTokenLimit: Int? = nil
+            modelAutoCompactTokenLimit: Int? = nil,
+            hasModelReasoningEffort: Bool? = nil,
+            hasServiceTier: Bool? = nil
         ) {
             self.model = model
             self.reviewModel = reviewModel
@@ -249,17 +253,21 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
             self.serviceTier = serviceTier
             self.modelContextWindow = modelContextWindow
             self.modelAutoCompactTokenLimit = modelAutoCompactTokenLimit
+            self.hasModelReasoningEffort = hasModelReasoningEffort ?? (modelReasoningEffort != nil)
+            self.hasServiceTier = hasServiceTier ?? (serviceTier != nil)
         }
 
         package init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             model = try container.decodeIfPresent(String.self, forKey: .model)
             reviewModel = try container.decodeIfPresent(String.self, forKey: .reviewModel)
+            hasModelReasoningEffort = container.contains(.modelReasoningEffort)
             modelReasoningEffort = try Self.decodeStringEnumIfPresent(
                 from: container,
                 forKey: .modelReasoningEffort,
                 transform: CodexReviewReasoningEffort.init(rawValue:)
             )
+            hasServiceTier = container.contains(.serviceTier)
             serviceTier = try Self.decodeStringEnumIfPresent(
                 from: container,
                 forKey: .serviceTier,
