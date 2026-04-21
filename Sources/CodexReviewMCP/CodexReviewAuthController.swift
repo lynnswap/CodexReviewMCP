@@ -46,6 +46,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     private var activeAuthenticationManager: ReviewAuthManager?
     private var activeAuthenticationProbe: PreparedInactiveAccountProbe?
     private var hasResolvedAuthenticatedAccount = false
+    private var pendingRuntimeRecycleAfterDeferredSameAccountReauth: String?
 
     init(
         configuration: ReviewServerConfiguration,
@@ -194,6 +195,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     priorCurrentAccount: auth.account,
                     completedAccount: completedAccount
                 )
+            let shouldRecycleNonActivatingRuntimeImmediately =
+                shouldRecycleRunningRuntimeAfterNonActivatingSameAccountReauth(
+                    shouldRefreshSharedAuthSnapshot: shouldRefreshSharedAuthSnapshot,
+                    priorSnapshot: priorSnapshot,
+                    priorCurrentAccount: auth.account
+                )
             let commitDisposition: AuthenticationCommitDisposition = {
                 switch activationPolicy {
                 case .automatic:
@@ -206,7 +213,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     .init(
                         shouldActivateAuthenticatedAccount: false,
                         shouldCancelRunningJobs: false,
-                        forceRecycleServer: shouldRefreshSharedAuthSnapshot
+                        forceRecycleServer: shouldRecycleNonActivatingRuntimeImmediately
                             && runtimeState().serverIsRunning
                             && hasRunningJobs() == false
                     )
@@ -251,6 +258,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
 
             if commitDisposition.forceRecycleServer {
+                pendingRuntimeRecycleAfterDeferredSameAccountReauth = nil
                 await refreshResolvedState(
                     auth: auth,
                     forceRestartSession: true,
@@ -267,6 +275,14 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 priorSnapshot: priorSnapshot,
                 priorCurrentAccount: priorCurrentAccount
             )
+            if shouldRecycleNonActivatingRuntimeImmediately,
+               runtimeState().serverIsRunning,
+               hasRunningJobs()
+            {
+                pendingRuntimeRecycleAfterDeferredSameAccountReauth = auth.account?.accountKey
+            } else if shouldRefreshSharedAuthSnapshot == false {
+                pendingRuntimeRecycleAfterDeferredSameAccountReauth = nil
+            }
             if shouldRefreshSharedAuthSnapshot,
                runtimeState().serverIsRunning == false,
                auth.account != nil,
@@ -720,6 +736,20 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         serverIsRunning: Bool,
         runtimeGeneration: Int
         ) async {
+        if let pendingAccountKey = pendingRuntimeRecycleAfterDeferredSameAccountReauth {
+            if auth.account?.accountKey != pendingAccountKey {
+                pendingRuntimeRecycleAfterDeferredSameAccountReauth = nil
+            } else if serverIsRunning, hasRunningJobs() == false {
+                pendingRuntimeRecycleAfterDeferredSameAccountReauth = nil
+                await refreshResolvedState(
+                    auth: auth,
+                    forceRestartSession: true,
+                    forceRecycleServer: true,
+                    allowDuringAuthentication: true
+                )
+                return
+            }
+        }
         await reconcileRateLimitControllers(
             auth: auth,
             serverIsRunning: serverIsRunning,
@@ -1092,6 +1122,24 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         }
         return normalizedReviewAccountEmail(email: priorCurrentAccount.email)
             == normalizedReviewAccountEmail(email: completedAccount.email)
+    }
+
+    private func shouldRecycleRunningRuntimeAfterNonActivatingSameAccountReauth(
+        shouldRefreshSharedAuthSnapshot: Bool,
+        priorSnapshot: AuthPresentationSnapshot,
+        priorCurrentAccount: CodexAccount?
+    ) -> Bool {
+        guard shouldRefreshSharedAuthSnapshot,
+              let priorCurrentAccount
+        else {
+            return false
+        }
+        if priorSnapshot.savedAccounts.contains(where: {
+            $0.isActive && $0.accountKey == priorCurrentAccount.accountKey
+        }) {
+            return true
+        }
+        return priorSnapshot.savedAccounts.contains(where: \.isActive) == false
     }
 
     private func applyCommittedActiveAccount(

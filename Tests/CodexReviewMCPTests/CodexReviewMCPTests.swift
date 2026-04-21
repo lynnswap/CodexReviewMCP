@@ -6764,7 +6764,7 @@ struct CodexReviewMCPTests {
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
 
-    @Test func addAccountSameEmailReauthenticationWithRunningJobsDoesNotRecycleRuntime() async throws {
+    @Test func addAccountSameEmailReauthenticationWithRunningJobsDefersRuntimeRecycleUntilJobsFinish() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -6781,6 +6781,7 @@ struct CodexReviewMCPTests {
         let authSession = SameAccountSuccessfulLoginReviewAuthSession()
         var cancelCallCount = 0
         var recycleCallCount = 0
+        let hasRunningJobs = MutableValueBox(true)
         let auth = makeAuthModel(
             configuration: .init(
                 port: 0,
@@ -6803,7 +6804,7 @@ struct CodexReviewMCPTests {
                 recycleCallCount += 1
             },
             hasRunningJobs: {
-                true
+                hasRunningJobs.value
             },
             cancelRunningJobs: { _ in
                 cancelCallCount += 1
@@ -6821,6 +6822,60 @@ struct CodexReviewMCPTests {
         #expect(auth.account?.email == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
+
+        hasRunningJobs.value = false
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+
+        #expect(recycleCallCount == 1)
+    }
+
+    @Test func addAccountUnsavedSameEmailWithDifferentActiveSavedAccountDoesNotRecycleRuntime() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        var recycleCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: authSession,
+                    environment: environment
+                )
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
+            },
+            recycleServerIfRunning: {
+                recycleCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(CodexAccount(email: "review@example.com"))
+
+        await auth.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(recycleCallCount == 0)
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
+        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
     }
 
     @Test func beginAuthenticationRetryAfterFailedAddAccountKeepsCurrentActiveAccount() async throws {
@@ -11287,5 +11342,13 @@ private func withAsyncCleanup<T>(
     } catch {
         await cleanup()
         throw error
+    }
+}
+
+private final class MutableValueBox<Value>: @unchecked Sendable {
+    var value: Value
+
+    init(_ value: Value) {
+        self.value = value
     }
 }
