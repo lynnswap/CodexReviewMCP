@@ -5362,46 +5362,6 @@ struct CodexReviewMCPTests {
         #expect(loadedAccounts.activeAccountKey == "stale@example.com")
     }
 
-    @Test func beginAuthenticationUsesPersistedSavedAccountsBeforeStartupRefreshLoadsModel() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let registryStore = ReviewAccountRegistryStore(environment: environment)
-        _ = try saveReviewAccount(
-            email: "saved@example.com",
-            makeActive: false,
-            environment: environment,
-            registryStore: registryStore
-        )
-
-        let authSession = SuccessfulLoginReviewAuthSession()
-        let auth = makeAuthModel(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            sharedAuthSessionFactory: { _ in
-                authSession
-            },
-            loginAuthSessionFactory: { environment in
-                PersistingReviewAuthSession(
-                    base: authSession,
-                    environment: environment
-                )
-            }
-        )
-        auth.updateSavedAccounts([])
-        auth.updateAccount(nil)
-
-        await auth.beginAuthentication()
-
-        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
-        #expect(testAuthState(from: auth) == .signedOut)
-        #expect(auth.account == nil)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
-        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
-        #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
-    }
-
     @Test func logoutDuringAuthenticatedRetryCancelsLoginAndSignsOut() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
@@ -6577,6 +6537,36 @@ struct CodexReviewMCPTests {
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
+    }
+
+    @Test func addAccountUnsavedSameEmailReauthenticationPromotesRefreshedSavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: authSession,
+                    environment: environment
+                )
+            }
+        )
+        let unsavedCurrentAccount = CodexAccount(email: "review@example.com")
+        auth.updateAccount(unsavedCurrentAccount)
+
+        await auth.addAccount()
+
+        let savedAccount = try #require(auth.savedAccounts.first)
+        #expect(auth.account === savedAccount)
+        #expect(auth.account !== unsavedCurrentAccount)
+        #expect(auth.account?.planType == "pro")
     }
 
     @Test func addAccountWithoutActivationPreservesUnsavedCurrentSession() async throws {

@@ -116,9 +116,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     package func beginAuthentication(auth: CodexReviewAuthModel) async {
-        let hasPersistedSavedAccounts = auth.savedAccounts.isEmpty == false
-            || ((try? accountRegistryStore.loadAccounts().accounts.isEmpty) == false)
-        if hasPersistedSavedAccounts {
+        if auth.savedAccounts.isEmpty == false {
             await beginAuthentication(
                 auth: auth,
                 activationPolicy: .keepCurrentActiveAccount
@@ -1133,7 +1131,6 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         priorCurrentAccount: CodexAccount?
     ) {
         if let priorCurrentAccount,
-           priorSnapshot.savedAccounts.contains(where: { $0.accountKey == priorCurrentAccount.accountKey }),
            let resolvedSavedAccount = auth.savedAccounts.first(where: { $0.accountKey == priorCurrentAccount.accountKey })
         {
             auth.updateAccount(resolvedSavedAccount)
