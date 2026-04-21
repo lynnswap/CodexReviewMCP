@@ -388,24 +388,21 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         }
         let priorAccount = auth.account
         let removedActive = auth.account?.accountKey == accountKey
-        let priorUnsavedCurrentAccount = auth.account.flatMap { currentAccount in
-            auth.savedAccounts.contains(where: { $0.accountKey == currentAccount.accountKey })
-                ? nil
-                : currentAccount
-        }
+        let priorUnsavedCurrentAccount = unsavedCurrentAccount(in: auth)
         _ = try await accountRegistryStore.removeAccount(accountKey)
         var replacementSavedAccount: CodexAccount?
         if let loaded = try? accountRegistryStore.loadAccounts() {
             auth.updateSavedAccounts(loaded.accounts)
-            if let activeAccountKey = loaded.activeAccountKey,
+            if preserveUnsavedCurrentAccount(
+                priorUnsavedCurrentAccount,
+                in: auth
+            ) {
+                replacementSavedAccount = auth.savedAccounts.first(where: \.isActive)
+            } else if let activeAccountKey = loaded.activeAccountKey,
                let activeAccount = loaded.accounts.first(where: { $0.accountKey == activeAccountKey })
             {
                 auth.updateAccount(activeAccount)
                 replacementSavedAccount = activeAccount
-            } else if let priorUnsavedCurrentAccount,
-                      loaded.accounts.contains(where: { $0.accountKey == priorUnsavedCurrentAccount.accountKey }) == false
-            {
-                auth.updateAccount(priorUnsavedCurrentAccount)
             } else {
                 auth.updateAccount(nil)
             }
@@ -439,11 +436,16 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         accountKey: String,
         toIndex: Int
     ) async throws {
+        let priorUnsavedCurrentAccount = unsavedCurrentAccount(in: auth)
         try await accountRegistryStore.reorderAccount(
             accountKey: accountKey,
             toIndex: toIndex
         )
         await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
+        _ = preserveUnsavedCurrentAccount(
+            priorUnsavedCurrentAccount,
+            in: auth
+        )
         let resolvedRuntimeState = runtimeState()
         await reconcileRateLimitControllers(
             auth: auth,
@@ -1236,6 +1238,30 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         } else {
             auth.updateAccount(nil)
         }
+    }
+
+    private func unsavedCurrentAccount(
+        in auth: CodexReviewAuthModel
+    ) -> CodexAccount? {
+        auth.account.flatMap { currentAccount in
+            auth.savedAccounts.contains(where: { $0.accountKey == currentAccount.accountKey })
+                ? nil
+                : currentAccount
+        }
+    }
+
+    @discardableResult
+    private func preserveUnsavedCurrentAccount(
+        _ priorUnsavedCurrentAccount: CodexAccount?,
+        in auth: CodexReviewAuthModel
+    ) -> Bool {
+        guard let priorUnsavedCurrentAccount,
+              auth.savedAccounts.contains(where: { $0.accountKey == priorUnsavedCurrentAccount.accountKey }) == false
+        else {
+            return false
+        }
+        auth.updateAccount(priorUnsavedCurrentAccount)
+        return true
     }
 
     private func refreshSavedAccounts(

@@ -1702,6 +1702,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 accountKey: accountKey,
                 runtimeGeneration: runtimeGeneration
             )
+            scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
         case .recycleNow(let accountKey, let runtimeGeneration):
             cancelDeferredAddAccountRuntimeReconcileTask()
             guard let store = attachedStore,
