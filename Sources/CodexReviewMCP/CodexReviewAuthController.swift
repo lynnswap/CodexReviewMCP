@@ -22,6 +22,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         case keepCurrentActiveAccount
     }
 
+    private struct AuthenticationCommitDisposition {
+        var shouldActivateAuthenticatedAccount: Bool
+        var shouldCancelRunningJobs: Bool
+        var forceRecycleServer: Bool
+    }
+
     private let configuration: ReviewServerConfiguration
     private let accountRegistryStore: ReviewAccountRegistryStore
     private let sharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession
@@ -169,15 +175,25 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             guard let completedAccount else {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
-            let shouldActivateAuthenticatedAccount: Bool = switch activationPolicy {
-            case .automatic:
-                shouldActivateAuthenticatedAccount(
-                    priorSnapshot: priorSnapshot,
-                    completedAccount: completedAccount
-                )
-            case .keepCurrentActiveAccount:
-                false
-            }
+            let shouldActivateAutomatically = shouldActivateAuthenticatedAccount(
+                priorSnapshot: priorSnapshot,
+                completedAccount: completedAccount
+            )
+            let commitDisposition: AuthenticationCommitDisposition = {
+                switch activationPolicy {
+                case .automatic:
+                    .init(
+                        shouldActivateAuthenticatedAccount: shouldActivateAutomatically,
+                        shouldCancelRunningJobs: shouldActivateAutomatically,
+                        forceRecycleServer: runtimeState().serverIsRunning
+                    )
+                case .keepCurrentActiveAccount:
+                    addAccountCommitDisposition(
+                        priorSnapshot: priorSnapshot,
+                        completedAccount: completedAccount
+                    )
+                }
+            }()
             let priorCurrentAccount = auth.account
             guard let commitProbe = takeAuthenticationProbeForCommit(authenticationAttemptID) else {
                 throw ReviewAuthError.cancelled
@@ -193,19 +209,21 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             do {
                 savedAccount = try accountRegistryStore.saveAuthSnapshot(
                     sourceAuthURL: ReviewHomePaths.reviewAuthURL(environment: commitProbe.environment),
-                    makeActive: shouldActivateAuthenticatedAccount
+                    makeActive: commitDisposition.shouldActivateAuthenticatedAccount
                 )
             } catch {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
 
-            if shouldActivateAuthenticatedAccount {
-                let warningMessage = await performCommittedJobCleanupIfNeeded(shouldCancelJobs: true)
+            if commitDisposition.shouldActivateAuthenticatedAccount {
+                let warningMessage = await performCommittedJobCleanupIfNeeded(
+                    shouldCancelJobs: commitDisposition.shouldCancelRunningJobs
+                )
                 await applyCommittedActiveAccount(
                     auth: auth,
                     savedAccount: savedAccount,
                     priorAccount: priorCurrentAccount,
-                    forceRecycleServer: runtimeState().serverIsRunning
+                    forceRecycleServer: commitDisposition.forceRecycleServer
                 )
                 if let warningMessage {
                     auth.updateWarning(message: warningMessage)
@@ -1030,6 +1048,35 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         }
         return normalizedReviewAccountEmail(email: currentAccount.email)
             == normalizedReviewAccountEmail(email: completedAccount.email)
+    }
+
+    private func addAccountCommitDisposition(
+        priorSnapshot: AuthPresentationSnapshot,
+        completedAccount: ReviewAuthAccount
+    ) -> AuthenticationCommitDisposition {
+        guard let currentAccount = priorSnapshot.account else {
+            return .init(
+                shouldActivateAuthenticatedAccount: true,
+                shouldCancelRunningJobs: false,
+                forceRecycleServer: runtimeState().serverIsRunning
+            )
+        }
+
+        let currentEmail = normalizedReviewAccountEmail(email: currentAccount.email)
+        let completedEmail = normalizedReviewAccountEmail(email: completedAccount.email)
+        guard currentEmail == completedEmail else {
+            return .init(
+                shouldActivateAuthenticatedAccount: false,
+                shouldCancelRunningJobs: false,
+                forceRecycleServer: false
+            )
+        }
+
+        return .init(
+            shouldActivateAuthenticatedAccount: true,
+            shouldCancelRunningJobs: false,
+            forceRecycleServer: false
+        )
     }
 
     private func applyCommittedActiveAccount(
