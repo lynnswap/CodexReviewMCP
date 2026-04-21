@@ -17,6 +17,11 @@ struct CodexAuthRuntimeState {
 
 @MainActor
 package final class CodexAuthController: CodexReviewAuthControlling {
+    private enum AuthenticationActivationPolicy {
+        case automatic
+        case keepCurrentActiveAccount
+    }
+
     private let configuration: ReviewServerConfiguration
     private let accountRegistryStore: ReviewAccountRegistryStore
     private let sharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession
@@ -105,6 +110,23 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     package func beginAuthentication(auth: CodexReviewAuthModel) async {
+        await beginAuthentication(
+            auth: auth,
+            activationPolicy: .automatic
+        )
+    }
+
+    package func addAccount(auth: CodexReviewAuthModel) async {
+        await beginAuthentication(
+            auth: auth,
+            activationPolicy: .keepCurrentActiveAccount
+        )
+    }
+
+    private func beginAuthentication(
+        auth: CodexReviewAuthModel,
+        activationPolicy: AuthenticationActivationPolicy
+    ) async {
         cancelStartupRefresh()
         guard auth.isAuthenticating == false else {
             return
@@ -147,10 +169,15 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             guard let completedAccount else {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
-            let shouldActivateAuthenticatedAccount = shouldActivateAuthenticatedAccount(
-                priorSnapshot: priorSnapshot,
-                completedAccount: completedAccount
-            )
+            let shouldActivateAuthenticatedAccount: Bool = switch activationPolicy {
+            case .automatic:
+                shouldActivateAuthenticatedAccount(
+                    priorSnapshot: priorSnapshot,
+                    completedAccount: completedAccount
+                )
+            case .keepCurrentActiveAccount:
+                false
+            }
             let priorCurrentAccount = auth.account
             guard let commitProbe = takeAuthenticationProbeForCommit(authenticationAttemptID) else {
                 throw ReviewAuthError.cancelled

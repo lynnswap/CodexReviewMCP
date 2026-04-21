@@ -349,6 +349,7 @@ private final class AddAccountToolbarItemView: NSView {
         progressButton.setProgressDetailToolTip(detail)
 
         guard targetMode != displayedMode else {
+            pendingMode = isAnimatingModeTransition ? targetMode : nil
             applyMode(targetMode)
             return
         }
@@ -370,6 +371,9 @@ private final class AddAccountToolbarItemView: NSView {
 
     private func applyMode(_ mode: Mode) {
         displayedMode = mode
+        if pendingMode == mode {
+            pendingMode = nil
+        }
         let isAuthenticating = mode == .progress
         addButton.isHidden = isAuthenticating
         progressButton.isHidden = isAuthenticating == false

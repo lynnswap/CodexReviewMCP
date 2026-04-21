@@ -5920,6 +5920,103 @@ struct CodexReviewMCPTests {
         #expect(rateLimitWindow(duration: 10_080, in: addedAccount)?.usedPercent == 20)
     }
 
+    @Test func addAccountRetryAfterFailedAuthenticationKeepsCurrentActiveAccountWithoutCancellingJobs() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let loginSession = SuccessfulLoginReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                ImmediateReadAccountReviewAuthSession(
+                    response: .init(
+                        account: .chatGPT(email: "active@example.com", planType: "pro"),
+                        requiresOpenAIAuth: false
+                    )
+                )
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: loginSession,
+                    environment: environment
+                )
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        await auth.refresh()
+        auth.updatePhase(.failed(message: "Previous add-account failed."))
+
+        await auth.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(cancelCallCount == 0)
+        #expect(auth.account?.email == "active@example.com")
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
+    }
+
+    @Test func addAccountSameEmailReauthenticationDoesNotCancelJobsOrSwitchActiveAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "review@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: authSession,
+                    environment: environment
+                )
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        await auth.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(cancelCallCount == 0)
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "review@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
+    }
+
     @Test func beginAuthenticationRetryAfterFailedAddAccountKeepsCurrentActiveAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)

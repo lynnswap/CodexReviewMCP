@@ -8,7 +8,7 @@ enum ReviewMonitorAddAccountAction {
             let auth = store.auth
             let previousFailureCount = auth.authenticationFailureCount
             let previousWarningMessage = auth.warningMessage
-            await auth.beginAuthentication()
+            await auth.addAccount()
             if auth.authenticationFailureCount != previousFailureCount,
                let message = auth.errorMessage
             {
