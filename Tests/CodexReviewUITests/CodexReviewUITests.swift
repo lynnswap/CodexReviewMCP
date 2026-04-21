@@ -1354,9 +1354,7 @@ struct CodexReviewUITests {
         )
         store.auth.updatePhase(.signedOut)
 
-        try await waitForCondition(timeout: .seconds(1)) {
-            viewController.addAccountToolbarItemModeForTesting == .add
-        }
+        try await waitForAddAccountToolbarMode(viewController, .add)
         #expect(viewController.addAccountToolbarItemModeForTesting == .add)
     }
 
@@ -3725,6 +3723,24 @@ private func waitForAddAccountToolbarItemHidden(
             try Task.checkCancellation()
             await Task.yield()
         }
+    }
+}
+
+@MainActor
+private func waitForAddAccountToolbarMode(
+    _ viewController: ReviewMonitorSplitViewController,
+    _ expected: ReviewMonitorSplitViewController.AddAccountToolbarItemModeForTesting,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let viewControllerBox = UncheckedSendableBox(viewController)
+    try await withTestTimeout(timeout) {
+        await MainActor.run {
+            if let window = viewControllerBox.value.view.window {
+                window.layoutIfNeeded()
+            }
+            viewControllerBox.value.view.layoutSubtreeIfNeeded()
+        }
+        await viewControllerBox.value.waitForAddAccountToolbarItemModeForTesting(expected)
     }
 }
 

@@ -6090,6 +6090,60 @@ struct CodexReviewMCPTests {
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
     }
 
+    @Test func addAccountUnresolvedFailedStateKeepsSynchronizedRuntimeWithoutRecycle() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "stale@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        let manager = AuthCapableAppServerManager()
+        let sharedSession = SuccessfulLoginReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: sharedSession,
+                    environment: environment
+                )
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
+            },
+            recycleServerIfRunning: {
+                await manager.shutdown()
+                _ = try? await manager.prepare()
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.updatePhase(.failed(message: "Authentication failed."))
+
+        await auth.addAccount()
+
+        #expect(cancelCallCount == 0)
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        #expect(await manager.prepareCount() == 0)
+        #expect(await manager.shutdownCount() == 0)
+    }
+
     @Test func addAccountWithoutActiveSessionActivatesAuthenticatedAccountWithoutCancellingJobs() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = SuccessfulLoginReviewAuthSession()
@@ -10311,6 +10365,8 @@ private func makeAuthModel(
     sharedAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
     loginAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
     probeAppServerManagerFactory: (@Sendable ([String: String]) -> any AppServerManaging)? = nil,
+    runtimeState: @escaping @MainActor @Sendable () -> CodexAuthRuntimeState = { .stopped },
+    recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void = {},
     rateLimitObservationClock: any ReviewClock = ContinuousClock(),
     rateLimitStaleRefreshInterval: Duration = .seconds(60),
     inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
@@ -10323,8 +10379,8 @@ private func makeAuthModel(
         sharedAuthSessionFactory: sharedAuthSessionFactory,
         loginAuthSessionFactory: loginAuthSessionFactory,
         probeAppServerManagerFactory: probeAppServerManagerFactory,
-        runtimeState: { .stopped },
-        recycleServerIfRunning: {},
+        runtimeState: runtimeState,
+        recycleServerIfRunning: recycleServerIfRunning,
         cancelRunningJobs: cancelRunningJobs,
         rateLimitObservationClock: rateLimitObservationClock,
         rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,

@@ -265,6 +265,13 @@ private final class AddAccountToolbarItemView: NSView {
         case progress
     }
 
+#if DEBUG
+    private struct StableModeWaiterForTesting {
+        let mode: Mode
+        let continuation: CheckedContinuation<Void, Never>
+    }
+#endif
+
     private let store: CodexReviewStore
     private let auth: CodexReviewAuthModel
     private let onAddAccount: @MainActor () -> Void
@@ -277,6 +284,10 @@ private final class AddAccountToolbarItemView: NSView {
     private let rootStackView = NSStackView()
     private let addButton = NSButton()
     private let progressButton = AddAccountToolbarProgressButton()
+
+#if DEBUG
+    private var stableModeWaitersForTesting: [UUID: StableModeWaiterForTesting] = [:]
+#endif
 
     var mode: Mode {
         auth.isAuthenticating ? .progress : .add
@@ -394,6 +405,7 @@ private final class AddAccountToolbarItemView: NSView {
 
         invalidateIntrinsicContentSize()
         needsLayout = true
+        notifyStableModeWaitersForTestingIfNeeded()
     }
 
     private func animateModeTransition(to targetMode: Mode) {
@@ -430,7 +442,9 @@ private final class AddAccountToolbarItemView: NSView {
                            pendingMode != self.displayedMode
                         {
                             self.animateModeTransition(to: pendingMode)
+                            return
                         }
+                        self.notifyStableModeWaitersForTestingIfNeeded()
                     }
                 }
             }
@@ -450,6 +464,63 @@ private final class AddAccountToolbarItemView: NSView {
     func performCancelForTesting() {
         handleCancel()
     }
+
+#if DEBUG
+    var displayedModeForTesting: Mode {
+        displayedMode
+    }
+
+    func waitForStableModeForTesting(_ mode: Mode) async {
+        if isStableModeForTesting(mode) {
+            return
+        }
+
+        let waiterID = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if isStableModeForTesting(mode) {
+                    continuation.resume()
+                    return
+                }
+                stableModeWaitersForTesting[waiterID] = .init(
+                    mode: mode,
+                    continuation: continuation
+                )
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelStableModeWaiterForTesting(waiterID)
+            }
+        }
+    }
+
+    private func isStableModeForTesting(_ mode: Mode) -> Bool {
+        displayedMode == mode && pendingMode == nil && isAnimatingModeTransition == false
+    }
+
+    private func notifyStableModeWaitersForTestingIfNeeded() {
+        guard stableModeWaitersForTesting.isEmpty == false else {
+            return
+        }
+
+        let readyWaiterIDs = stableModeWaitersForTesting.compactMap { id, waiter in
+            isStableModeForTesting(waiter.mode) ? id : nil
+        }
+        let readyContinuations = readyWaiterIDs.compactMap { id in
+            stableModeWaitersForTesting.removeValue(forKey: id)?.continuation
+        }
+        for continuation in readyContinuations {
+            continuation.resume()
+        }
+    }
+
+    private func cancelStableModeWaiterForTesting(_ waiterID: UUID) {
+        guard let waiter = stableModeWaitersForTesting.removeValue(forKey: waiterID) else {
+            return
+        }
+        waiter.continuation.resume()
+    }
+#endif
 }
 
 @MainActor
@@ -606,7 +677,7 @@ extension ReviewMonitorSplitViewController {
     }
 
     var addAccountToolbarItemModeForTesting: AddAccountToolbarItemModeForTesting? {
-        switch addAccountToolbarView?.mode {
+        switch addAccountToolbarView?.displayedModeForTesting {
         case .add:
             .add
         case .progress:
@@ -614,6 +685,22 @@ extension ReviewMonitorSplitViewController {
         case nil:
             nil
         }
+    }
+
+    func waitForAddAccountToolbarItemModeForTesting(
+        _ mode: AddAccountToolbarItemModeForTesting
+    ) async {
+        guard let addAccountToolbarView else {
+            fatalError("Add Account toolbar view is not configured yet.")
+        }
+        let targetMode: AddAccountToolbarItemView.Mode
+        switch mode {
+        case .add:
+            targetMode = .add
+        case .progress:
+            targetMode = .progress
+        }
+        await addAccountToolbarView.waitForStableModeForTesting(targetMode)
     }
 
     func performAddAccountToolbarItemForTesting() {

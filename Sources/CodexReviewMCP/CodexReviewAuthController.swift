@@ -216,11 +216,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
 
             if commitDisposition.shouldActivateAuthenticatedAccount {
+                var preserveRuntimeOnIdentityChange = false
                 if activationPolicy == .keepCurrentActiveAccount {
-                    let synchronized = await synchronizeSharedRuntimeAuthenticationIfNeeded(
+                    preserveRuntimeOnIdentityChange = await synchronizeSharedRuntimeAuthenticationIfNeeded(
                         expectedEmail: completedAccount
                     )
-                    if synchronized == false {
+                    if preserveRuntimeOnIdentityChange == false {
                         commitDisposition.shouldCancelRunningJobs = runtimeState().serverIsRunning
                         commitDisposition.forceRecycleServer = runtimeState().serverIsRunning
                     }
@@ -233,8 +234,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     savedAccount: savedAccount,
                     priorAccount: priorCurrentAccount,
                     forceRecycleServer: commitDisposition.forceRecycleServer,
-                    preserveRuntimeOnIdentityChange: activationPolicy == .keepCurrentActiveAccount
-                        && priorCurrentAccount == nil
+                    preserveRuntimeOnIdentityChange: preserveRuntimeOnIdentityChange
                         && commitDisposition.forceRecycleServer == false
                 )
                 if let warningMessage {
