@@ -7985,6 +7985,11 @@ struct CodexReviewMCPTests {
             environment: environment,
             registryStore: registryStore
         )
+        try writeReviewAuthSnapshot(
+            email: "current@example.com",
+            planType: "plus",
+            environment: environment
+        )
 
         var cancelCallCount = 0
         var recycleCallCount = 0
@@ -7995,12 +8000,7 @@ struct CodexReviewMCPTests {
                 environment: environment
             ),
             sharedAuthSessionFactory: { _ in
-                ImmediateReadAccountReviewAuthSession(
-                    response: .init(
-                        account: .chatGPT(email: "saved@example.com", planType: "pro"),
-                        requiresOpenAIAuth: false
-                    )
-                )
+                FileBackedSharedReviewAuthSession(environment: environment)
             },
             loginAuthSessionFactory: { _ in
                 SignedOutReviewAuthSession()
@@ -8024,6 +8024,7 @@ struct CodexReviewMCPTests {
         #expect(recycleCallCount == 1)
         #expect(auth.account?.email == "saved@example.com")
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "saved@example.com")
     }
 
     @Test func removingActiveAccountSwitchesToFirstRemainingSavedAccount() async throws {
@@ -10339,6 +10340,49 @@ private actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
 private actor SignedOutReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        .init(stream: .init { $0.finish() }, cancel: {})
+    }
+
+    func close() async {}
+}
+
+private actor FileBackedSharedReviewAuthSession: ReviewAuthSession {
+    private let environment: [String: String]
+
+    init(environment: [String: String]) {
+        self.environment = environment
+    }
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        guard let snapshot = await MainActor.run(
+            body: { () -> (email: String, planType: String?)? in
+                guard let account = loadSharedReviewAccount(environment: environment) else {
+                    return nil
+                }
+                return (email: account.email, planType: account.planType)
+            }
+        ) else {
+            return .init(account: nil, requiresOpenAIAuth: true)
+        }
+        return .init(
+            account: .chatGPT(email: snapshot.email, planType: snapshot.planType ?? "free"),
+            requiresOpenAIAuth: false
+        )
     }
 
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {

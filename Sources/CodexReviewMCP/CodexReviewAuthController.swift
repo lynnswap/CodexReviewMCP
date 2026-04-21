@@ -372,7 +372,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         let shouldRecoverCurrentSessionFromSavedSnapshot =
             isCurrentSessionTarget && accountSessionController.requiresAuthenticationRecoveryForCurrentSession()
         let shouldHydratePersistedActiveTarget =
-            isPersistedActiveTarget && priorAccount == nil
+            isPersistedActiveTarget && isCurrentSessionTarget == false
         if shouldRecoverCurrentSessionFromSavedSnapshot || shouldHydratePersistedActiveTarget {
             try await accountRegistryStore.restoreSharedAuthFromSavedAccount(accountKey)
         } else if isCurrentSessionTarget == false && isPersistedActiveTarget == false {
