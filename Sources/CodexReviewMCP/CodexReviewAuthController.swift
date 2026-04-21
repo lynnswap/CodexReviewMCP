@@ -624,7 +624,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         {
             let activeAccountKey = accountKey
             let applyActiveRateLimitRefreshSuccess: (AppServerAccountRateLimitsResponse) async -> Void = { [self] response in
-                if let resolvedAccount = resolvedAccount(for: accountKey, in: auth) {
+                for resolvedAccount in resolvedAccounts(for: accountKey, in: auth) {
                     applyRateLimits(from: response, to: resolvedAccount)
                 }
                 try? await self.accountRegistryStore.updateCachedRateLimits(
@@ -635,7 +635,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 )
             }
             let applyActiveRateLimitRefreshFailure: (Date, String, Bool) async -> Void = { [self] fetchedAt, message, shouldClear in
-                if let resolvedAccount = resolvedAccount(for: accountKey, in: auth) {
+                for resolvedAccount in resolvedAccounts(for: accountKey, in: auth) {
                     resolvedAccount.updateRateLimitFetchMetadata(
                         fetchedAt: fetchedAt,
                         error: message
@@ -835,7 +835,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             accountKey: auth.account?.accountKey,
             runtimeGeneration: runtimeGeneration,
             accountResolver: { accountKey in
-                resolvedAccount(for: accountKey, in: auth)
+                resolvedAccounts(for: accountKey, in: auth)
             }
         )
         await inactiveAccountRateLimitController.reconcile(
@@ -877,7 +877,11 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             if state.account != nil {
                 _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
             } else if forceRecycleServer == false {
-                try? await accountRegistryStore.clearActiveAccount()
+                let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
+                if FileManager.default.fileExists(atPath: sharedAuthURL.path) {
+                    try? FileManager.default.removeItem(at: sharedAuthURL)
+                    try? await accountRegistryStore.clearActiveAccount()
+                }
             }
             await refreshSavedAccounts(
                 auth: auth,
@@ -1475,7 +1479,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
 @MainActor
 private final class CodexAccountSessionController {
-    typealias AccountResolver = @MainActor @Sendable (String) -> CodexAccount?
+    typealias AccountResolver = @MainActor @Sendable (String) -> [CodexAccount]
 
     private struct AttachmentTarget: Equatable {
         var accountKey: String
@@ -1556,14 +1560,14 @@ private final class CodexAccountSessionController {
         await attach(target: target)
     }
 
-    private func resolveCurrentAccount(for target: AttachmentTarget) -> CodexAccount? {
-        accountResolver?(target.accountKey)
+    private func resolveCurrentAccounts(for target: AttachmentTarget) -> [CodexAccount] {
+        accountResolver?(target.accountKey) ?? []
     }
 
     private func attach(
         target: AttachmentTarget
     ) async {
-        guard resolveCurrentAccount(for: target) != nil else {
+        guard resolveCurrentAccounts(for: target).isEmpty == false else {
             return
         }
         do {
@@ -1612,59 +1616,79 @@ private final class CodexAccountSessionController {
 
         do {
             let response = try await session.readRateLimits()
-            guard isCurrent(target: target),
-                  let account = resolveCurrentAccount(for: target)
+            guard isCurrent(target: target) else {
+                return
+            }
+            let accounts = resolveCurrentAccounts(for: target)
+            guard let persistedAccount = accounts.first
             else {
                 return
             }
             rateLimitsReadCapability = .supported
-            applyRateLimits(from: response, to: account)
-            try? accountRegistryStore.updateSavedAccountMetadata(from: account)
-            try? accountRegistryStore.updateCachedRateLimits(from: account)
+            for account in accounts {
+                applyRateLimits(from: response, to: account)
+            }
+            try? accountRegistryStore.updateSavedAccountMetadata(from: persistedAccount)
+            try? accountRegistryStore.updateCachedRateLimits(from: persistedAccount)
             scheduleStaleRefresh(
                 target: target,
                 session: session
             )
         } catch let error as AppServerResponseError where error.isUnsupportedMethod {
-            guard isCurrent(target: target),
-                  let account = resolveCurrentAccount(for: target)
+            guard isCurrent(target: target) else {
+                return
+            }
+            let accounts = resolveCurrentAccounts(for: target)
+            guard let persistedAccount = accounts.first
             else {
                 return
             }
             rateLimitsReadCapability = .unsupported
-            account.clearRateLimits()
-            account.updateRateLimitFetchMetadata(
-                fetchedAt: Date(),
-                error: error.message
-            )
-            try? accountRegistryStore.updateCachedRateLimits(from: account)
+            for account in accounts {
+                account.clearRateLimits()
+                account.updateRateLimitFetchMetadata(
+                    fetchedAt: Date(),
+                    error: error.message
+                )
+            }
+            try? accountRegistryStore.updateCachedRateLimits(from: persistedAccount)
         } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
-            guard isCurrent(target: target),
-                  let account = resolveCurrentAccount(for: target)
+            guard isCurrent(target: target) else {
+                return
+            }
+            let accounts = resolveCurrentAccounts(for: target)
+            guard let persistedAccount = accounts.first
             else {
                 return
             }
             rateLimitsReadCapability = .authenticationRequired
-            account.clearRateLimits()
-            account.updateRateLimitFetchMetadata(
-                fetchedAt: Date(),
-                error: error.message
-            )
-            try? accountRegistryStore.updateCachedRateLimits(from: account)
+            for account in accounts {
+                account.clearRateLimits()
+                account.updateRateLimitFetchMetadata(
+                    fetchedAt: Date(),
+                    error: error.message
+                )
+            }
+            try? accountRegistryStore.updateCachedRateLimits(from: persistedAccount)
             return
         } catch is CancellationError {
             return
         } catch {
-            guard isCurrent(target: target),
-                  let account = resolveCurrentAccount(for: target)
+            guard isCurrent(target: target) else {
+                return
+            }
+            let accounts = resolveCurrentAccounts(for: target)
+            guard let persistedAccount = accounts.first
             else {
                 return
             }
-            account.updateRateLimitFetchMetadata(
-                fetchedAt: Date(),
-                error: error.localizedDescription
-            )
-            try? accountRegistryStore.updateCachedRateLimits(from: account)
+            for account in accounts {
+                account.updateRateLimitFetchMetadata(
+                    fetchedAt: Date(),
+                    error: error.localizedDescription
+                )
+            }
+            try? accountRegistryStore.updateCachedRateLimits(from: persistedAccount)
             shouldRetry = true
             return
         }
@@ -1678,16 +1702,21 @@ private final class CodexAccountSessionController {
                 guard case .accountRateLimitsUpdated(let payload) = notification else {
                     continue
                 }
-                guard isCurrent(target: target),
-                      let account = resolveCurrentAccount(for: target)
+                guard isCurrent(target: target) else {
+                    return
+                }
+                let accounts = resolveCurrentAccounts(for: target)
+                guard let persistedAccount = accounts.first
                 else {
                     return
                 }
                 guard isCodexRateLimit(payload.rateLimits.limitID) else {
                     continue
                 }
-                applyRateLimits(from: payload.rateLimits, to: account)
-                try? accountRegistryStore.updateCachedRateLimits(from: account)
+                for account in accounts {
+                    applyRateLimits(from: payload.rateLimits, to: account)
+                }
+                try? accountRegistryStore.updateCachedRateLimits(from: persistedAccount)
                 if rateLimitsReadCapability != .unsupported {
                     scheduleStaleRefresh(
                         target: target,
@@ -1754,23 +1783,31 @@ private final class CodexAccountSessionController {
             }
 
             guard self.staleRefreshTaskID == taskID,
-                  self.isCurrent(target: target),
-                  let account = self.resolveCurrentAccount(for: target)
+                  self.isCurrent(target: target)
             else {
+                return
+            }
+            let accounts = self.resolveCurrentAccounts(for: target)
+            guard let persistedAccount = accounts.first else {
                 return
             }
 
             do {
                 let response = try await session.readRateLimits()
                 guard self.staleRefreshTaskID == taskID,
-                      self.isCurrent(target: target),
-                      let currentAccount = self.resolveCurrentAccount(for: target)
+                      self.isCurrent(target: target)
                 else {
                     return
                 }
+                let currentAccounts = self.resolveCurrentAccounts(for: target)
+                guard let currentPersistedAccount = currentAccounts.first else {
+                    return
+                }
                 self.rateLimitsReadCapability = .supported
-                applyRateLimits(from: response, to: currentAccount)
-                try? self.accountRegistryStore.updateCachedRateLimits(from: currentAccount)
+                for account in currentAccounts {
+                    applyRateLimits(from: response, to: account)
+                }
+                try? self.accountRegistryStore.updateCachedRateLimits(from: currentPersistedAccount)
                 self.staleRefreshTask = nil
                 self.staleRefreshTaskID = nil
                 self.scheduleStaleRefresh(
@@ -1784,12 +1821,14 @@ private final class CodexAccountSessionController {
                     return
                 }
                 self.rateLimitsReadCapability = .unsupported
-                account.clearRateLimits()
-                account.updateRateLimitFetchMetadata(
-                    fetchedAt: Date(),
-                    error: error.message
-                )
-                try? self.accountRegistryStore.updateCachedRateLimits(from: account)
+                for account in accounts {
+                    account.clearRateLimits()
+                    account.updateRateLimitFetchMetadata(
+                        fetchedAt: Date(),
+                        error: error.message
+                    )
+                }
+                try? self.accountRegistryStore.updateCachedRateLimits(from: persistedAccount)
                 self.staleRefreshTask = nil
                 self.staleRefreshTaskID = nil
             } catch let error as AppServerResponseError where error.isRateLimitAuthenticationRequired {
@@ -1799,12 +1838,14 @@ private final class CodexAccountSessionController {
                     return
                 }
                 self.rateLimitsReadCapability = .authenticationRequired
-                account.clearRateLimits()
-                account.updateRateLimitFetchMetadata(
-                    fetchedAt: Date(),
-                    error: error.message
-                )
-                try? self.accountRegistryStore.updateCachedRateLimits(from: account)
+                for account in accounts {
+                    account.clearRateLimits()
+                    account.updateRateLimitFetchMetadata(
+                        fetchedAt: Date(),
+                        error: error.message
+                    )
+                }
+                try? self.accountRegistryStore.updateCachedRateLimits(from: persistedAccount)
                 self.staleRefreshTask = nil
                 self.staleRefreshTaskID = nil
             } catch is CancellationError {
@@ -1815,11 +1856,13 @@ private final class CodexAccountSessionController {
                 else {
                     return
                 }
-                account.updateRateLimitFetchMetadata(
-                    fetchedAt: Date(),
-                    error: error.localizedDescription
-                )
-                try? self.accountRegistryStore.updateCachedRateLimits(from: account)
+                for account in accounts {
+                    account.updateRateLimitFetchMetadata(
+                        fetchedAt: Date(),
+                        error: error.localizedDescription
+                    )
+                }
+                try? self.accountRegistryStore.updateCachedRateLimits(from: persistedAccount)
                 self.staleRefreshTask = nil
                 self.staleRefreshTaskID = nil
                 self.scheduleStaleRefresh(
@@ -2271,17 +2314,22 @@ private func didAccountIdentityChange(
 }
 
 @MainActor
-private func resolvedAccount(
+private func resolvedAccounts(
     for accountKey: String,
     in auth: CodexReviewAuthModel
-) -> CodexAccount? {
-    if let savedAccount = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
-        return savedAccount
+) -> [CodexAccount] {
+    var accounts: [CodexAccount] = []
+    if let currentAccount = auth.account,
+       currentAccount.accountKey == accountKey
+    {
+        accounts.append(currentAccount)
     }
-    if auth.account?.accountKey == accountKey {
-        return auth.account
+    if let savedAccount = auth.savedAccounts.first(where: { $0.accountKey == accountKey }),
+       accounts.contains(where: { $0 === savedAccount }) == false
+    {
+        accounts.append(savedAccount)
     }
-    return nil
+    return accounts
 }
 
 @MainActor

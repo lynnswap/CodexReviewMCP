@@ -2210,6 +2210,70 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func rateLimitNotificationUpdatesDetachedCurrentAndSavedAccountInstances() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let currentProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
+        defer { currentProbe.cancel() }
+
+        await store.start()
+
+        try await waitForObservedValue(currentProbe) {
+            $0 == 40
+        }
+
+        let savedAccount = try #require(store.auth.savedAccounts.first)
+        let detachedCurrent = CodexAccount(email: "review@example.com", planType: "pro")
+        store.auth.updateAccount(detachedCurrent)
+        #expect(savedAccount !== detachedCurrent)
+
+        let authTransport = try #require(await manager.authTransportForTesting())
+        try await authTransport.sendRateLimitsUpdated(
+            [
+                "limitId": "codex",
+                "limitName": NSNull(),
+                "primary": [
+                    "usedPercent": 85,
+                    "windowDurationMins": 300,
+                    "resetsAt": 1_735_776_000,
+                ],
+                "secondary": [
+                    "usedPercent": 55,
+                    "windowDurationMins": 10080,
+                    "resetsAt": 1_736_380_800,
+                ],
+            ]
+        )
+
+        try await waitForObservedValue(currentProbe) {
+            $0 == 85
+        }
+
+        #expect(rateLimitWindow(duration: 300, in: detachedCurrent)?.usedPercent == 85)
+        #expect(rateLimitWindow(duration: 10_080, in: detachedCurrent)?.usedPercent == 55)
+        #expect(rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 85)
+        #expect(rateLimitWindow(duration: 10_080, in: savedAccount)?.usedPercent == 55)
+
+        await store.stop()
+    }
+
     @Test func startingStoreCapturesRateLimitUpdateDeliveredDuringInitialRead() async throws {
         let environment = try isolatedHomeEnvironment()
         let authTransport = AuthCapableAppServerSessionTransport()
@@ -5919,6 +5983,14 @@ struct CodexReviewMCPTests {
             )
         )
         #expect(loadSharedReviewAccount(environment: environment) == nil)
+
+        await auth.refresh()
+
+        let refreshedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(refreshedAccounts.activeAccountKey == "active@example.com")
     }
 
     @Test func signOutUnsavedCurrentAccountRemovesSharedAuthSnapshot() async throws {
