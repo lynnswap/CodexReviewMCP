@@ -289,13 +289,7 @@ public final class CodexReviewAuthModel {
     }
 
     package func updateAccount(_ account: CodexAccount?) {
-        if let account,
-           let savedAccount = savedAccounts.first(where: { $0.accountKey == account.accountKey })
-        {
-            self.account = savedAccount
-        } else {
-            self.account = account
-        }
+        self.account = account
     }
 
     package func updateSavedAccounts(_ incomingSavedAccounts: [CodexAccount]) {
@@ -322,11 +316,6 @@ public final class CodexReviewAuthModel {
             )
             reconciledAccount.updateIsActive(incomingAccount.isActive)
             return reconciledAccount
-        }
-        if let account,
-           let savedAccount = self.savedAccounts.first(where: { $0.accountKey == account.accountKey })
-        {
-            self.account = savedAccount
         }
     }
 

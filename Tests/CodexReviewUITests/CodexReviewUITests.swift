@@ -1521,7 +1521,7 @@ struct CodexReviewUITests {
         #expect(reloadedSecondAccount.isSwitching == false)
     }
 
-    @Test func updateAccountReusesSavedAccountInstanceForMatchingKey() {
+    @Test func updateAccountPreservesDetachedCurrentSessionForMatchingKey() {
         let auth = CodexReviewAuthModel(controller: CodexReviewPreviewAuthController())
         let savedAccount = CodexAccount(email: "review@example.com", planType: "pro")
         auth.updateSavedAccounts([savedAccount])
@@ -1529,7 +1529,8 @@ struct CodexReviewUITests {
         let detachedAccount = CodexAccount(email: "review@example.com", planType: "plus")
         auth.updateAccount(detachedAccount)
 
-        #expect(auth.account === savedAccount)
+        #expect(auth.account === detachedAccount)
+        #expect(auth.account !== savedAccount)
         #expect(savedAccount.isActive == false)
     }
 
