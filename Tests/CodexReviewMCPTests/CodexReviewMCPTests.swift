@@ -3443,6 +3443,63 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func authRequiredRateLimitReadDoesNotRetryAfterAddingDifferentAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        let firstTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .authenticationRequired
+        )
+        let secondTransport = AuthCapableAppServerSessionTransport()
+        let manager = AuthCapableAppServerManager(
+            authTransports: [firstTransport, secondTransport]
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            sharedAuthSessionFactory: { _ in
+                ImmediateReadAccountReviewAuthSession(
+                    response: .init(
+                        account: .chatGPT(email: "active@example.com", planType: "pro"),
+                        requiresOpenAIAuth: false
+                    )
+                )
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: SuccessfulLoginReviewAuthSession(),
+                    environment: environment
+                )
+            }
+        )
+
+        await store.start()
+        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+        let initialCheckoutCount = await manager.authTransportCheckoutCount()
+        #expect(store.auth.account?.email == "active@example.com")
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+
+        await store.auth.addAccount()
+
+        #expect(await manager.authTransportCheckoutCount() == initialCheckoutCount)
+        #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
+        #expect(await secondTransport.rateLimitsReadCount() == 0)
+        #expect(store.auth.account?.email == "active@example.com")
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+
+        await store.stop()
+    }
+
     @Test func unsupportedRateLimitReadDoesNotPromoteFirstNonCurrentNotificationToCurrentSnapshot() async throws {
         let environment = try isolatedHomeEnvironment()
         let authTransport = AuthCapableAppServerSessionTransport(
@@ -5303,6 +5360,46 @@ struct CodexReviewMCPTests {
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "stale@example.com")
         #expect(auth.savedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "stale@example.com")
+    }
+
+    @Test func beginAuthenticationUsesPersistedSavedAccountsBeforeStartupRefreshLoadsModel() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let authSession = SuccessfulLoginReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: authSession,
+                    environment: environment
+                )
+            }
+        )
+        auth.updateSavedAccounts([])
+        auth.updateAccount(nil)
+
+        await auth.beginAuthentication()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.account == nil)
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
+        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }
 
     @Test func logoutDuringAuthenticatedRetryCancelsLoginAndSignsOut() async throws {

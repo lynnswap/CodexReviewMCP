@@ -116,7 +116,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     package func beginAuthentication(auth: CodexReviewAuthModel) async {
-        if auth.savedAccounts.isEmpty == false {
+        let hasPersistedSavedAccounts = auth.savedAccounts.isEmpty == false
+            || ((try? accountRegistryStore.loadAccounts().accounts.isEmpty) == false)
+        if hasPersistedSavedAccounts {
             await beginAuthentication(
                 auth: auth,
                 activationPolicy: .keepCurrentActiveAccount
@@ -252,7 +254,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 priorSnapshot: priorSnapshot,
                 priorCurrentAccount: priorCurrentAccount
             )
-            if auth.account != nil,
+            if shouldRefreshSharedAuthSnapshot,
+               auth.account != nil,
                didAccountIdentityChange(from: priorCurrentAccount, to: auth.account) == false
             {
                 accountSessionController.resetAuthenticationRequiredCapabilityForAuthRecovery()
