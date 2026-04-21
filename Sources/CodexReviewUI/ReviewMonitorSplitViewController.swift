@@ -246,7 +246,10 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     }
 
     private var shouldHideAddAccountToolbarItem: Bool {
-        uiState.sidebarSelection != .account || sidebarItem?.isCollapsed != false
+        if store.auth.isAuthenticating {
+            return false
+        }
+        return uiState.sidebarSelection != .account || sidebarItem?.isCollapsed != false
     }
 }
 

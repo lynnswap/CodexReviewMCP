@@ -1360,6 +1360,38 @@ struct CodexReviewUITests {
         #expect(viewController.addAccountToolbarItemModeForTesting == .add)
     }
 
+    @Test func addAccountToolbarItemStaysVisibleDuringAuthenticationOutsideAccountSidebar() async throws {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .workspace
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = true
+        window.layoutIfNeeded()
+
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting == false)
+        #expect(viewController.addAccountToolbarItemModeForTesting == .progress)
+    }
+
     @Test func codexAccountStoresMaskedEmailUsingExpectedLocalPartRules() {
         #expect(CodexAccount(email: "ashurum.deck@gmail.com").maskedEmail == "as…ck@gmail.com")
         #expect(CodexAccount(email: "ab+z@example.com").maskedEmail == "a…z@example.com")

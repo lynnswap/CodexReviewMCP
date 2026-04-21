@@ -179,7 +179,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 priorSnapshot: priorSnapshot,
                 completedAccount: completedAccount
             )
-            let commitDisposition: AuthenticationCommitDisposition = {
+            var commitDisposition: AuthenticationCommitDisposition = {
                 switch activationPolicy {
                 case .automatic:
                     .init(
@@ -217,9 +217,13 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
             if commitDisposition.shouldActivateAuthenticatedAccount {
                 if activationPolicy == .keepCurrentActiveAccount {
-                    _ = await synchronizeSharedRuntimeAuthenticationIfNeeded(
+                    let synchronized = await synchronizeSharedRuntimeAuthenticationIfNeeded(
                         expectedEmail: completedAccount
                     )
+                    if synchronized == false {
+                        commitDisposition.shouldCancelRunningJobs = runtimeState().serverIsRunning
+                        commitDisposition.forceRecycleServer = runtimeState().serverIsRunning
+                    }
                 }
                 let warningMessage = await performCommittedJobCleanupIfNeeded(
                     shouldCancelJobs: commitDisposition.shouldCancelRunningJobs
