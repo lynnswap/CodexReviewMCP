@@ -5830,6 +5830,8 @@ struct CodexReviewMCPTests {
         await store.auth.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 0)
 
         await store.stop()
     }

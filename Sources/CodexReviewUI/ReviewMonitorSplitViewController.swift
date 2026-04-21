@@ -130,6 +130,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             self?.updateAddAccountToolbarItemVisibility()
         }
         .store(in: &observationHandles)
+
+        store.auth.observe(\.phase) { [weak self] _ in
+            self?.updateAddAccountToolbarItemVisibility()
+        }
+        .store(in: &observationHandles)
     }
 
     private func installToolbarIfNeeded(on window: NSWindow) {

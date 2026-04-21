@@ -232,7 +232,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     auth: auth,
                     savedAccount: savedAccount,
                     priorAccount: priorCurrentAccount,
-                    forceRecycleServer: commitDisposition.forceRecycleServer
+                    forceRecycleServer: commitDisposition.forceRecycleServer,
+                    preserveRuntimeOnIdentityChange: activationPolicy == .keepCurrentActiveAccount
+                        && priorCurrentAccount == nil
+                        && commitDisposition.forceRecycleServer == false
                 )
                 if let warningMessage {
                     auth.updateWarning(message: warningMessage)
@@ -740,7 +743,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         auth: CodexReviewAuthModel,
         forceRestartSession: Bool = false,
         forceRecycleServer: Bool = false,
-        allowDuringAuthentication: Bool = false
+        allowDuringAuthentication: Bool = false,
+        preserveRuntimeOnIdentityChange: Bool = false
     ) async {
         do {
             let authManager = makeAuthManager(
@@ -769,7 +773,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 to: auth
             )
             auth.updateWarning(message: nil)
-            let identityChanged = didAccountIdentityChange(from: priorAccount, to: auth.account)
+            let actualIdentityChanged = didAccountIdentityChange(from: priorAccount, to: auth.account)
+            let identityChanged = preserveRuntimeOnIdentityChange ? false : actualIdentityChanged
             hasResolvedAuthenticatedAccount = state.isAuthenticated
             let shouldRestartSameIdentitySession = state.isAuthenticated
                 && identityChanged == false
@@ -1117,14 +1122,16 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         auth: CodexReviewAuthModel,
         savedAccount: CodexAccount?,
         priorAccount: CodexAccount?,
-        forceRecycleServer: Bool
+        forceRecycleServer: Bool,
+        preserveRuntimeOnIdentityChange: Bool = false
     ) async {
         if runtimeState().serverIsRunning {
             await refreshResolvedState(
                 auth: auth,
                 forceRestartSession: true,
                 forceRecycleServer: forceRecycleServer,
-                allowDuringAuthentication: true
+                allowDuringAuthentication: true,
+                preserveRuntimeOnIdentityChange: preserveRuntimeOnIdentityChange
             )
             return
         }
