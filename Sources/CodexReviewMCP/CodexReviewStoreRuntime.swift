@@ -1597,6 +1597,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             recycleServerIfRunning: { [weak self] in
                 await self?.recycleSharedAppServerAfterAuthChange()
             },
+            hasRunningJobs: { [weak self] in
+                self?.attachedStore?.hasRunningJobs ?? false
+            },
             cancelRunningJobs: { [weak self] reason in
                 guard let store = self?.attachedStore else {
                     return

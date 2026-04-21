@@ -37,6 +37,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     private let inactiveAccountRateLimitController: InactiveSavedAccountRateLimitController
     private let runtimeState: @MainActor @Sendable () -> CodexAuthRuntimeState
     private let recycleServerIfRunning: @MainActor @Sendable () async -> Void
+    private let hasRunningJobs: @MainActor @Sendable () -> Bool
     private let cancelRunningJobs: @MainActor @Sendable (String) async throws -> Void
     private var refreshTask: Task<Void, Never>?
     private var refreshTaskID: UUID?
@@ -55,6 +56,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         probeAppServerManagerFactory: (@Sendable ([String: String]) -> any AppServerManaging)? = nil,
         runtimeState: @escaping @MainActor @Sendable () -> CodexAuthRuntimeState,
         recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void,
+        hasRunningJobs: @escaping @MainActor @Sendable () -> Bool = { false },
         cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in },
         rateLimitObservationClock: any ReviewClock = ContinuousClock(),
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
@@ -85,6 +87,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         )
         self.runtimeState = runtimeState
         self.recycleServerIfRunning = recycleServerIfRunning
+        self.hasRunningJobs = hasRunningJobs
         self.cancelRunningJobs = cancelRunningJobs
     }
 
@@ -205,6 +208,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                         shouldCancelRunningJobs: false,
                         forceRecycleServer: shouldRefreshSharedAuthSnapshot
                             && runtimeState().serverIsRunning
+                            && hasRunningJobs() == false
                     )
                 }
             }()
@@ -264,6 +268,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 priorCurrentAccount: priorCurrentAccount
             )
             if shouldRefreshSharedAuthSnapshot,
+               runtimeState().serverIsRunning == false,
                auth.account != nil,
                didAccountIdentityChange(from: priorCurrentAccount, to: auth.account) == false
             {

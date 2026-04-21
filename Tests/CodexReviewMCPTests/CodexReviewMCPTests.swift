@@ -6764,6 +6764,65 @@ struct CodexReviewMCPTests {
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
 
+    @Test func addAccountSameEmailReauthenticationWithRunningJobsDoesNotRecycleRuntime() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "review@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "stale@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        var cancelCallCount = 0
+        var recycleCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: authSession,
+                    environment: environment
+                )
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
+            },
+            recycleServerIfRunning: {
+                recycleCallCount += 1
+            },
+            hasRunningJobs: {
+                true
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        await auth.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(cancelCallCount == 0)
+        #expect(recycleCallCount == 0)
+        #expect(auth.account?.email == "review@example.com")
+        #expect(loadedAccounts.activeAccountKey == "review@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
+    }
+
     @Test func beginAuthenticationRetryAfterFailedAddAccountKeepsCurrentActiveAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
@@ -10908,6 +10967,7 @@ private func makeAuthModel(
     probeAppServerManagerFactory: (@Sendable ([String: String]) -> any AppServerManaging)? = nil,
     runtimeState: @escaping @MainActor @Sendable () -> CodexAuthRuntimeState = { .stopped },
     recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void = {},
+    hasRunningJobs: @escaping @MainActor @Sendable () -> Bool = { false },
     rateLimitObservationClock: any ReviewClock = ContinuousClock(),
     rateLimitStaleRefreshInterval: Duration = .seconds(60),
     inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
@@ -10922,6 +10982,7 @@ private func makeAuthModel(
         probeAppServerManagerFactory: probeAppServerManagerFactory,
         runtimeState: runtimeState,
         recycleServerIfRunning: recycleServerIfRunning,
+        hasRunningJobs: hasRunningJobs,
         cancelRunningJobs: cancelRunningJobs,
         rateLimitObservationClock: rateLimitObservationClock,
         rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
