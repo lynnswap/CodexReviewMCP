@@ -1209,6 +1209,115 @@ struct CodexReviewUITests {
         #expect(backend.beginAuthenticationCallCount() == 1)
     }
 
+    @Test func addAccountToolbarItemBeginsAuthenticationEvenWhenJobsAreRunning() async throws {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: makeWorkspaces(from: [runningJob])
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+
+        viewController.performAddAccountToolbarItemForTesting()
+        await backend.waitForBeginAuthenticationCallCount(1)
+
+        #expect(backend.beginAuthenticationCallCount() == 1)
+    }
+
+    @Test func addAccountToolbarItemShowsProgressAndRemovesInlineProgressRow() async throws {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+
+        #expect(viewController.addAccountToolbarItemModeForTesting == .progress)
+        #expect(
+            viewController
+                .sidebarViewControllerForTesting
+                .accountsViewControllerForTesting
+                .showsAuthenticationProgressRowForTesting == false
+        )
+    }
+
+    @Test func addAccountToolbarItemCancelCancelsAuthentication() async throws {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+
+        #expect(viewController.addAccountToolbarItemModeForTesting == .progress)
+
+        viewController.performAddAccountToolbarCancelForTesting()
+        await backend.waitForCancelAuthenticationCallCount(1)
+
+        #expect(backend.cancelAuthenticationCallCount() == 1)
+    }
+
     @Test func codexAccountStoresMaskedEmailUsingExpectedLocalPartRules() {
         #expect(CodexAccount(email: "ashurum.deck@gmail.com").maskedEmail == "as…ck@gmail.com")
         #expect(CodexAccount(email: "ab+z@example.com").maskedEmail == "a…z@example.com")

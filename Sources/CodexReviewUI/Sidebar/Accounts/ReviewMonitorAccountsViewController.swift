@@ -20,18 +20,10 @@ private struct ReviewMonitorAccountsListView: View {
         return currentAccount
     }
 
-    private var shouldShowAuthenticationProgress: Bool {
-        store.auth.isAuthenticating && (store.auth.account != nil || store.auth.hasSavedAccounts)
-    }
-
     var body: some View {
         @Bindable var auth = store.auth
         
         List {
-            if shouldShowAuthenticationProgress,
-               let progress = auth.progress {
-                authenticationProgressRow(progress)
-            }
             if let unsavedCurrentAccount {
                 accountRow(unsavedCurrentAccount, auth: auth)
                     .moveDisabled(true)
@@ -153,29 +145,6 @@ private struct ReviewMonitorAccountsListView: View {
             .padding(.horizontal, 10)
         )
     }
-    @ViewBuilder
-    private func authenticationProgressRow(
-        _ progress: CodexReviewAuthModel.Progress
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(progress.title)
-                .font(.headline)
-                .foregroundStyle(.primary)
-            Text(progress.detail)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Button("Cancel", role: .cancel) {
-                Task { @MainActor in
-                    await store.auth.cancelAuthentication()
-                }
-            }
-            .controlSize(.small)
-        }
-        .padding(.vertical, 6)
-        .accessibilityIdentifier("review-monitor.account-auth-progress")
-        .listRowBackground(Color.clear)
-        .moveDisabled(true)
-    }
 }
 
 private struct FocusRingSelectionIndicator: NSViewRepresentable {
@@ -238,6 +207,7 @@ private struct RowView: View{
 @MainActor
 final class ReviewMonitorAccountsViewController: NSViewController {
     private let store: CodexReviewStore
+    private var hostingView: NSHostingView<ReviewMonitorAccountsListView>?
 
     init(store: CodexReviewStore) {
         self.store = store
@@ -263,6 +233,7 @@ final class ReviewMonitorAccountsViewController: NSViewController {
             rootView: ReviewMonitorAccountsListView(store: store)
         )
         hostingView.translatesAutoresizingMaskIntoConstraints = false
+        self.hostingView = hostingView
 
         view.addSubview(hostingView)
         NSLayoutConstraint.activate([
@@ -275,6 +246,19 @@ final class ReviewMonitorAccountsViewController: NSViewController {
 }
 
 #if DEBUG
+private extension ReviewMonitorAccountsListView {
+    var showsAuthenticationProgressRowForTesting: Bool {
+        false
+    }
+}
+
+@MainActor
+extension ReviewMonitorAccountsViewController {
+    var showsAuthenticationProgressRowForTesting: Bool {
+        hostingView?.rootView.showsAuthenticationProgressRowForTesting ?? false
+    }
+}
+
 #Preview {
     ReviewMonitorAccountsViewController(
         store: makeReviewMonitorAccountsPreviewStore()

@@ -5882,6 +5882,7 @@ struct CodexReviewMCPTests {
         let loginSession = SuccessfulLoginReviewAuthSession()
         let rateLimitTransport = AuthCapableAppServerSessionTransport()
         let rateLimitManager = AuthCapableAppServerManager(authTransport: rateLimitTransport)
+        var cancelCallCount = 0
         let auth = makeAuthModel(
             configuration: .init(
                 port: 0,
@@ -5899,6 +5900,9 @@ struct CodexReviewMCPTests {
             },
             probeAppServerManagerFactory: { _ in
                 rateLimitManager
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
@@ -5909,6 +5913,7 @@ struct CodexReviewMCPTests {
 
         let addedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
         #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
+        #expect(cancelCallCount == 0)
         #expect(auth.account?.email == "active@example.com")
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
         #expect(rateLimitWindow(duration: 300, in: addedAccount)?.usedPercent == 40)

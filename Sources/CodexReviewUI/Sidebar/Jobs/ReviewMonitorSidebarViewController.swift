@@ -943,6 +943,11 @@ extension ReviewMonitorSidebarViewController {
         presentationForCurrentState
     }
 
+    var accountsViewControllerForTesting: ReviewMonitorAccountsViewController {
+        accountsViewController.loadViewIfNeeded()
+        return accountsViewController
+    }
+
     var displayedSectionTitlesForTesting: [String] {
         var titles: [String] = []
         for row in 0..<outlineView.numberOfRows {
