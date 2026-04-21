@@ -1081,8 +1081,17 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         }
 
         guard let currentAccount = priorSnapshot.account else {
+            if case .failed = priorSnapshot.phase,
+               priorSnapshot.isResolvedAuthenticated == false
+            {
+                return .init(
+                    shouldActivateAuthenticatedAccount: false,
+                    shouldCancelRunningJobs: false,
+                    forceRecycleServer: false
+                )
+            }
             return .init(
-                shouldActivateAuthenticatedAccount: false,
+                shouldActivateAuthenticatedAccount: true,
                 shouldCancelRunningJobs: false,
                 forceRecycleServer: false
             )
