@@ -1093,6 +1093,16 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         hasSavedAccounts: Bool,
         completedAccount: ReviewAuthAccount
     ) -> AuthenticationCommitDisposition {
+        if let currentAccount {
+            let currentEmail = normalizedReviewAccountEmail(email: currentAccount.email)
+            let completedEmail = normalizedReviewAccountEmail(email: completedAccount.email)
+            return .init(
+                shouldActivateAuthenticatedAccount: currentEmail == completedEmail,
+                shouldCancelRunningJobs: false,
+                forceRecycleServer: false
+            )
+        }
+
         guard hasSavedAccounts else {
             return .init(
                 shouldActivateAuthenticatedAccount: true,
@@ -1101,27 +1111,18 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             )
         }
 
-        guard let currentAccount else {
-            if case .failed = priorSnapshot.phase,
-               priorSnapshot.isResolvedAuthenticated == false
-            {
-                return .init(
-                    shouldActivateAuthenticatedAccount: false,
-                    shouldCancelRunningJobs: false,
-                    forceRecycleServer: false
-                )
-            }
+        if case .failed = priorSnapshot.phase,
+           priorSnapshot.isResolvedAuthenticated == false
+        {
             return .init(
-                shouldActivateAuthenticatedAccount: true,
+                shouldActivateAuthenticatedAccount: false,
                 shouldCancelRunningJobs: false,
                 forceRecycleServer: false
             )
         }
 
-        let currentEmail = normalizedReviewAccountEmail(email: currentAccount.email)
-        let completedEmail = normalizedReviewAccountEmail(email: completedAccount.email)
         return .init(
-            shouldActivateAuthenticatedAccount: currentEmail == completedEmail,
+            shouldActivateAuthenticatedAccount: true,
             shouldCancelRunningJobs: false,
             forceRecycleServer: false
         )

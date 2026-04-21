@@ -6400,6 +6400,44 @@ struct CodexReviewMCPTests {
         #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }
 
+    @Test func addAccountWithoutSavedAccountsPreservesUnsavedCurrentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let authSession = SuccessfulLoginReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: authSession,
+                    environment: environment
+                )
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let unsavedCurrentAccount = CodexAccount(email: "unsaved@example.com", planType: "pro")
+        auth.updateSavedAccounts([])
+        auth.updateAccount(unsavedCurrentAccount)
+
+        await auth.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(cancelCallCount == 0)
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "unsaved@example.com"))
+        #expect(auth.account === unsavedCurrentAccount)
+        #expect(auth.savedAccounts.map(\.email) == ["review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == nil)
+        #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
+    }
+
     @Test func addAccountWithoutActiveSessionActivatesAuthenticatedAccountWithoutCancellingJobs() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = SuccessfulLoginReviewAuthSession()
