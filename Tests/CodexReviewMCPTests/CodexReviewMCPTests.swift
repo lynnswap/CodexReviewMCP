@@ -7333,6 +7333,56 @@ struct CodexReviewMCPTests {
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
 
+    @Test func switchingBackToPersistedActiveAccountRecyclesCurrentDifferentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        let savedAccount = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        var cancelCallCount = 0
+        var recycleCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                ImmediateReadAccountReviewAuthSession(
+                    response: .init(
+                        account: .chatGPT(email: "saved@example.com", planType: "pro"),
+                        requiresOpenAIAuth: false
+                    )
+                )
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
+            },
+            recycleServerIfRunning: {
+                recycleCallCount += 1
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateAccount(CodexAccount(email: "current@example.com"))
+
+        try await auth.switchAccount(savedAccount)
+
+        #expect(cancelCallCount == 1)
+        #expect(recycleCallCount == 1)
+        #expect(auth.account?.email == "saved@example.com")
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
+    }
+
     @Test func removingActiveAccountSwitchesToFirstRemainingSavedAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)

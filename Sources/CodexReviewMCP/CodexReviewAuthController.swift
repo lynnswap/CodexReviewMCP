@@ -356,13 +356,17 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         guard loadedAccounts.accounts.contains(where: { $0.accountKey == accountKey }) else {
             throw ReviewAuthError.authenticationRequired("Saved account was not found.")
         }
-        guard loadedAccounts.activeAccountKey != accountKey else {
+        let targetSavedAccount = loadedAccounts.accounts.first(where: { $0.accountKey == accountKey })
+        let priorAccount = auth.account
+        let isCurrentSessionTarget = priorAccount?.accountKey == accountKey
+        let isPersistedActiveTarget = loadedAccounts.activeAccountKey == accountKey
+        guard isPersistedActiveTarget == false || isCurrentSessionTarget == false else {
             return
         }
-        let priorAccount = auth.account
-        let isPromotingCurrentSessionToPersistedActiveAccount = priorAccount?.accountKey == accountKey
-        try await accountRegistryStore.activateAccount(accountKey)
-        if isPromotingCurrentSessionToPersistedActiveAccount {
+        if isPersistedActiveTarget == false {
+            try await accountRegistryStore.activateAccount(accountKey)
+        }
+        if isCurrentSessionTarget {
             await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
             if let resolvedSavedAccount = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
                 auth.updateAccount(resolvedSavedAccount)
@@ -380,7 +384,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         if runtimeState().serverIsRunning {
             await applyCommittedActiveAccount(
                 auth: auth,
-                savedAccount: loadedAccounts.accounts.first(where: { $0.accountKey == accountKey }),
+                savedAccount: targetSavedAccount,
                 priorAccount: priorAccount,
                 forceRecycleServer: true
             )

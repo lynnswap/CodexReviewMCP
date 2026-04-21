@@ -14,7 +14,7 @@ struct AccountContextMenuView: View {
     }
 
     private var isPersistedActiveAccount: Bool {
-        auth.savedAccounts.first(where: \.isActive)?.accountKey == account.accountKey
+        auth.isAlreadyUsingPersistedActiveAccount(account.accountKey)
     }
 
     var sectionTitle: String {
