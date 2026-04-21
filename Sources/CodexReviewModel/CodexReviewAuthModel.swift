@@ -140,7 +140,7 @@ public final class CodexReviewAuthModel {
     }
 
     package func switchAccount(_ account: CodexAccount) async throws {
-        guard isAlreadyUsingPersistedActiveAccount(account.accountKey) == false else {
+        guard canSwitchAccount(account) else {
             return
         }
         let targetAccount = savedAccounts.first(where: { $0.accountKey == account.accountKey })
@@ -164,7 +164,7 @@ public final class CodexReviewAuthModel {
         _ account: CodexAccount,
         requiresConfirmation: Bool
     ) {
-        guard isAlreadyUsingPersistedActiveAccount(account.accountKey) == false else {
+        guard canSwitchAccount(account) else {
             return
         }
         requestAccountAction(
@@ -327,6 +327,23 @@ public final class CodexReviewAuthModel {
         _ accountKey: String
     ) -> Bool {
         persistedActiveAccountKey == accountKey && account?.accountKey == accountKey
+    }
+
+    package func switchActionIsDisabled(for account: CodexAccount) -> Bool {
+        canSwitchAccount(account) == false
+    }
+
+    private func canSwitchAccount(_ account: CodexAccount) -> Bool {
+        guard savedAccounts.contains(where: { $0.accountKey == account.accountKey }) else {
+            return false
+        }
+        if isAlreadyUsingPersistedActiveAccount(account.accountKey) {
+            return controller.requiresCurrentSessionRecovery(
+                auth: self,
+                accountKey: account.accountKey
+            )
+        }
+        return true
     }
 
     private func reusableAccount(for accountKey: String) -> CodexAccount? {

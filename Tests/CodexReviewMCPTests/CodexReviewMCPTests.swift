@@ -7681,9 +7681,7 @@ struct CodexReviewMCPTests {
         )
 
         let missingAccount = CodexAccount(email: "missing@example.com")
-        await #expect(throws: Error.self) {
-            try await auth.switchAccount(missingAccount)
-        }
+        try await auth.switchAccount(missingAccount)
         #expect(cancelCallCount == 0)
     }
 

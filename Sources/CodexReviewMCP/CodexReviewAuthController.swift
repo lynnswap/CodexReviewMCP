@@ -546,9 +546,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             if let signedOutAccountKey = signedOutAccount?.accountKey, removesSavedSignedOutAccount {
                 try await accountRegistryStore.clearActiveAccount(accountKey: signedOutAccountKey)
             } else {
-                try? FileManager.default.removeItem(
-                    at: ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
-                )
+                let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
+                if FileManager.default.fileExists(atPath: sharedAuthURL.path) {
+                    try FileManager.default.removeItem(at: sharedAuthURL)
+                }
             }
             if let loaded = try? accountRegistryStore.loadAccounts() {
                 auth.updateSavedAccounts(loaded.accounts)
@@ -800,6 +801,15 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         {
             auth.updateAccount(priorUnsavedCurrentAccount)
         }
+    }
+
+    package func requiresCurrentSessionRecovery(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) -> Bool {
+        accountSessionController.requiresAuthenticationRecoveryForCurrentSession()
+            && runtimeState().serverIsRunning
+            && auth.savedAccounts.first(where: \.isActive)?.accountKey == accountKey
     }
 
     package func reconcileAuthenticatedSession(

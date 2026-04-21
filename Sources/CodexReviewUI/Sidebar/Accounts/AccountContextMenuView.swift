@@ -13,8 +13,8 @@ struct AccountContextMenuView: View {
         auth.account?.accountKey == account.accountKey
     }
 
-    private var isPersistedActiveAccount: Bool {
-        auth.isAlreadyUsingPersistedActiveAccount(account.accountKey)
+    private var isSwitchActionDisabled: Bool {
+        auth.switchActionIsDisabled(for: account)
     }
 
     var sectionTitle: String {
@@ -45,7 +45,7 @@ struct AccountContextMenuView: View {
                     requiresConfirmation: store.hasRunningJobs && auth.account?.accountKey != account.accountKey
                 )
             }
-            .disabled(isPersistedActiveAccount)
+            .disabled(isSwitchActionDisabled)
             
             Button("Refresh", systemImage: "arrow.clockwise") {
                 refreshRateLimits()

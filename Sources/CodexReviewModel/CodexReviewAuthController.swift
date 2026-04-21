@@ -31,6 +31,10 @@ package protocol CodexReviewAuthControlling: AnyObject {
         serverIsRunning: Bool,
         runtimeGeneration: Int
     ) async
+    func requiresCurrentSessionRecovery(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) -> Bool
 }
 
 extension CodexReviewAuthControlling {
@@ -74,6 +78,13 @@ extension CodexReviewAuthControlling {
         auth _: CodexReviewAuthModel,
         accountKey _: String
     ) async {}
+
+    package func requiresCurrentSessionRecovery(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) -> Bool {
+        false
+    }
 }
 
 @MainActor

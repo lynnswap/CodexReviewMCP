@@ -1199,6 +1199,42 @@ struct CodexReviewUITests {
         #expect(backend.lastSwitchedAccountKey() == currentSavedAccount.accountKey)
     }
 
+    @Test func persistedActiveCurrentRecoverySwitchStillDelegatesToController() async throws {
+        let backend = AuthActionBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = makeStore(backend: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: []
+        )
+
+        try await store.auth.switchAccount(currentAccount)
+
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
+    @Test func detachedCurrentSessionCannotRequestNoOpSwitch() {
+        let backend = AuthActionBackend()
+        let store = makeStore(backend: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let detachedCurrent = CodexAccount(email: "current@example.com", planType: "plus")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: detachedCurrent,
+            savedAccounts: [activeSavedAccount],
+            workspaces: []
+        )
+
+        #expect(store.auth.switchActionIsDisabled(for: detachedCurrent))
+    }
+
     @Test func accountMenusUseFullEmailForSectionTitles() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let account = CodexAccount(email: "masked.user@example.com", planType: "pro")
@@ -4357,10 +4393,18 @@ private final class CountingStartAuthController: CodexReviewAuthControlling {
         serverIsRunning _: Bool,
         runtimeGeneration _: Int
     ) async {}
+
+    func requiresCurrentSessionRecovery(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) -> Bool {
+        backend.requiresCurrentSessionRecovery
+    }
 }
 
 @MainActor
 private final class CountingStartBackend: CodexReviewStoreBackend {
+    var requiresCurrentSessionRecovery = false
     let shouldAutoStartEmbeddedServer: Bool
     let initialAuthState: TestAuthState
     var initialAccount: CodexAccount? {
@@ -4532,11 +4576,19 @@ private final class AuthActionController: CodexReviewAuthControlling {
         serverIsRunning _: Bool,
         runtimeGeneration _: Int
     ) async {}
+
+    func requiresCurrentSessionRecovery(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) -> Bool {
+        backend.requiresCurrentSessionRecovery
+    }
 }
 
 @MainActor
 private final class AuthActionBackend: CodexReviewStoreBackend {
     var isActive: Bool = false
+    var requiresCurrentSessionRecovery = false
     let shouldAutoStartEmbeddedServer = false
     let initialAuthState: TestAuthState
     var initialAccount: CodexAccount? {
