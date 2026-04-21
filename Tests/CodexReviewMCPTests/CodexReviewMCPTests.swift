@@ -5214,7 +5214,7 @@ struct CodexReviewMCPTests {
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
     }
 
-    @Test func beginAuthenticationActivatesNewLoginWhenCurrentAuthIsFailed() async throws {
+    @Test func beginAuthenticationWithSavedAccountsKeepsCurrentAccountWhenAuthFails() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
             email: "stale@example.com",
@@ -5248,8 +5248,11 @@ struct CodexReviewMCPTests {
 
         await auth.beginAuthentication()
 
-        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "stale@example.com"))
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "stale@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "stale@example.com")
     }
 
     @Test func logoutDuringAuthenticatedRetryCancelsLoginAndSignsOut() async throws {
@@ -5825,7 +5828,7 @@ struct CodexReviewMCPTests {
         #expect(testAuthState(from: store.auth) == .signedOut)
     }
 
-    @Test func addAccountCancellationDoesNotRestorePresentationFallbackAccount() async throws {
+    @Test func addAccountCancellationPreservesSignedOutStateWithSavedAccounts() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -5852,9 +5855,7 @@ struct CodexReviewMCPTests {
         store.auth.updateAccount(nil)
 
         let beginTask = Task {
-            await store.auth.addAccount(
-                presentationFallbackAccount: initialAccounts.accounts.first(where: \.isActive)
-            )
+            await store.auth.addAccount()
         }
 
         await authSession.waitForLoginStart()
@@ -5892,7 +5893,7 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func sameAccountReauthenticationRecyclesSharedAppServer() async throws {
+    @Test func sameAccountReauthenticationWithoutInitialEmptyStateDoesNotRecycleSharedAppServer() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SameAccountSuccessfulLoginReviewAuthSession()
@@ -5912,13 +5913,13 @@ struct CodexReviewMCPTests {
         await store.auth.beginAuthentication()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
-        #expect(await manager.prepareCount() == 2)
-        #expect(await manager.shutdownCount() == 1)
+        #expect(await manager.prepareCount() == 1)
+        #expect(await manager.shutdownCount() == 0)
 
         await store.stop()
     }
 
-    @Test func addAccountWithoutActiveSessionRefreshesSharedRuntimeWithoutRecycle() async throws {
+    @Test func addAccountWithoutSavedAccountsDoesNotAutoActivate() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SuccessfulLoginReviewAuthSession()
@@ -5937,14 +5938,15 @@ struct CodexReviewMCPTests {
         await store.start()
         await store.auth.addAccount()
 
-        #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
+        #expect(testAuthState(from: store.auth) == .signedOut)
+        #expect(store.auth.savedAccounts.map(\.email) == ["review@example.com"])
         #expect(await manager.prepareCount() == 1)
         #expect(await manager.shutdownCount() == 0)
 
         await store.stop()
     }
 
-    @Test func addAccountSameAccountReauthenticationRefreshesSharedRuntimeWithoutRecycle() async throws {
+    @Test func addAccountWithUnsavedCurrentSameEmailPreservesCurrentSession() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SameAccountSuccessfulLoginReviewAuthSession()
@@ -5964,6 +5966,7 @@ struct CodexReviewMCPTests {
         await store.auth.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
+        #expect(store.auth.savedAccounts.map(\.email) == ["review@example.com"])
         #expect(await manager.prepareCount() == 1)
         #expect(await manager.shutdownCount() == 0)
 
@@ -6237,7 +6240,7 @@ struct CodexReviewMCPTests {
         #expect(await manager.shutdownCount() == 0)
     }
 
-    @Test func addAccountWithoutResolvedCurrentAccountKeepsSavedActiveAccountWithoutCancellingJobs() async throws {
+    @Test func addAccountWithoutResolvedCurrentAccountStaysSignedOutWithoutCancellingJobs() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
             email: "active@example.com",
@@ -6286,7 +6289,8 @@ struct CodexReviewMCPTests {
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
-        #expect(testAuthState(from: auth) == .signedIn(accountID: "active@example.com"))
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.account == nil)
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
         #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "active@example.com")
@@ -6294,7 +6298,7 @@ struct CodexReviewMCPTests {
         #expect(await manager.shutdownCount() == 0)
     }
 
-    @Test func addAccountSignedOutWithSavedAccountsActivatesNewLogin() async throws {
+    @Test func addAccountWithSavedAccountsAndNoCurrentSessionStaysSignedOut() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -6333,10 +6337,58 @@ struct CodexReviewMCPTests {
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
-        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.account == nil)
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
+        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
+    }
+
+    @Test func addAccountSameEmailWithoutCurrentSessionStaysSignedOut() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "review@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: authSession,
+                    environment: environment
+                )
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(nil)
+
+        await auth.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(cancelCallCount == 0)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.account == nil)
+        #expect(auth.savedAccounts.map(\.email) == ["review@example.com"])
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
-        #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
+        #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
     }
 
     @Test func addAccountWithoutActivationPreservesUnsavedCurrentSession() async throws {
@@ -6438,7 +6490,7 @@ struct CodexReviewMCPTests {
         #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
     }
 
-    @Test func addAccountWithoutActiveSessionActivatesAuthenticatedAccountWithoutCancellingJobs() async throws {
+    @Test func addAccountWithoutActiveSessionAddsAccountWithoutCancellingJobs() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = SuccessfulLoginReviewAuthSession()
         var cancelCallCount = 0
@@ -6466,10 +6518,10 @@ struct CodexReviewMCPTests {
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
-        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
-        #expect(loadedAccounts.activeAccountKey == "review@example.com")
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(loadedAccounts.activeAccountKey == nil)
         #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
-        #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
+        #expect(loadSharedReviewAccount(environment: environment) == nil)
     }
 
     @Test func addAccountSameEmailReauthenticationDoesNotCancelJobsOrSwitchActiveAccount() async throws {

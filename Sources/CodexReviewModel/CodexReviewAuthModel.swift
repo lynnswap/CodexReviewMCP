@@ -131,13 +131,8 @@ public final class CodexReviewAuthModel {
         await controller.beginAuthentication(auth: self)
     }
 
-    package func addAccount(
-        presentationFallbackAccount: CodexAccount? = nil
-    ) async {
-        await controller.addAccount(
-            auth: self,
-            presentationFallbackAccount: presentationFallbackAccount
-        )
+    package func addAccount() async {
+        await controller.addAccount(auth: self)
     }
 
     public func cancelAuthentication() async {
@@ -301,18 +296,13 @@ public final class CodexReviewAuthModel {
         } else {
             self.account = account
         }
-        let activeAccountKey = self.account?.accountKey
-        for savedAccount in savedAccounts {
-            savedAccount.updateIsActive(savedAccount.accountKey == activeAccountKey)
-        }
     }
 
     package func updateSavedAccounts(_ incomingSavedAccounts: [CodexAccount]) {
-        let activeAccountKey = account?.accountKey
         self.savedAccounts = incomingSavedAccounts.map { incomingAccount in
             let reconciledAccount = reusableAccount(for: incomingAccount.accountKey) ?? incomingAccount
             guard reconciledAccount !== incomingAccount else {
-                reconciledAccount.updateIsActive(reconciledAccount.accountKey == activeAccountKey)
+                reconciledAccount.updateIsActive(incomingAccount.isActive)
                 return reconciledAccount
             }
             reconciledAccount.updateEmail(incomingAccount.email)
@@ -330,7 +320,7 @@ public final class CodexReviewAuthModel {
                 fetchedAt: incomingAccount.lastRateLimitFetchAt,
                 error: incomingAccount.lastRateLimitError
             )
-            reconciledAccount.updateIsActive(reconciledAccount.accountKey == activeAccountKey)
+            reconciledAccount.updateIsActive(incomingAccount.isActive)
             return reconciledAccount
         }
         if let account,

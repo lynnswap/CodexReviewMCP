@@ -1207,7 +1207,6 @@ struct CodexReviewUITests {
         await backend.waitForBeginAuthenticationCallCount(1)
 
         #expect(backend.beginAuthenticationCallCount() == 1)
-        #expect(backend.recordedAddAccountFallbackEmails() == [nil])
     }
 
     @Test func addAccountToolbarItemBeginsAuthenticationEvenWhenJobsAreRunning() async throws {
@@ -1240,7 +1239,6 @@ struct CodexReviewUITests {
         await backend.waitForBeginAuthenticationCallCount(1)
 
         #expect(backend.beginAuthenticationCallCount() == 1)
-        #expect(backend.recordedAddAccountFallbackEmails() == ["first@example.com"])
     }
 
     @Test func addAccountToolbarItemShowsProgressAndRemovesInlineProgressRow() async throws {
@@ -1506,7 +1504,7 @@ struct CodexReviewUITests {
         auth.updateAccount(detachedAccount)
 
         #expect(auth.account === savedAccount)
-        #expect(savedAccount.isActive)
+        #expect(savedAccount.isActive == false)
     }
 
     @Test func jobCellViewUpdatesHostedObservationReferenceWithoutReplacingHostingView() throws {
@@ -4472,16 +4470,6 @@ private final class AuthActionController: CodexReviewAuthControlling {
         await backend.beginAuthentication(auth: auth)
     }
 
-    func addAccount(
-        auth: CodexReviewAuthModel,
-        presentationFallbackAccount: CodexAccount?
-    ) async {
-        await backend.addAccount(
-            auth: auth,
-            presentationFallbackAccount: presentationFallbackAccount
-        )
-    }
-
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
         await backend.cancelAuthentication(auth: auth)
     }
@@ -4539,7 +4527,6 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
     private var removeCalls = 0
     private var switchedAccountKeys: [String] = []
     private var removedAccountKeys: [String] = []
-    private var addAccountFallbackEmails: [String?] = []
 
     init(
         initialAuthState: TestAuthState = .signedOut,
@@ -4585,16 +4572,6 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
 
     func beginAuthentication(auth: CodexReviewAuthModel) async {
         _ = auth
-        beginCalls += 1
-        await beginSignal.signal()
-    }
-
-    func addAccount(
-        auth: CodexReviewAuthModel,
-        presentationFallbackAccount: CodexAccount?
-    ) async {
-        _ = auth
-        addAccountFallbackEmails.append(presentationFallbackAccount?.email)
         beginCalls += 1
         await beginSignal.signal()
     }
@@ -4651,10 +4628,6 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
 
     func beginAuthenticationCallCount() -> Int {
         beginCalls
-    }
-
-    func recordedAddAccountFallbackEmails() -> [String?] {
-        addAccountFallbackEmails
     }
 
     func refreshAuthStateCallCount() -> Int {

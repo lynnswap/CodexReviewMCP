@@ -123,27 +123,15 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     package func addAccount(auth: CodexReviewAuthModel) async {
-        await addAccount(
-            auth: auth,
-            presentationFallbackAccount: nil
-        )
-    }
-
-    package func addAccount(
-        auth: CodexReviewAuthModel,
-        presentationFallbackAccount: CodexAccount?
-    ) async {
         await beginAuthentication(
             auth: auth,
-            activationPolicy: .keepCurrentActiveAccount,
-            presentationFallbackAccount: presentationFallbackAccount
+            activationPolicy: .keepCurrentActiveAccount
         )
     }
 
     private func beginAuthentication(
         auth: CodexReviewAuthModel,
-        activationPolicy: AuthenticationActivationPolicy,
-        presentationFallbackAccount: CodexAccount? = nil
+        activationPolicy: AuthenticationActivationPolicy
     ) async {
         cancelStartupRefresh()
         guard auth.isAuthenticating == false else {
@@ -184,15 +172,13 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 }
             }
             try ensureAuthenticationAttemptIsCurrent(authenticationAttemptID)
-            guard let completedAccount else {
+            guard completedAccount != nil else {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
             let shouldActivateAutomatically = shouldActivateAuthenticatedAccount(
-                priorSnapshot: priorSnapshot,
-                completedAccount: completedAccount
+                priorSnapshot: priorSnapshot
             )
-            let currentAccountForAddAccount = auth.account ?? presentationFallbackAccount
-            var commitDisposition: AuthenticationCommitDisposition = {
+            let commitDisposition: AuthenticationCommitDisposition = {
                 switch activationPolicy {
                 case .automatic:
                     .init(
@@ -201,15 +187,14 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                         forceRecycleServer: runtimeState().serverIsRunning
                     )
                 case .keepCurrentActiveAccount:
-                    addAccountCommitDisposition(
-                        priorSnapshot: priorSnapshot,
-                        currentAccount: currentAccountForAddAccount,
-                        hasSavedAccounts: auth.savedAccounts.isEmpty == false,
-                        completedAccount: completedAccount
+                    .init(
+                        shouldActivateAuthenticatedAccount: false,
+                        shouldCancelRunningJobs: false,
+                        forceRecycleServer: false
                     )
                 }
             }()
-            let priorCurrentAccount = auth.account ?? presentationFallbackAccount
+            let priorCurrentAccount = auth.account
             guard let commitProbe = takeAuthenticationProbeForCommit(authenticationAttemptID) else {
                 throw ReviewAuthError.cancelled
             }
@@ -231,16 +216,6 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
 
             if commitDisposition.shouldActivateAuthenticatedAccount {
-                var preserveRuntimeOnIdentityChange = false
-                if activationPolicy == .keepCurrentActiveAccount {
-                    preserveRuntimeOnIdentityChange = await synchronizeSharedRuntimeAuthenticationIfNeeded(
-                        expectedEmail: completedAccount
-                    )
-                    if preserveRuntimeOnIdentityChange == false {
-                        commitDisposition.shouldCancelRunningJobs = runtimeState().serverIsRunning
-                        commitDisposition.forceRecycleServer = runtimeState().serverIsRunning
-                    }
-                }
                 let warningMessage = await performCommittedJobCleanupIfNeeded(
                     shouldCancelJobs: commitDisposition.shouldCancelRunningJobs
                 )
@@ -248,9 +223,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     auth: auth,
                     savedAccount: savedAccount,
                     priorAccount: priorCurrentAccount,
-                    forceRecycleServer: commitDisposition.forceRecycleServer,
-                    preserveRuntimeOnIdentityChange: preserveRuntimeOnIdentityChange
-                        && commitDisposition.forceRecycleServer == false
+                    forceRecycleServer: commitDisposition.forceRecycleServer
                 )
                 if let warningMessage {
                     auth.updateWarning(message: warningMessage)
@@ -259,20 +232,14 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
 
             await refreshSavedAccounts(auth: auth)
-            if let priorAccountKey = priorCurrentAccount?.accountKey,
-               let activeAccount = auth.savedAccounts.first(where: { $0.accountKey == priorAccountKey })
-            {
-                auth.updateAccount(activeAccount)
-            } else if let priorCurrentAccount,
-                      auth.savedAccounts.contains(where: { $0.accountKey == priorCurrentAccount.accountKey }) == false
-            {
-                auth.updateAccount(priorCurrentAccount)
-            } else if let activeAccount = auth.savedAccounts.first(where: \.isActive) {
-                auth.updateAccount(activeAccount)
-            }
+            await refreshSavedAccountRateLimits(auth: auth, accountKey: savedAccount.accountKey)
+            restoreNonActivatingAccountAdditionState(
+                auth: auth,
+                priorSnapshot: priorSnapshot,
+                priorCurrentAccount: priorCurrentAccount
+            )
             auth.updatePhase(.signedOut)
             auth.updateWarning(message: nil)
-            await refreshSavedAccountRateLimits(auth: auth, accountKey: savedAccount.accountKey)
             hasResolvedAuthenticatedAccount = auth.account != nil
             await reconcileAfterResolvedAuthState(
                 auth: auth,
@@ -1072,84 +1039,9 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     private func shouldActivateAuthenticatedAccount(
-        priorSnapshot: AuthPresentationSnapshot,
-        completedAccount: ReviewAuthAccount
+        priorSnapshot: AuthPresentationSnapshot
     ) -> Bool {
-        guard let currentAccount = priorSnapshot.account else {
-            return true
-        }
-        if case .failed = priorSnapshot.phase,
-           priorSnapshot.isResolvedAuthenticated == false
-        {
-            return true
-        }
-        return normalizedReviewAccountEmail(email: currentAccount.email)
-            == normalizedReviewAccountEmail(email: completedAccount.email)
-    }
-
-    private func addAccountCommitDisposition(
-        priorSnapshot: AuthPresentationSnapshot,
-        currentAccount: CodexAccount?,
-        hasSavedAccounts: Bool,
-        completedAccount: ReviewAuthAccount
-    ) -> AuthenticationCommitDisposition {
-        if let currentAccount {
-            let currentEmail = normalizedReviewAccountEmail(email: currentAccount.email)
-            let completedEmail = normalizedReviewAccountEmail(email: completedAccount.email)
-            return .init(
-                shouldActivateAuthenticatedAccount: currentEmail == completedEmail,
-                shouldCancelRunningJobs: false,
-                forceRecycleServer: false
-            )
-        }
-
-        guard hasSavedAccounts else {
-            return .init(
-                shouldActivateAuthenticatedAccount: true,
-                shouldCancelRunningJobs: false,
-                forceRecycleServer: false
-            )
-        }
-
-        if case .failed = priorSnapshot.phase,
-           priorSnapshot.isResolvedAuthenticated == false
-        {
-            return .init(
-                shouldActivateAuthenticatedAccount: false,
-                shouldCancelRunningJobs: false,
-                forceRecycleServer: false
-            )
-        }
-
-        return .init(
-            shouldActivateAuthenticatedAccount: true,
-            shouldCancelRunningJobs: false,
-            forceRecycleServer: false
-        )
-    }
-
-    private func synchronizeSharedRuntimeAuthenticationIfNeeded(
-        expectedEmail: ReviewAuthAccount
-    ) async -> Bool {
-        guard runtimeState().serverIsRunning else {
-            return true
-        }
-        do {
-            let session = try await sharedAuthSessionFactory(configuration.environment)
-            defer {
-                Task {
-                    await session.close()
-                }
-            }
-            let response = try await session.readAccount(refreshToken: true)
-            guard case .chatGPT(let email, _)? = response.account else {
-                return false
-            }
-            return normalizedReviewAccountEmail(email: email)
-                == normalizedReviewAccountEmail(email: expectedEmail.email)
-        } catch {
-            return false
-        }
+        priorSnapshot.savedAccounts.isEmpty && priorSnapshot.account == nil
     }
 
     private func applyCommittedActiveAccount(
@@ -1196,6 +1088,23 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             return nil
         } catch {
             return error.localizedDescription.nilIfEmpty ?? "Failed to cancel running reviews."
+        }
+    }
+
+    private func restoreNonActivatingAccountAdditionState(
+        auth: CodexReviewAuthModel,
+        priorSnapshot: AuthPresentationSnapshot,
+        priorCurrentAccount: CodexAccount?
+    ) {
+        if let priorCurrentAccount,
+           priorSnapshot.savedAccounts.contains(where: { $0.accountKey == priorCurrentAccount.accountKey }),
+           let resolvedSavedAccount = auth.savedAccounts.first(where: { $0.accountKey == priorCurrentAccount.accountKey })
+        {
+            auth.updateAccount(resolvedSavedAccount)
+        } else if let priorCurrentAccount {
+            auth.updateAccount(priorCurrentAccount)
+        } else {
+            auth.updateAccount(nil)
         }
     }
 
