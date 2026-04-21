@@ -5825,6 +5825,47 @@ struct CodexReviewMCPTests {
         #expect(testAuthState(from: store.auth) == .signedOut)
     }
 
+    @Test func addAccountCancellationDoesNotRestorePresentationFallbackAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let manager = AuthCapableAppServerManager()
+        let authSession = BlockingLoginReviewAuthSession()
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        store.auth.updateSavedAccounts(initialAccounts.accounts)
+        store.auth.updateAccount(nil)
+
+        let beginTask = Task {
+            await store.auth.addAccount(
+                presentationFallbackAccount: initialAccounts.accounts.first(where: \.isActive)
+            )
+        }
+
+        await authSession.waitForLoginStart()
+        await store.auth.cancelAuthentication()
+        _ = await beginTask.value
+
+        #expect(store.auth.account == nil)
+        #expect(store.auth.savedAccounts.map(\.email) == ["saved@example.com"])
+        #expect(testAuthState(from: store.auth) == .signedOut)
+    }
+
     @Test func successfulAuthenticationRecyclesSharedAppServer() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
@@ -6331,13 +6372,30 @@ struct CodexReviewMCPTests {
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
         auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(CodexAccount(email: "unsaved@example.com", planType: "pro"))
+        let unsavedCurrentAccount = CodexAccount(email: "unsaved@example.com", planType: "pro")
+        unsavedCurrentAccount.updateRateLimits(
+            [
+                (
+                    windowDurationMinutes: 300,
+                    usedPercent: 61,
+                    resetsAt: Date(timeIntervalSince1970: 1_735_776_000)
+                )
+            ]
+        )
+        unsavedCurrentAccount.updateRateLimitFetchMetadata(
+            fetchedAt: Date(timeIntervalSince1970: 1_735_700_000),
+            error: "cached"
+        )
+        auth.updateAccount(unsavedCurrentAccount)
 
         await auth.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "unsaved@example.com"))
+        #expect(auth.account === unsavedCurrentAccount)
+        #expect(rateLimitWindow(duration: 300, in: auth.account)?.usedPercent == 61)
+        #expect(auth.account?.lastRateLimitError == "cached")
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }

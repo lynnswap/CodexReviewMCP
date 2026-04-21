@@ -149,15 +149,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         guard auth.isAuthenticating == false else {
             return
         }
-        var priorSnapshot = snapshot(
+        let priorSnapshot = snapshot(
             from: auth,
             isResolvedAuthenticated: hasResolvedAuthenticatedAccount
         )
-        if priorSnapshot.account == nil,
-           let presentationFallbackAccount
-        {
-            priorSnapshot.account = makeReviewAuthAccount(presentationFallbackAccount)
-        }
         let authenticationAttemptID = UUID()
         activeAuthenticationAttemptID = authenticationAttemptID
         authenticationCancellationRestoreState = priorSnapshot
@@ -196,6 +191,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 priorSnapshot: priorSnapshot,
                 completedAccount: completedAccount
             )
+            let currentAccountForAddAccount = auth.account ?? presentationFallbackAccount
             var commitDisposition: AuthenticationCommitDisposition = {
                 switch activationPolicy {
                 case .automatic:
@@ -207,17 +203,13 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 case .keepCurrentActiveAccount:
                     addAccountCommitDisposition(
                         priorSnapshot: priorSnapshot,
+                        currentAccount: currentAccountForAddAccount,
                         hasSavedAccounts: auth.savedAccounts.isEmpty == false,
                         completedAccount: completedAccount
                     )
                 }
             }()
-            let priorCurrentAccount = priorSnapshot.account.map { account in
-                CodexAccount(
-                    email: account.email,
-                    planType: account.planType
-                )
-            }
+            let priorCurrentAccount = auth.account ?? presentationFallbackAccount
             guard let commitProbe = takeAuthenticationProbeForCommit(authenticationAttemptID) else {
                 throw ReviewAuthError.cancelled
             }
@@ -1097,6 +1089,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     private func addAccountCommitDisposition(
         priorSnapshot: AuthPresentationSnapshot,
+        currentAccount: CodexAccount?,
         hasSavedAccounts: Bool,
         completedAccount: ReviewAuthAccount
     ) -> AuthenticationCommitDisposition {
@@ -1108,7 +1101,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             )
         }
 
-        guard let currentAccount = priorSnapshot.account else {
+        guard let currentAccount else {
             if case .failed = priorSnapshot.phase,
                priorSnapshot.isResolvedAuthenticated == false
             {
