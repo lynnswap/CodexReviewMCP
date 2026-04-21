@@ -140,7 +140,7 @@ public final class CodexReviewAuthModel {
     }
 
     package func switchAccount(_ account: CodexAccount) async throws {
-        guard self.account?.accountKey != account.accountKey else {
+        guard persistedActiveAccountKey != account.accountKey else {
             return
         }
         let targetAccount = savedAccounts.first(where: { $0.accountKey == account.accountKey })
@@ -164,7 +164,7 @@ public final class CodexReviewAuthModel {
         _ account: CodexAccount,
         requiresConfirmation: Bool
     ) {
-        guard self.account?.accountKey != account.accountKey else {
+        guard persistedActiveAccountKey != account.accountKey else {
             return
         }
         requestAccountAction(
@@ -328,6 +328,10 @@ public final class CodexReviewAuthModel {
         {
             self.account = savedAccount
         }
+    }
+
+    package var persistedActiveAccountKey: String? {
+        savedAccounts.first(where: \.isActive)?.accountKey
     }
 
     private func reusableAccount(for accountKey: String) -> CodexAccount? {

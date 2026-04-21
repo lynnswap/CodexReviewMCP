@@ -352,15 +352,30 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         if auth.isAuthenticating {
             await cancelAuthentication(auth: auth)
         }
-        guard auth.account?.accountKey != accountKey else {
-            return
-        }
         let loadedAccounts = try accountRegistryStore.loadAccounts()
         guard loadedAccounts.accounts.contains(where: { $0.accountKey == accountKey }) else {
             throw ReviewAuthError.authenticationRequired("Saved account was not found.")
         }
+        guard loadedAccounts.activeAccountKey != accountKey else {
+            return
+        }
         let priorAccount = auth.account
+        let isPromotingCurrentSessionToPersistedActiveAccount = priorAccount?.accountKey == accountKey
         try await accountRegistryStore.activateAccount(accountKey)
+        if isPromotingCurrentSessionToPersistedActiveAccount {
+            await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
+            if let resolvedSavedAccount = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
+                auth.updateAccount(resolvedSavedAccount)
+            }
+            auth.updateWarning(message: nil)
+            let resolvedRuntimeState = runtimeState()
+            await reconcileRateLimitControllers(
+                auth: auth,
+                serverIsRunning: resolvedRuntimeState.serverIsRunning,
+                runtimeGeneration: resolvedRuntimeState.runtimeGeneration
+            )
+            return
+        }
         let warningMessage = await performCommittedJobCleanupIfNeeded(shouldCancelJobs: true)
         if runtimeState().serverIsRunning {
             await applyCommittedActiveAccount(

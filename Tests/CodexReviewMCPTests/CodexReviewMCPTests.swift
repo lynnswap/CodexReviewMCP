@@ -7273,6 +7273,66 @@ struct CodexReviewMCPTests {
         #expect(auth.account == nil)
     }
 
+    @Test func switchingSavedAccountPromotesCurrentUnsavedSessionWithoutRecycleOrCleanup() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "review@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        var cancelCallCount = 0
+        var recycleCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
+            },
+            recycleServerIfRunning: {
+                recycleCallCount += 1
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateAccount(CodexAccount(email: "review@example.com"))
+        let targetAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
+
+        try await auth.switchAccount(targetAccount)
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(cancelCallCount == 0)
+        #expect(recycleCallCount == 0)
+        #expect(auth.account === targetAccount)
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        #expect(loadedAccounts.activeAccountKey == "review@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
+    }
+
     @Test func removingActiveAccountSwitchesToFirstRemainingSavedAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
