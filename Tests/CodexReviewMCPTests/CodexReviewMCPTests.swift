@@ -5182,7 +5182,7 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
 
         await authSession.waitForLoginStart()
@@ -5214,7 +5214,7 @@ struct CodexReviewMCPTests {
         store.auth.updateWarning(message: "Cancellation failed.")
 
         let beginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
 
         await authSession.waitForLoginStart()
@@ -5241,7 +5241,7 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
 
         await authSession.waitForLoginStart()
@@ -5256,7 +5256,7 @@ struct CodexReviewMCPTests {
         #expect(remainingProbeEntries.isEmpty)
     }
 
-    @Test func beginAuthenticationIgnoresConcurrentRetryWhileLoginIsInProgress() async throws {
+    @Test func signInIgnoresConcurrentRetryWhileLoginIsInProgress() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
         let authFactory = CountingReviewAuthSessionFactory(session: authSession)
@@ -5273,13 +5273,13 @@ struct CodexReviewMCPTests {
         )
 
         let firstBeginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
 
         await authSession.waitForLoginStart()
 
         let secondBeginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
         _ = await secondBeginTask.value
 
@@ -5314,7 +5314,7 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
 
         await authSession.waitForLoginStart()
@@ -5333,7 +5333,7 @@ struct CodexReviewMCPTests {
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
     }
 
-    @Test func beginAuthenticationWithSavedAccountsKeepsCurrentAccountWhenAuthFails() async throws {
+    @Test func signInWithSavedAccountsActivatesAuthenticatedAccountFromFailedState() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
             email: "stale@example.com",
@@ -5365,13 +5365,13 @@ struct CodexReviewMCPTests {
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
         auth.updatePhase(.failed(message: "Authentication failed."))
 
-        await auth.beginAuthentication()
+        await auth.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
-        #expect(testAuthState(from: auth) == .signedIn(accountID: "stale@example.com"))
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "stale@example.com")
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
         #expect(auth.savedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
-        #expect(loadedAccounts.activeAccountKey == "stale@example.com")
+        #expect(loadedAccounts.activeAccountKey == "review@example.com")
     }
 
     @Test func logoutDuringAuthenticatedRetryCancelsLoginAndSignsOut() async throws {
@@ -5394,7 +5394,7 @@ struct CodexReviewMCPTests {
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
 
         await authSession.waitForLoginStart()
@@ -5429,7 +5429,7 @@ struct CodexReviewMCPTests {
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
 
         await authSession.waitForLoginStart()
@@ -5645,7 +5645,7 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await auth.beginAuthentication()
+        await auth.signIn()
 
         #expect(testAuthState(from: auth) == .failed(reviewAuthPersistenceFailureMessage))
         #expect(cancelCallCount == 0)
@@ -5908,7 +5908,7 @@ struct CodexReviewMCPTests {
         #expect(cancelCallCount == 1)
     }
 
-    @Test func beginAuthenticationUsesInjectedAuthSessionWithoutAuthTransportCheckout() async throws {
+    @Test func signInUsesInjectedAuthSessionWithoutAuthTransportCheckout() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = BlockingLoginReviewAuthSession()
@@ -5925,7 +5925,7 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
         let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
         defer { authStateProbe.cancel() }
@@ -6003,7 +6003,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
         #expect(await manager.prepareCount() == 2)
@@ -6029,7 +6029,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
         #expect(await manager.prepareCount() == 2)
@@ -6109,7 +6109,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(store.auth.isAuthenticating == false)
         #expect(
@@ -6143,7 +6143,7 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await auth.beginAuthentication()
+        await auth.signIn()
         await auth.cancelAuthentication()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
@@ -6152,7 +6152,7 @@ struct CodexReviewMCPTests {
         #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
     }
 
-    @Test func beginAuthenticationRefreshesInactiveSavedAccountRateLimits() async throws {
+    @Test func addAccountRefreshesInactiveSavedAccountRateLimits() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         try writeReviewAuthSnapshot(
@@ -6191,7 +6191,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        await auth.beginAuthentication()
+        await auth.addAccount()
 
         let addedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
         #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
@@ -6463,7 +6463,7 @@ struct CodexReviewMCPTests {
         #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }
 
-    @Test func beginAuthenticationWithSavedAccountsAndNoCurrentSessionAddsWithoutActivating() async throws {
+    @Test func signInWithSavedAccountsAndNoCurrentSessionActivatesAuthenticatedAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -6494,13 +6494,13 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(nil)
 
-        await auth.beginAuthentication()
+        await auth.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
-        #expect(testAuthState(from: auth) == .signedOut)
-        #expect(auth.account == nil)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
-        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }
 
@@ -6832,6 +6832,64 @@ struct CodexReviewMCPTests {
         #expect(recycleCallCount == 1)
     }
 
+    @Test func addAccountSameEmailDeferredRuntimeRecycleClearsAfterRuntimeGenerationChanges() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "review@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "stale@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        var recycleCallCount = 0
+        let hasRunningJobs = MutableValueBox(true)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: authSession,
+                    environment: environment
+                )
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
+            },
+            recycleServerIfRunning: {
+                recycleCallCount += 1
+            },
+            hasRunningJobs: {
+                hasRunningJobs.value
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+
+        await auth.addAccount()
+        #expect(recycleCallCount == 0)
+
+        hasRunningJobs.value = false
+        await auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 2
+        )
+
+        #expect(recycleCallCount == 0)
+    }
+
     @Test func addAccountUnsavedSameEmailWithDifferentActiveSavedAccountDoesNotRecycleRuntime() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
@@ -6878,7 +6936,7 @@ struct CodexReviewMCPTests {
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
     }
 
-    @Test func beginAuthenticationRetryAfterFailedAddAccountKeepsCurrentActiveAccount() async throws {
+    @Test func signInRetryAfterFailedAddAccountActivatesAuthenticatedAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -6915,15 +6973,15 @@ struct CodexReviewMCPTests {
         await auth.refresh()
         auth.updatePhase(.failed(message: "Previous add-account failed."))
 
-        await auth.beginAuthentication()
+        await auth.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
-        #expect(auth.account?.email == "active@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
         #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
-        #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["active@example.com", "review@example.com"])
-        #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
 
     @Test func switchingToMissingAccountDoesNotCancelRunningJobs() async throws {
@@ -7261,7 +7319,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
         #expect(await manager.prepareCount() == 1)
@@ -7287,7 +7345,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
 
@@ -7316,7 +7374,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -7349,7 +7407,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(
@@ -7559,7 +7617,7 @@ struct CodexReviewMCPTests {
 
         let updates = ObservableValueProbe { testAuthState(from: store.auth) }
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         try await waitForObservedValue(updates) { $0.isAuthenticated }
 
@@ -7600,7 +7658,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         let authTransport = try #require(await manager.authTransportForTesting())
         #expect(await authTransport.completeParams() == nil)
@@ -7644,7 +7702,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(
             testAuthState(from: store.auth) == .failed(
@@ -7710,7 +7768,7 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.beginAuthentication()
+            await store.auth.signIn()
         }
 
         await authSession.waitForLoginStart()
@@ -7777,7 +7835,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -7818,7 +7876,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(
             testAuthState(from: store.auth) == .failed(
@@ -7860,7 +7918,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(await recorder.lastAuthenticateRequest()?.url.absoluteString == "https://auth.openai.com/oauth/authorize?foo=bar")
         #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
@@ -7900,7 +7958,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(await recorder.lastAuthenticateRequest() == nil)
         #expect(
@@ -7943,7 +8001,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
@@ -7981,7 +8039,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
@@ -8025,7 +8083,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.beginAuthentication()
+        await store.auth.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
@@ -11014,6 +11072,192 @@ private func makeInjectedAuthSessionStore(
 }
 
 @MainActor
+private final class TestAuthRuntimeDriver {
+    private struct DeferredAddAccountRuntimeEffect {
+        var accountKey: String
+        var runtimeGeneration: Int
+    }
+
+    private let runtimeState: @MainActor @Sendable () -> CodexAuthRuntimeState
+    private let recycleServerIfRunning: @MainActor @Sendable () async -> Void
+    private let hasRunningJobs: @MainActor @Sendable () -> Bool
+    private var deferredAddAccountRuntimeEffect: DeferredAddAccountRuntimeEffect?
+
+    init(
+        runtimeState: @escaping @MainActor @Sendable () -> CodexAuthRuntimeState,
+        recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void,
+        hasRunningJobs: @escaping @MainActor @Sendable () -> Bool
+    ) {
+        self.runtimeState = runtimeState
+        self.recycleServerIfRunning = recycleServerIfRunning
+        self.hasRunningJobs = hasRunningJobs
+    }
+
+    func resolveAddAccountRuntimeEffect(
+        accountKey: String,
+        runtimeGeneration: Int
+    ) -> CodexAuthRuntimeEffect {
+        if hasRunningJobs() {
+            return .deferRecycleUntilJobsDrain(
+                accountKey: accountKey,
+                runtimeGeneration: runtimeGeneration
+            )
+        }
+        return .recycleNow(
+            accountKey: accountKey,
+            runtimeGeneration: runtimeGeneration
+        )
+    }
+
+    func applyAddAccountRuntimeEffect(
+        _ effect: CodexAuthRuntimeEffect,
+        auth: CodexReviewAuthModel
+    ) async {
+        switch effect {
+        case .none:
+            deferredAddAccountRuntimeEffect = nil
+        case .deferRecycleUntilJobsDrain(let accountKey, let runtimeGeneration):
+            deferredAddAccountRuntimeEffect = .init(
+                accountKey: accountKey,
+                runtimeGeneration: runtimeGeneration
+            )
+        case .recycleNow(let accountKey, let runtimeGeneration):
+            let currentRuntimeState = runtimeState()
+            guard currentRuntimeState.serverIsRunning,
+                  currentRuntimeState.runtimeGeneration == runtimeGeneration,
+                  auth.account?.accountKey == accountKey
+            else {
+                deferredAddAccountRuntimeEffect = nil
+                return
+            }
+            deferredAddAccountRuntimeEffect = nil
+            await recycleServerIfRunning()
+            await auth.reconcileAuthenticatedSession(
+                serverIsRunning: runtimeState().serverIsRunning,
+                runtimeGeneration: runtimeState().runtimeGeneration
+            )
+        }
+    }
+
+    func reconcileDeferredAddAccountRuntimeEffectIfNeeded(
+        auth: CodexReviewAuthModel,
+        serverIsRunning: Bool,
+        runtimeGeneration: Int
+    ) async {
+        guard let deferredAddAccountRuntimeEffect else {
+            return
+        }
+        guard serverIsRunning,
+              deferredAddAccountRuntimeEffect.runtimeGeneration == runtimeGeneration,
+              auth.account?.accountKey == deferredAddAccountRuntimeEffect.accountKey
+        else {
+            self.deferredAddAccountRuntimeEffect = nil
+            return
+        }
+        guard hasRunningJobs() == false else {
+            return
+        }
+        self.deferredAddAccountRuntimeEffect = nil
+        await recycleServerIfRunning()
+    }
+}
+
+@MainActor
+private final class TestRuntimeOwningAuthController: CodexReviewAuthControlling {
+    private let base: CodexAuthController
+    private let runtimeDriver: TestAuthRuntimeDriver
+
+    init(
+        base: CodexAuthController,
+        runtimeDriver: TestAuthRuntimeDriver
+    ) {
+        self.base = base
+        self.runtimeDriver = runtimeDriver
+    }
+
+    func startStartupRefresh(auth: CodexReviewAuthModel) {
+        base.startStartupRefresh(auth: auth)
+    }
+
+    func cancelStartupRefresh() {
+        base.cancelStartupRefresh()
+    }
+
+    func refresh(auth: CodexReviewAuthModel) async {
+        await base.refresh(auth: auth)
+    }
+
+    func signIn(auth: CodexReviewAuthModel) async {
+        await base.signIn(auth: auth)
+    }
+
+    func addAccount(auth: CodexReviewAuthModel) async {
+        await base.addAccount(auth: auth)
+    }
+
+    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+        await base.cancelAuthentication(auth: auth)
+    }
+
+    func switchAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws {
+        try await base.switchAccount(auth: auth, accountKey: accountKey)
+    }
+
+    func removeAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws {
+        try await base.removeAccount(auth: auth, accountKey: accountKey)
+    }
+
+    func reorderSavedAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String,
+        toIndex: Int
+    ) async throws {
+        try await base.reorderSavedAccount(
+            auth: auth,
+            accountKey: accountKey,
+            toIndex: toIndex
+        )
+    }
+
+    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
+        try await base.signOutActiveAccount(auth: auth)
+    }
+
+    func refreshSavedAccountRateLimits(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async {
+        await base.refreshSavedAccountRateLimits(
+            auth: auth,
+            accountKey: accountKey
+        )
+    }
+
+    func reconcileAuthenticatedSession(
+        auth: CodexReviewAuthModel,
+        serverIsRunning: Bool,
+        runtimeGeneration: Int
+    ) async {
+        await runtimeDriver.reconcileDeferredAddAccountRuntimeEffectIfNeeded(
+            auth: auth,
+            serverIsRunning: serverIsRunning,
+            runtimeGeneration: runtimeGeneration
+        )
+        await base.reconcileAuthenticatedSession(
+            auth: auth,
+            serverIsRunning: serverIsRunning,
+            runtimeGeneration: runtimeGeneration
+        )
+    }
+}
+
+@MainActor
 private func makeAuthModel(
     configuration: ReviewServerConfiguration,
     appServerManager: any AppServerManaging = MockAppServerManager { _ in .success() },
@@ -11028,6 +11272,11 @@ private func makeAuthModel(
     inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
     cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in }
 ) -> CodexReviewAuthModel {
+    let runtimeDriver = TestAuthRuntimeDriver(
+        runtimeState: runtimeState,
+        recycleServerIfRunning: recycleServerIfRunning,
+        hasRunningJobs: hasRunningJobs
+    )
     let controller = CodexAuthController(
         configuration: configuration,
         accountRegistryStore: ReviewAccountRegistryStore(environment: configuration.environment),
@@ -11037,13 +11286,26 @@ private func makeAuthModel(
         probeAppServerManagerFactory: probeAppServerManagerFactory,
         runtimeState: runtimeState,
         recycleServerIfRunning: recycleServerIfRunning,
-        hasRunningJobs: hasRunningJobs,
+        resolveAddAccountRuntimeEffect: { accountKey, runtimeGeneration in
+            runtimeDriver.resolveAddAccountRuntimeEffect(
+                accountKey: accountKey,
+                runtimeGeneration: runtimeGeneration
+            )
+        },
+        applyAddAccountRuntimeEffect: { effect, auth in
+            await runtimeDriver.applyAddAccountRuntimeEffect(effect, auth: auth)
+        },
         cancelRunningJobs: cancelRunningJobs,
         rateLimitObservationClock: rateLimitObservationClock,
         rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
         inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
     )
-    return CodexReviewAuthModel(controller: controller)
+    return CodexReviewAuthModel(
+        controller: TestRuntimeOwningAuthController(
+            base: controller,
+            runtimeDriver: runtimeDriver
+        )
+    )
 }
 
 private actor PersistingReviewAuthSession: ReviewAuthSession {

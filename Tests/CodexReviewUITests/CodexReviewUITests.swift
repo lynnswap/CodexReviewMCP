@@ -4126,7 +4126,7 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
         _ = auth
     }
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
+    func signIn(auth: CodexReviewAuthModel) async {
         _ = auth
     }
 
@@ -4309,8 +4309,12 @@ private final class CountingStartAuthController: CodexReviewAuthControlling {
 
     func refresh(auth _: CodexReviewAuthModel) async {}
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
-        await backend.beginAuthentication(auth: auth)
+    func signIn(auth: CodexReviewAuthModel) async {
+        await backend.signIn(auth: auth)
+    }
+
+    func addAccount(auth: CodexReviewAuthModel) async {
+        await backend.signIn(auth: auth)
     }
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
@@ -4394,7 +4398,7 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
         _ = auth
     }
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
+    func signIn(auth: CodexReviewAuthModel) async {
         _ = auth
         beginCalls += 1
         actions.append("begin")
@@ -4466,8 +4470,12 @@ private final class AuthActionController: CodexReviewAuthControlling {
         await backend.refreshAuthState(auth: auth)
     }
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
-        await backend.beginAuthentication(auth: auth)
+    func signIn(auth: CodexReviewAuthModel) async {
+        await backend.signIn(auth: auth)
+    }
+
+    func addAccount(auth: CodexReviewAuthModel) async {
+        await backend.signIn(auth: auth)
     }
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
@@ -4570,7 +4578,7 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
         await refreshSignal.signal()
     }
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
+    func signIn(auth: CodexReviewAuthModel) async {
         _ = auth
         beginCalls += 1
         await beginSignal.signal()

@@ -237,28 +237,26 @@ struct AppServerSupervisorTests {
                 startupTimeout: .seconds(1)
             )
         )
-        defer {
-            Task {
-                await supervisor.shutdown()
+        try await withAsyncCleanup {
+            _ = try await supervisor.prepare()
+            let transport = try await supervisor.checkoutTransport(sessionID: "session-a")
+            let response: AppServerConfigReadResponse = try await withTestTimeout {
+                try await transport.request(
+                    method: "config/read",
+                    params: AppServerConfigReadParams(
+                        cwd: FileManager.default.currentDirectoryPath,
+                        includeLayers: false
+                    ),
+                    responseType: AppServerConfigReadResponse.self
+                )
             }
+
+            #expect(response.config.model == "gpt-5.4-mini")
+            #expect(response.config.reviewModel == "gpt-5.4-mini")
+        } cleanup: {
+            await supervisor.shutdown()
             try? FileManager.default.removeItem(at: commandURL)
         }
-
-        _ = try await supervisor.prepare()
-        let transport = try await supervisor.checkoutTransport(sessionID: "session-a")
-        let response: AppServerConfigReadResponse = try await withTestTimeout {
-            try await transport.request(
-                method: "config/read",
-                params: AppServerConfigReadParams(
-                    cwd: FileManager.default.currentDirectoryPath,
-                    includeLayers: false
-                ),
-                responseType: AppServerConfigReadResponse.self
-            )
-        }
-
-        #expect(response.config.model == "gpt-5.4-mini")
-        #expect(response.config.reviewModel == "gpt-5.4-mini")
     }
 
     @Test func checkoutAuthTransportUsesSharedConnection() async throws {
@@ -274,26 +272,24 @@ struct AppServerSupervisorTests {
                 startupTimeout: .seconds(1)
             )
         )
-        defer {
-            Task {
-                await supervisor.shutdown()
-            }
+        try await withAsyncCleanup {
+            _ = try await supervisor.prepare()
+            let transport = try await supervisor.checkoutAuthTransport()
+            let response: AppServerConfigReadResponse = try await transport.request(
+                method: "config/read",
+                params: AppServerConfigReadParams(
+                    cwd: FileManager.default.currentDirectoryPath,
+                    includeLayers: false
+                ),
+                responseType: AppServerConfigReadResponse.self
+            )
+
+            #expect(response.config.model == "gpt-5.4-mini")
+            #expect(response.config.reviewModel == "gpt-5.4-mini")
+        } cleanup: {
+            await supervisor.shutdown()
             try? FileManager.default.removeItem(at: commandURL)
         }
-
-        _ = try await supervisor.prepare()
-        let transport = try await supervisor.checkoutAuthTransport()
-        let response: AppServerConfigReadResponse = try await transport.request(
-            method: "config/read",
-            params: AppServerConfigReadParams(
-                cwd: FileManager.default.currentDirectoryPath,
-                includeLayers: false
-            ),
-            responseType: AppServerConfigReadResponse.self
-        )
-
-        #expect(response.config.model == "gpt-5.4-mini")
-        #expect(response.config.reviewModel == "gpt-5.4-mini")
     }
 
     @Test func prepareTimeoutStopsStartingProcess() async throws {
@@ -470,23 +466,21 @@ struct AppServerSupervisorTests {
                 startupTimeout: .seconds(1)
             )
         )
-        defer {
-            Task {
-                await supervisor.shutdown()
-            }
+        try await withAsyncCleanup {
+            let firstRuntimeState = try await supervisor.prepare()
+            let firstIdentity = ProcessIdentity(
+                pid: pid_t(firstRuntimeState.pid),
+                startTime: firstRuntimeState.startTime
+            )
+            try requestSupervisorProcessExit(at: processControl.exitRequestFileURL)
+            try await waitForProcessExit(firstIdentity)
+
+            let secondRuntimeState = try await supervisor.prepare()
+            #expect(secondRuntimeState.pid != firstRuntimeState.pid)
+            #expect(secondRuntimeState.processGroupLeaderPID == secondRuntimeState.pid)
+        } cleanup: {
+            await supervisor.shutdown()
         }
-
-        let firstRuntimeState = try await supervisor.prepare()
-        let firstIdentity = ProcessIdentity(
-            pid: pid_t(firstRuntimeState.pid),
-            startTime: firstRuntimeState.startTime
-        )
-        try requestSupervisorProcessExit(at: processControl.exitRequestFileURL)
-        try await waitForProcessExit(firstIdentity)
-
-        let secondRuntimeState = try await supervisor.prepare()
-        #expect(secondRuntimeState.pid != firstRuntimeState.pid)
-        #expect(secondRuntimeState.processGroupLeaderPID == secondRuntimeState.pid)
     }
 
     @Test func prepareSucceedsWhenParentStandardIOIsRedirected() async throws {
@@ -541,23 +535,21 @@ struct AppServerSupervisorTests {
                 startupTimeout: .seconds(1)
             )
         )
-        defer {
-            Task {
-                await supervisor.shutdown()
-            }
+        try await withAsyncCleanup {
+            _ = try await supervisor.prepare()
+            let transport = try await supervisor.checkoutTransport(sessionID: "stdio-redirect")
+            let response: AppServerConfigReadResponse = try await transport.request(
+                method: "config/read",
+                params: AppServerConfigReadParams(
+                    cwd: FileManager.default.currentDirectoryPath,
+                    includeLayers: false
+                ),
+                responseType: AppServerConfigReadResponse.self
+            )
+            #expect(response.config.model == "gpt-5.4-mini")
+        } cleanup: {
+            await supervisor.shutdown()
         }
-
-        _ = try await supervisor.prepare()
-        let transport = try await supervisor.checkoutTransport(sessionID: "stdio-redirect")
-        let response: AppServerConfigReadResponse = try await transport.request(
-            method: "config/read",
-            params: AppServerConfigReadParams(
-                cwd: FileManager.default.currentDirectoryPath,
-                includeLayers: false
-            ),
-            responseType: AppServerConfigReadResponse.self
-        )
-        #expect(response.config.model == "gpt-5.4-mini")
     }
 
     @Test func prepareFailsWhenProcessLeavesDedicatedGroupBeforeReady() async throws {
@@ -822,6 +814,21 @@ private func withTestTimeout<T: Sendable>(
         }
         defer { group.cancelAll() }
         return try await #require(group.next())
+    }
+}
+
+@MainActor
+private func withAsyncCleanup<T>(
+    _ operation: @escaping @MainActor @Sendable () async throws -> T,
+    cleanup: @escaping @MainActor @Sendable () async -> Void
+) async throws -> T {
+    do {
+        let result = try await operation()
+        await cleanup()
+        return result
+    } catch {
+        await cleanup()
+        throw error
     }
 }
 

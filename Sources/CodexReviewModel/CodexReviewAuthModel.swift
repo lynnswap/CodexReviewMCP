@@ -127,11 +127,11 @@ public final class CodexReviewAuthModel {
         await controller.refresh(auth: self)
     }
 
-    public func beginAuthentication() async {
-        await controller.beginAuthentication(auth: self)
+    public func signIn() async {
+        await controller.signIn(auth: self)
     }
 
-    package func addAccount() async {
+    public func addAccount() async {
         await controller.addAccount(auth: self)
     }
 
