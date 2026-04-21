@@ -476,6 +476,15 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             }
         }
         if removedCurrentSession {
+            if let replacementSavedAccount {
+                try? await accountRegistryStore.restoreSharedAuthFromSavedAccount(
+                    replacementSavedAccount.accountKey
+                )
+            } else {
+                try? FileManager.default.removeItem(
+                    at: ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
+                )
+            }
             auth.updatePhase(.signedOut)
             hasResolvedAuthenticatedAccount = replacementSavedAccount != nil
             let warningMessage = await performCommittedJobCleanupIfNeeded(shouldCancelJobs: true)

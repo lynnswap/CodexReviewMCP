@@ -8456,6 +8456,52 @@ struct CodexReviewMCPTests {
         #expect(loadedAccounts.activeAccountKey == "active@example.com")
     }
 
+    @Test func removingDetachedCurrentSavedAccountRestoresReplacementSharedAuth() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let currentSavedAccount = try saveReviewAccount(
+            email: "current@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "current@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateAccount(currentSavedAccount)
+
+        try await auth.removeAccount(accountKey: currentSavedAccount.accountKey)
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(auth.account?.email == "active@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["active@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
+    }
+
     @Test func removingActiveAccountKeepsReplacementWhenSharedAuthReadFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
