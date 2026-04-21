@@ -726,6 +726,7 @@ struct CodexReviewMCPTests {
         try await waitForMainActorCondition {
             store.settings.selectedModel == nil
         }
+        try await waitForSettingsWriteCount(transport, expectedCount: 1)
 
         let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
         #expect(firstWrite.first == "review_model")
@@ -3279,7 +3280,8 @@ struct CodexReviewMCPTests {
             appServerManager: manager,
             authSessionFactory: {
                 authSession
-            }
+            },
+            deferStartupAuthRefreshUntilPrepared: true
         )
         let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
         defer { authStateProbe.cancel() }
@@ -3324,9 +3326,22 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        try await Task.sleep(for: .milliseconds(400))
+        try await waitForTotalRateLimitsReadCount(
+            [firstTransport, secondTransport],
+            expectedCount: 1
+        )
+        try await waitForAuthTransportCheckoutCount(manager, expectedCount: 2)
 
-        #expect(await manager.authTransportCheckoutCount() == 1)
+        let initialCheckoutCount = await manager.authTransportCheckoutCount()
+        #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
+
+        await store.auth.reconcileAuthenticatedSession(
+            serverIsRunning: true,
+            runtimeGeneration: 1
+        )
+
+        #expect(await manager.authTransportCheckoutCount() == initialCheckoutCount)
+        #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
         #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
 
@@ -4877,6 +4892,13 @@ struct CodexReviewMCPTests {
 
         let transport = await manager.sessionTransport()
         await transport.waitForRequest("config/read")
+        try await waitForMainActorCondition {
+            store.workspaces.contains { workspace in
+                workspace.jobs.contains { job in
+                    job.sessionID == "session-bootstrap" && job.status == .running
+                }
+            }
+        }
 
         let cancelResult = try await store.cancelReview(
             selector: .init(cwd: nil, statuses: [.running]),
@@ -10001,6 +10023,52 @@ private func waitForRateLimitsReadCount(
 ) async throws {
     try await withTestTimeout(timeout) {
         while await transport.rateLimitsReadCount() < expectedCount {
+            await Task.yield()
+        }
+    }
+}
+
+private func totalRateLimitsReadCount(
+    _ transports: [AuthCapableAppServerSessionTransport]
+) async -> Int {
+    var total = 0
+    for transport in transports {
+        total += await transport.rateLimitsReadCount()
+    }
+    return total
+}
+
+private func waitForTotalRateLimitsReadCount(
+    _ transports: [AuthCapableAppServerSessionTransport],
+    expectedCount: Int,
+    timeout: Duration = .seconds(2)
+) async throws {
+    try await withTestTimeout(timeout) {
+        while await totalRateLimitsReadCount(transports) < expectedCount {
+            await Task.yield()
+        }
+    }
+}
+
+private func waitForSettingsWriteCount(
+    _ transport: SettingsWriteTransport,
+    expectedCount: Int,
+    timeout: Duration = .seconds(2)
+) async throws {
+    try await withTestTimeout(timeout) {
+        while await transport.recordedEditKeyPaths().count < expectedCount {
+            await Task.yield()
+        }
+    }
+}
+
+private func waitForAuthTransportCheckoutCount(
+    _ manager: AuthCapableAppServerManager,
+    expectedCount: Int,
+    timeout: Duration = .seconds(2)
+) async throws {
+    try await withTestTimeout(timeout) {
+        while await manager.authTransportCheckoutCount() < expectedCount {
             await Task.yield()
         }
     }

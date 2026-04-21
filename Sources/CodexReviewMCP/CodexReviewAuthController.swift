@@ -1275,6 +1275,7 @@ private final class CodexAccountSessionController {
         case unknown
         case supported
         case unsupported
+        case authenticationRequired
     }
 
     private let appServerManager: any AppServerManaging
@@ -1321,6 +1322,12 @@ private final class CodexAccountSessionController {
             activeTarget = shouldAttach ? desiredTarget : nil
         }
         self.accountResolver = shouldAttach ? accountResolver : nil
+
+        if desiredTarget == activeTarget,
+           rateLimitsReadCapability == .authenticationRequired
+        {
+            return
+        }
 
         guard shouldAttach,
               let target = activeTarget,
@@ -1422,6 +1429,7 @@ private final class CodexAccountSessionController {
             else {
                 return
             }
+            rateLimitsReadCapability = .authenticationRequired
             account.clearRateLimits()
             account.updateRateLimitFetchMetadata(
                 fetchedAt: Date(),
@@ -1495,7 +1503,6 @@ private final class CodexAccountSessionController {
         staleRefreshTask?.cancel()
         staleRefreshTask = nil
         staleRefreshTaskID = nil
-        rateLimitsReadCapability = .unknown
         observerTask = nil
         observerTransport = nil
     }
@@ -1565,6 +1572,7 @@ private final class CodexAccountSessionController {
                 else {
                     return
                 }
+                self.rateLimitsReadCapability = .authenticationRequired
                 account.clearRateLimits()
                 account.updateRateLimitFetchMetadata(
                     fetchedAt: Date(),
