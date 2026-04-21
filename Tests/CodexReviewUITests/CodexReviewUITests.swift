@@ -1218,6 +1218,28 @@ struct CodexReviewUITests {
         #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
     }
 
+    @Test func selectedAccountRowTapDelegatesSameAccountRecoverySwitch() async {
+        let backend = AuthActionBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = makeStore(backend: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: []
+        )
+        let viewController = ReviewMonitorAccountsViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        viewController.tapAccountRowForTesting(currentAccount)
+        await backend.waitForSwitchAccountCallCount(1)
+
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
     @Test func sameAccountRecoverySwitchUsesRunningJobsConfirmation() async {
         let backend = AuthActionBackend()
         backend.requiresCurrentSessionRecovery = true

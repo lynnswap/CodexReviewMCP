@@ -121,13 +121,7 @@ private struct ReviewMonitorAccountsListView: View {
             .accessibilityHidden(true)
             .contentShape(.circle)
             .onTapGesture {
-                if isSelected {
-                    return
-                }
-                auth.requestSwitchAccount(
-                    account,
-                    requiresConfirmation: store.hasRunningJobs && auth.account?.accountKey != account.accountKey
-                )
+                requestAccountRowSwitch(account, auth: auth)
             }
         }
         .contextMenu {
@@ -146,6 +140,20 @@ private struct ReviewMonitorAccountsListView: View {
                 : AnyShapeStyle(.clear)
             )
             .padding(.horizontal, 10)
+        )
+    }
+
+    private func requestAccountRowSwitch(
+        _ account: CodexAccount,
+        auth: CodexReviewAuthModel
+    ) {
+        guard auth.switchActionIsDisabled(for: account) == false else {
+            return
+        }
+        auth.requestSwitchAccount(
+            account,
+            requiresConfirmation: store.hasRunningJobs
+                && auth.switchActionRequiresRunningJobsConfirmation(for: account)
         )
     }
 }
@@ -253,12 +261,20 @@ private extension ReviewMonitorAccountsListView {
     var showsAuthenticationProgressRowForTesting: Bool {
         false
     }
+
+    func tapAccountRowForTesting(_ account: CodexAccount) {
+        requestAccountRowSwitch(account, auth: store.auth)
+    }
 }
 
 @MainActor
 extension ReviewMonitorAccountsViewController {
     var showsAuthenticationProgressRowForTesting: Bool {
         hostingView?.rootView.showsAuthenticationProgressRowForTesting ?? false
+    }
+
+    func tapAccountRowForTesting(_ account: CodexAccount) {
+        hostingView?.rootView.tapAccountRowForTesting(account)
     }
 }
 
