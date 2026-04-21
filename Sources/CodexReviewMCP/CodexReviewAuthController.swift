@@ -271,12 +271,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                let activeAccount = auth.savedAccounts.first(where: { $0.accountKey == priorAccountKey })
             {
                 auth.updateAccount(activeAccount)
-            } else if let activeAccount = auth.savedAccounts.first(where: \.isActive) {
-                auth.updateAccount(activeAccount)
             } else if let priorCurrentAccount,
                       auth.savedAccounts.contains(where: { $0.accountKey == priorCurrentAccount.accountKey }) == false
             {
                 auth.updateAccount(priorCurrentAccount)
+            } else if let activeAccount = auth.savedAccounts.first(where: \.isActive) {
+                auth.updateAccount(activeAccount)
             }
             auth.updatePhase(.signedOut)
             auth.updateWarning(message: nil)
@@ -799,6 +799,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             )
             auth.updateWarning(message: nil)
             let actualIdentityChanged = didAccountIdentityChange(from: priorAccount, to: auth.account)
+            if state.isAuthenticated,
+               actualIdentityChanged == false,
+               forceRecycleServer == false
+            {
+                accountSessionController.resetAuthenticationRequiredCapabilityForAuthRecovery()
+            }
             let identityChanged = preserveRuntimeOnIdentityChange ? false : actualIdentityChanged
             hasResolvedAuthenticatedAccount = state.isAuthenticated
             let shouldRestartSameIdentitySession = state.isAuthenticated
@@ -1529,6 +1535,13 @@ private final class CodexAccountSessionController {
         staleRefreshTaskID = nil
         observerTask = nil
         observerTransport = nil
+    }
+
+    func resetAuthenticationRequiredCapabilityForAuthRecovery() {
+        guard rateLimitsReadCapability == .authenticationRequired else {
+            return
+        }
+        rateLimitsReadCapability = .unknown
     }
 
     private func scheduleStaleRefresh(

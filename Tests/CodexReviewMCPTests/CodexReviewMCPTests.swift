@@ -3348,6 +3348,51 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func authRequiredRateLimitReadRetriesAfterSameAccountRefresh() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let firstTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .authenticationRequired
+        )
+        let secondTransport = AuthCapableAppServerSessionTransport()
+        let manager = AuthCapableAppServerManager(
+            authTransports: [firstTransport, secondTransport]
+        )
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = CodexReviewStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+
+        await store.auth.refresh()
+
+        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+        }
+
+        #expect(await firstTransport.rateLimitsReadCount() == 1)
+        #expect(await secondTransport.rateLimitsReadCount() >= 1)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+
+        await store.stop()
+    }
+
     @Test func unsupportedRateLimitReadDoesNotPromoteFirstNonCurrentNotificationToCurrentSnapshot() async throws {
         let environment = try isolatedHomeEnvironment()
         let authTransport = AuthCapableAppServerSessionTransport(
@@ -6250,6 +6295,50 @@ struct CodexReviewMCPTests {
         #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
+    }
+
+    @Test func addAccountWithoutActivationPreservesUnsavedCurrentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let authSession = SuccessfulLoginReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                authSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: authSession,
+                    environment: environment
+                )
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(CodexAccount(email: "unsaved@example.com", planType: "pro"))
+
+        await auth.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(cancelCallCount == 0)
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "unsaved@example.com"))
+        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }
 
