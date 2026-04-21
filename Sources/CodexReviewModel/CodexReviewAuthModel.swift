@@ -131,8 +131,13 @@ public final class CodexReviewAuthModel {
         await controller.beginAuthentication(auth: self)
     }
 
-    package func addAccount() async {
-        await controller.addAccount(auth: self)
+    package func addAccount(
+        presentationFallbackAccount: CodexAccount? = nil
+    ) async {
+        await controller.addAccount(
+            auth: self,
+            presentationFallbackAccount: presentationFallbackAccount
+        )
     }
 
     public func cancelAuthentication() async {

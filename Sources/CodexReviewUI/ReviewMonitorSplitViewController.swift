@@ -391,7 +391,11 @@ private final class AddAccountToolbarItemView: NSView {
         progressButton.setProgressDetailToolTip(detail)
 
         guard targetMode != displayedMode else {
-            pendingMode = isAnimatingModeTransition ? targetMode : nil
+            if isAnimatingModeTransition {
+                pendingMode = targetMode
+                return
+            }
+            pendingMode = nil
             applyMode(targetMode)
             return
         }

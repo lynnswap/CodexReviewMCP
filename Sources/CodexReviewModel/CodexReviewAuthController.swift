@@ -7,6 +7,10 @@ package protocol CodexReviewAuthControlling: AnyObject {
     func refresh(auth: CodexReviewAuthModel) async
     func beginAuthentication(auth: CodexReviewAuthModel) async
     func addAccount(auth: CodexReviewAuthModel) async
+    func addAccount(
+        auth: CodexReviewAuthModel,
+        presentationFallbackAccount: CodexAccount?
+    ) async
     func cancelAuthentication(auth: CodexReviewAuthModel) async
     func switchAccount(
         auth: CodexReviewAuthModel,
@@ -36,6 +40,13 @@ package protocol CodexReviewAuthControlling: AnyObject {
 extension CodexReviewAuthControlling {
     package func addAccount(auth: CodexReviewAuthModel) async {
         await beginAuthentication(auth: auth)
+    }
+
+    package func addAccount(
+        auth: CodexReviewAuthModel,
+        presentationFallbackAccount _: CodexAccount?
+    ) async {
+        await addAccount(auth: auth)
     }
 
     package func switchAccount(

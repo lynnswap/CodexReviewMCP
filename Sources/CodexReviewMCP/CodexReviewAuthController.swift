@@ -123,24 +123,41 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     package func addAccount(auth: CodexReviewAuthModel) async {
+        await addAccount(
+            auth: auth,
+            presentationFallbackAccount: nil
+        )
+    }
+
+    package func addAccount(
+        auth: CodexReviewAuthModel,
+        presentationFallbackAccount: CodexAccount?
+    ) async {
         await beginAuthentication(
             auth: auth,
-            activationPolicy: .keepCurrentActiveAccount
+            activationPolicy: .keepCurrentActiveAccount,
+            presentationFallbackAccount: presentationFallbackAccount
         )
     }
 
     private func beginAuthentication(
         auth: CodexReviewAuthModel,
-        activationPolicy: AuthenticationActivationPolicy
+        activationPolicy: AuthenticationActivationPolicy,
+        presentationFallbackAccount: CodexAccount? = nil
     ) async {
         cancelStartupRefresh()
         guard auth.isAuthenticating == false else {
             return
         }
-        let priorSnapshot = snapshot(
+        var priorSnapshot = snapshot(
             from: auth,
             isResolvedAuthenticated: hasResolvedAuthenticatedAccount
         )
+        if priorSnapshot.account == nil,
+           let presentationFallbackAccount
+        {
+            priorSnapshot.account = makeReviewAuthAccount(presentationFallbackAccount)
+        }
         let authenticationAttemptID = UUID()
         activeAuthenticationAttemptID = authenticationAttemptID
         authenticationCancellationRestoreState = priorSnapshot
@@ -195,7 +212,12 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     )
                 }
             }()
-            let priorCurrentAccount = auth.account
+            let priorCurrentAccount = priorSnapshot.account.map { account in
+                CodexAccount(
+                    email: account.email,
+                    planType: account.planType
+                )
+            }
             guard let commitProbe = takeAuthenticationProbeForCommit(authenticationAttemptID) else {
                 throw ReviewAuthError.cancelled
             }

@@ -8,7 +8,14 @@ enum ReviewMonitorAddAccountAction {
             let auth = store.auth
             let previousFailureCount = auth.authenticationFailureCount
             let previousWarningMessage = auth.warningMessage
-            await auth.addAccount()
+            let fallbackAccount: CodexAccount? = if store.hasRunningJobs {
+                auth.savedAccounts.first(where: \.isActive)
+            } else {
+                nil
+            }
+            await auth.addAccount(
+                presentationFallbackAccount: fallbackAccount
+            )
             if auth.authenticationFailureCount != previousFailureCount,
                let message = auth.errorMessage
             {
