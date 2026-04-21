@@ -1105,6 +1105,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             )
         case .addAccount:
             let sharedAuthUpdate = sharedAuthUpdateForAddAccount(
+                priorSnapshot: priorSnapshot,
                 priorCurrentAccount: priorCurrentAccount,
                 completedAccount: completedAccount
             )
@@ -1113,7 +1114,6 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 sharedAuthUpdate: sharedAuthUpdate,
                 runtimeEffect: addAccountRuntimeEffect(
                     sharedAuthUpdate: sharedAuthUpdate,
-                    priorSnapshot: priorSnapshot,
                     priorCurrentAccount: priorCurrentAccount
                 ),
                 shouldCancelRunningJobs: false
@@ -1122,28 +1122,30 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     private func sharedAuthUpdateForAddAccount(
+        priorSnapshot: AuthPresentationSnapshot,
         priorCurrentAccount: CodexAccount?,
         completedAccount: ReviewAuthAccount
     ) -> SharedAuthUpdate {
         guard let priorCurrentAccount else {
             return .none
         }
-        return normalizedReviewAccountEmail(email: priorCurrentAccount.email)
-            == normalizedReviewAccountEmail(email: completedAccount.email)
-            ? .refreshCurrentAccountSnapshot
-            : .none
+        guard normalizedReviewAccountEmail(email: priorCurrentAccount.email)
+            == normalizedReviewAccountEmail(email: completedAccount.email),
+            currentSessionOwnsSameAccountAddAccountRefresh(
+                priorSnapshot: priorSnapshot,
+                priorCurrentAccount: priorCurrentAccount
+            )
+        else {
+            return .none
+        }
+        return .refreshCurrentAccountSnapshot
     }
 
     private func addAccountRuntimeEffect(
         sharedAuthUpdate: SharedAuthUpdate,
-        priorSnapshot: AuthPresentationSnapshot,
         priorCurrentAccount: CodexAccount?
     ) -> CodexAuthRuntimeEffect {
         guard sharedAuthUpdate.shouldRefreshSharedAuthSnapshot,
-              shouldRecycleRunningRuntimeAfterNonActivatingSameAccountReauth(
-                  priorSnapshot: priorSnapshot,
-                  priorCurrentAccount: priorCurrentAccount
-              ),
               let accountKey = priorCurrentAccount?.accountKey
         else {
             return .none
@@ -1158,7 +1160,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         )
     }
 
-    private func shouldRecycleRunningRuntimeAfterNonActivatingSameAccountReauth(
+    private func currentSessionOwnsSameAccountAddAccountRefresh(
         priorSnapshot: AuthPresentationSnapshot,
         priorCurrentAccount: CodexAccount?
     ) -> Bool {

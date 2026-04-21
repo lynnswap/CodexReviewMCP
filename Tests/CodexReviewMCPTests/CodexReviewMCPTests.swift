@@ -6832,6 +6832,78 @@ struct CodexReviewMCPTests {
         #expect(recycleCallCount == 1)
     }
 
+    @Test func addAccountSameEmailDeferredRuntimeRecycleRunsWhenStoreJobsDrain() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        try await withAsyncCleanup {
+            await store.start()
+            await store.auth.refresh()
+            #expect(store.auth.account?.email == "review@example.com")
+            let jobID = try store.enqueueReview(
+                sessionID: "session-a",
+                request: .init(
+                    cwd: FileManager.default.currentDirectoryPath,
+                    target: .uncommittedChanges
+                )
+            )
+            store.markStarted(jobID: jobID, startedAt: Date())
+
+            #expect(store.hasRunningJobs)
+            #expect(await manager.prepareCount() == 1)
+            #expect(await manager.shutdownCount() == 0)
+
+            await store.auth.addAccount()
+
+            #expect(await manager.prepareCount() == 1)
+            #expect(await manager.shutdownCount() == 0)
+
+            store.completeReview(
+                jobID: jobID,
+                outcome: .init(
+                    state: .succeeded,
+                    exitCode: 0,
+                    reviewThreadID: nil,
+                    threadID: nil,
+                    turnID: nil,
+                    model: nil,
+                    hasFinalReview: false,
+                    lastAgentMessage: "",
+                    errorMessage: nil,
+                    summary: "Completed.",
+                    startedAt: Date(),
+                    endedAt: Date(),
+                    content: ""
+                )
+            )
+
+            try await withTestTimeout(.seconds(2)) {
+                while true {
+                    let prepareCount = await manager.prepareCount()
+                    let shutdownCount = await manager.shutdownCount()
+                    if prepareCount == 2, shutdownCount == 1 {
+                        break
+                    }
+                    await Task.yield()
+                }
+            }
+        } cleanup: {
+            await store.stop()
+        }
+    }
+
     @Test func addAccountSameEmailDeferredRuntimeRecycleClearsAfterRuntimeGenerationChanges() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
@@ -6934,6 +7006,7 @@ struct CodexReviewMCPTests {
         #expect(auth.account?.email == "review@example.com")
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "saved@example.com")
     }
 
     @Test func signInRetryAfterFailedAddAccountActivatesAuthenticatedAccount() async throws {
