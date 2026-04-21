@@ -6124,6 +6124,58 @@ struct CodexReviewMCPTests {
         #expect(auth.savedAccounts.isEmpty)
     }
 
+    @Test func refreshPreservesPersistedActiveSelectionForDetachedCurrentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let currentSavedAccount = try saveReviewAccount(
+            email: "review@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let sharedSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "review@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { _ in
+                sharedSession
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateAccount(currentSavedAccount)
+
+        await auth.refresh()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
+        #expect(loadedAccounts.activeAccountKey == "saved@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
+    }
+
     @Test func failedInitialAuthenticationPersistenceDoesNotCancelRunningJobs() async throws {
         let environment = try isolatedHomeEnvironment()
         let loginSession = NonPersistentSuccessfulLoginReviewAuthSession()

@@ -894,7 +894,13 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 return
             }
             if state.account != nil {
-                _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+                let refreshedAccountKey = normalizedReviewAccountEmail(email: state.account?.email ?? "")
+                let persistedActiveAccountKey = auth.savedAccounts.first(where: \.isActive)?.accountKey
+                let shouldPreservePersistedActiveSelection =
+                    persistedActiveAccountKey != nil && persistedActiveAccountKey != refreshedAccountKey
+                _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(
+                    makeActive: shouldPreservePersistedActiveSelection == false
+                )
             } else if forceRecycleServer == false {
                 let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
                 if FileManager.default.fileExists(atPath: sharedAuthURL.path) {
