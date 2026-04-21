@@ -589,7 +589,7 @@ extension CodexReviewStore {
             )
             workspaces = [workspace] + workspaces
         }
-        jobsDidMutate()
+        noteJobMutation()
     }
 
     private func updateJob(
@@ -601,7 +601,7 @@ extension CodexReviewStore {
         }
         let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
         update(job)
-        jobsDidMutate()
+        noteJobMutation()
     }
 
     private func removeJob(id: String) {
@@ -614,13 +614,7 @@ extension CodexReviewStore {
         if workspace.jobs.isEmpty {
             workspaces.remove(at: location.workspaceIndex)
         }
-        jobsDidMutate()
-    }
-
-    private func jobsDidMutate() {
-        writeDiagnosticsIfNeeded()
-        (backend as? CodexReviewEmbeddedServerBackend)?
-            .scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
+        noteJobMutation()
     }
 
     private func filteredJobs(
@@ -1694,8 +1688,7 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     ) async {
         switch effect {
         case .none:
-            cancelDeferredAddAccountRuntimeReconcileTask()
-            deferredAddAccountRuntimeEffect = nil
+            scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
         case .deferRecycleUntilJobsDrain(let accountKey, let runtimeGeneration):
             cancelDeferredAddAccountRuntimeReconcileTask()
             deferredAddAccountRuntimeEffect = .init(
@@ -1900,6 +1893,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     func attachStore(_ store: CodexReviewStore) {
         attachedStore = store
+        store.onJobsDidMutate = { [weak self] in
+            self?.scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
+        }
     }
 
     func start(

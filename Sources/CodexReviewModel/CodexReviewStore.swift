@@ -23,6 +23,7 @@ public final class CodexReviewStore {
     @ObservationIgnored package let diagnosticsURL: URL?
     @ObservationIgnored package let backend: any CodexReviewStoreBackend
     @ObservationIgnored package var previewSupportRetainer: AnyObject?
+    @ObservationIgnored package var onJobsDidMutate: (@MainActor () -> Void)?
 
     package init(
         backend: any CodexReviewStoreBackend,
@@ -141,6 +142,11 @@ public final class CodexReviewStore {
             try data.write(to: diagnosticsURL, options: .atomic)
         } catch {
         }
+    }
+
+    package func noteJobMutation() {
+        writeDiagnosticsIfNeeded()
+        onJobsDidMutate?()
     }
 
     private func resetReviews() {

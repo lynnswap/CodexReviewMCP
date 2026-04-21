@@ -6936,16 +6936,124 @@ struct CodexReviewMCPTests {
                 )
             )
 
-            try await withTestTimeout(.seconds(2)) {
-                while true {
-                    let prepareCount = await manager.prepareCount()
-                    let shutdownCount = await manager.shutdownCount()
-                    if prepareCount == 2, shutdownCount == 1 {
-                        break
-                    }
-                    await Task.yield()
-                }
+            try await waitForAppServerLifecycleCounts(
+                manager,
+                prepareCount: 2,
+                shutdownCount: 1
+            )
+        } cleanup: {
+            await store.stop()
+        }
+    }
+
+    @Test func addAccountSameEmailDeferredRuntimeRecycleRunsWhenCancellationCompletesJob() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
             }
+        )
+
+        try await withAsyncCleanup {
+            await store.start()
+            await store.auth.refresh()
+            #expect(store.auth.account?.email == "review@example.com")
+            let jobID = try store.enqueueReview(
+                sessionID: "session-a",
+                request: .init(
+                    cwd: FileManager.default.currentDirectoryPath,
+                    target: .uncommittedChanges
+                )
+            )
+            store.markStarted(jobID: jobID, startedAt: Date())
+
+            await store.auth.addAccount()
+
+            try store.completeCancellationLocally(
+                jobID: jobID,
+                sessionID: "session-a"
+            )
+
+            try await waitForAppServerLifecycleCounts(
+                manager,
+                prepareCount: 2,
+                shutdownCount: 1
+            )
+        } cleanup: {
+            await store.stop()
+        }
+    }
+
+    @Test func unrelatedAddAccountDoesNotClearPendingDeferredRuntimeRecycle() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let manager = AuthCapableAppServerManager()
+        let authSession = MutableAuthenticatedLoginReviewAuthSession(
+            currentEmail: "review@example.com",
+            nextLoginEmails: ["review@example.com", "secondary@example.com"]
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        try await withAsyncCleanup {
+            await store.start()
+            await store.auth.refresh()
+            #expect(store.auth.account?.email == "review@example.com")
+            let jobID = try store.enqueueReview(
+                sessionID: "session-a",
+                request: .init(
+                    cwd: FileManager.default.currentDirectoryPath,
+                    target: .uncommittedChanges
+                )
+            )
+            store.markStarted(jobID: jobID, startedAt: Date())
+
+            await store.auth.addAccount()
+            await store.auth.addAccount()
+
+            #expect(await manager.prepareCount() == 1)
+            #expect(await manager.shutdownCount() == 0)
+
+            store.completeReview(
+                jobID: jobID,
+                outcome: .init(
+                    state: .succeeded,
+                    exitCode: 0,
+                    reviewThreadID: nil,
+                    threadID: nil,
+                    turnID: nil,
+                    model: nil,
+                    hasFinalReview: false,
+                    lastAgentMessage: "",
+                    errorMessage: nil,
+                    summary: "Completed.",
+                    startedAt: Date(),
+                    endedAt: Date(),
+                    content: ""
+                )
+            )
+
+            try await waitForAppServerLifecycleCounts(
+                manager,
+                prepareCount: 2,
+                shutdownCount: 1
+            )
         } cleanup: {
             await store.stop()
         }
@@ -9551,6 +9659,79 @@ private actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
+private actor MutableAuthenticatedLoginReviewAuthSession: ReviewAuthSession {
+    private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
+    private var bufferedNotifications: [AppServerServerNotification] = []
+    private var currentEmail: String
+    private let planType: String
+    private var nextLoginEmails: [String]
+
+    init(
+        currentEmail: String,
+        planType: String = "pro",
+        nextLoginEmails: [String]
+    ) {
+        self.currentEmail = currentEmail
+        self.planType = planType
+        self.nextLoginEmails = nextLoginEmails
+    }
+
+    func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
+        .init(
+            account: .chatGPT(email: currentEmail, planType: planType),
+            requiresOpenAIAuth: false
+        )
+    }
+
+    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
+        _ = params
+        if let nextLoginEmail = nextLoginEmails.first {
+            nextLoginEmails.removeFirst()
+            currentEmail = nextLoginEmail
+        }
+        buffer(.accountUpdated(.init(authMode: .chatGPT, planType: planType)))
+        buffer(.accountLoginCompleted(.init(error: nil, loginID: "login-browser", success: true)))
+        return .chatGPT(
+            loginID: "login-browser",
+            authURL: "https://auth.openai.com/oauth/authorize?foo=bar"
+        )
+    }
+
+    func cancelLogin(loginID _: String) async throws {}
+
+    func logout() async throws {}
+
+    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+        let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
+        setContinuation(continuation)
+        return .init(stream: stream, cancel: {})
+    }
+
+    func close() async {
+        continuation?.finish()
+        continuation = nil
+    }
+
+    private func setContinuation(
+        _ continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation
+    ) {
+        self.continuation = continuation
+        let bufferedNotifications = self.bufferedNotifications
+        self.bufferedNotifications.removeAll(keepingCapacity: false)
+        for notification in bufferedNotifications {
+            continuation.yield(notification)
+        }
+    }
+
+    private func buffer(_ notification: AppServerServerNotification) {
+        if let continuation {
+            continuation.yield(notification)
+        } else {
+            bufferedNotifications.append(notification)
+        }
+    }
+}
+
 private actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
@@ -9790,6 +9971,8 @@ private actor AuthCapableAppServerManager: AppServerManaging {
     private var reviewCheckoutCountStorage = 0
     private var shutdownCountStorage = 0
     private var prepareCountStorage = 0
+    private let prepareSignal = AsyncSignal()
+    private let shutdownSignal = AsyncSignal()
 
     init(
         authTransport: any AppServerSessionTransport = AuthCapableAppServerSessionTransport(),
@@ -9817,6 +10000,7 @@ private actor AuthCapableAppServerManager: AppServerManaging {
             throw prepareError
         }
         prepareCountStorage += 1
+        await prepareSignal.signal()
         return runtimeState
     }
 
@@ -9854,6 +10038,7 @@ private actor AuthCapableAppServerManager: AppServerManaging {
 
     func shutdown() async {
         shutdownCountStorage += 1
+        await shutdownSignal.signal()
     }
 
     func authTransportCheckoutCount() -> Int {
@@ -9874,6 +10059,14 @@ private actor AuthCapableAppServerManager: AppServerManaging {
 
     func prepareCount() -> Int {
         prepareCountStorage
+    }
+
+    func waitForPrepareCount(_ expectedCount: Int) async {
+        await prepareSignal.wait(untilCount: expectedCount)
+    }
+
+    func waitForShutdownCount(_ expectedCount: Int) async {
+        await shutdownSignal.wait(untilCount: expectedCount)
     }
 }
 
@@ -11006,6 +11199,19 @@ private func waitForAuthTransportCheckoutCount(
         while await manager.authTransportCheckoutCount() < expectedCount {
             await Task.yield()
         }
+    }
+}
+
+private func waitForAppServerLifecycleCounts(
+    _ manager: AuthCapableAppServerManager,
+    prepareCount expectedPrepareCount: Int,
+    shutdownCount expectedShutdownCount: Int,
+    timeout: Duration = .seconds(2)
+) async throws {
+    try await withTestTimeout(timeout) {
+        async let waitForPrepare = manager.waitForPrepareCount(expectedPrepareCount)
+        async let waitForShutdown = manager.waitForShutdownCount(expectedShutdownCount)
+        _ = await (waitForPrepare, waitForShutdown)
     }
 }
 
