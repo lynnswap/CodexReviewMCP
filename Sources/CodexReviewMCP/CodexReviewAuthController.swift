@@ -238,6 +238,11 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 priorSnapshot: priorSnapshot,
                 priorCurrentAccount: priorCurrentAccount
             )
+            if auth.account != nil,
+               didAccountIdentityChange(from: priorCurrentAccount, to: auth.account) == false
+            {
+                accountSessionController.resetAuthenticationRequiredCapabilityForAuthRecovery()
+            }
             auth.updatePhase(.signedOut)
             auth.updateWarning(message: nil)
             hasResolvedAuthenticatedAccount = auth.account != nil

@@ -3393,6 +3393,56 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func authRequiredRateLimitReadRetriesAfterSameAccountAddAccountReauthentication() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "review@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        let firstTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .authenticationRequired
+        )
+        let secondTransport = AuthCapableAppServerSessionTransport()
+        let manager = AuthCapableAppServerManager(
+            authTransports: [firstTransport, secondTransport]
+        )
+        let authSession = SameAccountSuccessfulLoginReviewAuthSession()
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        await store.start()
+        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+        #expect(store.auth.account?.email == "review@example.com")
+        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+
+        await store.auth.addAccount()
+
+        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
+        try await waitForMainActorCondition {
+            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+        }
+
+        #expect(await firstTransport.rateLimitsReadCount() == 1)
+        #expect(await secondTransport.rateLimitsReadCount() >= 1)
+        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+        #expect(store.auth.account?.email == "review@example.com")
+
+        await store.stop()
+    }
+
     @Test func unsupportedRateLimitReadDoesNotPromoteFirstNonCurrentNotificationToCurrentSnapshot() async throws {
         let environment = try isolatedHomeEnvironment()
         let authTransport = AuthCapableAppServerSessionTransport(
