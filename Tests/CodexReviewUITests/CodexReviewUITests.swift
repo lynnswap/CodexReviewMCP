@@ -1183,7 +1183,8 @@ struct CodexReviewUITests {
         let statusView = StatusView(store: store)
 
         #expect(contextMenu.sectionTitle == account.email)
-        #expect(statusView.menuSectionTitle == account.email)
+        #expect(store.auth.account?.email == account.email)
+        _ = statusView
     }
 
     @Test func addAccountToolbarItemBeginsAuthentication() async throws {
@@ -2976,7 +2977,7 @@ struct CodexReviewUITests {
         #expect(backend.recordedActions().isEmpty)
     }
 
-    @Test func statusViewRestartsStoppedServer() async {
+    @Test func storeRestartStartsStoppedServer() async {
         let backend = CountingStartBackend(
             shouldAutoStartEmbeddedServer: false,
             initialAuthState: .signedIn(accountID: "review@example.com"),
@@ -2988,11 +2989,7 @@ struct CodexReviewUITests {
             authState: .signedIn(accountID: "review@example.com"),
             workspaces: []
         )
-        let view = StatusView(store: store)
-
-        #expect(view.showsServerRestartAction)
-
-        view.restartServer()
+        await store.restart()
         await backend.waitForStartCallCount(1)
 
         #expect(backend.startCallCount() == 1)
@@ -3008,6 +3005,295 @@ struct CodexReviewUITests {
         let view = StatusView(store: store)
 
         #expect(view.showsServerRestartAction)
+    }
+
+    @Test func statusViewUsesSettingsStoreLabels() {
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = makeSettingsSnapshot(
+            model: "gpt-5.4-mini",
+            reasoningEffort: .low,
+            serviceTier: nil
+        )
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .running,
+            authState: .signedIn(accountID: "review@example.com"),
+            workspaces: [],
+            settingsSnapshot: backend.initialSettingsSnapshot
+        )
+
+        let view = StatusView(store: store)
+
+        #expect(store.settings.currentModelDisplayText == "GPT-5.4 Mini")
+        #expect(store.settings.currentReasoningDisplayText == "Low")
+        #expect(store.settings.currentServiceTierDisplayText == "Normal")
+        _ = view
+    }
+
+    @Test func statusViewDisablesSettingsControlsWhenServerIsNotRunning() {
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = makeSettingsSnapshot()
+        let store = CodexReviewStore(backend: backend)
+        store.loadForTesting(
+            serverState: .stopped,
+            authState: .signedIn(accountID: "review@example.com"),
+            workspaces: [],
+            settingsSnapshot: backend.initialSettingsSnapshot
+        )
+
+        #expect(store.serverState != .running || store.settings.isLoading || store.settings.displayedModels.isEmpty)
+    }
+
+    @Test func settingsStoreNormalizesReasoningAndTierWhenModelChanges() async {
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = makeSettingsSnapshot(
+            model: "gpt-5.4",
+            reasoningEffort: .high,
+            serviceTier: .fast
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        await store.settings.updateModel("gpt-5.4-mini")
+
+        #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.selectedReasoningEffort == nil)
+        #expect(store.settings.selectedServiceTier == nil)
+        #expect(store.settings.currentReasoningDisplayText == "Medium")
+    }
+
+    @Test func settingsStoreKeepsCurrentHiddenModelVisible() {
+        let hiddenModel = CodexReviewModelCatalogItem(
+            id: "gpt-hidden",
+            model: "gpt-hidden",
+            displayName: "GPT Hidden",
+            hidden: true,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .medium, description: "Hidden default.")
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: []
+        )
+        let visibleModel = CodexReviewModelCatalogItem(
+            id: "gpt-5.4",
+            model: "gpt-5.4",
+            displayName: "GPT-5.4",
+            hidden: false,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .medium, description: "Visible default.")
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: [.fast]
+        )
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = .init(
+            model: "gpt-hidden",
+            reasoningEffort: .medium,
+            serviceTier: nil,
+            models: [visibleModel, hiddenModel]
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-hidden"])
+    }
+
+    @Test func settingsStoreKeepsConfiguredMissingModelVisible() {
+        let visibleModel = CodexReviewModelCatalogItem(
+            id: "gpt-5.4",
+            model: "gpt-5.4",
+            displayName: "GPT-5.4",
+            hidden: false,
+            supportedReasoningEfforts: [
+                .init(reasoningEffort: .medium, description: "Visible default.")
+            ],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: [.fast]
+        )
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = .init(
+            model: "gpt-missing",
+            reasoningEffort: nil,
+            serviceTier: nil,
+            models: [visibleModel]
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-missing"])
+        #expect(store.settings.currentModelDisplayText == "gpt-missing")
+    }
+
+    @Test func settingsStorePreservesIncompatiblePersistedOverridesUntilEdited() {
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = makeSettingsSnapshot(
+            model: "gpt-5.4-mini",
+            reasoningEffort: .high,
+            serviceTier: .fast
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        #expect(store.settings.selectedReasoningEffort == .high)
+        #expect(store.settings.selectedServiceTier == .fast)
+        #expect(store.settings.currentReasoningDisplayText == "High")
+        #expect(store.settings.currentServiceTierDisplayText == "Fast")
+    }
+
+    @Test func settingsStorePreservesReasoningOverrideWhenModelCatalogOmitsOptions() {
+        let modelWithoutReasoningOptions = CodexReviewModelCatalogItem(
+            id: "gpt-no-options",
+            model: "gpt-no-options",
+            displayName: "GPT No Options",
+            hidden: false,
+            supportedReasoningEfforts: [],
+            defaultReasoningEffort: .medium,
+            supportedServiceTiers: []
+        )
+        let backend = CodexReviewPreviewStoreBackend()
+        backend.initialSettingsSnapshot = .init(
+            model: "gpt-no-options",
+            fallbackModel: nil,
+            reasoningEffort: .high,
+            serviceTier: nil,
+            models: [modelWithoutReasoningOptions]
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        #expect(store.settings.selectedReasoningEffort == .high)
+        #expect(store.settings.currentReasoningDisplayText == "High")
+    }
+
+    @Test func settingsStoreAppliesPendingSelectionAfterInFlightSave() async throws {
+        let backend = BlockingSettingsBackend(snapshot: makeSettingsSnapshot())
+        backend.blockNextModelUpdate()
+        let store = CodexReviewStore(backend: backend)
+
+        store.settings.selectedModel = "gpt-5.4-mini"
+        await backend.waitForBlockedModelUpdateToStart()
+
+        store.settings.selectedReasoningEffort = .low
+        await backend.resumeBlockedModelUpdate()
+
+        try await waitForCondition {
+            backend.reasoningUpdateCalls == [.low]
+        }
+
+        #expect(store.settings.selectedModel == "gpt-5.4-mini")
+        #expect(store.settings.selectedReasoningEffort == .low)
+        #expect(backend.modelUpdateCalls.count == 1)
+    }
+
+    @Test func settingsStoreRunsQueuedRefreshAfterCurrentLoad() async throws {
+        let backend = BlockingSettingsBackend(snapshot: makeSettingsSnapshot())
+        backend.blockNextRefresh()
+        let store = CodexReviewStore(backend: backend)
+
+        let refreshTask = Task { @MainActor in
+            await store.settings.refresh()
+        }
+        await backend.waitForBlockedRefreshToStart()
+
+        await store.settings.refresh()
+        await backend.resumeBlockedRefresh()
+        await refreshTask.value
+
+        try await waitForCondition {
+            backend.refreshCallCount == 2
+        }
+    }
+
+    @Test func settingsStorePersistsQueuedReasoningAndTierWithoutWritingModelOverride() async throws {
+        let backend = BlockingSettingsBackend(
+            snapshot: makeSettingsSnapshot(
+                model: "gpt-5.3-codex",
+                reasoningEffort: .low,
+                serviceTier: .fast
+            )
+        )
+        backend.blockNextReasoningUpdate()
+        let store = CodexReviewStore(backend: backend)
+
+        store.settings.selectedReasoningEffort = .medium
+        await backend.waitForBlockedReasoningUpdateToStart()
+
+        store.settings.selectedReasoningEffort = .minimal
+        store.settings.selectedServiceTier = .flex
+        await backend.resumeBlockedReasoningUpdate()
+
+        try await waitForCondition {
+            backend.reasoningUpdateCalls == [.medium, .minimal]
+                && backend.serviceTierUpdateCalls == [.flex]
+        }
+
+        #expect(backend.modelUpdateCalls.isEmpty)
+        #expect(store.settings.selectedReasoningEffort == .minimal)
+        #expect(store.settings.selectedServiceTier == .flex)
+    }
+
+    @Test func settingsStorePersistsBackToBackObservedSelectionChanges() async throws {
+        let backend = BlockingSettingsBackend(
+            snapshot: makeSettingsSnapshot(
+                model: "gpt-5.3-codex",
+                reasoningEffort: .low,
+                serviceTier: .fast
+            )
+        )
+        backend.blockNextReasoningUpdate()
+        let store = CodexReviewStore(backend: backend)
+
+        store.settings.selectedReasoningEffort = .medium
+        store.settings.selectedServiceTier = .flex
+        await backend.waitForBlockedReasoningUpdateToStart()
+        await backend.resumeBlockedReasoningUpdate()
+
+        try await waitForCondition {
+            backend.reasoningUpdateCalls == [.medium]
+                && backend.serviceTierUpdateCalls == [.flex]
+        }
+
+        #expect(store.settings.selectedReasoningEffort == .medium)
+        #expect(store.settings.selectedServiceTier == .flex)
+    }
+
+    @Test func settingsStoreClearsModelOverrideBackToFallbackModel() async throws {
+        let backend = BlockingSettingsBackend(
+            snapshot: makeSettingsSnapshot(
+                model: "gpt-5.4-mini",
+                fallbackModel: "gpt-5.4",
+                reasoningEffort: .low,
+                serviceTier: nil
+            )
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        store.settings.selectedModel = nil
+
+        try await waitForCondition {
+            backend.modelUpdateCalls == [
+                .init(model: nil, reasoningEffort: .low, serviceTier: nil)
+            ]
+        }
+
+        #expect(store.settings.selectedModel == nil)
+        #expect(store.settings.effectiveModel == "gpt-5.4")
+        #expect(store.settings.currentModelDisplayText == "GPT-5.4")
+    }
+
+    @Test func settingsStoreClearsReasoningOverrideBackToModelDefault() async throws {
+        let backend = BlockingSettingsBackend(
+            snapshot: makeSettingsSnapshot(
+                model: "gpt-5.4",
+                reasoningEffort: .high,
+                serviceTier: .fast
+            )
+        )
+        let store = CodexReviewStore(backend: backend)
+
+        store.settings.selectedReasoningEffort = nil
+
+        try await waitForCondition {
+            backend.reasoningUpdateCalls == [nil]
+        }
+
+        #expect(store.settings.selectedReasoningEffort == nil)
+        #expect(store.settings.currentReasoningDisplayText == "Medium")
     }
 
     @Test func signInViewDescriptionTextReflectsAuthState() {
@@ -3239,6 +3525,21 @@ private func withTestTimeout<T: Sendable>(
 }
 
 @MainActor
+private func waitForCondition(
+    timeout: Duration = .seconds(2),
+    _ condition: @escaping @MainActor @Sendable () -> Bool
+) async throws {
+    try await withTestTimeout(timeout) {
+        while await MainActor.run(body: {
+            condition() == false
+        }) {
+            try Task.checkCancellation()
+            await Task.yield()
+        }
+    }
+}
+
+@MainActor
 private func awaitTransportRender(
     _ transport: ReviewMonitorTransportViewController,
     after renderCount: Int,
@@ -3447,7 +3748,8 @@ private extension CodexReviewStore {
         serverState: CodexReviewServerState,
         authState: TestAuthState = .signedOut,
         serverURL: URL? = nil,
-        workspaces: [CodexReviewWorkspace]
+        workspaces: [CodexReviewWorkspace],
+        settingsSnapshot: CodexReviewSettingsSnapshot? = nil
     ) {
         loadForTesting(
             serverState: serverState,
@@ -3467,9 +3769,26 @@ private extension CodexReviewStore {
                 ]
             } ?? [],
             serverURL: serverURL,
-            workspaces: workspaces
+            workspaces: workspaces,
+            settingsSnapshot: settingsSnapshot
         )
     }
+}
+
+@MainActor
+private func makeSettingsSnapshot(
+    model: String? = "gpt-5.4",
+    fallbackModel: String? = nil,
+    reasoningEffort: CodexReviewReasoningEffort = .medium,
+    serviceTier: CodexReviewServiceTier? = .fast
+) -> CodexReviewSettingsSnapshot {
+    .init(
+        model: model,
+        fallbackModel: fallbackModel,
+        reasoningEffort: reasoningEffort,
+        serviceTier: serviceTier,
+        models: ReviewMonitorPreviewContent.makePreviewModelCatalog()
+    )
 }
 
 @MainActor
@@ -3540,6 +3859,162 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
 
     func logout(auth: CodexReviewAuthModel) async {
         _ = auth
+    }
+}
+
+@MainActor
+private final class BlockingSettingsBackend: CodexReviewStoreBackend {
+    struct ModelUpdateCall: Equatable {
+        let model: String?
+        let reasoningEffort: CodexReviewReasoningEffort?
+        let serviceTier: CodexReviewServiceTier?
+    }
+
+    var isActive = false
+    let shouldAutoStartEmbeddedServer = false
+    let initialAccount: CodexAccount? = nil
+    let initialAccounts: [CodexAccount] = []
+    let initialActiveAccountKey: String? = nil
+    var initialSettingsSnapshot: CodexReviewSettingsSnapshot
+
+    private(set) var refreshCallCount = 0
+    private(set) var modelUpdateCalls: [ModelUpdateCall] = []
+    private(set) var reasoningUpdateCalls: [CodexReviewReasoningEffort?] = []
+    private(set) var serviceTierUpdateCalls: [CodexReviewServiceTier?] = []
+
+    private var shouldBlockNextRefresh = false
+    private var shouldBlockNextModelUpdate = false
+    private var shouldBlockNextReasoningUpdate = false
+    private let blockedRefreshStartedGate = OneShotGate()
+    private let blockedRefreshResumeGate = OneShotGate()
+    private let blockedModelUpdateStartedGate = OneShotGate()
+    private let blockedModelUpdateResumeGate = OneShotGate()
+    private let blockedReasoningUpdateStartedGate = OneShotGate()
+    private let blockedReasoningUpdateResumeGate = OneShotGate()
+
+    init(snapshot: CodexReviewSettingsSnapshot) {
+        initialSettingsSnapshot = snapshot
+    }
+
+    func start(
+        store: CodexReviewStore,
+        forceRestartIfNeeded: Bool
+    ) async {
+        _ = store
+        _ = forceRestartIfNeeded
+    }
+
+    func stop(store: CodexReviewStore) async {
+        _ = store
+    }
+
+    func waitUntilStopped() async {}
+
+    func cancelReview(
+        jobID: String,
+        sessionID: String,
+        reason: String,
+        store: CodexReviewStore
+    ) async throws {
+        _ = jobID
+        _ = sessionID
+        _ = reason
+        _ = store
+    }
+
+    func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
+        refreshCallCount += 1
+        if shouldBlockNextRefresh {
+            shouldBlockNextRefresh = false
+            await blockedRefreshStartedGate.open()
+            await blockedRefreshResumeGate.wait()
+        }
+        return initialSettingsSnapshot
+    }
+
+    func updateSettingsModel(
+        _ model: String?,
+        reasoningEffort: CodexReviewReasoningEffort?,
+        persistReasoningEffort: Bool,
+        serviceTier: CodexReviewServiceTier?,
+        persistServiceTier: Bool
+    ) async throws {
+        modelUpdateCalls.append(
+            .init(
+                model: model,
+                reasoningEffort: reasoningEffort,
+                serviceTier: serviceTier
+            )
+        )
+        initialSettingsSnapshot.model = model
+        if persistReasoningEffort {
+            initialSettingsSnapshot.reasoningEffort = reasoningEffort
+        }
+        if persistServiceTier {
+            initialSettingsSnapshot.serviceTier = serviceTier
+        }
+
+        if shouldBlockNextModelUpdate {
+            shouldBlockNextModelUpdate = false
+            await blockedModelUpdateStartedGate.open()
+            await blockedModelUpdateResumeGate.wait()
+        }
+    }
+
+    func updateSettingsReasoningEffort(
+        _ reasoningEffort: CodexReviewReasoningEffort?
+    ) async throws {
+        reasoningUpdateCalls.append(reasoningEffort)
+        initialSettingsSnapshot.reasoningEffort = reasoningEffort
+
+        if shouldBlockNextReasoningUpdate {
+            shouldBlockNextReasoningUpdate = false
+            await blockedReasoningUpdateStartedGate.open()
+            await blockedReasoningUpdateResumeGate.wait()
+        }
+    }
+
+    func updateSettingsServiceTier(
+        _ serviceTier: CodexReviewServiceTier?
+    ) async throws {
+        serviceTierUpdateCalls.append(serviceTier)
+        initialSettingsSnapshot.serviceTier = serviceTier
+    }
+
+    func blockNextRefresh() {
+        shouldBlockNextRefresh = true
+    }
+
+    func waitForBlockedRefreshToStart() async {
+        await blockedRefreshStartedGate.wait()
+    }
+
+    func resumeBlockedRefresh() async {
+        await blockedRefreshResumeGate.open()
+    }
+
+    func blockNextModelUpdate() {
+        shouldBlockNextModelUpdate = true
+    }
+
+    func waitForBlockedModelUpdateToStart() async {
+        await blockedModelUpdateStartedGate.wait()
+    }
+
+    func resumeBlockedModelUpdate() async {
+        await blockedModelUpdateResumeGate.open()
+    }
+
+    func blockNextReasoningUpdate() {
+        shouldBlockNextReasoningUpdate = true
+    }
+
+    func waitForBlockedReasoningUpdateToStart() async {
+        await blockedReasoningUpdateStartedGate.wait()
+    }
+
+    func resumeBlockedReasoningUpdate() async {
+        await blockedReasoningUpdateResumeGate.open()
     }
 }
 

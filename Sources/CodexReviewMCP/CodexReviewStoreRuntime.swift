@@ -1657,6 +1657,37 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         )
     }
 
+    var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
+        let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
+        let profileClearsReviewModel = activeProfileClearsReviewModel(
+            environment: configuration.environment
+        )
+        let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
+            environment: configuration.environment
+        )
+        let profileClearsServiceTier = activeProfileClearsServiceTier(
+            environment: configuration.environment
+        )
+        let displayedOverrides = resolveDisplayedSettingsOverrides(
+            localConfig: localConfig,
+            resolvedConfig: fallbackConfig,
+            profileClearsReasoningEffort: profileClearsReasoningEffort,
+            profileClearsServiceTier: profileClearsServiceTier
+        )
+        return .init(
+            model: resolveReviewModelOverride(
+                localConfig: localConfig,
+                resolvedConfig: fallbackConfig,
+                profileClearsReviewModel: profileClearsReviewModel
+            ),
+            fallbackModel: fallbackConfig.model?.nilIfEmpty,
+            reasoningEffort: displayedOverrides.reasoningEffort,
+            serviceTier: displayedOverrides.serviceTier,
+            models: []
+        )
+    }
+
     var isActive: Bool {
         server != nil || waitTask != nil || startupTask != nil
     }
@@ -1803,6 +1834,186 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         if let waitTask {
             _ = await waitTask.value
         }
+    }
+
+    func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
+        let transport = try await appServerManager.checkoutAuthTransport()
+        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
+        let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
+        let configResponse: AppServerConfigReadResponse = try await transport.request(
+            method: "config/read",
+            params: AppServerConfigReadParams(
+                cwd: nil,
+                includeLayers: false
+            ),
+            responseType: AppServerConfigReadResponse.self
+        )
+        var models: [CodexReviewModelCatalogItem] = []
+        var cursor: String?
+        repeat {
+            let modelResponse: AppServerModelListResponse = try await transport.request(
+                method: "model/list",
+                params: AppServerModelListParams(
+                    cursor: cursor,
+                    limit: nil,
+                    includeHidden: true
+                ),
+                responseType: AppServerModelListResponse.self
+            )
+            models.append(contentsOf: modelResponse.data)
+            cursor = modelResponse.nextCursor?.nilIfEmpty
+        } while cursor != nil
+        let effectiveConfig = mergeAppServerConfig(
+            primary: configResponse.config,
+            fallback: fallbackConfig
+        )
+        let profileClearsReviewModel = activeProfileClearsReviewModel(
+            environment: configuration.environment
+        )
+        let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
+            environment: configuration.environment
+        )
+        let profileClearsServiceTier = activeProfileClearsServiceTier(
+            environment: configuration.environment
+        )
+        let displayedOverrides = resolveDisplayedSettingsOverrides(
+            localConfig: localConfig,
+            resolvedConfig: effectiveConfig,
+            profileClearsReasoningEffort: profileClearsReasoningEffort,
+            profileClearsServiceTier: profileClearsServiceTier
+        )
+        let modelOverride = resolveReviewModelOverride(
+            localConfig: localConfig,
+            resolvedConfig: effectiveConfig,
+            profileClearsReviewModel: profileClearsReviewModel
+        )
+
+        return .init(
+            model: modelOverride,
+            fallbackModel: effectiveConfig.model?.nilIfEmpty,
+            reasoningEffort: displayedOverrides.reasoningEffort,
+            serviceTier: displayedOverrides.serviceTier,
+            models: models
+        )
+    }
+
+    func updateSettingsModel(
+        _ model: String?,
+        reasoningEffort: CodexReviewReasoningEffort?,
+        persistReasoningEffort: Bool,
+        serviceTier: CodexReviewServiceTier?,
+        persistServiceTier: Bool
+    ) async throws {
+        let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let localConfigPresence = try loadReviewLocalConfigPresence(environment: configuration.environment)
+        let hasRootReviewModel = localConfigPresence.hasReviewModel
+        let hasProfileReviewModelOverride = activeProfileHasReviewModelOverride(
+            environment: configuration.environment
+        )
+        let writeModelAtRoot = profile == nil
+            || (hasRootReviewModel && hasProfileReviewModelOverride == false)
+        let hasRootReasoningEffort = localConfigPresence.hasModelReasoningEffort
+        let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
+            environment: configuration.environment
+        )
+        let writeReasoningAtRoot = profile == nil
+            || (hasRootReasoningEffort && hasProfileReasoningEffortOverride == false)
+        let hasRootServiceTier = localConfigPresence.hasServiceTier
+        let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
+            environment: configuration.environment
+        )
+        let writeServiceTierAtRoot = profile == nil
+            || (hasRootServiceTier && hasProfileServiceTierOverride == false)
+        var edits: [AppServerConfigEdit] = [
+            .init(
+                keyPath: settingsKeyPath(
+                    "review_model",
+                    profileKeyPath: profile?.keyPathPrefix,
+                    forceRoot: writeModelAtRoot
+                ),
+                value: model.map(AppServerJSONValue.string) ?? .null,
+                mergeStrategy: .replace
+            ),
+        ]
+        if persistReasoningEffort {
+            edits.append(
+                .init(
+                    keyPath: settingsKeyPath(
+                        "model_reasoning_effort",
+                        profileKeyPath: profile?.keyPathPrefix,
+                        forceRoot: writeReasoningAtRoot
+                    ),
+                    value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                )
+            )
+        }
+        if persistServiceTier {
+            edits.append(
+                .init(
+                    keyPath: settingsKeyPath(
+                        "service_tier",
+                        profileKeyPath: profile?.keyPathPrefix,
+                        forceRoot: writeServiceTierAtRoot
+                    ),
+                    value: serviceTier.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                )
+            )
+        }
+        try await writeSettings(edits: edits)
+    }
+
+    func updateSettingsReasoningEffort(
+        _ reasoningEffort: CodexReviewReasoningEffort?
+    ) async throws {
+        let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let localConfigPresence = try loadReviewLocalConfigPresence(environment: configuration.environment)
+        let hasRootReasoningEffort = localConfigPresence.hasModelReasoningEffort
+        let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
+            environment: configuration.environment
+        )
+        let forceRoot = profile == nil
+            || (hasRootReasoningEffort && hasProfileReasoningEffortOverride == false)
+        try await writeSettings(
+            edits: [
+                .init(
+                    keyPath: settingsKeyPath(
+                        "model_reasoning_effort",
+                        profileKeyPath: profile?.keyPathPrefix,
+                        forceRoot: forceRoot
+                    ),
+                    value: reasoningEffort.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                ),
+            ]
+        )
+    }
+
+    func updateSettingsServiceTier(
+        _ serviceTier: CodexReviewServiceTier?
+    ) async throws {
+        let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let localConfigPresence = try loadReviewLocalConfigPresence(environment: configuration.environment)
+        let hasRootServiceTier = localConfigPresence.hasServiceTier
+        let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
+            environment: configuration.environment
+        )
+        let forceRoot = profile == nil
+            || (hasRootServiceTier && hasProfileServiceTierOverride == false)
+        try await writeSettings(
+            edits: [
+                .init(
+                    keyPath: settingsKeyPath(
+                        "service_tier",
+                        profileKeyPath: profile?.keyPathPrefix,
+                        forceRoot: forceRoot
+                    ),
+                    value: serviceTier.map { .string($0.rawValue) } ?? .null,
+                    mergeStrategy: .replace
+                ),
+            ]
+        )
     }
 
     func cancelReview(
@@ -2083,6 +2294,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 appServerRuntimeState: runtimeState
             )
             appServerRuntimeGeneration += 1
+            if let store = attachedStore {
+                await store.settings.refreshIfRunning(serverState: store.serverState)
+            }
         } catch {
             let endpointRecord = server.currentEndpointRecord()
             removeRuntimeState(endpointRecord: endpointRecord)
@@ -2137,6 +2351,23 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             at: runtimeStateFileURL
         )
     }
+
+    private func writeSettings(
+        edits: [AppServerConfigEdit]
+    ) async throws {
+        let transport = try await appServerManager.checkoutAuthTransport()
+        let _: AppServerConfigWriteResponse = try await transport.request(
+            method: "config/batchWrite",
+            params: AppServerConfigBatchWriteParams(
+                edits: edits,
+                filePath: nil,
+                expectedVersion: nil,
+                reloadUserConfig: true
+            ),
+            responseType: AppServerConfigWriteResponse.self
+        )
+    }
+
 }
 
 private struct ReviewQueuedJob {

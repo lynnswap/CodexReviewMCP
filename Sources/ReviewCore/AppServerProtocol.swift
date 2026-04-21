@@ -1,4 +1,5 @@
 import Foundation
+import CodexReviewModel
 import ReviewJobs
 
 package enum AppServerJSONValue: Codable, Sendable, Equatable {
@@ -204,20 +205,34 @@ package struct AppServerNullParams: Encodable, Sendable {
 }
 
 package struct AppServerConfigReadParams: Encodable, Sendable {
-    package var cwd: String
+    package var cwd: String?
     package var includeLayers: Bool
+
+    package init(
+        cwd: String? = nil,
+        includeLayers: Bool
+    ) {
+        self.cwd = cwd
+        self.includeLayers = includeLayers
+    }
 }
 
 package struct AppServerConfigReadResponse: Decodable, Sendable {
     package struct Config: Decodable, Sendable {
         package var model: String?
         package var reviewModel: String?
+        package var modelReasoningEffort: CodexReviewReasoningEffort?
+        package var serviceTier: CodexReviewServiceTier?
         package var modelContextWindow: Int?
         package var modelAutoCompactTokenLimit: Int?
+        package var hasModelReasoningEffort: Bool
+        package var hasServiceTier: Bool
 
         package enum CodingKeys: String, CodingKey {
             case model
             case reviewModel = "review_model"
+            case modelReasoningEffort = "model_reasoning_effort"
+            case serviceTier = "service_tier"
             case modelContextWindow = "model_context_window"
             case modelAutoCompactTokenLimit = "model_auto_compact_token_limit"
         }
@@ -225,21 +240,52 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
         package init(
             model: String? = nil,
             reviewModel: String? = nil,
+            modelReasoningEffort: CodexReviewReasoningEffort? = nil,
+            serviceTier: CodexReviewServiceTier? = nil,
             modelContextWindow: Int? = nil,
-            modelAutoCompactTokenLimit: Int? = nil
+            modelAutoCompactTokenLimit: Int? = nil,
+            hasModelReasoningEffort: Bool? = nil,
+            hasServiceTier: Bool? = nil
         ) {
             self.model = model
             self.reviewModel = reviewModel
+            self.modelReasoningEffort = modelReasoningEffort
+            self.serviceTier = serviceTier
             self.modelContextWindow = modelContextWindow
             self.modelAutoCompactTokenLimit = modelAutoCompactTokenLimit
+            self.hasModelReasoningEffort = hasModelReasoningEffort ?? (modelReasoningEffort != nil)
+            self.hasServiceTier = hasServiceTier ?? (serviceTier != nil)
         }
 
         package init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             model = try container.decodeIfPresent(String.self, forKey: .model)
             reviewModel = try container.decodeIfPresent(String.self, forKey: .reviewModel)
+            hasModelReasoningEffort = container.contains(.modelReasoningEffort)
+            modelReasoningEffort = try Self.decodeStringEnumIfPresent(
+                from: container,
+                forKey: .modelReasoningEffort,
+                transform: CodexReviewReasoningEffort.init(rawValue:)
+            )
+            hasServiceTier = container.contains(.serviceTier)
+            serviceTier = try Self.decodeStringEnumIfPresent(
+                from: container,
+                forKey: .serviceTier,
+                transform: CodexReviewServiceTier.init(rawValue:)
+            )
             modelContextWindow = try Self.decodeFlexibleIntIfPresent(from: container, forKey: .modelContextWindow)
             modelAutoCompactTokenLimit = try Self.decodeFlexibleIntIfPresent(from: container, forKey: .modelAutoCompactTokenLimit)
+        }
+
+        private static func decodeStringEnumIfPresent<T>(
+            from container: KeyedDecodingContainer<CodingKeys>,
+            forKey key: CodingKeys,
+            transform: (String) -> T?
+        ) throws -> T? {
+            guard let rawValue = try container.decodeIfPresent(String.self, forKey: key) else {
+                return nil
+            }
+            return transform(rawValue)
         }
 
         private static func decodeFlexibleIntIfPresent(
@@ -266,6 +312,91 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
 
     package init(config: Config) {
         self.config = config
+    }
+}
+
+package struct AppServerModelListParams: Encodable, Sendable {
+    package var cursor: String?
+    package var limit: Int?
+    package var includeHidden: Bool?
+
+    package init(
+        cursor: String? = nil,
+        limit: Int? = nil,
+        includeHidden: Bool? = nil
+    ) {
+        self.cursor = cursor
+        self.limit = limit
+        self.includeHidden = includeHidden
+    }
+}
+
+package struct AppServerModelListResponse: Decodable, Sendable {
+    package var data: [CodexReviewModelCatalogItem]
+    package var nextCursor: String?
+
+    package init(
+        data: [CodexReviewModelCatalogItem],
+        nextCursor: String? = nil
+    ) {
+        self.data = data
+        self.nextCursor = nextCursor
+    }
+}
+
+package struct AppServerConfigEdit: Encodable, Sendable {
+    package var keyPath: String
+    package var value: AppServerJSONValue
+    package var mergeStrategy: AppServerMergeStrategy
+
+    package init(
+        keyPath: String,
+        value: AppServerJSONValue,
+        mergeStrategy: AppServerMergeStrategy
+    ) {
+        self.keyPath = keyPath
+        self.value = value
+        self.mergeStrategy = mergeStrategy
+    }
+}
+
+package enum AppServerMergeStrategy: String, Encodable, Sendable {
+    case replace = "replace"
+    case upsert = "upsert"
+}
+
+package struct AppServerConfigBatchWriteParams: Encodable, Sendable {
+    package var edits: [AppServerConfigEdit]
+    package var filePath: String?
+    package var expectedVersion: String?
+    package var reloadUserConfig: Bool
+
+    package init(
+        edits: [AppServerConfigEdit],
+        filePath: String? = nil,
+        expectedVersion: String? = nil,
+        reloadUserConfig: Bool = false
+    ) {
+        self.edits = edits
+        self.filePath = filePath
+        self.expectedVersion = expectedVersion
+        self.reloadUserConfig = reloadUserConfig
+    }
+}
+
+package struct AppServerConfigWriteResponse: Decodable, Sendable {
+    package var status: String?
+    package var version: String?
+    package var filePath: String?
+
+    package init(
+        status: String? = nil,
+        version: String? = nil,
+        filePath: String? = nil
+    ) {
+        self.status = status
+        self.version = version
+        self.filePath = filePath
     }
 }
 

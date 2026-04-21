@@ -70,7 +70,14 @@ public final class CodexReviewAuthModel {
     }
 
     public package(set) var phase: Phase = .signedOut
-    public package(set) var account: CodexAccount?
+    public package(set) var account: CodexAccount? {
+        didSet {
+            guard account?.accountKey != oldValue?.accountKey else {
+                return
+            }
+            onAccountDidChange?()
+        }
+    }
     public package(set) var savedAccounts: [CodexAccount] = []
     public package(set) var authenticationFailureCount = 0
     public package(set) var warningMessage: String?
@@ -84,6 +91,7 @@ public final class CodexReviewAuthModel {
 
     @ObservationIgnored private let controller: any CodexReviewAuthControlling
     @ObservationIgnored private var pendingAccountAction: PendingAccountAction?
+    @ObservationIgnored package var onAccountDidChange: (@MainActor () -> Void)?
 
     public var progress: Progress? {
         guard case .signingIn(let progress) = phase else {

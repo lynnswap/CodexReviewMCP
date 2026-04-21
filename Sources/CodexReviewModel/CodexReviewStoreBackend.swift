@@ -7,6 +7,7 @@ package protocol CodexReviewStoreBackend: AnyObject {
     var initialAccount: CodexAccount? { get }
     var initialAccounts: [CodexAccount] { get }
     var initialActiveAccountKey: String? { get }
+    var initialSettingsSnapshot: CodexReviewSettingsSnapshot { get }
 
     func start(
         store: CodexReviewStore,
@@ -24,6 +25,24 @@ package protocol CodexReviewStoreBackend: AnyObject {
         store: CodexReviewStore
     ) async throws
 
+    func refreshSettings() async throws -> CodexReviewSettingsSnapshot
+
+    func updateSettingsModel(
+        _ model: String?,
+        reasoningEffort: CodexReviewReasoningEffort?,
+        persistReasoningEffort: Bool,
+        serviceTier: CodexReviewServiceTier?,
+        persistServiceTier: Bool
+    ) async throws
+
+    func updateSettingsReasoningEffort(
+        _ reasoningEffort: CodexReviewReasoningEffort?
+    ) async throws
+
+    func updateSettingsServiceTier(
+        _ serviceTier: CodexReviewServiceTier?
+    ) async throws
+
     func attachStore(_ store: CodexReviewStore)
 }
 
@@ -36,8 +55,42 @@ extension CodexReviewStoreBackend {
         initialAccount?.accountKey
     }
 
+    package var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
+        .init()
+    }
+
     package func attachStore(_ store: CodexReviewStore) {
         _ = store
+    }
+
+    package func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
+        initialSettingsSnapshot
+    }
+
+    package func updateSettingsModel(
+        _ model: String?,
+        reasoningEffort: CodexReviewReasoningEffort?,
+        persistReasoningEffort: Bool,
+        serviceTier: CodexReviewServiceTier?,
+        persistServiceTier: Bool
+    ) async throws {
+        _ = model
+        _ = reasoningEffort
+        _ = persistReasoningEffort
+        _ = serviceTier
+        _ = persistServiceTier
+    }
+
+    package func updateSettingsReasoningEffort(
+        _ reasoningEffort: CodexReviewReasoningEffort?
+    ) async throws {
+        _ = reasoningEffort
+    }
+
+    package func updateSettingsServiceTier(
+        _ serviceTier: CodexReviewServiceTier?
+    ) async throws {
+        _ = serviceTier
     }
 }
 
@@ -48,6 +101,7 @@ package final class CodexReviewPreviewStoreBackend: CodexReviewStoreBackend {
     package let initialAccount: CodexAccount? = nil
     package let initialAccounts: [CodexAccount] = []
     package let initialActiveAccountKey: String? = nil
+    package var initialSettingsSnapshot: CodexReviewSettingsSnapshot = .init()
 
     package init() {}
 

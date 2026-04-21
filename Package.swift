@@ -36,6 +36,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
         .package(url: "https://github.com/lynnswap/ObservationBridge.git", from: "0.6.1"),
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", .upToNextMinor(from: "0.4.0")),
+        .package(url: "https://github.com/dduan/TOMLDecoder.git", exact: "0.4.4"),
     ],
     targets: [
         .target(
@@ -58,6 +59,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "TOMLDecoder", package: "TOMLDecoder"),
             ],
             resources: [
                 .process("Resources"),

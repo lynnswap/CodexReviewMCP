@@ -287,9 +287,14 @@ package struct AppServerReviewRunner: Sendable {
             environment: settings.command.environment,
             codexHome: resolvedCodexHome
         )
+        let profileClearsReviewModel = activeProfileClearsReviewModel(
+            environment: settings.command.environment,
+            codexHome: resolvedCodexHome
+        )
         effectiveModel = resolveReviewModelSelection(
             localConfig: localConfig,
-            resolvedConfig: fallbackAppServerConfig
+            resolvedConfig: fallbackAppServerConfig,
+            profileClearsReviewModel: profileClearsReviewModel
         ).reportedModelBeforeThreadStart
 
         let resolvedConfig: AppServerConfigReadResponse.Config
@@ -329,11 +334,15 @@ package struct AppServerReviewRunner: Sendable {
             )))
         }
 
-        let reviewSpecificModel = localConfig.reviewModel?.nilIfEmpty
-            ?? resolvedConfig.reviewModel?.nilIfEmpty
+        let reviewSpecificModel = resolveReviewModelOverride(
+            localConfig: localConfig,
+            resolvedConfig: resolvedConfig,
+            profileClearsReviewModel: profileClearsReviewModel
+        )
         let resolvedModels = resolveReviewModelSelection(
             localConfig: localConfig,
-            resolvedConfig: resolvedConfig
+            resolvedConfig: resolvedConfig,
+            profileClearsReviewModel: profileClearsReviewModel
         )
         effectiveModel = resolvedModels.reportedModelBeforeThreadStart
 

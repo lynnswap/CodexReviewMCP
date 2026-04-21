@@ -4,20 +4,31 @@ import ReviewJobs
 package struct ReviewLocalConfig: Sendable, Equatable {
     package var reviewModel: String?
     package var modelReasoningEffort: String?
+    package var serviceTier: String?
     package var modelContextWindow: Int?
     package var modelAutoCompactTokenLimit: Int?
 
     package init(
         reviewModel: String? = nil,
         modelReasoningEffort: String? = nil,
+        serviceTier: String? = nil,
         modelContextWindow: Int? = nil,
         modelAutoCompactTokenLimit: Int? = nil
     ) {
         self.reviewModel = reviewModel
         self.modelReasoningEffort = modelReasoningEffort
+        self.serviceTier = serviceTier
         self.modelContextWindow = modelContextWindow
         self.modelAutoCompactTokenLimit = modelAutoCompactTokenLimit
     }
+}
+
+package struct ReviewLocalConfigPresence: Sendable, Equatable {
+    package var hasReviewModel = false
+    package var hasModelReasoningEffort = false
+    package var hasServiceTier = false
+    package var hasModelContextWindow = false
+    package var hasModelAutoCompactTokenLimit = false
 }
 
 package enum ReviewLocalConfigError: LocalizedError {
@@ -37,6 +48,20 @@ package enum ReviewLocalConfigError: LocalizedError {
 package func loadReviewLocalConfig(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) throws -> ReviewLocalConfig {
+    let (fileURL, content) = try loadReviewLocalConfigContent(environment: environment)
+    return try parseReviewLocalConfig(content, sourcePath: fileURL.path)
+}
+
+package func loadReviewLocalConfigPresence(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+) throws -> ReviewLocalConfigPresence {
+    let (_, content) = try loadReviewLocalConfigContent(environment: environment)
+    return parseReviewLocalConfigPresence(content)
+}
+
+private func loadReviewLocalConfigContent(
+    environment: [String: String]
+) throws -> (URL, String) {
     let fileURL = ReviewHomePaths.reviewConfigURL(environment: environment)
     do {
         try ReviewHomePaths.ensureReviewHomeScaffold(environment: environment)
@@ -50,8 +75,7 @@ package func loadReviewLocalConfig(
     } catch {
         throw ReviewLocalConfigError.unreadable(path: fileURL.path, message: error.localizedDescription)
     }
-
-    return try parseReviewLocalConfig(content, sourcePath: fileURL.path)
+    return (fileURL, content)
 }
 
 package func parseReviewLocalConfig(
@@ -90,6 +114,12 @@ package func parseReviewLocalConfig(
                 key: key,
                 sourcePath: sourcePath
             )
+        case "service_tier":
+            config.serviceTier = try parseReviewConfigString(
+                rawValue,
+                key: key,
+                sourcePath: sourcePath
+            )
         case "model_context_window":
             config.modelContextWindow = try parseReviewConfigInteger(
                 rawValue,
@@ -110,11 +140,54 @@ package func parseReviewLocalConfig(
     return config
 }
 
+package func parseReviewLocalConfigPresence(
+    _ content: String
+) -> ReviewLocalConfigPresence {
+    var presence = ReviewLocalConfigPresence()
+    var inRoot = true
+
+    for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
+        let trimmed = stripReviewConfigComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            continue
+        }
+        if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+            inRoot = false
+            continue
+        }
+        guard inRoot, let separator = trimmed.range(of: "=") else {
+            continue
+        }
+
+        let key = trimmed[..<separator.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        switch key {
+        case "review_model":
+            presence.hasReviewModel = true
+        case "model_reasoning_effort":
+            presence.hasModelReasoningEffort = true
+        case "service_tier":
+            presence.hasServiceTier = true
+        case "model_context_window":
+            presence.hasModelContextWindow = true
+        case "model_auto_compact_token_limit":
+            presence.hasModelAutoCompactTokenLimit = true
+        default:
+            continue
+        }
+    }
+
+    return presence
+}
+
 private func parseReviewConfigString(
     _ rawValue: String,
     key: String,
     sourcePath: String
 ) throws -> String? {
+    let trimmedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedValue == "null" {
+        return nil
+    }
     guard rawValue.hasPrefix("\"") && rawValue.hasSuffix("\"")
             || rawValue.hasPrefix("'") && rawValue.hasSuffix("'")
     else {
@@ -132,17 +205,12 @@ private func parseReviewConfigInteger(
     key: String,
     sourcePath: String
 ) throws -> Int? {
-    guard rawValue.hasPrefix("\"") == false, rawValue.hasPrefix("'") == false else {
-        throw ReviewLocalConfigError.invalidValue(
-            path: sourcePath,
-            key: key,
-            expected: "an integer"
-        )
-    }
-
-    let normalized = rawValue
+    let normalized = trimReviewConfigMatchingQuotes(rawValue)
         .replacingOccurrences(of: "_", with: "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    if normalized == "null" {
+        return nil
+    }
     guard normalized.isEmpty == false,
           normalized.allSatisfy({ $0.isNumber }),
           let value = Int(normalized)

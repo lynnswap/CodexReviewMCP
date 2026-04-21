@@ -77,7 +77,6 @@ extension ReviewMonitorServerStatusAccessoryViewController {
 }
 #endif
 
-
 struct AccountRateLimitsSectionView: View {
     let account: CodexAccount?
 
@@ -121,49 +120,76 @@ struct AccountRateLimitsSectionView: View {
 }
 
 struct StatusView: View {
-    let store: CodexReviewStore
-    let auth: CodexReviewAuthModel
-
-    init(store: CodexReviewStore) {
-        self.store = store
-        self.auth = store.auth
-    }
-
-    private var account: CodexAccount? {
-        auth.account
-    }
-
-    private var showsManagementSection: Bool {
-        showsServerRestartAction
-    }
-
-    var menuSectionTitle: String {
-        account?.email ?? ""
-    }
+    var store: CodexReviewStore
 
     var body: some View {
-        Menu {
-            Section(menuSectionTitle) {
-                AccountRateLimitsSectionView(account: account)
-            }
-
-            if showsManagementSection {
-                Divider()
+        @Bindable var settings = store.settings
+        VStack{
+            Menu {
+                Section(store.auth.account?.email ?? "") {
+                    AccountRateLimitsSectionView(account: store.auth.account)
+                }
+                
                 if showsServerRestartAction {
+                    Divider()
                     Button("Reset Server", systemImage: "arrow.clockwise") {
-                        restartServer()
+                        Task {
+                            await store.restart()
+                        }
                     }
                 }
+            } label: {
+                AccountRateLimitGaugesView(account: store.auth.account)
+                    .transition(.blurReplace)
+                    .animation(.default, value: store.auth.account)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(.rect)
             }
-        } label: {
-            AccountRateLimitGaugesView(account: account)
-                .transition(.blurReplace)
-                .animation(.default, value: account)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            HStack{
+                Menu{
+                    // Keep this picker aligned with Codex CLI/App behavior and avoid
+                    // inventing a synthetic inherited/default row that those clients do not expose.
+                    Picker("Model", selection: $settings.selectedModel) {
+                        ForEach(settings.displayedModels) { item in
+                            Text(item.displayName).tag(Optional(item.model))
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    
+                    Picker("Tier", selection: $settings.selectedServiceTier) {
+                        Text("Normal").tag(Optional<CodexReviewServiceTier>.none)
+                        ForEach(settings.availableServiceTiers, id: \.self) { item in
+                            Text(item.displayText).tag(Optional(item))
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }label:{
+                    Text(settings.currentModelDisplayText)
+                }
+                Menu{
+                    // Deliberately mirror the concrete reasoning choices from the model catalog
+                    // instead of adding an extra "default" menu row that upstream clients lack.
+                    Picker("Reasoning", selection: $settings.selectedReasoningEffort) {
+                        ForEach(settings.availableReasoningOptions) { item in
+                            Text(item.reasoningEffort.displayText)
+                                .tag(Optional(item.reasoningEffort))
+                        }
+                    }
+                    .pickerStyle(.inline)
+                }label:{
+                    Text(settings.currentReasoningDisplayText)
+                }
+                Spacer(minLength: 0)
+            }
+            .disabled(
+                store.serverState != .running
+                    || settings.isLoading
+                    || settings.displayedModels.isEmpty
+            )
+            .labelsVisibility(.hidden)
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
         .padding(8)
     }
 
@@ -175,19 +201,13 @@ struct StatusView: View {
             false
         }
     }
-
-    func restartServer() {
-        Task {
-            await store.restart()
-        }
-    }
 }
 
 #if DEBUG
 
 #Preview("Signed In") {
     let store = makeStatusPreviewStore()
-    return StatusView(store: store)
+    StatusView(store: store)
         .padding()
 }
 
@@ -195,7 +215,7 @@ struct StatusView: View {
     let store = makeStatusPreviewStore(
         serverState: .failed("The embedded server stopped responding.")
     )
-    return StatusView(store: store)
+    StatusView(store: store)
         .padding()
 }
 
