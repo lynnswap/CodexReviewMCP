@@ -4113,6 +4113,70 @@ struct CodexReviewMCPTests {
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
     }
 
+    @Test func refreshingStoppedDetachedSavedCurrentUsesSelectedSavedProbe() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "saved@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "review@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "saved@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let capturedProbeAuthData = MutableValueBox<Data?>(nil)
+        let rateLimitTransport = AuthCapableAppServerSessionTransport()
+        let rateLimitManager = AuthCapableAppServerManager(authTransport: rateLimitTransport)
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            probeAppServerManagerFactory: { probeEnvironment in
+                capturedProbeAuthData.value = try? Data(
+                    contentsOf: ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
+                )
+                return rateLimitManager
+            }
+        )
+        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let currentSavedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
+        auth.updateAccount(currentSavedAccount)
+
+        await auth.refreshSavedAccountRateLimits(accountKey: currentSavedAccount.accountKey)
+
+        let probeAuthData = try #require(capturedProbeAuthData.value)
+        let selectedSavedAuthData = try Data(
+            contentsOf: ReviewHomePaths.savedAccountAuthURL(
+                accountKey: currentSavedAccount.accountKey,
+                environment: environment
+            )
+        )
+        let sharedAuthData = try Data(
+            contentsOf: ReviewHomePaths.reviewAuthURL(environment: environment)
+        )
+        #expect(probeAuthData == selectedSavedAuthData)
+        #expect(probeAuthData != sharedAuthData)
+        #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
+    }
+
     @Test func refreshingInactiveRateLimitsUpdatesSavedAccountModel() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(

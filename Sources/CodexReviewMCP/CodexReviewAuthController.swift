@@ -683,11 +683,21 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             do {
                 let probe: PreparedInactiveAccountProbe
                 let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
-                if FileManager.default.fileExists(atPath: sharedAuthURL.path) {
-                    probe = try await accountRegistryStore.prepareSharedAuthProbe()
-                } else if auth.savedAccounts.contains(where: { $0.accountKey == activeAccountKey }) {
+                let persistedActiveAccountKey = auth.savedAccounts.first(where: \.isActive)?.accountKey
+                let selectedSavedAccountKey = auth.savedAccounts.contains(where: {
+                    $0.accountKey == activeAccountKey
+                }) ? activeAccountKey : nil
+                if let selectedSavedAccountKey,
+                   selectedSavedAccountKey != persistedActiveAccountKey
+                {
                     probe = try await accountRegistryStore.prepareInactiveAccountProbe(
-                        accountKey: activeAccountKey
+                        accountKey: selectedSavedAccountKey
+                    )
+                } else if FileManager.default.fileExists(atPath: sharedAuthURL.path) {
+                    probe = try await accountRegistryStore.prepareSharedAuthProbe()
+                } else if let selectedSavedAccountKey {
+                    probe = try await accountRegistryStore.prepareInactiveAccountProbe(
+                        accountKey: selectedSavedAccountKey
                     )
                 } else {
                     probe = try await accountRegistryStore.prepareSharedAuthProbe()
