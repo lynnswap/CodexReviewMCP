@@ -1358,6 +1358,46 @@ struct CodexReviewUITests {
         #expect(viewController.addAccountToolbarItemModeForTesting == .add)
     }
 
+    @Test func addAccountToolbarItemProvidesOverflowMenuFallback() async throws {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+        try await waitForAddAccountToolbarMode(viewController, .add)
+
+        #expect(viewController.addAccountToolbarMenuTitleForTesting == "Add Account")
+
+        store.auth.updatePhase(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            )
+        )
+
+        try await waitForAddAccountToolbarMode(viewController, .progress)
+        #expect(viewController.addAccountToolbarMenuTitleForTesting == "Cancel Sign-In")
+    }
+
     @Test func addAccountToolbarItemStaysVisibleDuringAuthenticationOutsideAccountSidebar() async throws {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")

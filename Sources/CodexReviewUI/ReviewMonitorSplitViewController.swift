@@ -193,6 +193,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         case Self.addAccountToolbarItemIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = resolvedAddAccountToolbarView()
+            item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem()
             item.visibilityPriority = .high
             item.isHidden = shouldHideAddAccountToolbarItem
             return item
@@ -222,6 +223,16 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         }
     }
 
+    @objc
+    private func performAddAccountToolbarOverflowAction(_ sender: Any?) {
+        _ = sender
+        if store.auth.isAuthenticating {
+            cancelAddAccountToolbarItemAction()
+        } else {
+            performAddAccountToolbarItemAction()
+        }
+    }
+
     private func resolvedAddAccountToolbarView() -> AddAccountToolbarItemView {
         if let addAccountToolbarView {
             return addAccountToolbarView
@@ -240,14 +251,26 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         return view
     }
 
+    private func resolvedAddAccountToolbarMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(
+            title: store.auth.isAuthenticating ? "Cancel Sign-In" : "Add Account",
+            action: #selector(performAddAccountToolbarOverflowAction(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        return item
+    }
+
     private func updateAddAccountToolbarItemVisibility() {
         guard let toolbar else {
             return
         }
 
-        toolbar.items
-            .first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier })?
-            .isHidden = shouldHideAddAccountToolbarItem
+        guard let item = toolbar.items.first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier }) else {
+            return
+        }
+        item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem()
+        item.isHidden = shouldHideAddAccountToolbarItem
     }
 
     private var shouldHideAddAccountToolbarItem: Bool {
@@ -685,6 +708,12 @@ extension ReviewMonitorSplitViewController {
         case nil:
             nil
         }
+    }
+
+    var addAccountToolbarMenuTitleForTesting: String? {
+        toolbar?.items
+            .first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier })?
+            .menuFormRepresentation?.title
     }
 
     func waitForAddAccountToolbarItemModeForTesting(

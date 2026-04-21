@@ -6047,7 +6047,7 @@ struct CodexReviewMCPTests {
         #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
     }
 
-    @Test func addAccountActivatesNewLoginWhenCurrentAuthIsUnresolvedFailedState() async throws {
+    @Test func addAccountUnresolvedFailedStateKeepsCurrentActiveAccountWithoutCancellingJobs() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
             email: "stale@example.com",
@@ -6085,12 +6085,16 @@ struct CodexReviewMCPTests {
 
         await auth.addAccount()
 
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
-        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "stale@example.com"))
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "stale@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "stale@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["stale@example.com", "review@example.com"])
     }
 
-    @Test func addAccountUnresolvedFailedStateKeepsSynchronizedRuntimeWithoutRecycle() async throws {
+    @Test func addAccountUnresolvedFailedStateKeepsCurrentRuntimeWithoutRecycle() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
             email: "stale@example.com",
@@ -6137,9 +6141,68 @@ struct CodexReviewMCPTests {
 
         await auth.addAccount()
 
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
-        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "stale@example.com"))
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "stale@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "stale@example.com")
+        #expect(await manager.prepareCount() == 0)
+        #expect(await manager.shutdownCount() == 0)
+    }
+
+    @Test func addAccountWithoutResolvedCurrentAccountKeepsSavedActiveAccountWithoutCancellingJobs() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        let manager = AuthCapableAppServerManager()
+        let sharedSession = SuccessfulLoginReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: manager,
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: sharedSession,
+                    environment: environment
+                )
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
+            },
+            recycleServerIfRunning: {
+                await manager.shutdown()
+                _ = try? await manager.prepare()
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(nil)
+
+        await auth.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(cancelCallCount == 0)
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "active@example.com"))
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "active@example.com")
         #expect(await manager.prepareCount() == 0)
         #expect(await manager.shutdownCount() == 0)
     }

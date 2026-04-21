@@ -190,6 +190,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 case .keepCurrentActiveAccount:
                     addAccountCommitDisposition(
                         priorSnapshot: priorSnapshot,
+                        hasSavedAccounts: auth.savedAccounts.isEmpty == false,
                         completedAccount: completedAccount
                     )
                 }
@@ -247,6 +248,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             if let priorAccountKey = priorCurrentAccount?.accountKey,
                let activeAccount = auth.savedAccounts.first(where: { $0.accountKey == priorAccountKey })
             {
+                auth.updateAccount(activeAccount)
+            } else if let activeAccount = auth.savedAccounts.first(where: \.isActive) {
                 auth.updateAccount(activeAccount)
             } else if let priorCurrentAccount,
                       auth.savedAccounts.contains(where: { $0.accountKey == priorCurrentAccount.accountKey }) == false
@@ -1066,11 +1069,10 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
     private func addAccountCommitDisposition(
         priorSnapshot: AuthPresentationSnapshot,
+        hasSavedAccounts: Bool,
         completedAccount: ReviewAuthAccount
     ) -> AuthenticationCommitDisposition {
-        if case .failed = priorSnapshot.phase,
-           priorSnapshot.isResolvedAuthenticated == false
-        {
+        guard hasSavedAccounts else {
             return .init(
                 shouldActivateAuthenticatedAccount: true,
                 shouldCancelRunningJobs: false,
@@ -1080,7 +1082,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
         guard let currentAccount = priorSnapshot.account else {
             return .init(
-                shouldActivateAuthenticatedAccount: true,
+                shouldActivateAuthenticatedAccount: false,
                 shouldCancelRunningJobs: false,
                 forceRecycleServer: false
             )
@@ -1088,16 +1090,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
 
         let currentEmail = normalizedReviewAccountEmail(email: currentAccount.email)
         let completedEmail = normalizedReviewAccountEmail(email: completedAccount.email)
-        guard currentEmail == completedEmail else {
-            return .init(
-                shouldActivateAuthenticatedAccount: false,
-                shouldCancelRunningJobs: false,
-                forceRecycleServer: false
-            )
-        }
-
         return .init(
-            shouldActivateAuthenticatedAccount: true,
+            shouldActivateAuthenticatedAccount: currentEmail == completedEmail,
             shouldCancelRunningJobs: false,
             forceRecycleServer: false
         )
@@ -1109,7 +1103,6 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         guard runtimeState().serverIsRunning else {
             return true
         }
-
         do {
             let session = try await sharedAuthSessionFactory(configuration.environment)
             defer {
