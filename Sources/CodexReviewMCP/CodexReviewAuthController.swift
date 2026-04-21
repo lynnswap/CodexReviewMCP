@@ -116,6 +116,13 @@ package final class CodexAuthController: CodexReviewAuthControlling {
     }
 
     package func beginAuthentication(auth: CodexReviewAuthModel) async {
+        if auth.savedAccounts.isEmpty == false {
+            await beginAuthentication(
+                auth: auth,
+                activationPolicy: .keepCurrentActiveAccount
+            )
+            return
+        }
         await beginAuthentication(
             auth: auth,
             activationPolicy: .automatic
@@ -172,12 +179,18 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 }
             }
             try ensureAuthenticationAttemptIsCurrent(authenticationAttemptID)
-            guard completedAccount != nil else {
+            guard let completedAccount else {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
             let shouldActivateAutomatically = shouldActivateAuthenticatedAccount(
                 priorSnapshot: priorSnapshot
             )
+            let shouldRefreshSharedAuthSnapshot =
+                commitDispositionShouldRefreshSharedAuthSnapshot(
+                    activationPolicy: activationPolicy,
+                    priorCurrentAccount: auth.account,
+                    completedAccount: completedAccount
+                )
             let commitDisposition: AuthenticationCommitDisposition = {
                 switch activationPolicy {
                 case .automatic:
@@ -209,7 +222,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
             do {
                 savedAccount = try accountRegistryStore.saveAuthSnapshot(
                     sourceAuthURL: ReviewHomePaths.reviewAuthURL(environment: commitProbe.environment),
-                    makeActive: commitDisposition.shouldActivateAuthenticatedAccount
+                    makeActive: commitDisposition.shouldActivateAuthenticatedAccount,
+                    refreshSharedAuth: shouldRefreshSharedAuthSnapshot
                 )
             } catch {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
@@ -1047,6 +1061,20 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         priorSnapshot: AuthPresentationSnapshot
     ) -> Bool {
         priorSnapshot.savedAccounts.isEmpty && priorSnapshot.account == nil
+    }
+
+    private func commitDispositionShouldRefreshSharedAuthSnapshot(
+        activationPolicy: AuthenticationActivationPolicy,
+        priorCurrentAccount: CodexAccount?,
+        completedAccount: ReviewAuthAccount
+    ) -> Bool {
+        guard activationPolicy == .keepCurrentActiveAccount,
+              let priorCurrentAccount
+        else {
+            return false
+        }
+        return normalizedReviewAccountEmail(email: priorCurrentAccount.email)
+            == normalizedReviewAccountEmail(email: completedAccount.email)
     }
 
     private func applyCommittedActiveAccount(
