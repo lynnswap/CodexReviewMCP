@@ -6025,6 +6025,49 @@ struct CodexReviewMCPTests {
         #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
     }
 
+    @Test func addAccountActivatesNewLoginWhenCurrentAuthIsUnresolvedFailedState() async throws {
+        let environment = try isolatedHomeEnvironment()
+        try writeReviewAuthSnapshot(
+            email: "stale@example.com",
+            planType: "pro",
+            environment: environment
+        )
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try registryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+
+        let sharedSession = SuccessfulLoginReviewAuthSession()
+        var cancelCallCount = 0
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                sharedSession
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: sharedSession,
+                    environment: environment
+                )
+            },
+            cancelRunningJobs: { _ in
+                cancelCallCount += 1
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.updatePhase(.failed(message: "Authentication failed."))
+
+        await auth.addAccount()
+
+        #expect(cancelCallCount == 0)
+        #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
+        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+    }
+
     @Test func addAccountWithoutActiveSessionActivatesAuthenticatedAccountWithoutCancellingJobs() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = SuccessfulLoginReviewAuthSession()

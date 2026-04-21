@@ -1068,6 +1068,16 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         priorSnapshot: AuthPresentationSnapshot,
         completedAccount: ReviewAuthAccount
     ) -> AuthenticationCommitDisposition {
+        if case .failed = priorSnapshot.phase,
+           priorSnapshot.isResolvedAuthenticated == false
+        {
+            return .init(
+                shouldActivateAuthenticatedAccount: true,
+                shouldCancelRunningJobs: false,
+                forceRecycleServer: false
+            )
+        }
+
         guard let currentAccount = priorSnapshot.account else {
             return .init(
                 shouldActivateAuthenticatedAccount: true,
