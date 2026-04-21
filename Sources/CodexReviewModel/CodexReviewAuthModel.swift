@@ -333,6 +333,18 @@ public final class CodexReviewAuthModel {
         canSwitchAccount(account) == false
     }
 
+    package func switchActionRequiresRunningJobsConfirmation(
+        for account: CodexAccount
+    ) -> Bool {
+        if account.accountKey != self.account?.accountKey {
+            return true
+        }
+        return controller.requiresCurrentSessionRecovery(
+            auth: self,
+            accountKey: account.accountKey
+        )
+    }
+
     private func canSwitchAccount(_ account: CodexAccount) -> Bool {
         guard savedAccounts.contains(where: { $0.accountKey == account.accountKey }) else {
             return false

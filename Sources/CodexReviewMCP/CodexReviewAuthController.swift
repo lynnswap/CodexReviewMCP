@@ -374,7 +374,7 @@ package final class CodexAuthController: CodexReviewAuthControlling {
         let shouldHydratePersistedActiveTarget =
             isPersistedActiveTarget && priorAccount == nil
         if shouldRecoverCurrentSessionFromSavedSnapshot || shouldHydratePersistedActiveTarget {
-            try await accountRegistryStore.activateAccount(accountKey)
+            try await accountRegistryStore.restoreSharedAuthFromSavedAccount(accountKey)
         } else if isCurrentSessionTarget == false && isPersistedActiveTarget == false {
             try await accountRegistryStore.activateAccount(accountKey)
         }

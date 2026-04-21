@@ -42,7 +42,8 @@ struct AccountContextMenuView: View {
             Button("Switch", systemImage: "arrow.triangle.swap") {
                 auth.requestSwitchAccount(
                     account,
-                    requiresConfirmation: store.hasRunningJobs && auth.account?.accountKey != account.accountKey
+                    requiresConfirmation: store.hasRunningJobs
+                        && auth.switchActionRequiresRunningJobsConfirmation(for: account)
                 )
             }
             .disabled(isSwitchActionDisabled)

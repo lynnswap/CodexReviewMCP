@@ -1218,6 +1218,35 @@ struct CodexReviewUITests {
         #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
     }
 
+    @Test func sameAccountRecoverySwitchUsesRunningJobsConfirmation() async {
+        let backend = AuthActionBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = makeStore(backend: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: makeWorkspaces(from: [runningJob])
+        )
+
+        store.auth.requestSwitchAccount(
+            currentAccount,
+            requiresConfirmation: store.hasRunningJobs
+                && store.auth.switchActionRequiresRunningJobsConfirmation(for: currentAccount)
+        )
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(backend.switchAccountCallCount() == 0)
+
+        store.auth.confirmPendingAccountAction()
+        await backend.waitForSwitchAccountCallCount(1)
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
     @Test func detachedCurrentSessionCannotRequestNoOpSwitch() {
         let backend = AuthActionBackend()
         let store = makeStore(backend: backend)

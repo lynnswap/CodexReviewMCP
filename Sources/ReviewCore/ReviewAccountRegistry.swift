@@ -237,6 +237,24 @@ package actor ReviewAccountRegistryStore {
         }
     }
 
+    package func restoreSharedAuthFromSavedAccount(_ accountKey: String) throws {
+        let registry = try loadRegistry()
+        guard let record = storedAccount(
+            in: registry,
+            matchingRuntimeAccountKey: accountKey,
+            environment: environment
+        ) else {
+            throw ReviewAuthError.authenticationRequired("Saved account was not found.")
+        }
+        try persistAuthSnapshot(
+            from: persistedSavedAccountAuthURL(
+                accountKey: record.accountKey,
+                environment: environment
+            ),
+            to: ReviewHomePaths.reviewAuthURL(environment: environment)
+        )
+    }
+
     package func clearActiveAccount(accountKey: String? = nil) throws {
         let originalRegistry = try loadRegistry()
         var registry = originalRegistry

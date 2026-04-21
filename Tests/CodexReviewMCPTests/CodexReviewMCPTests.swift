@@ -1413,6 +1413,37 @@ struct CodexReviewMCPTests {
         #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com", "active@example.com"])
     }
 
+    @Test func restoringSharedAuthFromSavedAccountPreservesPersistedActiveSelection() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "review@example.com",
+            planType: "plus",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "active@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        try await registryStore.restoreSharedAuthFromSavedAccount("review@example.com")
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.planType == "plus")
+    }
+
     @Test func storeSeedsSharedAccountWhenRegistryPersistenceFails() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
