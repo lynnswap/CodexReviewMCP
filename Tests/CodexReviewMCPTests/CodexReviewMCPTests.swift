@@ -44,17 +44,20 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
+        try await withAsyncCleanup {
+            await store.start()
 
-        #expect(store.serverState == .running)
-        let discovery = try #require(ReviewDiscovery.read(from: discoveryFileURL))
-        let persistedRuntimeState = try #require(ReviewRuntimeStateStore.read(from: runtimeStateFileURL))
-        #expect(persistedRuntimeState.serverPID == discovery.pid)
-        #expect(persistedRuntimeState.serverStartTime == discovery.serverStartTime)
-        #expect(persistedRuntimeState.appServerPID == runtimeState.pid)
-        #expect(FileManager.default.fileExists(atPath: reviewConfigURL.path))
-        #expect(FileManager.default.fileExists(atPath: reviewAgentsURL.path))
+            #expect(store.serverState == .running)
+            let discovery = try #require(ReviewDiscovery.read(from: discoveryFileURL))
+            let persistedRuntimeState = try #require(ReviewRuntimeStateStore.read(from: runtimeStateFileURL))
+            #expect(persistedRuntimeState.serverPID == discovery.pid)
+            #expect(persistedRuntimeState.serverStartTime == discovery.serverStartTime)
+            #expect(persistedRuntimeState.appServerPID == runtimeState.pid)
+            #expect(FileManager.default.fileExists(atPath: reviewConfigURL.path))
+            #expect(FileManager.default.fileExists(atPath: reviewAgentsURL.path))
+        } cleanup: {
+            await store.stop()
+        }
     }
 
     @Test func initialSettingsSnapshotUsesEffectiveFallbackModelWhenReviewModelIsUnset() throws {
@@ -4933,48 +4936,51 @@ struct CodexReviewMCPTests {
             appServerManager: manager
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
+        try await withAsyncCleanup {
+            await store.start()
 
-        let sessionAReview = Task {
-            try await store.startReview(
-                sessionID: "session-a",
-                request: .init(
-                    cwd: FileManager.default.temporaryDirectory.path,
-                    target: .uncommittedChanges
+            let sessionAReview = Task {
+                try await store.startReview(
+                    sessionID: "session-a",
+                    request: .init(
+                        cwd: FileManager.default.temporaryDirectory.path,
+                        target: .uncommittedChanges
+                    )
                 )
-            )
-        }
-        let sessionBReview = Task {
-            try await store.startReview(
-                sessionID: "session-b",
-                request: .init(
-                    cwd: FileManager.default.temporaryDirectory.path,
-                    target: .uncommittedChanges
+            }
+            let sessionBReview = Task {
+                try await store.startReview(
+                    sessionID: "session-b",
+                    request: .init(
+                        cwd: FileManager.default.temporaryDirectory.path,
+                        target: .uncommittedChanges
+                    )
                 )
+            }
+
+            let sessionATransport = await manager.waitForTransport(sessionID: "session-a")
+            let sessionBTransport = await manager.waitForTransport(sessionID: "session-b")
+            await sessionATransport.waitForRequest("review/start")
+            await sessionBTransport.waitForRequest("review/start")
+
+            _ = try await store.cancelReview(
+                selector: .init(cwd: nil, statuses: [.running]),
+                sessionID: "session-a"
             )
+            let cancelledResult = try await sessionAReview.value
+
+            #expect(cancelledResult.status == .cancelled)
+            #expect(await sessionATransport.isClosed())
+            #expect(await sessionBTransport.isClosed() == false)
+            #expect(await manager.shutdownCount() == 0)
+            #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) != nil)
+
+            await store.closeSession("session-b", reason: "test cleanup")
+            let sessionBResult = try await sessionBReview.value
+            #expect(sessionBResult.status == .cancelled)
+        } cleanup: {
+            await store.stop()
         }
-
-        let sessionATransport = await manager.waitForTransport(sessionID: "session-a")
-        let sessionBTransport = await manager.waitForTransport(sessionID: "session-b")
-        await sessionATransport.waitForRequest("review/start")
-        await sessionBTransport.waitForRequest("review/start")
-
-        _ = try await store.cancelReview(
-            selector: .init(cwd: nil, statuses: [.running]),
-            sessionID: "session-a"
-        )
-        let cancelledResult = try await sessionAReview.value
-
-        #expect(cancelledResult.status == .cancelled)
-        #expect(await sessionATransport.isClosed())
-        #expect(await sessionBTransport.isClosed() == false)
-        #expect(await manager.shutdownCount() == 0)
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) != nil)
-
-        await store.closeSession("session-b", reason: "test cleanup")
-        let sessionBResult = try await sessionBReview.value
-        #expect(sessionBResult.status == .cancelled)
     }
 
     @Test func closeSessionClosesTransportThatFinishesConnectingLater() async throws {
@@ -4995,27 +5001,30 @@ struct CodexReviewMCPTests {
             appServerManager: manager
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
+        try await withAsyncCleanup {
+            await store.start()
 
-        let reviewTask = Task {
-            try await store.startReview(
-                sessionID: "session-delayed-connect",
-                request: .init(
-                    cwd: FileManager.default.temporaryDirectory.path,
-                    target: .uncommittedChanges
+            let reviewTask = Task {
+                try await store.startReview(
+                    sessionID: "session-delayed-connect",
+                    request: .init(
+                        cwd: FileManager.default.temporaryDirectory.path,
+                        target: .uncommittedChanges
+                    )
                 )
-            )
+            }
+
+            await manager.waitForConnectStart()
+            await store.closeSession("session-delayed-connect", reason: "session closed")
+            await manager.resumeConnect()
+
+            let result = try await reviewTask.value
+            let transport = try #require(await manager.createdTransport())
+            #expect(result.status == .cancelled)
+            #expect(await transport.isClosed())
+        } cleanup: {
+            await store.stop()
         }
-
-        await manager.waitForConnectStart()
-        await store.closeSession("session-delayed-connect", reason: "session closed")
-        await manager.resumeConnect()
-
-        let result = try await reviewTask.value
-        let transport = try #require(await manager.createdTransport())
-        #expect(result.status == .cancelled)
-        #expect(await transport.isClosed())
     }
 
     @Test func cancelReviewInterruptsInFlightBootstrapRequest() async throws {
@@ -5029,43 +5038,46 @@ struct CodexReviewMCPTests {
             appServerManager: manager
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
+        try await withAsyncCleanup {
+            await store.start()
 
-        let reviewTask = Task {
-            try await store.startReview(
-                sessionID: "session-bootstrap",
-                request: .init(
-                    cwd: FileManager.default.temporaryDirectory.path,
-                    target: .uncommittedChanges
+            let reviewTask = Task {
+                try await store.startReview(
+                    sessionID: "session-bootstrap",
+                    request: .init(
+                        cwd: FileManager.default.temporaryDirectory.path,
+                        target: .uncommittedChanges
+                    )
                 )
-            )
-        }
+            }
 
-        let transport = await manager.sessionTransport()
-        await transport.waitForRequest("config/read")
-        try await waitForMainActorCondition {
-            store.workspaces.contains { workspace in
-                workspace.jobs.contains { job in
-                    job.sessionID == "session-bootstrap" && job.status == .running
+            let transport = await manager.sessionTransport()
+            await transport.waitForRequest("config/read")
+            try await waitForMainActorCondition {
+                store.workspaces.contains { workspace in
+                    workspace.jobs.contains { job in
+                        job.sessionID == "session-bootstrap" && job.status == .running
+                    }
                 }
             }
+
+            let cancelResult = try await store.cancelReview(
+                selector: .init(cwd: nil, statuses: [.running]),
+                sessionID: "session-bootstrap"
+            )
+
+            #expect(cancelResult.cancelled)
+
+            let result = try await withTestTimeout {
+                try await reviewTask.value
+            }
+
+            #expect(result.status == .cancelled)
+            #expect(result.error == "Cancellation requested.")
+            #expect(await transport.isClosed())
+        } cleanup: {
+            await store.stop()
         }
-
-        let cancelResult = try await store.cancelReview(
-            selector: .init(cwd: nil, statuses: [.running]),
-            sessionID: "session-bootstrap"
-        )
-
-        #expect(cancelResult.cancelled)
-
-        let result = try await withTestTimeout {
-            try await reviewTask.value
-        }
-
-        #expect(result.status == .cancelled)
-        #expect(result.error == "Cancellation requested.")
-        #expect(await transport.isClosed())
     }
 
     @Test func cancelAllRunningJobsThrowsWhenAnyReviewCancellationFails() async throws {
@@ -6000,7 +6012,7 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func sameAccountReauthenticationWithoutInitialEmptyStateDoesNotRecycleSharedAppServer() async throws {
+    @Test func sameAccountReauthenticationWithoutInitialEmptyStateRecyclesSharedAppServer() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SameAccountSuccessfulLoginReviewAuthSession()
@@ -6020,8 +6032,8 @@ struct CodexReviewMCPTests {
         await store.auth.beginAuthentication()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
-        #expect(await manager.prepareCount() == 1)
-        #expect(await manager.shutdownCount() == 0)
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
 
         await store.stop()
     }
@@ -6053,7 +6065,7 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func addAccountWithUnsavedCurrentSameEmailPreservesCurrentSession() async throws {
+    @Test func addAccountWithUnsavedCurrentSameEmailRecyclesRunningServer() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SameAccountSuccessfulLoginReviewAuthSession()
@@ -6074,8 +6086,8 @@ struct CodexReviewMCPTests {
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
         #expect(store.auth.savedAccounts.map(\.email) == ["review@example.com"])
-        #expect(await manager.prepareCount() == 1)
-        #expect(await manager.shutdownCount() == 0)
+        #expect(await manager.prepareCount() == 2)
+        #expect(await manager.shutdownCount() == 1)
 
         await store.stop()
     }
@@ -11200,4 +11212,19 @@ private func rateLimitWindow(
     in account: CodexAccount?
 ) -> CodexRateLimitWindow? {
     account?.rateLimits.first { $0.windowDurationMinutes == duration }
+}
+
+@MainActor
+private func withAsyncCleanup<T>(
+    _ operation: @escaping @MainActor @Sendable () async throws -> T,
+    cleanup: @escaping @MainActor @Sendable () async -> Void
+) async throws -> T {
+    do {
+        let result = try await operation()
+        await cleanup()
+        return result
+    } catch {
+        await cleanup()
+        throw error
+    }
 }

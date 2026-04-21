@@ -203,7 +203,8 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                     .init(
                         shouldActivateAuthenticatedAccount: false,
                         shouldCancelRunningJobs: false,
-                        forceRecycleServer: false
+                        forceRecycleServer: shouldRefreshSharedAuthSnapshot
+                            && runtimeState().serverIsRunning
                     )
                 }
             }()
@@ -242,6 +243,16 @@ package final class CodexAuthController: CodexReviewAuthControlling {
                 if let warningMessage {
                     auth.updateWarning(message: warningMessage)
                 }
+                return
+            }
+
+            if commitDisposition.forceRecycleServer {
+                await refreshResolvedState(
+                    auth: auth,
+                    forceRestartSession: true,
+                    forceRecycleServer: true,
+                    allowDuringAuthentication: true
+                )
                 return
             }
 
