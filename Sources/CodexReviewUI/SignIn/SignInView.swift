@@ -1,17 +1,9 @@
 import SwiftUI
-import CodexReviewModel
+import ReviewApp
+import ReviewDomain
 
 struct SignInView: View {
     let store: CodexReviewStore
-    let onPrimaryAction: @MainActor () -> Void
-
-    init(
-        store: CodexReviewStore,
-        onPrimaryAction: @escaping @MainActor () -> Void = {}
-    ) {
-        self.store = store
-        self.onPrimaryAction = onPrimaryAction
-    }
 
     var body: some View {
         ContentUnavailableView {
@@ -23,7 +15,9 @@ struct SignInView: View {
                 .scenePadding(.bottom)
             
             Button(role: authenticationActionRole) {
-                onPrimaryAction()
+                Task { @MainActor in
+                    await store.performPrimaryAuthenticationAction()
+                }
             } label: {
                 LabeledContent {
                     if store.auth.isAuthenticating {
@@ -49,19 +43,19 @@ struct SignInView: View {
         .scenePadding()
     }
 
-    var authenticationActionTitle: String {
+    private var authenticationActionTitle: String {
         store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT"
     }
 
-    var authenticationActionRole: ButtonRole? {
+    private var authenticationActionRole: ButtonRole? {
         store.auth.isAuthenticating ? .cancel : .confirm
     }
 
-    var descriptionText: String? {
+    private var descriptionText: String? {
         store.auth.errorMessage ?? serverFailureMessage
     }
 
-    var serverFailureMessage: String? {
+    private var serverFailureMessage: String? {
         guard case .failed(let message) = store.serverState else {
             return nil
         }

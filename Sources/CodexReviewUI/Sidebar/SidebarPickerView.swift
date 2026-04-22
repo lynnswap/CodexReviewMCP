@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ReviewDomain
 
 @MainActor
 final class ReviewMonitorSidebarSegmentedAccessoryViewController: NSSplitViewItemAccessoryViewController {

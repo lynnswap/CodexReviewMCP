@@ -4,973 +4,14 @@ import Foundation
 import Observation
 import Testing
 import ReviewTestSupport
-@_spi(Testing) @testable import CodexReviewMCP
-@testable import CodexReviewModel
-@testable import ReviewCore
-@testable import ReviewHTTPServer
+import ReviewDomain
+@testable import ReviewInfra
+@_spi(Testing) @testable import ReviewApp
+@testable import ReviewRuntime
 
 @Suite(.serialized)
 @MainActor
 struct CodexReviewMCPTests {
-    @Test func startingStoreWritesDiscoveryAndRuntimeState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        let reviewConfigURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        let reviewAgentsURL = ReviewHomePaths.reviewAgentsURL(environment: environment)
-        ReviewDiscovery.remove(at: discoveryFileURL)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer {
-            ReviewDiscovery.remove(at: discoveryFileURL)
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        }
-
-        let runtimeState = AppServerRuntimeState(
-            pid: 200,
-            startTime: .init(seconds: 2, microseconds: 0),
-            processGroupLeaderPID: 200,
-            processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
-        )
-        let manager = MockAppServerManager(modeProvider: { _ in .success() }, runtimeState: runtimeState)
-        let store = makeInjectedAuthSessionStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager,
-            authSessionFactory: {
-                SignedOutReviewAuthSession()
-            }
-        )
-
-        try await withAsyncCleanup {
-            await store.start()
-
-            #expect(store.serverState == .running)
-            let discovery = try #require(ReviewDiscovery.read(from: discoveryFileURL))
-            let persistedRuntimeState = try #require(ReviewRuntimeStateStore.read(from: runtimeStateFileURL))
-            #expect(persistedRuntimeState.serverPID == discovery.pid)
-            #expect(persistedRuntimeState.serverStartTime == discovery.serverStartTime)
-            #expect(persistedRuntimeState.appServerPID == runtimeState.pid)
-            #expect(FileManager.default.fileExists(atPath: reviewConfigURL.path))
-            #expect(FileManager.default.fileExists(atPath: reviewAgentsURL.path))
-        } cleanup: {
-            await store.stop()
-        }
-    }
-
-    @Test func initialSettingsSnapshotUsesEffectiveFallbackModelWhenReviewModelIsUnset() throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.4-mini"
-        model_reasoning_effort = "high"
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: MockAppServerManager { _ in .success() }
-        )
-
-        #expect(store.settings.selectedModel == nil)
-        #expect(store.settings.effectiveModel == "gpt-5.4-mini")
-        #expect(store.settings.currentModelDisplayText == "gpt-5.4-mini")
-        #expect(store.settings.selectedReasoningEffort == .high)
-        #expect(store.settings.selectedServiceTier == .flex)
-    }
-
-    @Test func refreshSettingsPagesThroughEntireModelCatalog() async throws {
-        let transport = SettingsRefreshTransport(
-            config: .init(
-                model: "gpt-5.4",
-                reviewModel: "gpt-5.4-mini"
-            ),
-            firstPage: .init(
-                data: [
-                    .init(
-                        id: "gpt-5.4",
-                        model: "gpt-5.4",
-                        displayName: "GPT-5.4",
-                        hidden: false,
-                        supportedReasoningEfforts: [
-                            .init(reasoningEffort: .medium, description: "Balanced default.")
-                        ],
-                        defaultReasoningEffort: .medium,
-                        supportedServiceTiers: [.fast]
-                    )
-                ],
-                nextCursor: "page-2"
-            ),
-            secondPage: .init(
-                data: [
-                    .init(
-                        id: "gpt-5.4-mini",
-                        model: "gpt-5.4-mini",
-                        displayName: "GPT-5.4 Mini",
-                        hidden: false,
-                        supportedReasoningEfforts: [
-                            .init(reasoningEffort: .low, description: "Quick pass."),
-                            .init(reasoningEffort: .medium, description: "Balanced default.")
-                        ],
-                        defaultReasoningEffort: .medium,
-                        supportedServiceTiers: []
-                    )
-                ],
-                nextCursor: nil
-            )
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.refresh()
-
-        #expect(store.settings.selectedModel == "gpt-5.4-mini")
-        #expect(store.settings.fallbackModel == "gpt-5.4")
-        #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-5.4-mini"])
-        #expect(await transport.requestedModelListCursors() == [nil, "page-2"])
-    }
-
-    @Test func refreshSettingsMergesFallbackConfigWhenConfigReadOmitsOverrides() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        review_model = "gpt-5.4-mini"
-        model_reasoning_effort = "high"
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsRefreshTransport(
-            config: .init(model: "gpt-5.4"),
-            firstPage: .init(data: [], nextCursor: nil),
-            secondPage: .init(data: [], nextCursor: nil)
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.refresh()
-
-        #expect(store.settings.selectedModel == "gpt-5.4-mini")
-        #expect(store.settings.fallbackModel == "gpt-5.4")
-        #expect(store.settings.selectedReasoningEffort == .high)
-        #expect(store.settings.selectedServiceTier == .flex)
-    }
-
-    @Test func refreshSettingsPrefersReviewLocalModelOverrideOverProfileModel() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = "gpt-5.4-mini"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.4"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsRefreshTransport(
-            config: .init(model: "gpt-5.4"),
-            firstPage: .init(data: [], nextCursor: nil),
-            secondPage: .init(data: [], nextCursor: nil)
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.refresh()
-
-        #expect(store.settings.selectedModel == "gpt-5.4-mini")
-        #expect(store.settings.fallbackModel == "gpt-5.4")
-    }
-
-    @Test func standaloneSettingsWritesTargetActiveProfileWhenRootOverrideIsAbsent() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.3-codex"
-        model_reasoning_effort = "low"
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.updateReasoningEffort(.high)
-        await store.settings.updateServiceTier(.fast)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.model_reasoning_effort"],
-            ["profiles.reviewer.service_tier"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesModelOverrideToRootWhenRootOverrideExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = "gpt-5.4"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.3-codex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        let gpt54 = CodexReviewModelCatalogItem(
-            id: "gpt-5.4",
-            model: "gpt-5.4",
-            displayName: "GPT-5.4",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast]
-        )
-        let gpt54Mini = CodexReviewModelCatalogItem(
-            id: "gpt-5.4-mini",
-            model: "gpt-5.4-mini",
-            displayName: "GPT-5.4 Mini",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .low, description: "Quick pass."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: "gpt-5.4",
-                fallbackModel: nil,
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: [gpt54, gpt54Mini]
-            )
-        )
-
-        await store.settings.updateModel("gpt-5.4-mini")
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["review_model"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesModelOverrideToProfileWhenProfileClearsRootOverride() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = "gpt-5.4"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        review_model = null
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        let gpt54 = CodexReviewModelCatalogItem(
-            id: "gpt-5.4",
-            model: "gpt-5.4",
-            displayName: "GPT-5.4",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast]
-        )
-        let gpt54Mini = CodexReviewModelCatalogItem(
-            id: "gpt-5.4-mini",
-            model: "gpt-5.4-mini",
-            displayName: "GPT-5.4 Mini",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .low, description: "Quick pass."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: [gpt54, gpt54Mini]
-            )
-        )
-
-        await store.settings.updateModel("gpt-5.4-mini")
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.review_model"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesReasoningOverrideToRootWhenRootOverrideExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        model_reasoning_effort = "high"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.4"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: .high,
-                serviceTier: nil,
-                models: []
-            )
-        )
-
-        await store.settings.updateReasoningEffort(.low)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesReasoningOverrideToProfileWhenProfileClearsRootOverride() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        model_reasoning_effort = "high"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model_reasoning_effort = null
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: []
-            )
-        )
-
-        await store.settings.updateReasoningEffort(.low)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesModelOverrideToRootWhenRootNullClearExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = null
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        let gpt54 = CodexReviewModelCatalogItem(
-            id: "gpt-5.4",
-            model: "gpt-5.4",
-            displayName: "GPT-5.4",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast]
-        )
-        let gpt54Mini = CodexReviewModelCatalogItem(
-            id: "gpt-5.4-mini",
-            model: "gpt-5.4-mini",
-            displayName: "GPT-5.4 Mini",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .low, description: "Quick pass."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: [gpt54, gpt54Mini]
-            )
-        )
-
-        await store.settings.updateModel("gpt-5.4-mini")
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["review_model"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesReasoningOverrideToRootWhenRootNullClearExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        model_reasoning_effort = null
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: []
-            )
-        )
-
-        await store.settings.updateReasoningEffort(.low)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesTargetQuotedDottedActiveProfile() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "qa.us"
-
-        [profiles."qa.us"]
-        model = "gpt-5.3-codex"
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.updateServiceTier(.fast)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            [#"profiles."qa.us".service_tier"#],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesTargetActiveProfileBeforeTrackedKeysExist() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        sandbox_mode = "danger-full-access"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.updateReasoningEffort(.high)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesTargetActiveProfileWhenSectionIsMissing() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.updateReasoningEffort(.high)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsClearsRootOverrideAtRootWhenRootOverrideExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = "gpt-5.4-mini"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.4"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        store.settings.selectedModel = nil
-        try await waitForMainActorCondition {
-            store.settings.selectedModel == nil
-        }
-        try await waitForSettingsWriteCount(transport, expectedCount: 1)
-
-        let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.first == "review_model")
-    }
-
-    @Test func profileModelChangeClearsInheritedRootTierAtRoot() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = "fast"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.3-codex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        let gpt54Mini = CodexReviewModelCatalogItem(
-            id: "gpt-5.4-mini",
-            model: "gpt-5.4-mini",
-            displayName: "GPT-5.4 Mini",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .low, description: "Quick pass."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        let gpt53Codex = CodexReviewModelCatalogItem(
-            id: "gpt-5.3-codex",
-            model: "gpt-5.3-codex",
-            displayName: "GPT-5.3 Codex",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .minimal, description: "Lowest overhead."),
-                .init(reasoningEffort: .low, description: "Faster iteration."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast, .flex]
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.3-codex",
-                reasoningEffort: nil,
-                serviceTier: .fast,
-                models: [gpt53Codex, gpt54Mini]
-            )
-        )
-
-        await store.settings.updateModel("gpt-5.4-mini")
-
-        let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.contains("service_tier"))
-        #expect(firstWrite.contains("profiles.reviewer.service_tier") == false)
-    }
-
-    @Test func standaloneSettingsClearsInheritedRootTierAtRoot() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = "fast"
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: .fast,
-                models: []
-            )
-        )
-
-        await store.settings.updateServiceTier(nil)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["service_tier"],
-        ])
-    }
-
-    @Test func standaloneSettingsUpdatesInheritedRootTierAtRoot() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = "fast"
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: .fast,
-                models: []
-            )
-        )
-
-        await store.settings.updateServiceTier(.flex)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["service_tier"],
-        ])
-    }
-
-    @Test func standaloneSettingsUpdatesRootNullClearedTierAtRoot() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = null
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: []
-            )
-        )
-
-        await store.settings.updateServiceTier(.flex)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["service_tier"],
-        ])
-    }
-
-    @Test func standaloneSettingsClearsProfileTierToNormalAtProfileWhenRootTierExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = "fast"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: .flex,
-                models: []
-            )
-        )
-
-        await store.settings.updateServiceTier(nil)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.service_tier"],
-        ])
-    }
-
     @Test func storeSkipsRegistryAccountsWithoutSavedAuthSnapshots() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
@@ -1298,7 +339,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first { $0.accountKey == initialAccounts.activeAccountKey })
 
-        try await auth.reorderSavedAccount(accountKey: firstAccount.accountKey, toIndex: 1)
+        try await auth.store.reorderSavedAccount(accountKey: firstAccount.accountKey, toIndex: 1)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(loadedAccounts.activeAccountKey == secondAccount.accountKey)
@@ -1350,7 +391,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(CodexAccount(email: "current@example.com"))
 
-        try await auth.reorderSavedAccount(accountKey: otherAccount.accountKey, toIndex: 0)
+        try await auth.store.reorderSavedAccount(accountKey: otherAccount.accountKey, toIndex: 0)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "current@example.com")
@@ -1403,7 +444,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(nil)
         auth.updatePhase(.signedOut)
 
-        try await auth.reorderSavedAccount(accountKey: otherAccount.accountKey, toIndex: 0)
+        try await auth.store.reorderSavedAccount(accountKey: otherAccount.accountKey, toIndex: 0)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account == nil)
@@ -1752,6 +793,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -1780,7 +822,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.refresh()
+        defer { Task { await store.stop() } }
+        await store.refreshAuthentication()
 
         #expect(
             testAuthState(from: store.auth) == .failed(
@@ -1831,6 +874,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -1866,7 +910,7 @@ struct CodexReviewMCPTests {
 
         #expect(store.serverState == .stopped)
 
-        await store.auth.refresh()
+        await store.refreshAuthentication()
 
         #expect(store.serverState == .stopped)
         #expect(await manager.prepareCount() == 0)
@@ -1911,6 +955,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         #expect(store.serverState == .failed("prepare failed"))
         try await waitForObservedValue(authStateProbe) {
@@ -1943,6 +988,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -2008,6 +1054,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
@@ -2068,6 +1115,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -2118,6 +1166,7 @@ struct CodexReviewMCPTests {
         defer { weeklyProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(weeklyProbe) {
             $0 == 20
@@ -2169,6 +1218,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -2234,6 +1284,7 @@ struct CodexReviewMCPTests {
         defer { currentProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(currentProbe) {
             $0 == 40
@@ -2328,6 +1379,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
@@ -2363,6 +1415,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2426,6 +1479,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2499,6 +1553,7 @@ struct CodexReviewMCPTests {
         defer { codexProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         await authTransport.waitForNotificationStream()
 
         try await authTransport.sendRateLimitsUpdated(
@@ -2569,6 +1624,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2612,6 +1668,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2672,6 +1729,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2779,12 +1837,13 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
         try await waitForClockSuspension(clock)
 
-        await store.auth.refresh()
+        await store.refreshAuthentication()
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 12
         }
@@ -2846,6 +1905,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2885,6 +1945,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2952,6 +2013,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -3036,6 +2098,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -3074,7 +2137,7 @@ struct CodexReviewMCPTests {
             ]
         )
 
-        await store.auth.refresh()
+        await store.refreshAuthentication()
 
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 12
@@ -3116,6 +2179,7 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
         }
@@ -3154,7 +2218,7 @@ struct CodexReviewMCPTests {
             ]
         )
 
-        await store.auth.refresh()
+        await store.refreshAuthentication()
 
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 18
@@ -3202,11 +2266,12 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
 
-        await store.auth.refresh()
+        await store.refreshAuthentication()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "new@example.com"))
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
@@ -3274,6 +2339,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -3379,13 +2445,14 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             store.auth.account?.email == "active@example.com"
                 && store.settings.selectedModel == "gpt-old"
         }
 
         let savedAccount = try #require(store.auth.savedAccounts.first(where: { $0.email == "other@example.com" }))
-        try await store.auth.switchAccount(savedAccount)
+        try await store.switchAccount(savedAccount)
 
         try await waitForMainActorCondition {
             store.auth.account?.email == "other@example.com"
@@ -3427,6 +2494,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -3459,11 +2527,12 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
 
-        await store.auth.logout()
+        await store.logout()
 
         #expect(testAuthState(from: store.auth) == .signedOut)
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
@@ -3496,6 +2565,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -3535,6 +2605,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForTotalRateLimitsReadCount(
             [firstTransport, secondTransport],
             expectedCount: 1
@@ -3544,7 +2615,7 @@ struct CodexReviewMCPTests {
         let initialCheckoutCount = await manager.authTransportCheckoutCount()
         #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
 
-        await store.auth.reconcileAuthenticatedSession(
+        await store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 1
         )
@@ -3585,10 +2656,11 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        await store.auth.refresh()
+        await store.refreshAuthentication()
 
         try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
         try await waitForMainActorCondition {
@@ -3630,10 +2702,11 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        await store.auth.reconcileAuthenticatedSession(
+        await store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 2
         )
@@ -3681,11 +2754,12 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
         #expect(store.auth.account?.email == "review@example.com")
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        await store.auth.addAccount()
+        await store.addAccount()
 
         try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
         try await waitForMainActorCondition {
@@ -3746,7 +2820,7 @@ struct CodexReviewMCPTests {
             )
             store.markStarted(jobID: jobID, startedAt: Date())
 
-            await store.auth.addAccount()
+            await store.addAccount()
 
             #expect(await secondTransport.rateLimitsReadCount() == 0)
             #expect(store.auth.account?.lastRateLimitError == nil)
@@ -3820,12 +2894,13 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
         let initialCheckoutCount = await manager.authTransportCheckoutCount()
         #expect(store.auth.account?.email == "active@example.com")
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        await store.auth.addAccount()
+        await store.addAccount()
 
         #expect(await manager.authTransportCheckoutCount() == initialCheckoutCount)
         #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
@@ -3860,6 +2935,7 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
+        defer { Task { await store.stop() } }
         await authTransport.waitForNotificationStream()
 
         try await authTransport.sendRateLimitsUpdated(
@@ -3911,6 +2987,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         await authTransport.waitForNotificationStream()
 
         try await authTransport.sendRateLimitsUpdated(
@@ -3966,7 +3043,7 @@ struct CodexReviewMCPTests {
 
         #expect(store.serverState == .stopped)
 
-        await store.auth.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
+        await store.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
 
         #expect(store.serverState == .stopped)
         #expect(await manager.prepareCount() == 0)
@@ -3995,7 +3072,7 @@ struct CodexReviewMCPTests {
         auth.updatePhase(.signedOut)
         auth.updateAccount(activeAccount)
 
-        await auth.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
+        await auth.store.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
 
         #expect(auth.account?.email == "review@example.com")
         #expect(auth.savedAccounts.isEmpty)
@@ -4022,7 +3099,7 @@ struct CodexReviewMCPTests {
         )
         let activeAccount = try #require(store.auth.account)
 
-        await store.auth.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
+        await store.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
 
         let probeRootURL = ReviewHomePaths.makeProbeRootURL(environment: environment)
         let remainingProbeEntries = (try? FileManager.default.contentsOfDirectory(
@@ -4065,7 +3142,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(currentAccount)
         let savedAccount = try #require(auth.savedAccounts.first)
 
-        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
 
         #expect(auth.account?.email == "current@example.com")
         #expect(auth.savedAccounts.map(\.email) == ["saved@example.com"])
@@ -4107,7 +3184,7 @@ struct CodexReviewMCPTests {
         let currentSavedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
         auth.updateAccount(currentSavedAccount)
 
-        await auth.refreshSavedAccountRateLimits(accountKey: currentSavedAccount.accountKey)
+        await auth.store.refreshSavedAccountRateLimits(accountKey: currentSavedAccount.accountKey)
 
         #expect(auth.account?.email == "review@example.com")
         #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
@@ -4160,7 +3237,7 @@ struct CodexReviewMCPTests {
         let currentSavedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
         auth.updateAccount(currentSavedAccount)
 
-        await auth.refreshSavedAccountRateLimits(accountKey: currentSavedAccount.accountKey)
+        await auth.store.refreshSavedAccountRateLimits(accountKey: currentSavedAccount.accountKey)
 
         let probeAuthData = try #require(capturedProbeAuthData.value)
         let selectedSavedAuthData = try Data(
@@ -4198,7 +3275,7 @@ struct CodexReviewMCPTests {
         )
         let savedAccount = try #require(store.auth.savedAccounts.first)
 
-        await store.auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
 
         let refreshedAccount = try #require(
             store.auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
@@ -4239,7 +3316,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         let savedAccount = try #require(auth.savedAccounts.first)
 
-        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
 
         let refreshedAccount = try #require(
             auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
@@ -4281,7 +3358,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         let savedAccount = try #require(auth.savedAccounts.first)
 
-        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
 
         #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
         #expect(rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 40)
@@ -4324,7 +3401,7 @@ struct CodexReviewMCPTests {
             ReviewAccountRegistryStore.saveRegistryRecordFailureMessageForTesting = nil
         }
 
-        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
 
         let refreshedAccount = try #require(
             auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
@@ -4395,7 +3472,7 @@ struct CodexReviewMCPTests {
             options: Data.WritingOptions.atomic
         )
 
-        await auth.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
 
         let refreshedAccount = try #require(auth.savedAccounts.first)
         #expect(refreshedAccount !== savedAccount)
@@ -4474,7 +3551,7 @@ struct CodexReviewMCPTests {
             error: nil
         )
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 1
         )
@@ -4487,7 +3564,7 @@ struct CodexReviewMCPTests {
         #expect(await inactiveTransport.rateLimitsReadCount() == 1)
         #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 21)
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: false,
             runtimeGeneration: 1
         )
@@ -4567,7 +3644,7 @@ struct CodexReviewMCPTests {
 
         clock.advance(by: .seconds(24 * 60 * 60 + 60))
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 1
         )
@@ -4580,7 +3657,7 @@ struct CodexReviewMCPTests {
         #expect(await inactiveTransport.rateLimitsReadCount() == 1)
         #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 19)
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: false,
             runtimeGeneration: 1
         )
@@ -4658,7 +3735,7 @@ struct CodexReviewMCPTests {
             error: nil
         )
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 1
         )
@@ -4674,7 +3751,7 @@ struct CodexReviewMCPTests {
 
         #expect(rateLimitWindow(duration: 10_080, in: inactiveAccount)?.usedPercent == 44)
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: false,
             runtimeGeneration: 1
         )
@@ -4758,7 +3835,7 @@ struct CodexReviewMCPTests {
             )
         }
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 1
         )
@@ -4774,7 +3851,7 @@ struct CodexReviewMCPTests {
 
         #expect(await inactiveTransport.rateLimitsReadCount() >= 2)
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: false,
             runtimeGeneration: 1
         )
@@ -4857,7 +3934,7 @@ struct CodexReviewMCPTests {
             )
         }
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 1
         )
@@ -4867,7 +3944,7 @@ struct CodexReviewMCPTests {
             auth.savedAccounts.first(where: { $0.email == "next@example.com" })
         )
         auth.updateAccount(newActiveAccount)
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 2
         )
@@ -4884,7 +3961,7 @@ struct CodexReviewMCPTests {
         #expect(rateLimitWindow(duration: 300, in: newActiveAccount) == nil)
         #expect(await inactiveTransport.rateLimitsReadCount() >= 2)
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: false,
             runtimeGeneration: 2
         )
@@ -4947,13 +4024,13 @@ struct CodexReviewMCPTests {
             error: nil
         )
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 1
         )
         try await waitForClockSuspension(clock)
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: false,
             runtimeGeneration: 1
         )
@@ -5027,7 +4104,7 @@ struct CodexReviewMCPTests {
             error: nil
         )
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 1
         )
@@ -5042,7 +4119,7 @@ struct CodexReviewMCPTests {
         #expect(auth.account?.email == "current@example.com")
         #expect(rateLimitWindow(duration: 10_080, in: savedAccount)?.usedPercent == 34)
 
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: false,
             runtimeGeneration: 1
         )
@@ -5068,6 +4145,7 @@ struct CodexReviewMCPTests {
 
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .failed(
@@ -5102,6 +4180,7 @@ struct CodexReviewMCPTests {
 
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .failed(
@@ -5118,490 +4197,6 @@ struct CodexReviewMCPTests {
         #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
 
         await store.stop()
-    }
-
-    @Test func diagnosticsSnapshotIncludesServerAndCompletedReviewState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let diagnosticsDirectoryURL = try makeTemporaryDirectory()
-        let diagnosticsURL = diagnosticsDirectoryURL.appendingPathComponent("diagnostics.json")
-        let reviewDirectoryURL = try makeTemporaryDirectory()
-        defer {
-            try? FileManager.default.removeItem(at: diagnosticsDirectoryURL)
-            try? FileManager.default.removeItem(at: reviewDirectoryURL)
-        }
-
-        let manager = MockAppServerManager { _ in
-            .commandOutputThenSuccessThenTransportDisconnect(
-                finalReview: "Looks solid overall.",
-                outputDelta: "README.md | 1 +"
-            )
-        }
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            diagnosticsURL: diagnosticsURL,
-            appServerManager: manager
-        )
-
-        await store.start()
-
-        let result = try await store.startReview(
-            sessionID: "session-diagnostics",
-            request: .init(
-                cwd: reviewDirectoryURL.path,
-                target: .uncommittedChanges
-            )
-        )
-
-        let snapshot = try readStoreDiagnosticsSnapshot(from: diagnosticsURL)
-        let job = try #require(snapshot.jobs.first)
-
-        #expect(result.status == .succeeded)
-        #expect(snapshot.serverState == "Running")
-        #expect(snapshot.failureMessage == nil)
-        #expect(snapshot.serverURL == store.serverURL?.absoluteString)
-        #expect(snapshot.childRuntimePath == nil)
-        #expect(job.status == "succeeded")
-        #expect(job.logText.contains("Looks solid overall."))
-        #expect(job.logText.contains("README.md | 1 +"))
-        #expect(job.rawLogText.isEmpty)
-
-        await store.stop()
-    }
-
-    @Test func stoppingStoreRemovesDiscoveryAndRuntimeState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewDiscovery.remove(at: discoveryFileURL)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer {
-            ReviewDiscovery.remove(at: discoveryFileURL)
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        }
-
-        let manager = MockAppServerManager { _ in .success() }
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        await store.start()
-        await store.stop()
-
-        #expect(ReviewDiscovery.read(from: discoveryFileURL) == nil)
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
-    }
-
-    @Test func stopKeepsRuntimeStateUntilAppServerShutdownFinishes() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
-
-        let manager = DelayedShutdownAppServerManager(
-            runtimeState: .init(
-                pid: 200,
-                startTime: .init(seconds: 2, microseconds: 0),
-                processGroupLeaderPID: 200,
-                processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
-            )
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        await store.start()
-        let stopTask = Task { await store.stop() }
-        await manager.waitForShutdownStart()
-
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) != nil)
-
-        await manager.resumeShutdown()
-        _ = await stopTask.value
-
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
-    }
-
-    @Test func stopCancelsPartialStartupAndRemovesDiscoveryState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewDiscovery.remove(at: discoveryFileURL)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer {
-            ReviewDiscovery.remove(at: discoveryFileURL)
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        }
-
-        let manager = BlockingPrepareAppServerManager(runtimeState: .init(
-            pid: 300,
-            startTime: .init(seconds: 3, microseconds: 0),
-            processGroupLeaderPID: 300,
-            processGroupLeaderStartTime: .init(seconds: 3, microseconds: 0)
-        ))
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        let startTask = Task { await store.start() }
-
-        await manager.waitForPrepareStart()
-        try await waitForFileAppearance(at: discoveryFileURL)
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
-
-        await store.stop()
-        _ = await startTask.value
-
-        #expect(store.serverState == .stopped)
-        #expect(ReviewDiscovery.readPersisted(from: discoveryFileURL) == nil)
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
-        #expect(await manager.shutdownCount() == 1)
-    }
-
-    @Test func stopWithoutLocalServerPreservesPersistedDiscoveryAndRuntimeState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewDiscovery.remove(at: discoveryFileURL)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer {
-            ReviewDiscovery.remove(at: discoveryFileURL)
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        }
-
-        let serverPID = getpid()
-        let serverStartTime = try #require(processStartTime(of: serverPID))
-        let endpointRecord = try #require(
-            ReviewDiscovery.makeRecord(host: "127.0.0.1", port: 9417, pid: Int(serverPID))
-        )
-        let runtimeState = ReviewRuntimeStateRecord(
-            serverPID: Int(serverPID),
-            serverStartTime: serverStartTime,
-            appServerPID: 999,
-            appServerStartTime: .init(seconds: 9, microseconds: 0),
-            appServerProcessGroupLeaderPID: 999,
-            appServerProcessGroupLeaderStartTime: .init(seconds: 9, microseconds: 0),
-            updatedAt: Date()
-        )
-        try ReviewDiscovery.write(endpointRecord, to: discoveryFileURL)
-        try ReviewRuntimeStateStore.write(runtimeState, to: runtimeStateFileURL)
-
-        let manager = MockAppServerManager { _ in .success() }
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        await store.stop()
-
-        #expect(ReviewDiscovery.readPersisted(from: discoveryFileURL)?.pid == Int(serverPID))
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL)?.serverPID == Int(serverPID))
-    }
-
-    @Test func restartRecoversFromPartialStartup() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
-
-        let manager = BlockingPrepareAppServerManager(runtimeState: .init(
-            pid: 400,
-            startTime: .init(seconds: 4, microseconds: 0),
-            processGroupLeaderPID: 400,
-            processGroupLeaderStartTime: .init(seconds: 4, microseconds: 0)
-        ))
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        let firstStartTask = Task { await store.start() }
-
-        await manager.waitForPrepareStart()
-        await store.restart()
-        _ = await firstStartTask.value
-
-        #expect(store.serverState == .running)
-        let runtimeState = try #require(ReviewRuntimeStateStore.read(from: runtimeStateFileURL))
-        #expect(runtimeState.appServerPID == 400)
-        #expect(await manager.prepareCount() == 2)
-        #expect(await manager.shutdownCount() >= 1)
-
-        await store.stop()
-        #expect(store.serverState == .stopped)
-    }
-
-    @Test func sessionTransportFailureDoesNotDropOtherSessionsOrRuntimeState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
-
-        let manager = MockAppServerManager { sessionID in
-            sessionID == "session-a" ? .interruptFailure() : .longRunning()
-        }
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        try await withAsyncCleanup {
-            await store.start()
-
-            let sessionAReview = Task {
-                try await store.startReview(
-                    sessionID: "session-a",
-                    request: .init(
-                        cwd: FileManager.default.temporaryDirectory.path,
-                        target: .uncommittedChanges
-                    )
-                )
-            }
-            let sessionBReview = Task {
-                try await store.startReview(
-                    sessionID: "session-b",
-                    request: .init(
-                        cwd: FileManager.default.temporaryDirectory.path,
-                        target: .uncommittedChanges
-                    )
-                )
-            }
-
-            let sessionATransport = await manager.waitForTransport(sessionID: "session-a")
-            let sessionBTransport = await manager.waitForTransport(sessionID: "session-b")
-            await sessionATransport.waitForRequest("review/start")
-            await sessionBTransport.waitForRequest("review/start")
-
-            _ = try await store.cancelReview(
-                selector: .init(cwd: nil, statuses: [.running]),
-                sessionID: "session-a"
-            )
-            let cancelledResult = try await sessionAReview.value
-
-            #expect(cancelledResult.status == .cancelled)
-            #expect(await sessionATransport.isClosed())
-            #expect(await sessionBTransport.isClosed() == false)
-            #expect(await manager.shutdownCount() == 0)
-            #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) != nil)
-
-            await store.closeSession("session-b", reason: "test cleanup")
-            let sessionBResult = try await sessionBReview.value
-            #expect(sessionBResult.status == .cancelled)
-        } cleanup: {
-            await store.stop()
-        }
-    }
-
-    @Test func closeSessionClosesTransportThatFinishesConnectingLater() async throws {
-        let manager = DelayedConnectAppServerManager(
-            runtimeState: .init(
-                pid: 200,
-                startTime: .init(seconds: 2, microseconds: 0),
-                processGroupLeaderPID: 200,
-                processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
-            )
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
-
-        try await withAsyncCleanup {
-            await store.start()
-
-            let reviewTask = Task {
-                try await store.startReview(
-                    sessionID: "session-delayed-connect",
-                    request: .init(
-                        cwd: FileManager.default.temporaryDirectory.path,
-                        target: .uncommittedChanges
-                    )
-                )
-            }
-
-            await manager.waitForConnectStart()
-            await store.closeSession("session-delayed-connect", reason: "session closed")
-            await manager.resumeConnect()
-
-            let result = try await reviewTask.value
-            let transport = try #require(await manager.createdTransport())
-            #expect(result.status == .cancelled)
-            #expect(await transport.isClosed())
-        } cleanup: {
-            await store.stop()
-        }
-    }
-
-    @Test func cancelReviewInterruptsInFlightBootstrapRequest() async throws {
-        let manager = BlockingBootstrapAppServerManager()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
-
-        try await withAsyncCleanup {
-            await store.start()
-
-            let reviewTask = Task {
-                try await store.startReview(
-                    sessionID: "session-bootstrap",
-                    request: .init(
-                        cwd: FileManager.default.temporaryDirectory.path,
-                        target: .uncommittedChanges
-                    )
-                )
-            }
-
-            let transport = await manager.sessionTransport()
-            await transport.waitForRequest("config/read")
-            try await waitForMainActorCondition {
-                store.workspaces.contains { workspace in
-                    workspace.jobs.contains { job in
-                        job.sessionID == "session-bootstrap" && job.status == .running
-                    }
-                }
-            }
-
-            let cancelResult = try await store.cancelReview(
-                selector: .init(cwd: nil, statuses: [.running]),
-                sessionID: "session-bootstrap"
-            )
-
-            #expect(cancelResult.cancelled)
-
-            let result = try await withTestTimeout {
-                try await reviewTask.value
-            }
-
-            #expect(result.status == .cancelled)
-            #expect(result.error == "Cancellation requested.")
-            #expect(await transport.isClosed())
-        } cleanup: {
-            await store.stop()
-        }
-    }
-
-    @Test func cancelAllRunningJobsThrowsWhenAnyReviewCancellationFails() async throws {
-        let store = CodexReviewStore(
-            backend: CancellationFailureStoreBackend(
-                failingSessionIDs: ["session-a"],
-                error: NSError(
-                    domain: "CodexReviewMCPTests.CancellationFailureStoreBackend",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Cancellation failed."]
-                )
-            )
-        )
-        let failedJob = CodexReviewJob.makeForTesting(
-            id: "job-a",
-            sessionID: "session-a",
-            targetSummary: "target-a",
-            status: .running,
-            summary: "Running"
-        )
-        let cancelledJob = CodexReviewJob.makeForTesting(
-            id: "job-b",
-            sessionID: "session-b",
-            targetSummary: "target-b",
-            status: .running,
-            summary: "Running"
-        )
-        store.workspaces = [
-            CodexReviewWorkspace(
-                cwd: "/tmp/repo",
-                jobs: [failedJob, cancelledJob]
-            )
-        ]
-
-        await #expect(throws: Error.self) {
-            try await store.cancelAllRunningJobs(reason: "Account change requested.")
-        }
-
-        #expect(failedJob.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(failedJob.errorMessage == "Cancellation failed.")
-        #expect(cancelledJob.status == .cancelled)
-        #expect(cancelledJob.errorMessage == "Account change requested.")
-    }
-
-    @Test func terminateAllRunningJobsLocallyFinalizesCancellationRequestedJobs() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let requestedJob = CodexReviewJob.makeForTesting(
-            id: "job-requested",
-            sessionID: "session-a",
-            targetSummary: "target-a",
-            status: .running,
-            summary: "Cancellation requested."
-        )
-        requestedJob.cancellationRequested = true
-        requestedJob.errorMessage = "Account change requested."
-        let failedJob = CodexReviewJob.makeForTesting(
-            id: "job-failed",
-            sessionID: "session-b",
-            targetSummary: "target-b",
-            status: .running,
-            summary: "Running"
-        )
-        store.workspaces = [
-            CodexReviewWorkspace(
-                cwd: "/tmp/repo",
-                jobs: [requestedJob, failedJob]
-            )
-        ]
-
-        store.terminateAllRunningJobsLocally(
-            reason: "Account change requested.",
-            failureMessage: "Cancellation failed."
-        )
-
-        #expect(requestedJob.status == .failed)
-        #expect(requestedJob.cancellationRequested == false)
-        #expect(requestedJob.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(requestedJob.errorMessage == "Cancellation failed.")
-        #expect(requestedJob.endedAt != nil)
-
-        #expect(failedJob.status == .failed)
-        #expect(failedJob.cancellationRequested == false)
-        #expect(failedJob.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(failedJob.errorMessage == "Cancellation failed.")
-        #expect(failedJob.endedAt != nil)
     }
 
     @Test func cancelAuthenticationClosesStateWithoutStartingAnotherAuthSession() async throws {
@@ -5621,12 +4216,12 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
 
         await authSession.waitForLoginStart()
 
-        await store.auth.cancelAuthentication()
+        await store.cancelAuthentication()
         _ = await beginTask.value
 
         #expect(testAuthState(from: store.auth) == .signedOut)
@@ -5653,11 +4248,11 @@ struct CodexReviewMCPTests {
         store.auth.updateWarning(message: "Cancellation failed.")
 
         let beginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
 
         await authSession.waitForLoginStart()
-        await store.auth.cancelAuthentication()
+        await store.cancelAuthentication()
         _ = await beginTask.value
 
         #expect(store.auth.warningMessage == "Cancellation failed.")
@@ -5680,11 +4275,11 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
 
         await authSession.waitForLoginStart()
-        await store.auth.cancelAuthentication()
+        await store.cancelAuthentication()
         _ = await beginTask.value
 
         let probeRootURL = ReviewHomePaths.makeProbeRootURL(environment: environment)
@@ -5693,6 +4288,240 @@ struct CodexReviewMCPTests {
             includingPropertiesForKeys: nil
         )) ?? []
         #expect(remainingProbeEntries.isEmpty)
+    }
+
+    @Test func performPrimaryAuthenticationActionBeginsAuthenticationWhenSignedOutAndServerRunning() async {
+        let backend = PrimaryAuthenticationStoreBackend()
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["begin"])
+    }
+
+    @Test func performPrimaryAuthenticationActionCancelsAuthenticationWhenAuthenticating() async {
+        let backend = PrimaryAuthenticationStoreBackend()
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["cancel"])
+    }
+
+    @Test func performPrimaryAuthenticationActionRestartsFailedServerBeforeBeginningAuthentication() async {
+        let backend = PrimaryAuthenticationStoreBackend(
+            restartResultingServerState: .running
+        )
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authPhase: .signedOut,
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["start", "begin"])
+        #expect(store.serverState == .running)
+    }
+
+    @Test func performPrimaryAuthenticationActionRestartsStoppedServerBeforeBeginningAuthentication() async {
+        let backend = PrimaryAuthenticationStoreBackend(
+            restartResultingServerState: .running
+        )
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .stopped,
+            authPhase: .signedOut,
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["start", "begin"])
+        #expect(store.serverState == .running)
+    }
+
+    @Test func performPrimaryAuthenticationActionBeginsAuthenticationEvenWhenRestartFails() async {
+        let backend = PrimaryAuthenticationStoreBackend(
+            restartResultingServerState: .failed("Still unavailable.")
+        )
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authPhase: .signedOut,
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["start", "begin"])
+        #expect(store.serverState == .failed("Still unavailable."))
+    }
+
+    @Test func switchingAccountFailureClearsProgressStateAndPreservesActiveAccount() async {
+        let backend = AccountActionStoreBackend(
+            switchStartsBlocked: true,
+            switchErrorMessage: "Switch failed."
+        )
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        store.auth.updateSavedAccounts([firstAccount, secondAccount])
+        store.auth.updateAccount(firstAccount)
+
+        let switchTask = Task {
+            try await store.switchAccount(secondAccount)
+        }
+
+        await backend.waitForSwitchAccountStartCallCount(1)
+        #expect(
+            store.auth.savedAccounts.contains(
+                where: { $0.accountKey == secondAccount.accountKey && $0.isSwitching }
+            )
+        )
+
+        await backend.releaseSwitchAccount()
+        await #expect(throws: Error.self) {
+            try await switchTask.value
+        }
+
+        #expect(store.auth.savedAccounts.contains(where: { $0.isSwitching }) == false)
+        #expect(store.auth.account?.accountKey == firstAccount.accountKey)
+    }
+
+    @Test func metadataOnlySwitchDoesNotPresentRunningJobsConfirmation() async {
+        let backend = AccountActionStoreBackend()
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let currentSavedAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        let currentSession = CodexAccount(email: "current@example.com", planType: "plus")
+        let runningJob = makeStoreTestJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: currentSession,
+            savedAccounts: [activeSavedAccount, currentSavedAccount],
+            workspaces: makeStoreTestWorkspaces(from: [runningJob])
+        )
+
+        store.requestSwitchAccount(
+            currentSavedAccount,
+            requiresConfirmation: store.hasRunningJobs
+                && store.auth.account?.accountKey != currentSavedAccount.accountKey
+        )
+        await backend.waitForSwitchAccountCallCount(1)
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
+        #expect(backend.lastSwitchedAccountKey() == currentSavedAccount.accountKey)
+    }
+
+    @Test func persistedActiveCurrentRecoverySwitchStillDelegatesToController() async throws {
+        let backend = AccountActionStoreBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: []
+        )
+
+        try await store.switchAccount(currentAccount)
+
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
+    @Test func sameAccountRecoverySwitchUsesRunningJobsConfirmation() async {
+        let backend = AccountActionStoreBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        let runningJob = makeStoreTestJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: makeStoreTestWorkspaces(from: [runningJob])
+        )
+
+        store.requestSwitchAccount(
+            currentAccount,
+            requiresConfirmation: store.hasRunningJobs
+                && store.switchActionRequiresRunningJobsConfirmation(for: currentAccount)
+        )
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(backend.switchAccountCallCount() == 0)
+
+        store.confirmPendingAccountAction()
+        await backend.waitForSwitchAccountCallCount(1)
+
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
+    @Test func inactiveSavedCurrentRecoverySwitchUsesRunningJobsConfirmation() async {
+        let backend = AccountActionStoreBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let currentSavedAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        let runningJob = makeStoreTestJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentSavedAccount,
+            savedAccounts: [activeSavedAccount, currentSavedAccount],
+            workspaces: makeStoreTestWorkspaces(from: [runningJob])
+        )
+
+        store.requestSwitchAccount(
+            currentSavedAccount,
+            requiresConfirmation: store.hasRunningJobs
+                && store.switchActionRequiresRunningJobsConfirmation(for: currentSavedAccount)
+        )
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(backend.switchAccountCallCount() == 0)
+    }
+
+    @Test func detachedCurrentSessionCannotRequestNoOpSwitch() {
+        let backend = AccountActionStoreBackend()
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let detachedCurrent = CodexAccount(email: "current@example.com", planType: "plus")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: detachedCurrent,
+            savedAccounts: [activeSavedAccount],
+            workspaces: []
+        )
+
+        #expect(store.switchActionIsDisabled(for: detachedCurrent))
     }
 
     @Test func signInIgnoresConcurrentRetryWhileLoginIsInProgress() async throws {
@@ -5712,19 +4541,19 @@ struct CodexReviewMCPTests {
         )
 
         let firstBeginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
 
         await authSession.waitForLoginStart()
 
         let secondBeginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
         _ = await secondBeginTask.value
 
         #expect(await authFactory.creationCount() == 1)
 
-        await store.auth.cancelAuthentication()
+        await store.cancelAuthentication()
         _ = await firstBeginTask.value
         #expect(await authSession.cancelledLoginIDs() == ["login-browser"])
     }
@@ -5753,12 +4582,12 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
 
         await authSession.waitForLoginStart()
 
-        await store.auth.cancelAuthentication()
+        await store.cancelAuthentication()
         _ = await beginTask.value
 
         #expect(
@@ -5804,7 +4633,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
         auth.updatePhase(.failed(message: "Authentication failed."))
 
-        await auth.signIn()
+        await auth.store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
@@ -5830,15 +4659,16 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
 
         await authSession.waitForLoginStart()
 
-        await store.auth.logout()
+        await store.logout()
         _ = await beginTask.value
 
         #expect(testAuthState(from: store.auth) == .signedOut)
@@ -5865,16 +4695,17 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
 
         await authSession.waitForLoginStart()
 
         let logoutTask = Task {
-            await store.auth.logout()
+            await store.logout()
         }
         await authSession.waitForCloseRequest()
         _ = await logoutTask.value
@@ -5926,7 +4757,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        try await auth.signOutActiveAccount()
+        try await auth.store.signOutActiveAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
@@ -5981,7 +4812,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        try await auth.signOutActiveAccount()
+        try await auth.store.signOutActiveAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
@@ -6030,7 +4861,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
-        try await auth.signOutActiveAccount()
+        try await auth.store.signOutActiveAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
@@ -6048,7 +4879,7 @@ struct CodexReviewMCPTests {
         )
         #expect(loadSharedReviewAccount(environment: environment) == nil)
 
-        await auth.refresh()
+        await auth.store.refreshAuthentication()
 
         let refreshedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
@@ -6086,7 +4917,7 @@ struct CodexReviewMCPTests {
         auth.updatePhase(.signedOut)
         auth.updateAccount(currentAccount)
 
-        try await auth.signOutActiveAccount()
+        try await auth.store.signOutActiveAccount()
 
         #expect(auth.account == nil)
         #expect(
@@ -6118,7 +4949,7 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await auth.refresh()
+        await auth.store.refreshAuthentication()
 
         #expect(auth.account?.email == "review@example.com")
         #expect(auth.savedAccounts.isEmpty)
@@ -6167,7 +4998,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
-        await auth.refresh()
+        await auth.store.refreshAuthentication()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "review@example.com")
@@ -6201,7 +5032,7 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await auth.signIn()
+        await auth.store.signIn()
 
         #expect(testAuthState(from: auth) == .failed(reviewAuthPersistenceFailureMessage))
         #expect(cancelCallCount == 0)
@@ -6237,6 +5068,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             store.auth.savedAccounts.map(\.email) == ["review@example.com"]
         }
@@ -6279,7 +5111,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        try await auth.signOutActiveAccount()
+        try await auth.store.signOutActiveAccount()
 
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(cancelCallCount == 1)
@@ -6324,7 +5156,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        try await auth.signOutActiveAccount()
+        try await auth.store.signOutActiveAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
@@ -6371,7 +5203,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        try await auth.signOutActiveAccount()
+        try await auth.store.signOutActiveAccount()
 
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(cancelCallCount == 1)
@@ -6412,7 +5244,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        await auth.logout()
+        await auth.store.logout()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.errorMessage == nil)
@@ -6457,7 +5289,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        await auth.logout()
+        await auth.store.logout()
 
         #expect(auth.account == nil)
         #expect(auth.errorMessage == nil)
@@ -6481,7 +5313,7 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
         let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
         defer { authStateProbe.cancel() }
@@ -6494,7 +5326,7 @@ struct CodexReviewMCPTests {
             return progress.browserURL?.contains("/oauth/authorize") == true
         }
 
-        await store.auth.cancelAuthentication()
+        await store.cancelAuthentication()
         _ = await beginTask.value
 
         #expect(await manager.authTransportCheckoutCount() == 0)
@@ -6530,11 +5362,11 @@ struct CodexReviewMCPTests {
         store.auth.updateAccount(nil)
 
         let beginTask = Task {
-            await store.auth.addAccount()
+            await store.addAccount()
         }
 
         await authSession.waitForLoginStart()
-        await store.auth.cancelAuthentication()
+        await store.cancelAuthentication()
         _ = await beginTask.value
 
         #expect(store.auth.account == nil)
@@ -6559,7 +5391,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.signIn()
+        defer { Task { await store.stop() } }
+        await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
         #expect(await manager.prepareCount() == 2)
@@ -6585,7 +5418,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.signIn()
+        defer { Task { await store.stop() } }
+        await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
         #expect(await manager.prepareCount() == 2)
@@ -6611,7 +5445,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.addAccount()
+        defer { Task { await store.stop() } }
+        await store.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedOut)
         #expect(store.auth.savedAccounts.map(\.email) == ["review@example.com"])
@@ -6638,7 +5473,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.addAccount()
+        defer { Task { await store.stop() } }
+        await store.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
         #expect(store.auth.savedAccounts.map(\.email) == ["review@example.com"])
@@ -6665,7 +5501,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.signIn()
+        defer { Task { await store.stop() } }
+        await store.signIn()
 
         #expect(store.auth.isAuthenticating == false)
         #expect(
@@ -6699,8 +5536,8 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await auth.signIn()
-        await auth.cancelAuthentication()
+        await auth.store.signIn()
+        await auth.store.cancelAuthentication()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
@@ -6747,7 +5584,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let addedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
         #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
@@ -6796,10 +5633,10 @@ struct CodexReviewMCPTests {
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
-        await auth.refresh()
+        await auth.store.refreshAuthentication()
         auth.updatePhase(.failed(message: "Previous add-account failed."))
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -6847,7 +5684,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
         auth.updatePhase(.failed(message: "Authentication failed."))
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -6903,7 +5740,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
         auth.updatePhase(.failed(message: "Authentication failed."))
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -6960,7 +5797,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(nil)
         auth.updatePhase(.failed(message: "Authentication failed."))
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -7008,7 +5845,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(nil)
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -7052,7 +5889,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(nil)
         auth.updatePhase(.signedOut)
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
@@ -7093,7 +5930,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(nil)
 
-        await auth.signIn()
+        await auth.store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
@@ -7138,7 +5975,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(nil)
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -7172,7 +6009,7 @@ struct CodexReviewMCPTests {
         let unsavedCurrentAccount = CodexAccount(email: "review@example.com")
         auth.updateAccount(unsavedCurrentAccount)
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         #expect(auth.account === unsavedCurrentAccount)
         #expect(auth.savedAccounts.first?.email == "review@example.com")
@@ -7229,7 +6066,7 @@ struct CodexReviewMCPTests {
         )
         auth.updateAccount(unsavedCurrentAccount)
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -7268,7 +6105,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts([])
         auth.updateAccount(unsavedCurrentAccount)
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -7303,7 +6140,7 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -7353,7 +6190,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -7412,7 +6249,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(recycleCallCount == 1)
@@ -7473,7 +6310,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -7483,7 +6320,7 @@ struct CodexReviewMCPTests {
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
 
         hasRunningJobs.value = false
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 1
         )
@@ -7532,12 +6369,15 @@ struct CodexReviewMCPTests {
         )
         hasRunningJobs.value = true
 
-        await runtimeDriver.applyAddAccountRuntimeEffect(effect, auth: auth)
+        await runtimeDriver.applyAddAccountRuntimeEffect(
+            effect,
+            auth: auth.model
+        )
         #expect(recycleCallCount == 0)
 
         hasRunningJobs.value = false
         await runtimeDriver.reconcileDeferredAddAccountRuntimeEffectIfNeeded(
-            auth: auth,
+            auth: auth.model,
             serverIsRunning: true,
             runtimeGeneration: 1
         )
@@ -7563,7 +6403,7 @@ struct CodexReviewMCPTests {
 
         try await withAsyncCleanup {
             await store.start()
-            await store.auth.refresh()
+            await store.refreshAuthentication()
             #expect(store.auth.account?.email == "review@example.com")
             let jobID = try store.enqueueReview(
                 sessionID: "session-a",
@@ -7578,7 +6418,7 @@ struct CodexReviewMCPTests {
             #expect(await manager.prepareCount() == 1)
             #expect(await manager.shutdownCount() == 0)
 
-            await store.auth.addAccount()
+            await store.addAccount()
 
             #expect(await manager.prepareCount() == 1)
             #expect(await manager.shutdownCount() == 0)
@@ -7630,7 +6470,7 @@ struct CodexReviewMCPTests {
 
         try await withAsyncCleanup {
             await store.start()
-            await store.auth.refresh()
+            await store.refreshAuthentication()
             #expect(store.auth.account?.email == "review@example.com")
             let jobID = try store.enqueueReview(
                 sessionID: "session-a",
@@ -7641,7 +6481,7 @@ struct CodexReviewMCPTests {
             )
             store.markStarted(jobID: jobID, startedAt: Date())
 
-            await store.auth.addAccount()
+            await store.addAccount()
 
             try store.completeCancellationLocally(
                 jobID: jobID,
@@ -7679,7 +6519,7 @@ struct CodexReviewMCPTests {
 
         try await withAsyncCleanup {
             await store.start()
-            await store.auth.refresh()
+            await store.refreshAuthentication()
             #expect(store.auth.account?.email == "review@example.com")
             let jobID = try store.enqueueReview(
                 sessionID: "session-a",
@@ -7690,8 +6530,8 @@ struct CodexReviewMCPTests {
             )
             store.markStarted(jobID: jobID, startedAt: Date())
 
-            await store.auth.addAccount()
-            await store.auth.addAccount()
+            await store.addAccount()
+            await store.addAccount()
 
             #expect(await manager.prepareCount() == 1)
             #expect(await manager.shutdownCount() == 0)
@@ -7771,11 +6611,11 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        await auth.addAccount()
+        await auth.store.addAccount()
         #expect(recycleCallCount == 0)
 
         hasRunningJobs.value = false
-        await auth.reconcileAuthenticatedSession(
+        await auth.store.reconcileAuthenticatedSession(
             serverIsRunning: true,
             runtimeGeneration: 2
         )
@@ -7820,7 +6660,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(CodexAccount(email: "review@example.com"))
 
-        await auth.addAccount()
+        await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(recycleCallCount == 0)
@@ -7864,10 +6704,10 @@ struct CodexReviewMCPTests {
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
-        await auth.refresh()
+        await auth.store.refreshAuthentication()
         auth.updatePhase(.failed(message: "Previous add-account failed."))
 
-        await auth.signIn()
+        await auth.store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "review@example.com")
@@ -7900,7 +6740,7 @@ struct CodexReviewMCPTests {
         )
 
         let missingAccount = CodexAccount(email: "missing@example.com")
-        try await auth.switchAccount(missingAccount)
+        try await auth.store.switchAccount(missingAccount)
         #expect(cancelCallCount == 0)
     }
 
@@ -7936,7 +6776,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         let savedAccount = try #require(auth.savedAccounts.first)
 
-        try await auth.switchAccount(savedAccount)
+        try await auth.store.switchAccount(savedAccount)
 
         #expect(auth.account?.email == "saved@example.com")
         #expect(auth.isAuthenticated)
@@ -7993,7 +6833,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(currentAccount)
         let targetAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
 
-        try await auth.switchAccount(targetAccount)
+        try await auth.store.switchAccount(targetAccount)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -8059,7 +6899,7 @@ struct CodexReviewMCPTests {
         let currentAccount = CodexAccount(email: "review@example.com", planType: "plus")
         auth.updateAccount(currentAccount)
 
-        try await auth.switchAccount(CodexAccount(email: "review@example.com"))
+        try await auth.store.switchAccount(CodexAccount(email: "review@example.com"))
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -8115,7 +6955,7 @@ struct CodexReviewMCPTests {
         auth.updatePhase(.signedOut)
         let savedAccount = try #require(auth.savedAccounts.first)
 
-        try await auth.switchAccount(savedAccount)
+        try await auth.store.switchAccount(savedAccount)
 
         #expect(cancelCallCount == 1)
         #expect(recycleCallCount == 1)
@@ -8158,7 +6998,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(nil)
         auth.updatePhase(.failed(message: "Authentication required."))
 
-        try await auth.switchAccount(savedAccount)
+        try await auth.store.switchAccount(savedAccount)
 
         #expect(testAuthState(from: auth) == .signedIn(accountID: "saved@example.com"))
         #expect(auth.errorMessage == nil)
@@ -8206,7 +7046,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(CodexAccount(email: "current@example.com"))
 
-        try await auth.switchAccount(savedAccount)
+        try await auth.store.switchAccount(savedAccount)
 
         #expect(cancelCallCount == 1)
         #expect(recycleCallCount == 1)
@@ -8255,7 +7095,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
         let activeAccount = try #require(auth.account)
 
-        try await auth.removeAccount(accountKey: activeAccount.accountKey)
+        try await auth.store.removeAccount(accountKey: activeAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "other@example.com"))
@@ -8316,7 +7156,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(nil)
         auth.updatePhase(.signedOut)
 
-        try await auth.removeAccount(accountKey: activeAccount.accountKey)
+        try await auth.store.removeAccount(accountKey: activeAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
@@ -8362,7 +7202,7 @@ struct CodexReviewMCPTests {
         auth.updatePhase(.signedOut)
         let removedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "other@example.com" }))
 
-        try await auth.removeAccount(accountKey: removedAccount.accountKey)
+        try await auth.store.removeAccount(accountKey: removedAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account == nil)
@@ -8405,7 +7245,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(currentAccount)
         let savedAccount = try #require(auth.savedAccounts.first)
 
-        try await auth.removeAccount(accountKey: savedAccount.accountKey)
+        try await auth.store.removeAccount(accountKey: savedAccount.accountKey)
 
         #expect(auth.account?.email == "current@example.com")
         #expect(auth.savedAccounts.isEmpty)
@@ -8449,7 +7289,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(CodexAccount(email: "current@example.com"))
         let removedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "other@example.com" }))
 
-        try await auth.removeAccount(accountKey: removedAccount.accountKey)
+        try await auth.store.removeAccount(accountKey: removedAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "current@example.com")
@@ -8499,7 +7339,7 @@ struct CodexReviewMCPTests {
         let removedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "other@example.com" }))
         auth.updateAccount(currentSavedAccount)
 
-        try await auth.removeAccount(accountKey: removedAccount.accountKey)
+        try await auth.store.removeAccount(accountKey: removedAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "current@example.com")
@@ -8545,7 +7385,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
-        try await auth.removeAccount(accountKey: currentSavedAccount.accountKey)
+        try await auth.store.removeAccount(accountKey: currentSavedAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "active@example.com")
@@ -8594,7 +7434,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
         let activeAccount = try #require(auth.account)
 
-        try await auth.removeAccount(accountKey: activeAccount.accountKey)
+        try await auth.store.removeAccount(accountKey: activeAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "other@example.com"))
@@ -8651,7 +7491,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
         let activeAccount = try #require(auth.account)
 
-        try await auth.removeAccount(accountKey: activeAccount.accountKey)
+        try await auth.store.removeAccount(accountKey: activeAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "other@example.com")
@@ -8682,13 +7522,12 @@ struct CodexReviewMCPTests {
         )
 
         let manager = AuthCapableAppServerManager()
-        let controller = CodexAuthController(
+        let auth = makeAuthModel(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
                 environment: environment
             ),
-            accountRegistryStore: registryStore,
             appServerManager: manager,
             sharedAuthSessionFactory: { _ in
                 SignedOutReviewAuthSession()
@@ -8704,12 +7543,11 @@ struct CodexReviewMCPTests {
                 _ = try? await manager.prepare()
             }
         )
-        let auth = CodexReviewAuthModel(controller: controller)
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
         auth.updateSavedAccounts(initialAccounts.accounts)
         auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
 
-        try await auth.removeAccount(accountKey: "active@example.com")
+        try await auth.store.removeAccount(accountKey: "active@example.com")
 
         try await withTestTimeout(.seconds(2)) {
             while await manager.authTransportCheckoutCount() == 0 {
@@ -8740,7 +7578,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.signIn()
+        defer { Task { await store.stop() } }
+        await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
         #expect(await manager.prepareCount() == 1)
@@ -8766,7 +7605,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.signIn()
+        defer { Task { await store.stop() } }
+        await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
 
@@ -8795,7 +7635,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.signIn()
+        defer { Task { await store.stop() } }
+        await store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -8828,7 +7669,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        await store.auth.signIn()
+        defer { Task { await store.stop() } }
+        await store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(
@@ -8858,8 +7700,9 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-        await store.auth.logout()
+        await store.logout()
 
         #expect(testAuthState(from: store.auth) == .signedOut)
         #expect(await manager.prepareCount() == 2)
@@ -8885,8 +7728,9 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-        await store.auth.logout()
+        await store.logout()
 
         #expect(testAuthState(from: store.auth) == .signedOut)
         #expect(await manager.prepareCount() == 2)
@@ -8933,7 +7777,7 @@ struct CodexReviewMCPTests {
         auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
-        await auth.logout()
+        await auth.store.logout()
 
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(loadSharedReviewAccount(environment: environment) == nil)
@@ -8957,8 +7801,9 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-        await store.auth.logout()
+        await store.logout()
 
         #expect(
             testAuthState(from: store.auth) == .failed(
@@ -9028,11 +7873,12 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
 
-        await store.auth.logout()
+        await store.logout()
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 22
@@ -9083,7 +7929,7 @@ struct CodexReviewMCPTests {
 
         let updates = ObservableValueProbe { testAuthState(from: store.auth) }
 
-        await store.auth.signIn()
+        await store.signIn()
 
         try await waitForObservedValue(updates) { $0.isAuthenticated }
 
@@ -9124,7 +7970,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.signIn()
+        await store.signIn()
 
         let authTransport = try #require(await manager.authTransportForTesting())
         #expect(await authTransport.completeParams() == nil)
@@ -9168,7 +8014,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.signIn()
+        await store.signIn()
 
         #expect(
             testAuthState(from: store.auth) == .failed(
@@ -9234,7 +8080,7 @@ struct CodexReviewMCPTests {
         )
 
         let beginTask = Task {
-            await store.auth.signIn()
+            await store.signIn()
         }
 
         await authSession.waitForLoginStart()
@@ -9243,7 +8089,7 @@ struct CodexReviewMCPTests {
         #expect(store.auth.isAuthenticated)
         #expect(store.auth.account?.email == "review@example.com")
 
-        await store.auth.cancelAuthentication()
+        await store.cancelAuthentication()
         #expect(
             testAuthState(from: store.auth) == .failed(
                 "Authentication failed.",
@@ -9301,7 +8147,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.signIn()
+        await store.signIn()
 
         #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -9342,7 +8188,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.signIn()
+        await store.signIn()
 
         #expect(
             testAuthState(from: store.auth) == .failed(
@@ -9384,7 +8230,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.signIn()
+        await store.signIn()
 
         #expect(await recorder.lastAuthenticateRequest()?.url.absoluteString == "https://auth.openai.com/oauth/authorize?foo=bar")
         #expect(await recorder.lastAuthenticateRequest()?.callbackScheme == "lynnpd.codexreviewmonitor.auth")
@@ -9424,7 +8270,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.signIn()
+        await store.signIn()
 
         #expect(await recorder.lastAuthenticateRequest() == nil)
         #expect(
@@ -9467,7 +8313,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.signIn()
+        await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
@@ -9505,7 +8351,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.signIn()
+        await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
@@ -9549,7 +8395,7 @@ struct CodexReviewMCPTests {
             )
         )
 
-        await store.auth.signIn()
+        await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
     }
@@ -9574,11 +8420,10 @@ struct CodexReviewMCPTests {
         _ = try await session.startLogin(.chatGPT)
         await session.waitForAuthenticationTaskCompletion()
 
-        let subscription = await session.notificationStream()
-        defer { Task { await subscription.cancel() } }
+        let notificationStream = await session.notificationStream()
 
         try await withTestTimeout {
-            for try await _ in subscription.stream {
+            for try await _ in notificationStream {
                 Issue.record("Expected late native-auth subscribers to observe terminal cancellation without buffered notifications.")
             }
         }
@@ -9604,12 +8449,11 @@ struct CodexReviewMCPTests {
         _ = try await session.startLogin(.chatGPT)
         await session.waitForAuthenticationTaskCompletion()
 
-        let subscription = await session.notificationStream()
-        defer { Task { await subscription.cancel() } }
+        let notificationStream = await session.notificationStream()
 
         await #expect(throws: ReviewAuthError.loginFailed("Authentication failed.")) {
             try await withTestTimeout {
-                for try await _ in subscription.stream {
+                for try await _ in notificationStream {
                     Issue.record("Expected late native-auth subscribers to fail before receiving notifications.")
                 }
             }
@@ -9976,7 +8820,7 @@ struct CodexReviewMCPTests {
     }
 }
 
-private final class TestRestartClock: Clock, @unchecked Sendable {
+final class TestRestartClock: Clock, @unchecked Sendable {
     typealias Instant = ContinuousClock.Instant
     typealias Duration = Swift.Duration
 
@@ -10061,7 +8905,7 @@ private final class TestRestartClock: Clock, @unchecked Sendable {
     }
 }
 
-private actor RestartTaskResultBox {
+actor RestartTaskResultBox {
     private var result: Result<Void, Error>?
 
     func store(_ result: Result<Void, Error>) {
@@ -10073,7 +8917,7 @@ private actor RestartTaskResultBox {
     }
 }
 
-private actor DelayedShutdownAppServerManager: AppServerManaging {
+actor DelayedShutdownAppServerManager: AppServerManaging {
     private let runtimeState: AppServerRuntimeState
     private var shutdownStarted = false
     private var shutdownWaiters: [CheckedContinuation<Void, Never>] = []
@@ -10100,10 +8944,10 @@ private actor DelayedShutdownAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -10148,7 +8992,7 @@ private actor DelayedShutdownAppServerManager: AppServerManaging {
     }
 }
 
-private actor DelayedConnectAppServerManager: AppServerManaging {
+actor DelayedConnectAppServerManager: AppServerManaging {
     private let runtimeState: AppServerRuntimeState
     private var connectStarted = false
     private var connectStartWaiters: [CheckedContinuation<Void, Never>] = []
@@ -10189,10 +9033,10 @@ private actor DelayedConnectAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -10228,7 +9072,7 @@ private actor DelayedConnectAppServerManager: AppServerManaging {
     }
 }
 
-private actor BlockingPrepareAppServerManager: AppServerManaging {
+actor BlockingPrepareAppServerManager: AppServerManaging {
     private let runtimeState: AppServerRuntimeState
     private var prepareCountStorage = 0
     private var shutdownCountStorage = 0
@@ -10268,10 +9112,10 @@ private actor BlockingPrepareAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -10309,7 +9153,7 @@ private actor BlockingPrepareAppServerManager: AppServerManaging {
     }
 }
 
-private actor CountingReviewAuthSessionFactory {
+actor CountingReviewAuthSessionFactory {
     private let session: BlockingLoginReviewAuthSession
     private var creationCountStorage = 0
 
@@ -10327,7 +9171,7 @@ private actor CountingReviewAuthSessionFactory {
     }
 }
 
-private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
+actor BlockingLoginReviewAuthSession: ReviewAuthSession {
     private var loginParams: [AppServerLoginAccountParams] = []
     private var cancelledIDs: [String] = []
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
@@ -10352,15 +9196,15 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(
-            stream: stream,
-            cancel: { [self] in
-                await close()
+        continuation.onTermination = { _ in
+            Task {
+                await self.close()
             }
-        )
+        }
+        return stream
     }
 
     func close() async {
@@ -10387,7 +9231,7 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
+actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
     private var loginParams: [AppServerLoginAccountParams] = []
     private var cancelledIDs: [String] = []
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
@@ -10415,15 +9259,15 @@ private actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         self.continuation = continuation
-        return .init(
-            stream: stream,
-            cancel: { [self] in
-                await close()
+        continuation.onTermination = { _ in
+            Task {
+                await self.close()
             }
-        )
+        }
+        return stream
     }
 
     func close() async {
@@ -10463,7 +9307,7 @@ private actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
+actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
     private var readAccountCallCountStorage = 0
     private let readStartedSignal = AsyncSignal()
     private let readResumeGate = OneShotGate()
@@ -10488,8 +9332,8 @@ private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -10507,7 +9351,7 @@ private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor ImmediateReadAccountReviewAuthSession: ReviewAuthSession {
+actor ImmediateReadAccountReviewAuthSession: ReviewAuthSession {
     private let response: AppServerAccountReadResponse
 
     init(response: AppServerAccountReadResponse) {
@@ -10530,14 +9374,14 @@ private actor ImmediateReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
+actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
     private let message: String
 
     init(message: String) {
@@ -10564,14 +9408,14 @@ private actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor SignedOutReviewAuthSession: ReviewAuthSession {
+actor SignedOutReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
     }
@@ -10588,14 +9432,14 @@ private actor SignedOutReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor FileBackedSharedReviewAuthSession: ReviewAuthSession {
+actor FileBackedSharedReviewAuthSession: ReviewAuthSession {
     private let environment: [String: String]
 
     init(environment: [String: String]) {
@@ -10631,14 +9475,14 @@ private actor FileBackedSharedReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor BlockingReadAccountReviewAuthSession: ReviewAuthSession {
+actor BlockingReadAccountReviewAuthSession: ReviewAuthSession {
     private let readStartedSignal = AsyncSignal()
     private let finishReadSignal = AsyncSignal()
 
@@ -10660,8 +9504,8 @@ private actor BlockingReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -10675,7 +9519,7 @@ private actor BlockingReadAccountReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
+actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
     private var responses: [AppServerAccountReadResponse]
 
     init(responses: [AppServerAccountReadResponse]) {
@@ -10702,14 +9546,14 @@ private actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor SequencedReadAccountThenFailingReviewAuthSession: ReviewAuthSession {
+actor SequencedReadAccountThenFailingReviewAuthSession: ReviewAuthSession {
     private var responses: [AppServerAccountReadResponse]
     private let failureMessage: String
 
@@ -10744,14 +9588,14 @@ private actor SequencedReadAccountThenFailingReviewAuthSession: ReviewAuthSessio
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
+actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var didLogin = false
@@ -10781,10 +9625,10 @@ private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -10812,7 +9656,7 @@ private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
+actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
     }
@@ -10829,14 +9673,14 @@ private actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
+actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
 
@@ -10861,10 +9705,10 @@ private actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -10892,7 +9736,7 @@ private actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor MutableAuthenticatedLoginReviewAuthSession: ReviewAuthSession {
+actor MutableAuthenticatedLoginReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var currentEmail: String
@@ -10934,10 +9778,10 @@ private actor MutableAuthenticatedLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -10965,7 +9809,7 @@ private actor MutableAuthenticatedLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSession {
+actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var didLogin = false
@@ -11004,10 +9848,10 @@ private actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSess
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -11035,7 +9879,7 @@ private actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSess
     }
 }
 
-private actor FailingLogoutReviewAuthSession: ReviewAuthSession {
+actor FailingLogoutReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
     }
@@ -11054,14 +9898,14 @@ private actor FailingLogoutReviewAuthSession: ReviewAuthSession {
         throw ReviewAuthError.logoutFailed("Failed to sign out.")
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor LogoutFailureWithPersistedAuthReviewAuthSession: ReviewAuthSession {
+actor LogoutFailureWithPersistedAuthReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(
             account: .chatGPT(email: "review@example.com", planType: "pro"),
@@ -11083,14 +9927,14 @@ private actor LogoutFailureWithPersistedAuthReviewAuthSession: ReviewAuthSession
         throw ReviewAuthError.logoutFailed("Failed to sign out.")
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor LogoutFailureWithChangedAccountReviewAuthSession: ReviewAuthSession {
+actor LogoutFailureWithChangedAccountReviewAuthSession: ReviewAuthSession {
     private var readCount = 0
 
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
@@ -11121,14 +9965,14 @@ private actor LogoutFailureWithChangedAccountReviewAuthSession: ReviewAuthSessio
         throw ReviewAuthError.logoutFailed("Failed to sign out.")
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
 }
 
-private actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
+actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var refreshRequests: [Bool] = []
@@ -11155,10 +9999,10 @@ private actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -11190,7 +10034,7 @@ private actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor AuthCapableAppServerManager: AppServerManaging {
+actor AuthCapableAppServerManager: AppServerManaging {
     private let runtimeState = AppServerRuntimeState(
         pid: 200,
         startTime: .init(seconds: 2, microseconds: 0),
@@ -11259,10 +10103,10 @@ private actor AuthCapableAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -11303,7 +10147,7 @@ private actor AuthCapableAppServerManager: AppServerManaging {
     }
 }
 
-private actor PreparedSettingsRefreshAppServerManager: AppServerManaging {
+actor PreparedSettingsRefreshAppServerManager: AppServerManaging {
     private let runtimeState = AppServerRuntimeState(
         pid: 200,
         startTime: .init(seconds: 2, microseconds: 0),
@@ -11340,10 +10184,10 @@ private actor PreparedSettingsRefreshAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -11363,7 +10207,7 @@ private actor PreparedSettingsRefreshAppServerManager: AppServerManaging {
     }
 }
 
-private actor FailingAuthCheckoutAppServerManager: AppServerManaging {
+actor FailingAuthCheckoutAppServerManager: AppServerManaging {
     private let runtimeState = AppServerRuntimeState(
         pid: 200,
         startTime: .init(seconds: 2, microseconds: 0),
@@ -11391,10 +10235,10 @@ private actor FailingAuthCheckoutAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -11405,13 +10249,153 @@ private actor FailingAuthCheckoutAppServerManager: AppServerManaging {
 }
 
 @MainActor
-private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
-    let isActive = true
-    let shouldAutoStartEmbeddedServer = false
-    let initialAccount: CodexAccount? = nil
-    let initialAccounts: [CodexAccount] = []
-    let initialActiveAccountKey: String? = nil
+final class PrimaryAuthenticationStoreBackend: ReviewMonitorTestingHarness {
+    private let restartResultingServerState: CodexReviewServerState
+    private var actions: [String] = []
 
+    init(
+        restartResultingServerState: CodexReviewServerState = .starting
+    ) {
+        self.restartResultingServerState = restartResultingServerState
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false
+            )
+        )
+    }
+
+    override func start(
+        store: CodexReviewStore,
+        forceRestartIfNeeded _: Bool
+    ) async {
+        isActive = true
+        actions.append("start")
+        store.serverState = restartResultingServerState
+    }
+
+    override func stop(store _: CodexReviewStore) async {
+        isActive = false
+    }
+
+    override func waitUntilStopped() async {}
+
+    override func signIn(auth _: CodexReviewAuthModel) async {
+        actions.append("begin")
+    }
+
+    override func cancelAuthentication(auth _: CodexReviewAuthModel) async {
+        actions.append("cancel")
+    }
+
+    override func cancelReviewByID(
+        jobID _: String,
+        sessionID _: String,
+        reason _: String,
+        store _: CodexReviewStore
+    ) async throws -> ReviewCancelOutcome {
+        throw TestFailure("cancel review is not expected in PrimaryAuthenticationStoreBackend")
+    }
+
+    func recordedActions() -> [String] {
+        actions
+    }
+}
+
+@MainActor
+final class AccountActionStoreBackend: ReviewMonitorTestingHarness {
+    var requiresCurrentSessionRecovery = false
+
+    private let switchStartSignal = AsyncSignal()
+    private let switchSignal = AsyncSignal()
+    private let switchCompletionGate: OneShotGate
+    private let switchErrorMessage: String?
+    private var switchCalls = 0
+    private var switchedAccountKeys: [String] = []
+
+    init(
+        switchStartsBlocked: Bool = false,
+        switchErrorMessage: String? = nil
+    ) {
+        self.switchCompletionGate = OneShotGate(isOpen: switchStartsBlocked == false)
+        self.switchErrorMessage = switchErrorMessage
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false
+            )
+        )
+    }
+
+    override func start(
+        store _: CodexReviewStore,
+        forceRestartIfNeeded _: Bool
+    ) async {}
+
+    override func stop(store _: CodexReviewStore) async {}
+
+    override func waitUntilStopped() async {}
+
+    override func switchAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws {
+        switchCalls += 1
+        switchedAccountKeys.append(accountKey)
+        await switchStartSignal.signal()
+        await switchCompletionGate.wait()
+        if let switchErrorMessage {
+            throw ReviewError.io(switchErrorMessage)
+        }
+        if let account = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
+            auth.updateAccount(account)
+        }
+        await switchSignal.signal()
+    }
+
+    override func requiresCurrentSessionRecovery(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) -> Bool {
+        requiresCurrentSessionRecovery
+    }
+
+    override func cancelReviewByID(
+        jobID _: String,
+        sessionID _: String,
+        reason _: String,
+        store _: CodexReviewStore
+    ) async throws -> ReviewCancelOutcome {
+        throw TestFailure("cancel review is not expected in AccountActionStoreBackend")
+    }
+
+    func switchAccountCallCount() -> Int {
+        switchCalls
+    }
+
+    func waitForSwitchAccountStartCallCount(_ count: Int) async {
+        if await switchStartSignal.count() >= count {
+            return
+        }
+        await switchStartSignal.wait(untilCount: count)
+    }
+
+    func waitForSwitchAccountCallCount(_ count: Int) async {
+        if await switchSignal.count() >= count {
+            return
+        }
+        await switchSignal.wait(untilCount: count)
+    }
+
+    func releaseSwitchAccount() async {
+        await switchCompletionGate.open()
+    }
+
+    func lastSwitchedAccountKey() -> String? {
+        switchedAccountKeys.last
+    }
+}
+
+@MainActor
+final class CancellationFailureStoreBackend: ReviewMonitorTestingHarness {
     private let failingSessionIDs: Set<String>
     private let error: any Error
 
@@ -11421,23 +10405,28 @@ private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
     ) {
         self.failingSessionIDs = failingSessionIDs
         self.error = error
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false
+            )
+        )
     }
 
-    func start(
+    override func start(
         store _: CodexReviewStore,
         forceRestartIfNeeded _: Bool
     ) async {}
 
-    func stop(store _: CodexReviewStore) async {}
+    override func stop(store _: CodexReviewStore) async {}
 
-    func waitUntilStopped() async {}
+    override func waitUntilStopped() async {}
 
-    func cancelReview(
+    override func cancelReviewByID(
         jobID: String,
         sessionID: String,
         reason: String,
         store: CodexReviewStore
-    ) async throws {
+    ) async throws -> ReviewCancelOutcome {
         if failingSessionIDs.contains(sessionID) {
             throw error
         }
@@ -11446,10 +10435,17 @@ private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
             sessionID: sessionID,
             reason: reason
         )
+        let job = try store.resolveJob(jobID: jobID, sessionID: sessionID)
+        return .init(
+            jobID: jobID,
+            threadID: job.threadID,
+            cancelled: true,
+            status: job.status.state
+        )
     }
 }
 
-private actor BlockingBootstrapAppServerManager: AppServerManaging {
+actor BlockingBootstrapAppServerManager: AppServerManaging {
     private let runtimeState = AppServerRuntimeState(
         pid: 200,
         startTime: .init(seconds: 2, microseconds: 0),
@@ -11457,6 +10453,32 @@ private actor BlockingBootstrapAppServerManager: AppServerManaging {
         processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
     )
     private let transportStorage = BlockingBootstrapTransport()
+    private let authTransport = SettingsRefreshTransport(
+        config: .init(
+            model: "gpt-5.4-mini",
+            reviewModel: "gpt-5.4-mini"
+        ),
+        firstPage: .init(
+            data: [
+                .init(
+                    id: "gpt-5.4-mini",
+                    model: "gpt-5.4-mini",
+                    displayName: "GPT-5.4 Mini",
+                    hidden: false,
+                    supportedReasoningEfforts: [
+                        .init(
+                            reasoningEffort: .medium,
+                            description: "Medium reasoning"
+                        )
+                    ],
+                    defaultReasoningEffort: .medium,
+                    supportedServiceTiers: []
+                )
+            ],
+            nextCursor: nil
+        ),
+        secondPage: .init(data: [], nextCursor: nil)
+    )
 
     func prepare() async throws -> AppServerRuntimeState {
         runtimeState
@@ -11467,17 +10489,17 @@ private actor BlockingBootstrapAppServerManager: AppServerManaging {
     }
 
     func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
-        transportStorage
+        authTransport
     }
 
     func currentRuntimeState() async -> AppServerRuntimeState? {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -11491,11 +10513,10 @@ private actor BlockingBootstrapAppServerManager: AppServerManaging {
     }
 }
 
-private actor BlockingBootstrapTransport: AppServerSessionTransport {
+actor BlockingBootstrapTransport: AppServerSessionTransport {
     private var requestCounts: [String: Int] = [:]
     private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var closedStorage = false
-    private let configReadGate = OneShotGate()
 
     func initializeResponse() async -> AppServerInitializeResponse {
         .init(
@@ -11514,9 +10535,13 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
         noteRequest(method)
         switch method {
         case "config/read":
-            await configReadGate.wait()
-            try Task.checkCancellation()
-            throw TestFailure("config/read should have been interrupted")
+            while true {
+                if closedStorage {
+                    throw CancellationError()
+                }
+                try Task.checkCancellation()
+                try? await Task.sleep(for: .milliseconds(10))
+            }
         default:
             throw TestFailure("unexpected bootstrap request: \(method)")
         }
@@ -11524,8 +10549,8 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func isClosed() async -> Bool {
@@ -11558,7 +10583,7 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
     }
 }
 
-private actor SettingsRefreshTransport: AppServerSessionTransport {
+actor SettingsRefreshTransport: AppServerSessionTransport {
     private let config: AppServerConfigReadResponse.Config
     private let firstPage: AppServerModelListResponse
     private let secondPage: AppServerModelListResponse
@@ -11612,8 +10637,8 @@ private actor SettingsRefreshTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func isClosed() async -> Bool {
@@ -11629,7 +10654,7 @@ private actor SettingsRefreshTransport: AppServerSessionTransport {
     }
 }
 
-private actor SettingsWriteTransport: AppServerSessionTransport {
+actor SettingsWriteTransport: AppServerSessionTransport {
     private var recordedEditKeyPathsStorage: [[String]] = []
     private var closedStorage = false
 
@@ -11659,8 +10684,8 @@ private actor SettingsWriteTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func isClosed() async -> Bool {
@@ -11676,7 +10701,7 @@ private actor SettingsWriteTransport: AppServerSessionTransport {
     }
 }
 
-private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
+actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     enum StartLoginBehavior {
         case nativeCallback
         case legacyBrowser
@@ -11891,15 +10916,15 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(
-            stream: stream,
-            cancel: { [self] in
-                await close()
+        continuation.onTermination = { _ in
+            Task {
+                await self.close()
             }
-        )
+        }
+        return stream
     }
 
     func waitForNotificationStream() async {
@@ -12115,7 +11140,7 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     }
 }
 
-private actor DisconnectingRateLimitReadTransport: AppServerSessionTransport {
+actor DisconnectingRateLimitReadTransport: AppServerSessionTransport {
     func initializeResponse() async -> AppServerInitializeResponse {
         .init(
             userAgent: nil,
@@ -12146,8 +11171,8 @@ private actor DisconnectingRateLimitReadTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func isClosed() async -> Bool {
@@ -12157,13 +11182,13 @@ private actor DisconnectingRateLimitReadTransport: AppServerSessionTransport {
     func close() async {}
 }
 
-private struct TestWebAuthenticationRequest: Equatable {
+struct TestWebAuthenticationRequest: Equatable {
     var url: URL
     var callbackScheme: String
     var prefersEphemeral: Bool
 }
 
-private actor TestWebAuthenticationSessionRecorder {
+actor TestWebAuthenticationSessionRecorder {
     private let authenticateStartedSignal = AsyncSignal()
     private var lastRequest: TestWebAuthenticationRequest?
     private var cancelCalls = 0
@@ -12202,7 +11227,7 @@ private actor TestWebAuthenticationSessionRecorder {
     }
 }
 
-private func makeWebAuthenticationSessionFactory(
+func makeWebAuthenticationSessionFactory(
     recorder: TestWebAuthenticationSessionRecorder,
     autoResult: Result<URL, ReviewAuthError>? = nil
 ) -> ReviewMonitorWebAuthenticationSessionFactory {
@@ -12237,7 +11262,7 @@ private func makeWebAuthenticationSessionFactory(
     }
 }
 
-private func makeInjectedNativeLoginAuthSessionFactory(
+func makeInjectedNativeLoginAuthSessionFactory(
     manager: any AppServerManaging,
     nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
     webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
@@ -12258,7 +11283,7 @@ private func makeInjectedNativeLoginAuthSessionFactory(
     }
 }
 
-private func runWithRestartClock(
+func runWithRestartClock(
     _ clock: TestRestartClock,
     maxSteps: Int = 40,
     step: Duration = .milliseconds(100),
@@ -12295,7 +11320,7 @@ private func runWithRestartClock(
 }
 
 @MainActor
-private final class ObservableValueProbe<Value: Sendable>: @unchecked Sendable {
+final class ObservableValueProbe<Value: Sendable>: @unchecked Sendable {
     private let read: @MainActor () -> Value
     private let queue = AsyncValueQueue<Value>()
     private var isCancelled = false
@@ -12332,7 +11357,7 @@ private final class ObservableValueProbe<Value: Sendable>: @unchecked Sendable {
     }
 }
 
-private func waitForFileAppearance(
+func waitForFileAppearance(
     at fileURL: URL,
     timeout: Duration = .seconds(2)
 ) async throws {
@@ -12352,7 +11377,7 @@ private func waitForFileAppearance(
     }
 }
 
-private func waitForObservedValue<Value: Sendable>(
+func waitForObservedValue<Value: Sendable>(
     _ probe: ObservableValueProbe<Value>,
     predicate: @escaping @Sendable (Value) -> Bool
 ) async throws {
@@ -12366,7 +11391,7 @@ private func waitForObservedValue<Value: Sendable>(
     }
 }
 
-private func waitForClockSuspension(
+func waitForClockSuspension(
     _ clock: ManualTestClock,
     timeout: Duration = .seconds(2)
 ) async throws {
@@ -12377,7 +11402,7 @@ private func waitForClockSuspension(
     }
 }
 
-private func waitForRateLimitsReadCount(
+func waitForRateLimitsReadCount(
     _ transport: AuthCapableAppServerSessionTransport,
     expectedCount: Int,
     timeout: Duration = .seconds(2)
@@ -12389,7 +11414,7 @@ private func waitForRateLimitsReadCount(
     }
 }
 
-private func totalRateLimitsReadCount(
+func totalRateLimitsReadCount(
     _ transports: [AuthCapableAppServerSessionTransport]
 ) async -> Int {
     var total = 0
@@ -12399,7 +11424,7 @@ private func totalRateLimitsReadCount(
     return total
 }
 
-private func waitForTotalRateLimitsReadCount(
+func waitForTotalRateLimitsReadCount(
     _ transports: [AuthCapableAppServerSessionTransport],
     expectedCount: Int,
     timeout: Duration = .seconds(2)
@@ -12411,7 +11436,7 @@ private func waitForTotalRateLimitsReadCount(
     }
 }
 
-private func waitForSettingsWriteCount(
+func waitForSettingsWriteCount(
     _ transport: SettingsWriteTransport,
     expectedCount: Int,
     timeout: Duration = .seconds(2)
@@ -12423,7 +11448,7 @@ private func waitForSettingsWriteCount(
     }
 }
 
-private func waitForAuthTransportCheckoutCount(
+func waitForAuthTransportCheckoutCount(
     _ manager: AuthCapableAppServerManager,
     expectedCount: Int,
     timeout: Duration = .seconds(2)
@@ -12435,7 +11460,7 @@ private func waitForAuthTransportCheckoutCount(
     }
 }
 
-private func waitForAppServerLifecycleCounts(
+func waitForAppServerLifecycleCounts(
     _ manager: AuthCapableAppServerManager,
     prepareCount expectedPrepareCount: Int,
     shutdownCount expectedShutdownCount: Int,
@@ -12448,7 +11473,7 @@ private func waitForAppServerLifecycleCounts(
     }
 }
 
-private func withTestTimeout<T: Sendable>(
+func withTestTimeout<T: Sendable>(
     _ timeout: Duration = .seconds(2),
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
@@ -12468,7 +11493,7 @@ private func withTestTimeout<T: Sendable>(
     }
 }
 
-private final class FakeForcedRestartEnvironment: @unchecked Sendable {
+final class FakeForcedRestartEnvironment: @unchecked Sendable {
     enum TermAction {
         case ignore
         case exit
@@ -12603,7 +11628,7 @@ private final class FakeForcedRestartEnvironment: @unchecked Sendable {
     }
 }
 
-private func waitForMainActorCondition(
+func waitForMainActorCondition(
     timeout: Duration = .seconds(2),
     condition: @escaping @MainActor @Sendable () -> Bool
 ) async throws {
@@ -12617,7 +11642,7 @@ private func waitForMainActorCondition(
     }
 }
 
-private extension NSLock {
+extension NSLock {
     func withLock<T>(_ body: () -> T) -> T {
         lock()
         defer { unlock() }
@@ -12625,7 +11650,7 @@ private extension NSLock {
     }
 }
 
-private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [String: String] {
+func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [String: String] {
     var environment = ["HOME": try makeTemporaryDirectory().path]
     for (key, value) in extra {
         environment[key] = value
@@ -12634,7 +11659,7 @@ private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [S
 }
 
 @MainActor
-private func makeTestStore(
+func makeTestStore(
     configuration: ReviewServerConfiguration,
     diagnosticsURL: URL? = nil,
     appServerManager: any AppServerManaging
@@ -12648,7 +11673,7 @@ private func makeTestStore(
 }
 
 @MainActor
-private func makeInjectedAuthSessionStore(
+func makeInjectedAuthSessionStore(
     configuration: ReviewServerConfiguration,
     diagnosticsURL: URL? = nil,
     appServerManager: any AppServerManaging,
@@ -12679,28 +11704,85 @@ private func makeInjectedAuthSessionStore(
 }
 
 @MainActor
-private final class TestAuthRuntimeDriver {
+func makeStoreTestJob(
+    id: String = UUID().uuidString,
+    cwd: String = "/tmp/repo",
+    startedAt: Date = Date(),
+    status: CodexReviewJobStatus,
+    targetSummary: String,
+    summary: String? = nil
+) -> CodexReviewJob {
+    CodexReviewJob.makeForTesting(
+        id: id,
+        cwd: cwd,
+        targetSummary: targetSummary,
+        threadID: status == .queued ? nil : UUID().uuidString,
+        turnID: UUID().uuidString,
+        status: status,
+        startedAt: startedAt,
+        endedAt: status.isTerminal ? startedAt.addingTimeInterval(1) : nil,
+        summary: summary ?? status.displayText,
+        lastAgentMessage: "",
+        logEntries: [],
+        errorMessage: status == .failed ? summary ?? status.displayText : nil
+    )
+}
+
+@MainActor
+func makeStoreTestWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspace] {
+    var buckets: [String: [CodexReviewJob]] = [:]
+    var order: [String] = []
+    for job in jobs {
+        if buckets[job.cwd] == nil {
+            order.insert(job.cwd, at: 0)
+            buckets[job.cwd] = []
+        }
+        buckets[job.cwd, default: []].insert(job, at: 0)
+    }
+    return order.map { cwd in
+        CodexReviewWorkspace(
+            cwd: cwd,
+            jobs: buckets[cwd] ?? []
+        )
+    }
+}
+
+@MainActor
+final class TestAuthRuntimeDriver: ReviewMonitorAuthRuntimeDriver {
     private struct DeferredAddAccountRuntimeEffect {
         var accountKey: String
         var runtimeGeneration: Int
     }
 
-    private let runtimeState: @MainActor @Sendable () -> CodexAuthRuntimeState
-    private let recycleServerIfRunning: @MainActor @Sendable () async -> Void
+    private let runtimeStateProvider: @MainActor @Sendable () -> CodexAuthRuntimeState
+    private let recycleServerIfRunningAction: @MainActor @Sendable () async -> Void
     private let hasRunningJobs: @MainActor @Sendable () -> Bool
+    private let cancelRunningJobsAction: @MainActor @Sendable (String) async throws -> Void
     private var deferredAddAccountRuntimeEffect: DeferredAddAccountRuntimeEffect?
+    weak var store: CodexReviewStore?
 
     init(
         runtimeState: @escaping @MainActor @Sendable () -> CodexAuthRuntimeState,
         recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void,
-        hasRunningJobs: @escaping @MainActor @Sendable () -> Bool
+        hasRunningJobs: @escaping @MainActor @Sendable () -> Bool,
+        cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in }
     ) {
-        self.runtimeState = runtimeState
-        self.recycleServerIfRunning = recycleServerIfRunning
+        runtimeStateProvider = runtimeState
+        recycleServerIfRunningAction = recycleServerIfRunning
         self.hasRunningJobs = hasRunningJobs
+        cancelRunningJobsAction = cancelRunningJobs
+        super.init()
     }
 
-    func resolveAddAccountRuntimeEffect(
+    override func runtimeState() -> CodexAuthRuntimeState {
+        runtimeStateProvider()
+    }
+
+    override func recycleServerIfRunning() async {
+        await recycleServerIfRunningAction()
+    }
+
+    override func resolveAddAccountRuntimeEffect(
         accountKey: String,
         runtimeGeneration: Int
     ) -> CodexAuthRuntimeEffect {
@@ -12716,7 +11798,7 @@ private final class TestAuthRuntimeDriver {
         )
     }
 
-    func applyAddAccountRuntimeEffect(
+    override func applyAddAccountRuntimeEffect(
         _ effect: CodexAuthRuntimeEffect,
         auth: CodexReviewAuthModel
     ) async {
@@ -12745,12 +11827,18 @@ private final class TestAuthRuntimeDriver {
                 return
             }
             deferredAddAccountRuntimeEffect = nil
-            await recycleServerIfRunning()
-            await auth.reconcileAuthenticatedSession(
-                serverIsRunning: runtimeState().serverIsRunning,
-                runtimeGeneration: runtimeState().runtimeGeneration
-            )
+            await recycleServerIfRunningAction()
+            if let store {
+                await store.reconcileAuthenticatedSession(
+                    serverIsRunning: runtimeStateProvider().serverIsRunning,
+                    runtimeGeneration: runtimeStateProvider().runtimeGeneration
+                )
+            }
         }
+    }
+
+    override func cancelRunningJobs(reason: String) async throws {
+        try await cancelRunningJobsAction(reason)
     }
 
     func reconcileDeferredAddAccountRuntimeEffectIfNeeded(
@@ -12772,62 +11860,63 @@ private final class TestAuthRuntimeDriver {
             return
         }
         self.deferredAddAccountRuntimeEffect = nil
-        await recycleServerIfRunning()
+        await recycleServerIfRunningAction()
     }
 }
 
 @MainActor
-private final class TestRuntimeOwningAuthController: CodexReviewAuthControlling {
-    private let base: CodexAuthController
+final class TestRuntimeOwningAuthController: ReviewMonitorTestingHarness {
+    private let base: ReviewMonitorAuthOrchestrator
     private let runtimeDriver: TestAuthRuntimeDriver
 
     init(
-        base: CodexAuthController,
+        base: ReviewMonitorAuthOrchestrator,
         runtimeDriver: TestAuthRuntimeDriver
     ) {
         self.base = base
         self.runtimeDriver = runtimeDriver
+        super.init()
     }
 
-    func startStartupRefresh(auth: CodexReviewAuthModel) {
+    override func startStartupRefresh(auth: CodexReviewAuthModel) {
         base.startStartupRefresh(auth: auth)
     }
 
-    func cancelStartupRefresh() {
+    override func cancelStartupRefresh() {
         base.cancelStartupRefresh()
     }
 
-    func refresh(auth: CodexReviewAuthModel) async {
+    override func refreshAuth(auth: CodexReviewAuthModel) async {
         await base.refresh(auth: auth)
     }
 
-    func signIn(auth: CodexReviewAuthModel) async {
+    override func signIn(auth: CodexReviewAuthModel) async {
         await base.signIn(auth: auth)
     }
 
-    func addAccount(auth: CodexReviewAuthModel) async {
+    override func addAccount(auth: CodexReviewAuthModel) async {
         await base.addAccount(auth: auth)
     }
 
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+    override func cancelAuthentication(auth: CodexReviewAuthModel) async {
         await base.cancelAuthentication(auth: auth)
     }
 
-    func switchAccount(
+    override func switchAccount(
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async throws {
         try await base.switchAccount(auth: auth, accountKey: accountKey)
     }
 
-    func removeAccount(
+    override func removeAccount(
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async throws {
         try await base.removeAccount(auth: auth, accountKey: accountKey)
     }
 
-    func reorderSavedAccount(
+    override func reorderSavedAccount(
         auth: CodexReviewAuthModel,
         accountKey: String,
         toIndex: Int
@@ -12839,11 +11928,11 @@ private final class TestRuntimeOwningAuthController: CodexReviewAuthControlling 
         )
     }
 
-    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
+    override func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
         try await base.signOutActiveAccount(auth: auth)
     }
 
-    func refreshSavedAccountRateLimits(
+    override func refreshSavedAccountRateLimits(
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async {
@@ -12853,7 +11942,7 @@ private final class TestRuntimeOwningAuthController: CodexReviewAuthControlling 
         )
     }
 
-    func reconcileAuthenticatedSession(
+    override func reconcileAuthenticatedSession(
         auth: CodexReviewAuthModel,
         serverIsRunning: Bool,
         runtimeGeneration: Int
@@ -12872,7 +11961,119 @@ private final class TestRuntimeOwningAuthController: CodexReviewAuthControlling 
 }
 
 @MainActor
-private func makeAuthModel(
+@dynamicMemberLookup
+final class ReviewMonitorAuthTestHarness {
+    let store: CodexReviewStore
+
+    init(store: CodexReviewStore) {
+        self.store = store
+    }
+
+    var model: CodexReviewAuthModel {
+        store.auth
+    }
+
+    subscript<Value>(dynamicMember keyPath: KeyPath<CodexReviewAuthModel, Value>) -> Value {
+        store.auth[keyPath: keyPath]
+    }
+
+    func updateSavedAccounts(_ accounts: [CodexAccount]) {
+        store.auth.updateSavedAccounts(accounts)
+    }
+
+    func updateAccount(_ account: CodexAccount?) {
+        store.auth.updateAccount(account)
+    }
+
+    func updatePhase(_ phase: CodexReviewAuthModel.Phase) {
+        store.auth.updatePhase(phase)
+    }
+
+    func updateWarning(message: String?) {
+        store.auth.updateWarning(message: message)
+    }
+
+    func presentAccountActionAlert(title: String, message: String) {
+        store.auth.presentAccountActionAlert(title: title, message: message)
+    }
+
+    func dismissAccountActionAlert() {
+        store.dismissAccountActionAlert()
+    }
+
+    func requestSwitchAccount(_ account: CodexAccount, requiresConfirmation: Bool) {
+        store.requestSwitchAccount(account, requiresConfirmation: requiresConfirmation)
+    }
+
+    func requestSignOutActiveAccount(requiresConfirmation: Bool) {
+        store.requestSignOutActiveAccount(requiresConfirmation: requiresConfirmation)
+    }
+
+    func requestRemoveAccount(_ account: CodexAccount, requiresConfirmation: Bool) {
+        store.requestRemoveAccount(account, requiresConfirmation: requiresConfirmation)
+    }
+
+    func cancelPendingAccountAction() {
+        store.cancelPendingAccountAction()
+    }
+
+    func confirmPendingAccountAction() {
+        store.confirmPendingAccountAction()
+    }
+
+    func refresh() async {
+        await store.refreshAuthentication()
+    }
+
+    func signIn() async {
+        await store.signIn()
+    }
+
+    func addAccount() async {
+        await store.addAccount()
+    }
+
+    func cancelAuthentication() async {
+        await store.cancelAuthentication()
+    }
+
+    func switchAccount(_ account: CodexAccount) async throws {
+        try await store.switchAccount(account)
+    }
+
+    func removeAccount(accountKey: String) async throws {
+        try await store.removeAccount(accountKey: accountKey)
+    }
+
+    func reorderSavedAccount(accountKey: String, toIndex: Int) async throws {
+        try await store.reorderSavedAccount(accountKey: accountKey, toIndex: toIndex)
+    }
+
+    func signOutActiveAccount() async throws {
+        try await store.signOutActiveAccount()
+    }
+
+    func logout() async {
+        await store.logout()
+    }
+
+    func refreshSavedAccountRateLimits(accountKey: String) async {
+        await store.refreshSavedAccountRateLimits(accountKey: accountKey)
+    }
+
+    func reconcileAuthenticatedSession(
+        serverIsRunning: Bool,
+        runtimeGeneration: Int
+    ) async {
+        await store.reconcileAuthenticatedSession(
+            serverIsRunning: serverIsRunning,
+            runtimeGeneration: runtimeGeneration
+        )
+    }
+}
+
+@MainActor
+func makeAuthModel(
     configuration: ReviewServerConfiguration,
     appServerManager: any AppServerManaging = MockAppServerManager { _ in .success() },
     sharedAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
@@ -12885,44 +12086,35 @@ private func makeAuthModel(
     rateLimitStaleRefreshInterval: Duration = .seconds(60),
     inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
     cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in }
-) -> CodexReviewAuthModel {
+) -> ReviewMonitorAuthTestHarness {
     let runtimeDriver = TestAuthRuntimeDriver(
         runtimeState: runtimeState,
         recycleServerIfRunning: recycleServerIfRunning,
-        hasRunningJobs: hasRunningJobs
+        hasRunningJobs: hasRunningJobs,
+        cancelRunningJobs: cancelRunningJobs
     )
-    let controller = CodexAuthController(
+    let controller = ReviewMonitorAuthOrchestrator(
         configuration: configuration,
         accountRegistryStore: ReviewAccountRegistryStore(environment: configuration.environment),
         appServerManager: appServerManager,
         sharedAuthSessionFactory: sharedAuthSessionFactory,
         loginAuthSessionFactory: loginAuthSessionFactory,
         probeAppServerManagerFactory: probeAppServerManagerFactory,
-        runtimeState: runtimeState,
-        recycleServerIfRunning: recycleServerIfRunning,
-        resolveAddAccountRuntimeEffect: { accountKey, runtimeGeneration in
-            runtimeDriver.resolveAddAccountRuntimeEffect(
-                accountKey: accountKey,
-                runtimeGeneration: runtimeGeneration
-            )
-        },
-        applyAddAccountRuntimeEffect: { effect, auth in
-            await runtimeDriver.applyAddAccountRuntimeEffect(effect, auth: auth)
-        },
-        cancelRunningJobs: cancelRunningJobs,
+        runtimeBridge: .testing(runtimeDriver),
         rateLimitObservationClock: rateLimitObservationClock,
         rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
         inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
     )
-    return CodexReviewAuthModel(
-        controller: TestRuntimeOwningAuthController(
-            base: controller,
-            runtimeDriver: runtimeDriver
-        )
+    let adapter = TestRuntimeOwningAuthController(
+        base: controller,
+        runtimeDriver: runtimeDriver
     )
+    let store = CodexReviewStore.makeTestingStore(harness: adapter)
+    runtimeDriver.store = store
+    return ReviewMonitorAuthTestHarness(store: store)
 }
 
-private actor PersistingReviewAuthSession: ReviewAuthSession {
+actor PersistingReviewAuthSession: ReviewAuthSession {
     private let base: any ReviewAuthSession
     private let environment: [String: String]
 
@@ -12965,7 +12157,7 @@ private actor PersistingReviewAuthSession: ReviewAuthSession {
         )
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         await base.notificationStream()
     }
 
@@ -12974,7 +12166,7 @@ private actor PersistingReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private func writeReviewAuthSnapshot(
+func writeReviewAuthSnapshot(
     email: String,
     planType: String?,
     environment: [String: String]
@@ -13003,7 +12195,7 @@ private func writeReviewAuthSnapshot(
 }
 
 @MainActor
-private func saveReviewAccount(
+func saveReviewAccount(
     email: String,
     planType: String? = "pro",
     makeActive: Bool,
@@ -13021,7 +12213,7 @@ private func saveReviewAccount(
     return savedAccount
 }
 
-private func writeSavedAccountAuthSnapshot(
+func writeSavedAccountAuthSnapshot(
     email: String,
     planType: String?,
     accountKey: String,
@@ -13053,7 +12245,7 @@ private func writeSavedAccountAuthSnapshot(
         )
 }
 
-private func makeReviewAuthTestJWT(payload: [String: Any]) -> String {
+func makeReviewAuthTestJWT(payload: [String: Any]) -> String {
     let header = ["alg": "none", "typ": "JWT"]
     let headerData = try? JSONSerialization.data(withJSONObject: header)
     let payloadData = try? JSONSerialization.data(withJSONObject: payload)
@@ -13062,14 +12254,14 @@ private func makeReviewAuthTestJWT(payload: [String: Any]) -> String {
     return "\(headerComponent).\(payloadComponent)."
 }
 
-private func makeReviewAuthJWTComponent(_ data: Data) -> String {
+func makeReviewAuthJWTComponent(_ data: Data) -> String {
     data.base64EncodedString()
         .replacingOccurrences(of: "+", with: "-")
         .replacingOccurrences(of: "/", with: "_")
         .replacingOccurrences(of: "=", with: "")
 }
 
-private struct StoreDiagnosticsSnapshot: Decodable {
+struct StoreDiagnosticsSnapshot: Decodable {
     struct Job: Decodable {
         var status: String
         var summary: String
@@ -13084,18 +12276,18 @@ private struct StoreDiagnosticsSnapshot: Decodable {
     var jobs: [Job]
 }
 
-private func readStoreDiagnosticsSnapshot(from fileURL: URL) throws -> StoreDiagnosticsSnapshot {
+func readStoreDiagnosticsSnapshot(from fileURL: URL) throws -> StoreDiagnosticsSnapshot {
     let data = try Data(contentsOf: fileURL)
     return try JSONDecoder().decode(StoreDiagnosticsSnapshot.self, from: data)
 }
 
-private func makeTemporaryDirectory() throws -> URL {
+func makeTemporaryDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
 
-private struct TestFailure: Error {
+struct TestFailure: Error {
     let message: String
 
     init(_ message: String) {
@@ -13103,7 +12295,7 @@ private struct TestFailure: Error {
     }
 }
 
-private struct TestAuthState: Equatable {
+struct TestAuthState: Equatable {
     var phase: CodexReviewAuthModel.Phase
     var accountEmail: String?
     var accountPlanType: String?
@@ -13170,7 +12362,7 @@ private struct TestAuthState: Equatable {
 }
 
 @MainActor
-private func applyTestAuthState(
+func applyTestAuthState(
     auth: CodexReviewAuthModel,
     state: TestAuthState
 ) {
@@ -13189,7 +12381,7 @@ private func applyTestAuthState(
 }
 
 @MainActor
-private func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
+func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
     .init(
         isAuthenticated: auth.isAuthenticated,
         accountID: auth.account?.email,
@@ -13199,7 +12391,12 @@ private func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
 }
 
 @MainActor
-private func rateLimitWindow(
+func testAuthState(from auth: ReviewMonitorAuthTestHarness) -> TestAuthState {
+    testAuthState(from: auth.model)
+}
+
+@MainActor
+func rateLimitWindow(
     duration: Int,
     in account: CodexAccount?
 ) -> CodexRateLimitWindow? {
@@ -13207,7 +12404,7 @@ private func rateLimitWindow(
 }
 
 @MainActor
-private func withAsyncCleanup<T>(
+func withAsyncCleanup<T>(
     _ operation: @escaping @MainActor @Sendable () async throws -> T,
     cleanup: @escaping @MainActor @Sendable () async -> Void
 ) async throws -> T {
@@ -13221,7 +12418,7 @@ private func withAsyncCleanup<T>(
     }
 }
 
-private final class MutableValueBox<Value>: @unchecked Sendable {
+final class MutableValueBox<Value>: @unchecked Sendable {
     var value: Value
 
     init(_ value: Value) {

@@ -1,7 +1,8 @@
 import Foundation
 import Testing
 import ReviewTestSupport
-@testable import ReviewStdioAdapter
+@testable import ReviewInfra
+
 
 @Suite(.serialized) struct ReviewStdioAdapterTests {
     @Test func stdioFramerSplitsNewlineDelimitedJSON() {
@@ -755,7 +756,7 @@ private struct AdapterHarness {
         let adapter = ReviewStdioAdapter(
             configuration: .init(upstreamURL: upstreamURL),
             input: inputPipe.fileHandleForReading,
-            outputSink: outputSink,
+            outputSink: outputSink.send,
             transport: transport
         )
         return AdapterHarness(adapter: adapter, outputSink: outputSink)
@@ -778,7 +779,7 @@ private struct AdapterHarness {
     }
 }
 
-private final class RecordingOutputSink: ReviewStdioOutputSink, @unchecked Sendable {
+private final class RecordingOutputSink: @unchecked Sendable {
     private let lock = NSLock()
     private var lines: [String] = []
     private let outputQueue = AsyncValueQueue<String>()

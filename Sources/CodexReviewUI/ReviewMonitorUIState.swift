@@ -1,6 +1,7 @@
 import Observation
 import ReviewRuntime
 import SwiftUI
+import ReviewDomain
 
 @MainActor
 @Observable

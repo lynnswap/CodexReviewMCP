@@ -1,5 +1,6 @@
 import SwiftUI
-import CodexReviewModel
+import ReviewApp
+import ReviewDomain
 
 struct AccountRateLimitGaugesView: View {
     var account: CodexAccount?

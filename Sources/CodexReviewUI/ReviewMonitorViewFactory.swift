@@ -1,4 +1,5 @@
 import AppKit
+import ReviewDomain
 
 @MainActor
 enum ReviewMonitorViewFactory {

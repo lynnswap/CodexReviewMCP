@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-import CodexReviewModel
+import ReviewApp
 
 struct MCPServerUnavailableView: View {
     let store: CodexReviewStore
@@ -39,7 +39,7 @@ struct MCPServerUnavailableView: View {
         .frame(maxHeight:.infinity)
     }
 
-    var failureMessage: String? {
+    private var failureMessage: String? {
         guard case .failed(let message) = store.serverState else {
             return nil
         }
@@ -47,7 +47,7 @@ struct MCPServerUnavailableView: View {
         return trimmedMessage.isEmpty ? nil : trimmedMessage
     }
 
-    func restartServer() {
+    private func restartServer() {
         guard isRestarting == false else {
             return
         }
@@ -57,7 +57,7 @@ struct MCPServerUnavailableView: View {
                 isRestarting = false
             }
             if store.auth.isAuthenticating {
-                await store.auth.cancelAuthentication()
+                await store.cancelAuthentication()
             }
             await store.restart()
         }

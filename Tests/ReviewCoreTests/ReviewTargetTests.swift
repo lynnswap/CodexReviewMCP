@@ -1,7 +1,8 @@
 import Foundation
 import Testing
-@testable import ReviewCore
-@testable import ReviewJobs
+@testable import ReviewInfra
+
+@testable import ReviewDomain
 
 @Suite
 struct ReviewTargetTests {

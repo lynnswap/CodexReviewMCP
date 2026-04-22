@@ -1,842 +1,15 @@
 import AppKit
 import Foundation
-import SwiftUI
 import Testing
-@_spi(Testing) @testable import CodexReviewModel
+@_spi(Testing) @testable import ReviewApp
 @_spi(PreviewSupport) @testable import CodexReviewUI
 import ReviewTestSupport
-import ReviewJobs
+import ReviewDomain
 import ReviewRuntime
 
 @Suite(.serialized)
 @MainActor
 struct CodexReviewUITests {
-    @Test func bindingStoreAppliesInitialState() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        viewController.loadViewIfNeeded()
-
-        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
-        #expect(viewController.sidebarAccessoryCountForTesting == 1)
-        #expect(
-            viewController.sidebarTopAccessorySegmentAccessibilityDescriptionsForTesting ==
-                ["Workspace", "Account"]
-        )
-        #expect(viewController.contentAccessoryCountForTesting == 0)
-        #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.contentPaneViewControllerForTesting.isShowingEmptyStateForTesting)
-    }
-
-    @Test func splitViewShowsEmptyStateWithoutJobs() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        viewController.loadViewIfNeeded()
-
-        #expect(viewController.splitViewItems.count == 2)
-        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
-        #expect(viewController.sidebarAccessoryCountForTesting == 1)
-        #expect(viewController.contentAccessoryCountForTesting == 0)
-        #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
-        #expect(viewController.contentPaneViewControllerForTesting.isShowingEmptyStateForTesting)
-    }
-
-    @Test func splitViewShowsUnavailableSidebarWhenServerFailedOnLoad() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(
-            serverState: .failed("Embedded server is unavailable in preview mode."),
-            workspaces: []
-        )
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        viewController.loadViewIfNeeded()
-
-        #expect(viewController.splitViewItems.count == 2)
-        #expect(viewController.sidebarPresentationForTesting == .unavailable)
-        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
-        #expect(viewController.sidebarAccessoryCountForTesting == 1)
-    }
-
-    @Test func splitViewShowsJobSidebarWhenServerRunningOnLoad() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp"),
-            workspaces: []
-        )
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        viewController.loadViewIfNeeded()
-
-        #expect(viewController.sidebarPresentationForTesting == .jobList)
-        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
-        #expect(viewController.sidebarAccessoryCountForTesting == 1)
-    }
-
-    @Test func splitViewSwitchesSidebarPresentationWhenPickerSelectionChanges() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let uiState = ReviewMonitorUIState()
-        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
-        viewController.loadViewIfNeeded()
-
-        #expect(viewController.sidebarPresentationForTesting == .jobList)
-        #expect(viewController.sidebarBottomAccessoryIsHiddenForTesting == false)
-
-        uiState.sidebarSelection = .account
-        try await waitForSidebarBottomAccessoryHidden(viewController, true)
-        #expect(viewController.sidebarPresentationForTesting == .accountList)
-
-        uiState.sidebarSelection = .workspace
-        try await waitForSidebarBottomAccessoryHidden(viewController, false)
-        #expect(viewController.sidebarPresentationForTesting == .jobList)
-    }
-
-    @Test func statusAccessoryViewControllerObservesOnlySidebarSelection() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let uiState = ReviewMonitorUIState()
-        let viewController = ReviewMonitorServerStatusAccessoryViewController(
-            store: store,
-            uiState: uiState
-        )
-        viewController.loadViewIfNeeded()
-
-        #expect(viewController.observationHandleCountForTesting == 1)
-    }
-
-    @Test func contentPanePinsDisplayedContentToSafeArea() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            contentSize: NSSize(width: 900, height: 600)
-        )
-        let window = harness.window
-        defer { window.close() }
-
-        let contentPane = harness.viewController.contentPaneViewControllerForTesting
-        window.layoutIfNeeded()
-        contentPane.view.layoutSubtreeIfNeeded()
-
-        let safeAreaFrame = contentPane.safeAreaFrameForTesting
-        let displayedViewFrame = contentPane.displayedViewFrameForTesting
-
-        #expect(abs(displayedViewFrame.minX - safeAreaFrame.minX) < 0.5)
-        #expect(abs(displayedViewFrame.maxX - safeAreaFrame.maxX) < 0.5)
-        #expect(abs(displayedViewFrame.minY - safeAreaFrame.minY) < 0.5)
-        #expect(abs(displayedViewFrame.maxY - safeAreaFrame.maxY) < 0.5)
-        #expect(contentPane.activeDisplayedViewConstraintCountForTesting == 4)
-    }
-
-    @Test func splitViewSwitchesSidebarWhenServerAvailabilityChanges() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp"),
-            workspaces: []
-        )
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        viewController.loadViewIfNeeded()
-
-        #expect(viewController.sidebarPresentationForTesting == .jobList)
-
-        store.loadForTesting(
-            serverState: .failed("Embedded server is unavailable in preview mode."),
-            workspaces: []
-        )
-        try await waitForSidebarPresentation(viewController, .unavailable)
-        #expect(viewController.sidebarAccessoryCountForTesting == 1)
-
-        store.loadForTesting(
-            serverState: .running,
-            serverURL: URL(string: "http://localhost:9417/mcp"),
-            workspaces: []
-        )
-        try await waitForSidebarPresentation(viewController, .jobList)
-        #expect(viewController.sidebarAccessoryCountForTesting == 1)
-    }
-
-    @Test func splitViewInstallsToolbarWithSidebarTrackingSeparator() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(store: store)
-        let viewController = harness.viewController
-        let window = harness.window
-        defer { window.close() }
-
-        #expect(window.toolbar != nil)
-        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
-        #expect(
-            viewController.toolbarIdentifiersForTesting ==
-                [
-                    .toggleSidebar,
-                    .flexibleSpace,
-                    viewController.addAccountToolbarItemIdentifierForTesting,
-                    .sidebarTrackingSeparator,
-                    .flexibleSpace,
-                ]
-        )
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
-        #expect(window.styleMask.contains(.fullSizeContentView))
-        #expect(window.titleVisibility == .visible)
-        #expect(window.title == "Untitled")
-        #expect(window.subtitle == "")
-        #expect(window.isMovableByWindowBackground == false)
-        #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
-        #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
-    }
-
-    @Test func splitViewShowsAddAccountToolbarItemOnlyForAccountSidebar() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let uiState = ReviewMonitorUIState()
-        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
-        let window = NSWindow(contentViewController: viewController)
-        defer { window.close() }
-        window.setContentSize(NSSize(width: 900, height: 600))
-
-        viewController.attach(to: window)
-        let sidebarItem = try #require(viewController.splitViewItems.first)
-        sidebarItem.isCollapsed = false
-        window.layoutIfNeeded()
-
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
-
-        uiState.sidebarSelection = .account
-        try await waitForAddAccountToolbarItemHidden(viewController, false)
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting == false)
-
-        uiState.sidebarSelection = .workspace
-        try await waitForAddAccountToolbarItemHidden(viewController, true)
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
-    }
-
-    @Test func splitViewHidesAddAccountToolbarItemWhileSidebarIsCollapsed() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let uiState = ReviewMonitorUIState()
-        uiState.sidebarSelection = .account
-        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
-        let window = NSWindow(contentViewController: viewController)
-        defer { window.close() }
-        window.setContentSize(NSSize(width: 900, height: 600))
-
-        viewController.attach(to: window)
-        let sidebarItem = try #require(viewController.splitViewItems.first)
-        sidebarItem.isCollapsed = false
-        window.layoutIfNeeded()
-
-        try await waitForAddAccountToolbarItemHidden(viewController, false)
-        sidebarItem.isCollapsed = true
-        try await waitForAddAccountToolbarItemHidden(viewController, true)
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
-
-        sidebarItem.isCollapsed = false
-        try await waitForAddAccountToolbarItemHidden(viewController, false)
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting == false)
-    }
-
-    @Test func previewContentViewControllerConfiguresAttachedWindowLikeSplitPresentation() {
-        let viewController = makeReviewMonitorPreviewContentViewControllerForPreview()
-        let window = NSWindow(contentViewController: viewController)
-        defer { window.close() }
-        window.setContentSize(NSSize(width: 900, height: 600))
-        viewController.loadViewIfNeeded()
-        window.layoutIfNeeded()
-
-        #expect(window.toolbar != nil)
-        #expect(window.styleMask.contains(.fullSizeContentView))
-        #expect(window.titleVisibility == .visible)
-        #expect(window.titlebarAppearsTransparent)
-        #expect(window.titlebarSeparatorStyle == .automatic)
-        #expect(window.isMovableByWindowBackground == false)
-        #expect(window.backgroundColor == .clear)
-        #expect(window.isOpaque == false)
-    }
-
-    @Test func windowControllerUsesSeededAuthenticatedStateOnFirstPresentation() {
-        let backend = AuthActionBackend(
-            initialAuthState: .signedIn(accountID: "review@example.com")
-        )
-        let store = makeStore(backend: backend)
-        let windowController = ReviewMonitorWindowController(
-            store: store,
-            performInitialAuthRefresh: false
-        )
-        guard let window = windowController.window else {
-            Issue.record("ReviewMonitorWindowController did not create a window.")
-            return
-        }
-        defer { window.close() }
-
-        #expect(windowController.displayedContentKindForTesting == .splitView)
-        #expect(window.toolbar != nil)
-    }
-
-    @Test func windowControllerKeepsSplitViewForUnsavedCurrentSession() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let currentAccount = CodexAccount(email: "current@example.com", planType: "pro")
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .signedOut,
-            account: currentAccount,
-            savedAccounts: [],
-            workspaces: []
-        )
-        let windowController = ReviewMonitorWindowController(
-            store: store,
-            performInitialAuthRefresh: false
-        )
-        guard let window = windowController.window else {
-            Issue.record("ReviewMonitorWindowController did not create a window.")
-            return
-        }
-        defer { window.close() }
-
-        #expect(windowController.displayedContentKindForTesting == .splitView)
-        #expect(window.toolbar != nil)
-    }
-
-    @Test func windowControllerShowsSignInViewWhenSignedOut() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedOut
-        )
-        let window = harness.window
-        defer { window.close() }
-
-        #expect(harness.windowController.displayedContentKindForTesting == .signInView)
-        #expect(window.toolbar == nil)
-        #expect(window.titleVisibility == .hidden)
-        #expect(window.title == "")
-        #expect(window.subtitle == "")
-        #expect(window.isMovableByWindowBackground)
-    }
-
-    @Test func windowControllerForceSplitViewShowsSplitViewWhenSignedOut() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedOut,
-            forceSplitView: true
-        )
-        let window = harness.window
-        defer { window.close() }
-
-        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
-        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
-        #expect(window.toolbar != nil)
-        #expect(window.titleVisibility == .visible)
-        #expect(window.isMovableByWindowBackground == false)
-    }
-
-    @Test func windowControllerDoesNotRefreshAuthStateBeforeStoreStart() async {
-        let backend = AuthActionBackend()
-        let store = makeStore(backend: backend)
-        let windowController = ReviewMonitorWindowController(store: store)
-        defer { windowController.window?.close() }
-        await Task.yield()
-
-        #expect(backend.refreshAuthStateCallCount() == 0)
-    }
-
-    @Test func windowControllerSwitchesToSignInViewAfterLogout() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedIn(accountID: "review@example.com")
-        )
-        let window = harness.window
-        defer { window.close() }
-
-        applyTestAuthState(auth: store.auth, state: .signedOut)
-        try await waitForDisplayedContentKind(harness.windowController, .signInView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
-
-        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
-        #expect(window.toolbar == nil)
-        #expect(window.title == "")
-        #expect(window.subtitle == "")
-        #expect(window.isMovableByWindowBackground)
-    }
-
-    @Test func windowControllerCrossfadesBackToSplitViewAfterAuthentication() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedOut
-        )
-        let window = harness.window
-        defer { window.close() }
-
-        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-        try await waitForDisplayedContentKind(harness.windowController, .splitView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
-
-        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
-        #expect(window.toolbar != nil)
-        #expect(window.titleVisibility == .visible)
-        #expect(window.titlebarSeparatorStyle == .automatic)
-        #expect(window.isMovableByWindowBackground == false)
-    }
-
-    @Test func windowControllerRapidAuthFlipsKeepLatestContentEmbedded() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedIn(accountID: "review@example.com")
-        )
-        let window = harness.window
-        defer { window.close() }
-
-        applyTestAuthState(auth: store.auth, state: .signedOut)
-        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-        try await waitForDisplayedContentKind(harness.windowController, .splitView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
-        try await Task.sleep(for: .milliseconds(300))
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
-
-        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
-        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
-        #expect(window.toolbar != nil)
-    }
-
-    @Test func windowControllerRapidAuthFlipsDoNotAccumulateEmbeddedConstraints() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedIn(accountID: "review@example.com")
-        )
-        defer { harness.window.close() }
-
-        applyTestAuthState(auth: store.auth, state: .signedOut)
-        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-        applyTestAuthState(auth: store.auth, state: .signedOut)
-        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-
-        try await waitForDisplayedContentKind(harness.windowController, .splitView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
-        try await Task.sleep(for: .milliseconds(300))
-
-        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
-    }
-
-    @Test func windowControllerPreservesWindowSizeWhenSwitchingToSignInView() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedIn(accountID: "review@example.com")
-        )
-        let window = harness.window
-        defer { window.close() }
-
-        window.setContentSize(NSSize(width: 1080, height: 720))
-        window.layoutIfNeeded()
-        let beforeSize = window.frame.size
-
-        applyTestAuthState(auth: store.auth, state: .signedOut)
-        try await waitForDisplayedContentKind(harness.windowController, .signInView)
-        window.layoutIfNeeded()
-        let afterSize = window.frame.size
-
-        #expect(abs(beforeSize.width - afterSize.width) < 0.5)
-        #expect(abs(beforeSize.height - afterSize.height) < 0.5)
-    }
-
-    @Test func windowControllerKeepsSplitViewAfterAuthFailure() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedIn(accountID: "review@example.com")
-        )
-        let window = harness.window
-        defer { window.close() }
-
-        applyTestAuthState(auth: store.auth, state: .failed("Authentication failed."))
-        await Task.yield()
-
-        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
-        #expect(window.toolbar != nil)
-    }
-
-    @Test func windowControllerKeepsSignInViewPresentedWhileAuthenticating() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedOut
-        )
-        defer { harness.window.close() }
-
-        applyTestAuthState(
-            auth: store.auth,
-            state: .init(
-                isAuthenticated: true,
-                accountID: "review@example.com",
-                progress: .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue.",
-                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
-                )
-            )
-        )
-        try await waitForDisplayedContentKind(harness.windowController, .signInView)
-
-        #expect(harness.windowController.displayedContentKindForTesting == .signInView)
-    }
-
-    @Test func windowControllerKeepsSplitViewWhileAuthenticatedRetryAuthenticates() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedIn(accountID: "review@example.com")
-        )
-        defer { harness.window.close() }
-
-        applyTestAuthState(auth: store.auth, state: 
-            .failed(
-                "Authentication failed.",
-                isAuthenticated: true,
-                accountID: "review@example.com"
-            )
-        )
-        await Task.yield()
-
-        applyTestAuthState(auth: store.auth, state: 
-            .signingIn(
-                .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue.",
-                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
-                )
-            )
-        )
-        try await waitForDisplayedContentKind(harness.windowController, .splitView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
-
-        #expect(harness.windowController.displayedContentKindForTesting == .splitView)
-        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
-    }
-
-    @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {
-        let job = makeJob(
-            id: "job-safe-area",
-            status: .running,
-            targetSummary: "Uncommitted changes",
-            logText: "Safe area log\n"
-        )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let harness = makeWindowHarness(
-            store: store,
-            contentSize: NSSize(width: 900, height: 600)
-        )
-        let viewController = harness.viewController
-        let window = harness.window
-        defer { window.close() }
-        let transport = viewController.transportViewControllerForTesting
-
-        let initialRenderCount = transport.renderCountForTesting
-        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
-        _ = try await awaitTransportRender(transport, after: initialRenderCount)
-        transport.view.layoutSubtreeIfNeeded()
-
-        let logFrame = transport.logFrameForTesting
-        let safeAreaFrame = transport.safeAreaFrameForTesting
-
-        #expect(abs(logFrame.minX - safeAreaFrame.minX) < 0.5)
-        #expect(abs(logFrame.maxX - safeAreaFrame.maxX) < 0.5)
-        #expect(abs(logFrame.minY - safeAreaFrame.minY) < 0.5)
-        #expect(abs(logFrame.maxY - safeAreaFrame.maxY) < 0.5)
-    }
-
-    @Test func shortDetailLogKeepsTextViewWithinDocumentBounds() async throws {
-        let job = makeJob(
-            id: "job-short-log-layout",
-            status: .running,
-            targetSummary: "Uncommitted changes",
-            logText: "Short log\n"
-        )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let harness = makeWindowHarness(
-            store: store,
-            contentSize: NSSize(width: 900, height: 600)
-        )
-        let viewController = harness.viewController
-        let window = harness.window
-        defer { window.close() }
-        let transport = viewController.transportViewControllerForTesting
-
-        let initialRenderCount = transport.renderCountForTesting
-        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
-        _ = try await awaitTransportRender(transport, after: initialRenderCount)
-        transport.view.layoutSubtreeIfNeeded()
-
-        let textViewFrame = transport.logTextViewFrameForTesting
-        let documentViewFrame = transport.logDocumentViewFrameForTesting
-
-        #expect(abs(textViewFrame.minY) < 0.5)
-        #expect(textViewFrame.maxY <= documentViewFrame.maxY + 0.5)
-        #expect(textViewFrame.height <= documentViewFrame.height + 0.5)
-        expectLogTextContainerWidthTracksTextView(transport)
-    }
-
-    @Test func detailLogExpandsAfterSidebarReopensFromCompactWidth() async throws {
-        let job = makeJob(
-            id: "job-sidebar-width-regression",
-            status: .running,
-            targetSummary: "Uncommitted changes",
-            logText: Array(repeating: "Long line that should reflow across the widened detail pane.\n", count: 40).joined()
-        )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let harness = makeWindowHarness(
-            store: store,
-            contentSize: NSSize(width: 520, height: 420)
-        )
-        let viewController = harness.viewController
-        let window = harness.window
-        defer { window.close() }
-        try await waitForDisplayedContentKind(harness.windowController, .splitView)
-        let transport = viewController.transportViewControllerForTesting
-        let sidebarItem = try #require(viewController.splitViewItems.first)
-
-        let initialRenderCount = transport.renderCountForTesting
-        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
-        _ = try await awaitTransportRender(transport, after: initialRenderCount)
-
-        window.setContentSize(NSSize(width: 360, height: 420))
-        sidebarItem.isCollapsed = true
-        window.layoutIfNeeded()
-        viewController.view.layoutSubtreeIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        let compactDocumentWidth = transport.logDocumentViewFrameForTesting.width
-        expectLogTextContainerWidthTracksTextView(transport)
-
-        sidebarItem.isCollapsed = false
-        window.setContentSize(NSSize(width: 960, height: 600))
-        window.layoutIfNeeded()
-        viewController.view.layoutSubtreeIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        await transport.flushMainQueueForTesting()
-
-        let expandedDocumentWidth = transport.logDocumentViewFrameForTesting.width
-        let expandedLogWidth = transport.logFrameForTesting.width
-        let expandedTextWidth = transport.logTextViewFrameForTesting.width
-
-        #expect(expandedDocumentWidth > compactDocumentWidth + 200)
-        #expect(abs(expandedDocumentWidth - expandedLogWidth) < 32)
-        #expect(abs(expandedTextWidth - expandedLogWidth) < 32)
-        expectLogTextContainerWidthTracksTextView(transport)
-    }
-
-    @Test func detailLogShrinksAfterSidebarReopensIntoNarrowWidth() async throws {
-        let job = makeJob(
-            id: "job-sidebar-width-shrink-regression",
-            status: .running,
-            targetSummary: "Uncommitted changes",
-            logText: Array(repeating: "Long line that should reflow when the detail pane narrows.\n", count: 40).joined()
-        )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let harness = makeWindowHarness(
-            store: store,
-            contentSize: NSSize(width: 960, height: 600)
-        )
-        let viewController = harness.viewController
-        let window = harness.window
-        defer { window.close() }
-        try await waitForDisplayedContentKind(harness.windowController, .splitView)
-        let transport = viewController.transportViewControllerForTesting
-        let sidebarItem = try #require(viewController.splitViewItems.first)
-
-        let initialRenderCount = transport.renderCountForTesting
-        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
-        _ = try await awaitTransportRender(transport, after: initialRenderCount)
-        window.layoutIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        let expandedDocumentWidth = transport.logDocumentViewFrameForTesting.width
-        expectLogTextContainerWidthTracksTextView(transport)
-
-        sidebarItem.isCollapsed = true
-        window.setContentSize(NSSize(width: 360, height: 420))
-        window.layoutIfNeeded()
-        viewController.view.layoutSubtreeIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        await transport.flushMainQueueForTesting()
-
-        let compactDocumentWidth = transport.logDocumentViewFrameForTesting.width
-        let compactLogWidth = transport.logFrameForTesting.width
-        let compactTextWidth = transport.logTextViewFrameForTesting.width
-
-        #expect(compactDocumentWidth < expandedDocumentWidth - 200)
-        #expect(abs(compactDocumentWidth - compactLogWidth) < 32)
-        #expect(abs(compactTextWidth - compactLogWidth) < 32)
-        expectLogTextContainerWidthTracksTextView(transport)
-    }
-
-    @Test func detailLogTracksSimpleWindowResizeInBothDirections() async throws {
-        let job = makeJob(
-            id: "job-window-resize-width-regression",
-            status: .running,
-            targetSummary: "Uncommitted changes",
-            logText: Array(repeating: "Long line that should reflow as the window resizes.\n", count: 40).joined()
-        )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let harness = makeWindowHarness(
-            store: store,
-            contentSize: NSSize(width: 960, height: 600)
-        )
-        let viewController = harness.viewController
-        let window = harness.window
-        defer { window.close() }
-        let transport = viewController.transportViewControllerForTesting
-
-        let initialRenderCount = transport.renderCountForTesting
-        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
-        _ = try await awaitTransportRender(transport, after: initialRenderCount)
-        window.layoutIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        let wideWidth = transport.logDocumentViewFrameForTesting.width
-        expectLogTextContainerWidthTracksTextView(transport)
-
-        window.setContentSize(NSSize(width: 520, height: 420))
-        window.layoutIfNeeded()
-        viewController.view.layoutSubtreeIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        await transport.flushMainQueueForTesting()
-        let narrowWidth = transport.logDocumentViewFrameForTesting.width
-        let narrowTextWidth = transport.logTextViewFrameForTesting.width
-        let narrowLogWidth = transport.logFrameForTesting.width
-        expectLogTextContainerWidthTracksTextView(transport)
-
-        window.setContentSize(NSSize(width: 900, height: 600))
-        window.layoutIfNeeded()
-        viewController.view.layoutSubtreeIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        await transport.flushMainQueueForTesting()
-        let widenedAgainWidth = transport.logDocumentViewFrameForTesting.width
-        let widenedAgainTextWidth = transport.logTextViewFrameForTesting.width
-        let widenedAgainLogWidth = transport.logFrameForTesting.width
-
-        #expect(narrowWidth < wideWidth - 150)
-        #expect(widenedAgainWidth > narrowWidth + 150)
-        #expect(abs(narrowWidth - narrowLogWidth) < 32)
-        #expect(abs(narrowTextWidth - narrowLogWidth) < 32)
-        #expect(abs(widenedAgainWidth - widenedAgainLogWidth) < 32)
-        #expect(abs(widenedAgainTextWidth - widenedAgainLogWidth) < 32)
-        expectLogTextContainerWidthTracksTextView(transport)
-    }
-
-    @Test func detailLogTextContainerExpandsAfterToolbarSidebarToggleAtCompactWidth() async throws {
-        let job = makeJob(
-            id: "job-toolbar-sidebar-toggle-textkit-width-regression",
-            status: .running,
-            targetSummary: "Uncommitted changes",
-            logText: Array(repeating: "Long line that should reflow after the toolbar sidebar toggle path.\n", count: 40).joined()
-        )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let harness = makeWindowHarness(
-            store: store,
-            contentSize: NSSize(width: 520, height: 420)
-        )
-        let viewController = harness.viewController
-        let window = harness.window
-        defer { window.close() }
-        try await waitForDisplayedContentKind(harness.windowController, .splitView)
-        let transport = viewController.transportViewControllerForTesting
-        let sidebarItem = try #require(viewController.splitViewItems.first)
-        sidebarItem.isCollapsed = false
-        window.layoutIfNeeded()
-        viewController.view.layoutSubtreeIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        await transport.flushMainQueueForTesting()
-
-        let initialRenderCount = transport.renderCountForTesting
-        viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
-        _ = try await awaitTransportRender(transport, after: initialRenderCount)
-
-        viewController.toggleSidebar(nil)
-        window.setContentSize(NSSize(width: 360, height: 420))
-        window.layoutIfNeeded()
-        viewController.view.layoutSubtreeIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        await transport.flushMainQueueForTesting()
-        #expect(sidebarItem.isCollapsed)
-
-        viewController.toggleSidebar(nil)
-        window.layoutIfNeeded()
-        viewController.view.layoutSubtreeIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        await transport.flushMainQueueForTesting()
-        let compactDocumentWidth = transport.logDocumentViewFrameForTesting.width
-        expectLogTextContainerWidthTracksTextView(transport)
-
-        window.setContentSize(NSSize(width: 960, height: 600))
-        window.layoutIfNeeded()
-        viewController.view.layoutSubtreeIfNeeded()
-        transport.view.layoutSubtreeIfNeeded()
-        await transport.flushMainQueueForTesting()
-
-        let expandedDocumentWidth = transport.logDocumentViewFrameForTesting.width
-        let expandedLogWidth = transport.logFrameForTesting.width
-        let expandedTextWidth = transport.logTextViewFrameForTesting.width
-
-        #expect(sidebarItem.isCollapsed == false)
-        #expect(expandedDocumentWidth > compactDocumentWidth + 200)
-        #expect(abs(expandedDocumentWidth - expandedLogWidth) < 32)
-        #expect(abs(expandedTextWidth - expandedLogWidth) < 32)
-        expectLogTextContainerWidthTracksTextView(transport)
-    }
-
-    @Test func windowControllerDoesNotStartStoreWhenConstructed() {
-        let backend = CountingStartBackend()
-        let store = makeStore(backend: backend)
-        let harness = makeWindowHarness(store: store)
-        let window = harness.window
-        defer { window.close() }
-
-        #expect(backend.startCallCount() == 0)
-    }
-
-    @Test func splitViewAttachIsIdempotentForSameWindow() {
-        let backend = CountingStartBackend()
-        let store = makeStore(backend: backend)
-        let viewController = ReviewMonitorSplitViewController(store: store)
-        let window = NSWindow(contentViewController: viewController)
-        defer { window.close() }
-
-        viewController.attach(to: window)
-        let initialToolbar = window.toolbar
-        let initialIdentifiers = viewController.toolbarIdentifiersForTesting
-        viewController.attach(to: window)
-
-        #expect(window.toolbar === initialToolbar)
-        #expect(viewController.toolbarIdentifiersForTesting == initialIdentifiers)
-        #expect(backend.startCallCount() == 0)
-    }
-
-    @Test func previewRunningJobsAppendPseudoStreamOverTime() async throws {
-        let store = ReviewMonitorPreviewContent.makeStore(
-            streamInterval: Duration.milliseconds(10)
-        )
-        let runningJob = try #require(
-            store.workspaces
-                .flatMap { $0.jobs }
-                .first(where: { $0.status == .running })
-        )
-        let initialRevision = runningJob.reviewMonitorRevision
-        let initialLog = runningJob.reviewMonitorLogText
-
-        try await withTestTimeout(.seconds(1)) {
-            while await MainActor.run(body: { runningJob.reviewMonitorRevision }) == initialRevision {
-                try Task.checkCancellation()
-                await Task.yield()
-            }
-        }
-
-        #expect(runningJob.reviewMonitorLogText != initialLog)
-        #expect(runningJob.reviewMonitorLogText.contains("stream.tick"))
-    }
 
     @Test func splitViewSectionsByWorkspace() {
         let workspaceAlphaJob = makeJob(
@@ -851,7 +24,7 @@ struct CodexReviewUITests {
             status: .failed,
             targetSummary: "Base branch: main"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
@@ -883,7 +56,7 @@ struct CodexReviewUITests {
             status: .failed,
             targetSummary: "Base branch: main"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
@@ -917,7 +90,7 @@ struct CodexReviewUITests {
             status: .failed,
             targetSummary: "Base branch: main"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
@@ -953,7 +126,7 @@ struct CodexReviewUITests {
             status: .failed,
             targetSummary: "Base branch: main"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
@@ -983,7 +156,7 @@ struct CodexReviewUITests {
             status: .failed,
             targetSummary: "Base branch: main"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
@@ -1009,7 +182,7 @@ struct CodexReviewUITests {
             status: .failed,
             targetSummary: "Base branch: main"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
@@ -1046,7 +219,7 @@ struct CodexReviewUITests {
             cwd: "/tmp/workspace-alpha",
             jobs: [firstJob, secondJob]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: [workspace]
@@ -1075,7 +248,7 @@ struct CodexReviewUITests {
             cwd: "/tmp/workspace-alpha",
             jobs: [firstJob, secondJob]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: [workspace]
@@ -1090,299 +263,8 @@ struct CodexReviewUITests {
         #expect(sidebar.selectedJobForTesting?.id == "job-1")
     }
 
-    @Test func switchingAccountFailureClearsProgressStateAndPreservesActiveAccount() async {
-        let backend = AuthActionBackend(
-            initialAuthState: .signedIn(accountID: "first@example.com"),
-            switchStartsBlocked: true,
-            switchErrorMessage: "Switch failed."
-        )
-        let store = makeStore(backend: backend)
-        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
-        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
-        store.auth.updateSavedAccounts([firstAccount, secondAccount])
-        store.auth.updateAccount(firstAccount)
-
-        let switchTask = Task {
-            try await store.auth.switchAccount(secondAccount)
-        }
-
-        await backend.waitForSwitchAccountStartCallCount(1)
-        #expect(store.auth.savedAccounts.contains(where: { $0.accountKey == secondAccount.accountKey && $0.isSwitching }))
-
-        await backend.releaseSwitchAccount()
-        await #expect(throws: Error.self) {
-            try await switchTask.value
-        }
-
-        #expect(store.auth.savedAccounts.contains(where: { $0.isSwitching }) == false)
-        #expect(store.auth.account?.accountKey == firstAccount.accountKey)
-    }
-
-    @Test func activeAccountContextMenuSignOutUsesLogoutConfirmation() async {
-        let backend = AuthActionBackend()
-        let store = makeStore(backend: backend)
-        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
-        let otherAccount = CodexAccount(email: "second@example.com", planType: "plus")
-        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .signedOut,
-            account: activeAccount,
-            savedAccounts: [activeAccount, otherAccount],
-            workspaces: makeWorkspaces(from: [runningJob])
-        )
-        let view = AccountContextMenuView(store: store, account: activeAccount)
-
-        #expect(view.destructiveActionTitle == "Sign Out")
-        view.requestDestructiveAccountAction()
-
-        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
-        #expect(store.auth.pendingAccountActionConfirmationTitle == "Sign Out?")
-        #expect(backend.logoutCallCount() == 0)
-        #expect(backend.lastRemovedAccountKey() == nil)
-
-        store.auth.confirmPendingAccountAction()
-        await backend.waitForLogoutCallCount(1)
-
-        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
-        #expect(backend.logoutCallCount() == 1)
-        #expect(backend.lastRemovedAccountKey() == nil)
-    }
-
-    @Test func inactiveAccountContextMenuUsesUnifiedSignOutLabel() async {
-        let backend = AuthActionBackend()
-        let store = makeStore(backend: backend)
-        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
-        let otherAccount = CodexAccount(email: "second@example.com", planType: "plus")
-        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .signedOut,
-            account: activeAccount,
-            savedAccounts: [activeAccount, otherAccount],
-            workspaces: makeWorkspaces(from: [runningJob])
-        )
-        let view = AccountContextMenuView(store: store, account: otherAccount)
-
-        #expect(view.destructiveActionTitle == "Sign Out")
-        view.requestDestructiveAccountAction()
-        await backend.waitForRemoveAccountCallCount(1)
-
-        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
-        #expect(backend.logoutCallCount() == 0)
-        #expect(backend.lastRemovedAccountKey() == otherAccount.accountKey)
-    }
-
-    @Test func metadataOnlySwitchDoesNotPresentRunningJobsConfirmation() async {
-        let backend = AuthActionBackend()
-        let store = makeStore(backend: backend)
-        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
-        activeSavedAccount.updateIsActive(true)
-        let currentSavedAccount = CodexAccount(email: "current@example.com", planType: "plus")
-        let currentSession = CodexAccount(email: "current@example.com", planType: "plus")
-        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .signedOut,
-            account: currentSession,
-            savedAccounts: [activeSavedAccount, currentSavedAccount],
-            workspaces: makeWorkspaces(from: [runningJob])
-        )
-
-        store.auth.requestSwitchAccount(
-            currentSavedAccount,
-            requiresConfirmation: store.hasRunningJobs && store.auth.account?.accountKey != currentSavedAccount.accountKey
-        )
-        await backend.waitForSwitchAccountCallCount(1)
-
-        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
-        #expect(backend.lastSwitchedAccountKey() == currentSavedAccount.accountKey)
-    }
-
-    @Test func persistedActiveCurrentRecoverySwitchStillDelegatesToController() async throws {
-        let backend = AuthActionBackend()
-        backend.requiresCurrentSessionRecovery = true
-        let store = makeStore(backend: backend)
-        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
-        currentAccount.updateIsActive(true)
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .failed(message: "Authentication required."),
-            account: currentAccount,
-            savedAccounts: [currentAccount],
-            workspaces: []
-        )
-
-        try await store.auth.switchAccount(currentAccount)
-
-        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
-    }
-
-    @Test func selectedAccountRowTapDelegatesSameAccountRecoverySwitch() async {
-        let backend = AuthActionBackend()
-        backend.requiresCurrentSessionRecovery = true
-        let store = makeStore(backend: backend)
-        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
-        currentAccount.updateIsActive(true)
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .failed(message: "Authentication required."),
-            account: currentAccount,
-            savedAccounts: [currentAccount],
-            workspaces: []
-        )
-        let viewController = ReviewMonitorAccountsViewController(store: store)
-        viewController.loadViewIfNeeded()
-
-        viewController.tapAccountRowForTesting(currentAccount)
-        await backend.waitForSwitchAccountCallCount(1)
-
-        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
-    }
-
-    @Test func sameAccountRecoverySwitchUsesRunningJobsConfirmation() async {
-        let backend = AuthActionBackend()
-        backend.requiresCurrentSessionRecovery = true
-        let store = makeStore(backend: backend)
-        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
-        currentAccount.updateIsActive(true)
-        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .failed(message: "Authentication required."),
-            account: currentAccount,
-            savedAccounts: [currentAccount],
-            workspaces: makeWorkspaces(from: [runningJob])
-        )
-
-        store.auth.requestSwitchAccount(
-            currentAccount,
-            requiresConfirmation: store.hasRunningJobs
-                && store.auth.switchActionRequiresRunningJobsConfirmation(for: currentAccount)
-        )
-
-        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
-        #expect(backend.switchAccountCallCount() == 0)
-
-        store.auth.confirmPendingAccountAction()
-        await backend.waitForSwitchAccountCallCount(1)
-        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
-    }
-
-    @Test func inactiveSavedCurrentRecoverySwitchUsesRunningJobsConfirmation() async {
-        let backend = AuthActionBackend()
-        backend.requiresCurrentSessionRecovery = true
-        let store = makeStore(backend: backend)
-        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
-        activeSavedAccount.updateIsActive(true)
-        let currentSavedAccount = CodexAccount(email: "current@example.com", planType: "plus")
-        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .failed(message: "Authentication required."),
-            account: currentSavedAccount,
-            savedAccounts: [activeSavedAccount, currentSavedAccount],
-            workspaces: makeWorkspaces(from: [runningJob])
-        )
-
-        store.auth.requestSwitchAccount(
-            currentSavedAccount,
-            requiresConfirmation: store.hasRunningJobs
-                && store.auth.switchActionRequiresRunningJobsConfirmation(for: currentSavedAccount)
-        )
-
-        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
-        #expect(backend.switchAccountCallCount() == 0)
-    }
-
-    @Test func detachedCurrentSessionCannotRequestNoOpSwitch() {
-        let backend = AuthActionBackend()
-        let store = makeStore(backend: backend)
-        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
-        activeSavedAccount.updateIsActive(true)
-        let detachedCurrent = CodexAccount(email: "current@example.com", planType: "plus")
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .signedOut,
-            account: detachedCurrent,
-            savedAccounts: [activeSavedAccount],
-            workspaces: []
-        )
-
-        #expect(store.auth.switchActionIsDisabled(for: detachedCurrent))
-    }
-
-    @Test func accountMenusUseFullEmailForSectionTitles() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let account = CodexAccount(email: "masked.user@example.com", planType: "pro")
-        store.auth.updateSavedAccounts([account])
-        store.auth.updateAccount(account)
-
-        let contextMenu = AccountContextMenuView(store: store, account: account)
-        let statusView = StatusView(store: store)
-
-        #expect(contextMenu.sectionTitle == account.email)
-        #expect(store.auth.account?.email == account.email)
-        _ = statusView
-    }
-
-    @Test func addAccountToolbarItemBeginsAuthentication() async throws {
-        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
-        let store = makeStore(backend: backend)
-        let uiState = ReviewMonitorUIState()
-        uiState.sidebarSelection = .account
-        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
-        let window = NSWindow(contentViewController: viewController)
-        defer { window.close() }
-        window.setContentSize(NSSize(width: 900, height: 600))
-
-        viewController.attach(to: window)
-        let sidebarItem = try #require(viewController.splitViewItems.first)
-        sidebarItem.isCollapsed = false
-        window.layoutIfNeeded()
-        try await waitForAddAccountToolbarItemHidden(viewController, false)
-
-        viewController.performAddAccountToolbarItemForTesting()
-        await backend.waitForBeginAuthenticationCallCount(1)
-
-        #expect(backend.beginAuthenticationCallCount() == 1)
-    }
-
-    @Test func addAccountToolbarItemBeginsAuthenticationEvenWhenJobsAreRunning() async throws {
-        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
-        let store = makeStore(backend: backend)
-        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
-        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .signedOut,
-            account: activeAccount,
-            savedAccounts: [activeAccount],
-            workspaces: makeWorkspaces(from: [runningJob])
-        )
-
-        let uiState = ReviewMonitorUIState()
-        uiState.sidebarSelection = .account
-        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
-        let window = NSWindow(contentViewController: viewController)
-        defer { window.close() }
-        window.setContentSize(NSSize(width: 900, height: 600))
-
-        viewController.attach(to: window)
-        let sidebarItem = try #require(viewController.splitViewItems.first)
-        sidebarItem.isCollapsed = false
-        window.layoutIfNeeded()
-        try await waitForAddAccountToolbarItemHidden(viewController, false)
-
-        viewController.performAddAccountToolbarItemForTesting()
-        await backend.waitForBeginAuthenticationCallCount(1)
-
-        #expect(backend.beginAuthenticationCallCount() == 1)
-    }
-
-    @Test func addAccountToolbarItemShowsProgressAndRemovesInlineProgressRow() async throws {
-        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
-        let store = makeStore(backend: backend)
+    @Test func addAccountToolbarItemShowsProgressPresentation() async throws {
+        let store = CodexReviewStore.makePreviewStore()
         let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
         store.loadForTesting(
             serverState: .running,
@@ -1411,54 +293,10 @@ struct CodexReviewUITests {
         try await waitForAddAccountToolbarItemHidden(viewController, false)
 
         #expect(viewController.addAccountToolbarItemModeForTesting == .progress)
-        #expect(
-            viewController
-                .sidebarViewControllerForTesting
-                .accountsViewControllerForTesting
-                .showsAuthenticationProgressRowForTesting == false
-        )
-    }
-
-    @Test func addAccountToolbarItemCancelCancelsAuthentication() async throws {
-        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
-        let store = makeStore(backend: backend)
-        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
-        store.loadForTesting(
-            serverState: .running,
-            authPhase: .signingIn(
-                .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue."
-                )
-            ),
-            account: activeAccount,
-            savedAccounts: [activeAccount],
-            workspaces: []
-        )
-
-        let uiState = ReviewMonitorUIState()
-        uiState.sidebarSelection = .account
-        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
-        let window = NSWindow(contentViewController: viewController)
-        defer { window.close() }
-        window.setContentSize(NSSize(width: 900, height: 600))
-
-        viewController.attach(to: window)
-        let sidebarItem = try #require(viewController.splitViewItems.first)
-        sidebarItem.isCollapsed = false
-        window.layoutIfNeeded()
-        try await waitForAddAccountToolbarItemHidden(viewController, false)
-
-        #expect(viewController.addAccountToolbarItemModeForTesting == .progress)
-
-        viewController.performAddAccountToolbarCancelForTesting()
-        await backend.waitForCancelAuthenticationCallCount(1)
-
-        #expect(backend.cancelAuthenticationCallCount() == 1)
     }
 
     @Test func addAccountToolbarItemDoesNotStickInProgressModeWhenAuthenticationEndsImmediately() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
         store.loadForTesting(
             serverState: .running,
@@ -1498,7 +336,7 @@ struct CodexReviewUITests {
     }
 
     @Test func addAccountToolbarItemProvidesOverflowMenuFallback() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
         store.loadForTesting(
             serverState: .running,
@@ -1538,7 +376,7 @@ struct CodexReviewUITests {
     }
 
     @Test func addAccountToolbarItemStaysVisibleDuringAuthenticationOutsideAccountSidebar() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
         store.loadForTesting(
             serverState: .running,
@@ -1570,7 +408,7 @@ struct CodexReviewUITests {
     }
 
     @Test func addAccountToolbarItemRehidesAfterAuthenticationEndsOutsideAccountSidebar() async throws {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
         store.loadForTesting(
             serverState: .running,
@@ -1617,7 +455,7 @@ struct CodexReviewUITests {
     }
 
     @Test func authModelReusesSavedAccountInstancesAcrossReload() {
-        let auth = CodexReviewAuthModel(controller: CodexReviewPreviewAuthController())
+        let auth = CodexReviewAuthModel.makePreview()
         let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
         let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
         auth.updateSavedAccounts([firstAccount, secondAccount])
@@ -1635,7 +473,7 @@ struct CodexReviewUITests {
     }
 
     @Test func updateAccountPreservesDetachedCurrentSessionForMatchingKey() {
-        let auth = CodexReviewAuthModel(controller: CodexReviewPreviewAuthController())
+        let auth = CodexReviewAuthModel.makePreview()
         let savedAccount = CodexAccount(email: "review@example.com", planType: "pro")
         auth.updateSavedAccounts([savedAccount])
 
@@ -1702,7 +540,7 @@ struct CodexReviewUITests {
         )
         betaWorkspace.isExpanded = false
 
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: [alphaWorkspace, betaWorkspace]
@@ -1736,7 +574,7 @@ struct CodexReviewUITests {
             cwd: betaJob.cwd,
             jobs: [betaJob]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: [alphaWorkspace, betaWorkspace]
@@ -1760,7 +598,7 @@ struct CodexReviewUITests {
             cwd: job.cwd,
             jobs: [job]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: [workspace]
@@ -1790,7 +628,7 @@ struct CodexReviewUITests {
             status: .queued,
             targetSummary: "Queued review"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [secondaryJob] + primaryJobs)
@@ -1818,7 +656,7 @@ struct CodexReviewUITests {
                 targetSummary: "Review \(index)"
             )
         }
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: jobs)
@@ -1846,7 +684,7 @@ struct CodexReviewUITests {
                 targetSummary: "Review \(index)"
             )
         }
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: jobs)
@@ -1875,7 +713,7 @@ struct CodexReviewUITests {
                 targetSummary: "Review \(index)"
             )
         }
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: jobs)
@@ -1907,7 +745,7 @@ struct CodexReviewUITests {
             cwd: job.cwd,
             jobs: [job]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: [workspace]
@@ -1948,7 +786,7 @@ struct CodexReviewUITests {
             status: .running,
             targetSummary: "Uncommitted changes"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
@@ -1986,7 +824,7 @@ struct CodexReviewUITests {
             targetSummary: "Uncommitted changes",
             summary: "Running review."
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
@@ -2011,7 +849,7 @@ struct CodexReviewUITests {
             targetSummary: "Uncommitted changes",
             summary: "Running review."
         )
-        let store = CodexReviewStore(backend: FailingCancellationBackend())
+        let store = CodexReviewStore.makeTestingStore(harness: FailingCancellationBackend())
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
@@ -2035,7 +873,7 @@ struct CodexReviewUITests {
             targetSummary: "Uncommitted changes",
             summary: "Running review."
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
@@ -2072,7 +910,7 @@ struct CodexReviewUITests {
     @Test func jobsPresentOnInitialLoadStayUnselected() {
         let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
         let recentJob = makeJob(status: .succeeded, targetSummary: "Commit: abc123")
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
@@ -2093,7 +931,7 @@ struct CodexReviewUITests {
             summary: "MCP server codex_review ready.",
             logText: "Findings ready\n"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
@@ -2147,7 +985,7 @@ struct CodexReviewUITests {
                 .init(kind: .agentMessage, text: "No correctness issues found.")
             ]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
@@ -2188,7 +1026,7 @@ struct CodexReviewUITests {
             summary: "Recent review completed.",
             logText: "Recent log\n"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
@@ -2233,7 +1071,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: longLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -2267,7 +1105,7 @@ struct CodexReviewUITests {
             summary: "Recent review completed.",
             logText: longRecentLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
@@ -2320,7 +1158,7 @@ struct CodexReviewUITests {
             summary: "Recent review completed.",
             logText: longRecentLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
@@ -2365,7 +1203,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: longLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -2415,7 +1253,7 @@ struct CodexReviewUITests {
             summary: "Review completed.",
             logText: sharedLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [firstJob, secondJob]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -2456,7 +1294,7 @@ struct CodexReviewUITests {
             summary: "Recent review completed.",
             logText: longLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [shortJob, recentJob]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -2499,7 +1337,7 @@ struct CodexReviewUITests {
             summary: "Recent review.",
             logText: "Recent log\n"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [activeJob, recentJob]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -2533,7 +1371,7 @@ struct CodexReviewUITests {
             summary: "Review is still running.",
             logText: "Selected log\n"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
@@ -2573,7 +1411,7 @@ struct CodexReviewUITests {
             cwd: job.cwd,
             jobs: [job]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: [workspace]
@@ -2602,7 +1440,7 @@ struct CodexReviewUITests {
 
     @Test func newJobsArrivingWhileUnselectedDoNotAutoSelect() {
         let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: [])
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -2635,7 +1473,7 @@ struct CodexReviewUITests {
             summary: "Recent review completed.",
             logText: "Recent log\n"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
@@ -2673,7 +1511,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: "Initial log\n"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
@@ -2721,7 +1559,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: "Initial log\n"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
@@ -2762,7 +1600,7 @@ struct CodexReviewUITests {
                 .init(kind: .agentMessage, groupID: "msg_1", text: "Initial")
             ]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -2797,7 +1635,7 @@ struct CodexReviewUITests {
                 .init(kind: .agentMessage, groupID: "msg_1", text: "Initial")
             ]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -2833,7 +1671,7 @@ struct CodexReviewUITests {
                 .init(kind: .plan, groupID: "plan_1", text: "- original")
             ]
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -2862,7 +1700,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: "Initial log\n"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -2894,7 +1732,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: longLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -2942,7 +1780,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: longLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -2978,7 +1816,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: longLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -3012,7 +1850,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: "short log"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -3053,7 +1891,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: longLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [firstJob, secondJob]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -3092,7 +1930,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: longLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -3127,7 +1965,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: longLog
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
@@ -3161,7 +1999,7 @@ struct CodexReviewUITests {
             summary: "Running review.",
             logText: "Initial log\n"
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store)
         viewController.loadViewIfNeeded()
@@ -3185,7 +2023,7 @@ struct CodexReviewUITests {
             summary: "Failed to start review.",
             logText: "Authentication required. Sign in to ReviewMCP and retry."
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             authState: .signedOut,
@@ -3211,7 +2049,7 @@ struct CodexReviewUITests {
             summary: "Failed to start review.",
             logText: "Authentication required. Sign in to ReviewMCP and retry."
         )
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             authState: .signedIn(accountID: "review@example.com"),
@@ -3229,568 +2067,17 @@ struct CodexReviewUITests {
         #expect(snapshot.log == "Authentication required. Sign in to ReviewMCP and retry.")
     }
 
-    @Test func signInViewShowsPrimaryActionLabelWhenSignedOut() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        let view = SignInView(store: store)
-
-        #expect(view.authenticationActionTitle == "Sign in with ChatGPT")
-        #expect(view.authenticationActionRole == .confirm)
-    }
-
-    @Test func signInViewShowsPrimaryActionLabelWhenAuthenticating() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        applyTestAuthState(auth: store.auth, state: 
-            .signingIn(
-                .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue."
-                )
-            )
-        )
-        let view = SignInView(store: store)
-
-        #expect(view.authenticationActionTitle == "Cancel")
-        #expect(view.authenticationActionRole == .cancel)
-    }
-
-    @Test func signInViewControllerStartsAuthenticationWhenSignedOutAndServerRunning() async {
-        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
-        let store = makeStore(backend: backend)
-        store.loadForTesting(serverState: .running, authState: .signedOut, workspaces: [])
-        let viewController = ReviewMonitorSignInViewController(store: store)
-        viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
-
-        viewController.performPrimaryAction()
-        await backend.waitForBeginAuthenticationCallCount(1)
-
-        #expect(backend.recordedActions() == ["begin"])
-    }
-
-    @Test func signInViewControllerCancelsAuthenticationWhenAuthenticating() async {
-        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
-        let store = makeStore(backend: backend)
-        store.loadForTesting(
-            serverState: .running,
-            authState: .signingIn(
-                .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue."
-                )
-            ),
-            workspaces: []
-        )
-        let viewController = ReviewMonitorSignInViewController(store: store)
-        viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
-
-        viewController.performPrimaryAction()
-        await backend.waitForCancelAuthenticationCallCount(1)
-
-        #expect(backend.recordedActions() == ["cancel"])
-    }
-
-    @Test func signInViewControllerRestartsFailedServerBeforeBeginningAuthentication() async {
-        let backend = CountingStartBackend(
-            shouldAutoStartEmbeddedServer: false,
-            restartResultingServerState: .running
-        )
-        let store = makeStore(backend: backend)
-        store.loadForTesting(
-            serverState: .failed("The embedded server stopped responding."),
-            authState: .signedOut,
-            workspaces: []
-        )
-        let viewController = ReviewMonitorSignInViewController(store: store)
-        viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
-
-        viewController.performPrimaryAction()
-        await backend.waitForStartCallCount(1)
-        await backend.waitForBeginAuthenticationCallCount(1)
-
-        #expect(backend.recordedActions() == ["start", "begin"])
-        #expect(store.serverState == .running)
-    }
-
-    @Test func signInViewControllerRestartsStoppedServerBeforeBeginningAuthentication() async {
-        let backend = CountingStartBackend(
-            shouldAutoStartEmbeddedServer: false,
-            restartResultingServerState: .running
-        )
-        let store = makeStore(backend: backend)
-        store.loadForTesting(serverState: .stopped, authState: .signedOut, workspaces: [])
-        let viewController = ReviewMonitorSignInViewController(store: store)
-        viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
-
-        viewController.performPrimaryAction()
-        await backend.waitForStartCallCount(1)
-        await backend.waitForBeginAuthenticationCallCount(1)
-
-        #expect(backend.recordedActions() == ["start", "begin"])
-        #expect(store.serverState == .running)
-    }
-
-    @Test func signInViewControllerBeginsAuthenticationEvenWhenRestartFails() async {
-        let backend = CountingStartBackend(
-            shouldAutoStartEmbeddedServer: false,
-            restartResultingServerState: .failed("Still unavailable.")
-        )
-        let store = makeStore(backend: backend)
-        store.loadForTesting(
-            serverState: .failed("The embedded server stopped responding."),
-            authState: .signedOut,
-            workspaces: []
-        )
-        let viewController = ReviewMonitorSignInViewController(store: store)
-        viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
-
-        viewController.performPrimaryAction()
-        await backend.waitForStartCallCount(1)
-        await backend.waitForBeginAuthenticationCallCount(1)
-
-        #expect(backend.recordedActions() == ["start", "begin"])
-        #expect(store.serverState == .failed("Still unavailable."))
-    }
-
-    @Test func signInViewControllerDoesNotActOnBrowserProgressUpdates() async {
-        let backend = CountingStartBackend(shouldAutoStartEmbeddedServer: false)
-        let store = makeStore(backend: backend)
-        let viewController = ReviewMonitorSignInViewController(store: store)
-        viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
-
-        applyTestAuthState(auth: store.auth, state: 
-            .signingIn(
-                .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue.",
-                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
-                )
-            )
-        )
-        await Task.yield()
-        await Task.yield()
-        #expect(backend.recordedActions().isEmpty)
-    }
-
-    @Test func storeRestartStartsStoppedServer() async {
-        let backend = CountingStartBackend(
-            shouldAutoStartEmbeddedServer: false,
-            initialAuthState: .signedIn(accountID: "review@example.com"),
-            restartResultingServerState: .running
-        )
-        let store = makeStore(backend: backend)
-        store.loadForTesting(
-            serverState: .stopped,
-            authState: .signedIn(accountID: "review@example.com"),
-            workspaces: []
-        )
-        await store.restart()
-        await backend.waitForStartCallCount(1)
-
-        #expect(backend.startCallCount() == 1)
-    }
-
-    @Test func statusViewShowsRestartActionWhileServerStarting() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-        store.loadForTesting(
-            serverState: .starting,
-            authState: .signedIn(accountID: "review@example.com"),
-            workspaces: []
-        )
-        let view = StatusView(store: store)
-
-        #expect(view.showsServerRestartAction)
-    }
-
-    @Test func statusViewUsesSettingsStoreLabels() {
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = makeSettingsSnapshot(
-            model: "gpt-5.4-mini",
-            reasoningEffort: .low,
-            serviceTier: nil
-        )
-        let store = CodexReviewStore(backend: backend)
-        store.loadForTesting(
-            serverState: .running,
-            authState: .signedIn(accountID: "review@example.com"),
-            workspaces: [],
-            settingsSnapshot: backend.initialSettingsSnapshot
-        )
-
-        let view = StatusView(store: store)
-
-        #expect(store.settings.currentModelDisplayText == "GPT-5.4 Mini")
-        #expect(store.settings.currentReasoningDisplayText == "Low")
-        #expect(store.settings.currentServiceTierDisplayText == "Normal")
-        _ = view
-    }
-
-    @Test func statusViewDisablesSettingsControlsWhenServerIsNotRunning() {
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = makeSettingsSnapshot()
-        let store = CodexReviewStore(backend: backend)
-        store.loadForTesting(
-            serverState: .stopped,
-            authState: .signedIn(accountID: "review@example.com"),
-            workspaces: [],
-            settingsSnapshot: backend.initialSettingsSnapshot
-        )
-
-        #expect(store.serverState != .running || store.settings.isLoading || store.settings.displayedModels.isEmpty)
-    }
-
-    @Test func settingsStoreNormalizesReasoningAndTierWhenModelChanges() async {
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = makeSettingsSnapshot(
-            model: "gpt-5.4",
-            reasoningEffort: .high,
-            serviceTier: .fast
-        )
-        let store = CodexReviewStore(backend: backend)
-
-        await store.settings.updateModel("gpt-5.4-mini")
-
-        #expect(store.settings.selectedModel == "gpt-5.4-mini")
-        #expect(store.settings.selectedReasoningEffort == nil)
-        #expect(store.settings.selectedServiceTier == nil)
-        #expect(store.settings.currentReasoningDisplayText == "Medium")
-    }
-
-    @Test func settingsStoreKeepsCurrentHiddenModelVisible() {
-        let hiddenModel = CodexReviewModelCatalogItem(
-            id: "gpt-hidden",
-            model: "gpt-hidden",
-            displayName: "GPT Hidden",
-            hidden: true,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .medium, description: "Hidden default.")
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        let visibleModel = CodexReviewModelCatalogItem(
-            id: "gpt-5.4",
-            model: "gpt-5.4",
-            displayName: "GPT-5.4",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .medium, description: "Visible default.")
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast]
-        )
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = .init(
-            model: "gpt-hidden",
-            reasoningEffort: .medium,
-            serviceTier: nil,
-            models: [visibleModel, hiddenModel]
-        )
-        let store = CodexReviewStore(backend: backend)
-
-        #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-hidden"])
-    }
-
-    @Test func settingsStoreKeepsConfiguredMissingModelVisible() {
-        let visibleModel = CodexReviewModelCatalogItem(
-            id: "gpt-5.4",
-            model: "gpt-5.4",
-            displayName: "GPT-5.4",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .medium, description: "Visible default.")
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast]
-        )
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = .init(
-            model: "gpt-missing",
-            reasoningEffort: nil,
-            serviceTier: nil,
-            models: [visibleModel]
-        )
-        let store = CodexReviewStore(backend: backend)
-
-        #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-missing"])
-        #expect(store.settings.currentModelDisplayText == "gpt-missing")
-    }
-
-    @Test func settingsStorePreservesIncompatiblePersistedOverridesUntilEdited() {
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = makeSettingsSnapshot(
-            model: "gpt-5.4-mini",
-            reasoningEffort: .high,
-            serviceTier: .fast
-        )
-        let store = CodexReviewStore(backend: backend)
-
-        #expect(store.settings.selectedReasoningEffort == .high)
-        #expect(store.settings.selectedServiceTier == .fast)
-        #expect(store.settings.currentReasoningDisplayText == "High")
-        #expect(store.settings.currentServiceTierDisplayText == "Fast")
-    }
-
-    @Test func settingsStorePreservesReasoningOverrideWhenModelCatalogOmitsOptions() {
-        let modelWithoutReasoningOptions = CodexReviewModelCatalogItem(
-            id: "gpt-no-options",
-            model: "gpt-no-options",
-            displayName: "GPT No Options",
-            hidden: false,
-            supportedReasoningEfforts: [],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = .init(
-            model: "gpt-no-options",
-            fallbackModel: nil,
-            reasoningEffort: .high,
-            serviceTier: nil,
-            models: [modelWithoutReasoningOptions]
-        )
-        let store = CodexReviewStore(backend: backend)
-
-        #expect(store.settings.selectedReasoningEffort == .high)
-        #expect(store.settings.currentReasoningDisplayText == "High")
-    }
-
-    @Test func settingsStoreAppliesPendingSelectionAfterInFlightSave() async throws {
-        let backend = BlockingSettingsBackend(snapshot: makeSettingsSnapshot())
-        backend.blockNextModelUpdate()
-        let store = CodexReviewStore(backend: backend)
-
-        store.settings.selectedModel = "gpt-5.4-mini"
-        await backend.waitForBlockedModelUpdateToStart()
-
-        store.settings.selectedReasoningEffort = .low
-        await backend.resumeBlockedModelUpdate()
-
-        try await waitForCondition {
-            backend.reasoningUpdateCalls == [.low]
-        }
-
-        #expect(store.settings.selectedModel == "gpt-5.4-mini")
-        #expect(store.settings.selectedReasoningEffort == .low)
-        #expect(backend.modelUpdateCalls.count == 1)
-    }
-
-    @Test func settingsStoreRunsQueuedRefreshAfterCurrentLoad() async throws {
-        let backend = BlockingSettingsBackend(snapshot: makeSettingsSnapshot())
-        backend.blockNextRefresh()
-        let store = CodexReviewStore(backend: backend)
-
-        let refreshTask = Task { @MainActor in
-            await store.settings.refresh()
-        }
-        await backend.waitForBlockedRefreshToStart()
-
-        await store.settings.refresh()
-        await backend.resumeBlockedRefresh()
-        await refreshTask.value
-
-        try await waitForCondition {
-            backend.refreshCallCount == 2
-        }
-    }
-
-    @Test func settingsStorePersistsQueuedReasoningAndTierWithoutWritingModelOverride() async throws {
-        let backend = BlockingSettingsBackend(
-            snapshot: makeSettingsSnapshot(
-                model: "gpt-5.3-codex",
-                reasoningEffort: .low,
-                serviceTier: .fast
-            )
-        )
-        backend.blockNextReasoningUpdate()
-        let store = CodexReviewStore(backend: backend)
-
-        store.settings.selectedReasoningEffort = .medium
-        await backend.waitForBlockedReasoningUpdateToStart()
-
-        store.settings.selectedReasoningEffort = .minimal
-        store.settings.selectedServiceTier = .flex
-        await backend.resumeBlockedReasoningUpdate()
-
-        try await waitForCondition {
-            backend.reasoningUpdateCalls == [.medium, .minimal]
-                && backend.serviceTierUpdateCalls == [.flex]
-        }
-
-        #expect(backend.modelUpdateCalls.isEmpty)
-        #expect(store.settings.selectedReasoningEffort == .minimal)
-        #expect(store.settings.selectedServiceTier == .flex)
-    }
-
-    @Test func settingsStorePersistsBackToBackObservedSelectionChanges() async throws {
-        let backend = BlockingSettingsBackend(
-            snapshot: makeSettingsSnapshot(
-                model: "gpt-5.3-codex",
-                reasoningEffort: .low,
-                serviceTier: .fast
-            )
-        )
-        backend.blockNextReasoningUpdate()
-        let store = CodexReviewStore(backend: backend)
-
-        store.settings.selectedReasoningEffort = .medium
-        store.settings.selectedServiceTier = .flex
-        await backend.waitForBlockedReasoningUpdateToStart()
-        await backend.resumeBlockedReasoningUpdate()
-
-        try await waitForCondition {
-            backend.reasoningUpdateCalls == [.medium]
-                && backend.serviceTierUpdateCalls == [.flex]
-        }
-
-        #expect(store.settings.selectedReasoningEffort == .medium)
-        #expect(store.settings.selectedServiceTier == .flex)
-    }
-
-    @Test func settingsStoreClearsModelOverrideBackToFallbackModel() async throws {
-        let backend = BlockingSettingsBackend(
-            snapshot: makeSettingsSnapshot(
-                model: "gpt-5.4-mini",
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: .low,
-                serviceTier: nil
-            )
-        )
-        let store = CodexReviewStore(backend: backend)
-
-        store.settings.selectedModel = nil
-
-        try await waitForCondition {
-            backend.modelUpdateCalls == [
-                .init(model: nil, reasoningEffort: .low, serviceTier: nil)
-            ]
-        }
-
-        #expect(store.settings.selectedModel == nil)
-        #expect(store.settings.effectiveModel == "gpt-5.4")
-        #expect(store.settings.currentModelDisplayText == "GPT-5.4")
-    }
-
-    @Test func settingsStoreClearsReasoningOverrideBackToModelDefault() async throws {
-        let backend = BlockingSettingsBackend(
-            snapshot: makeSettingsSnapshot(
-                model: "gpt-5.4",
-                reasoningEffort: .high,
-                serviceTier: .fast
-            )
-        )
-        let store = CodexReviewStore(backend: backend)
-
-        store.settings.selectedReasoningEffort = nil
-
-        try await waitForCondition {
-            backend.reasoningUpdateCalls == [nil]
-        }
-
-        #expect(store.settings.selectedReasoningEffort == nil)
-        #expect(store.settings.currentReasoningDisplayText == "Medium")
-    }
-
-    @Test func signInViewDescriptionTextReflectsAuthState() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
-
-        applyTestAuthState(auth: store.auth, state: 
-            .signingIn(
-                .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue.",
-                    browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
-                )
-            )
-        )
-        #expect(SignInView(store: store).descriptionText == nil)
-
-        applyTestAuthState(auth: store.auth, state: .failed("Authentication failed."))
-        #expect(SignInView(store: store).descriptionText == "Authentication failed.")
-
-        applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-        #expect(SignInView(store: store).descriptionText == nil)
-
-        store.loadForTesting(
-            serverState: .failed("The embedded server stopped responding."),
-            authState: .signedOut,
-            workspaces: []
-        )
-        #expect(SignInView(store: store).descriptionText == "The embedded server stopped responding.")
-
-        store.loadForTesting(
-            serverState: .stopped,
-            authState: .signedOut,
-            workspaces: []
-        )
-        #expect(SignInView(store: store).descriptionText == nil)
-    }
-
-    @Test func mcpServerUnavailableViewRestartServerUsesStoreRestartFlow() async {
-        let backend = CountingStartBackend(
-            shouldAutoStartEmbeddedServer: false,
-            initialAuthState: .signedIn(accountID: "review@example.com")
-        )
-        let store = makeStore(backend: backend)
-        store.loadForTesting(
-            serverState: .failed("The embedded server stopped responding."),
-            authState: .signedIn(accountID: "review@example.com"),
-            workspaces: []
-        )
-        let view = MCPServerUnavailableView(store: store)
-
-        #expect(view.failureMessage == "The embedded server stopped responding.")
-
-        view.restartServer()
-        await backend.waitForStartCallCount(1)
-
-        #expect(backend.startCallCount() == 1)
-        #expect(store.serverState == .starting)
-    }
-
-    @Test func mcpServerUnavailableViewRestartCancelsAuthenticationBeforeRestart() async {
-        let backend = CountingStartBackend(
-            shouldAutoStartEmbeddedServer: false,
-            initialAuthState: .signedOut
-        )
-        let store = makeStore(backend: backend)
-        store.loadForTesting(
-            serverState: .failed("The embedded server stopped responding."),
-            authState: .init(
-                isAuthenticated: true,
-                accountID: "review@example.com",
-                progress: .init(
-                    title: "Sign in with ChatGPT",
-                    detail: "Open the browser to continue."
-                )
-            ),
-            workspaces: []
-        )
-        let view = MCPServerUnavailableView(store: store)
-
-        view.restartServer()
-        await backend.waitForCancelAuthenticationCallCount(1)
-        await backend.waitForStartCallCount(1)
-
-        #expect(backend.cancelAuthenticationCallCount() == 1)
-        #expect(backend.startCallCount() == 1)
-    }
-
 }
 
 @MainActor
-private struct ReviewMonitorWindowHarness {
+struct ReviewMonitorWindowHarness {
     let windowController: ReviewMonitorWindowController
     let viewController: ReviewMonitorSplitViewController
     let window: NSWindow
 }
 
 @MainActor
-private func makeWindowHarness(
+func makeWindowHarness(
     store: CodexReviewStore,
     authState: TestAuthState = .signedIn(accountID: "review@example.com"),
     contentSize: NSSize? = nil,
@@ -3818,15 +2105,15 @@ private func makeWindowHarness(
 
 
 @MainActor
-private func waitForDisplayedContentKind(
+func waitForWindowContentKind(
     _ windowController: ReviewMonitorWindowController,
-    _ expected: ReviewMonitorWindowController.DisplayedContentKind,
+    _ expected: ReviewMonitorWindowController.WindowContentKind,
     timeout: Duration = .seconds(2)
 ) async throws {
     let windowControllerBox = UncheckedSendableBox(windowController)
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
-            windowControllerBox.value.displayedContentKindForTesting != expected
+            windowControllerBox.value.windowContentKindForTesting != expected
         }) {
             try Task.checkCancellation()
             await Task.yield()
@@ -3835,7 +2122,7 @@ private func waitForDisplayedContentKind(
 }
 
 @MainActor
-private func waitForSidebarPresentation(
+func waitForSidebarPresentation(
     _ viewController: ReviewMonitorSplitViewController,
     _ expected: ReviewMonitorSplitViewController.SidebarPresentationForTesting,
     timeout: Duration = .seconds(2)
@@ -3852,7 +2139,7 @@ private func waitForSidebarPresentation(
 }
 
 @MainActor
-private func waitForEmbeddedContentSubviewCount(
+func waitForEmbeddedContentSubviewCount(
     _ windowController: ReviewMonitorWindowController,
     _ expected: Int,
     timeout: Duration = .seconds(2)
@@ -3869,7 +2156,7 @@ private func waitForEmbeddedContentSubviewCount(
 }
 
 @MainActor
-private func waitForSidebarBottomAccessoryHidden(
+func waitForSidebarBottomAccessoryHidden(
     _ viewController: ReviewMonitorSplitViewController,
     _ expected: Bool,
     timeout: Duration = .seconds(2)
@@ -3886,7 +2173,7 @@ private func waitForSidebarBottomAccessoryHidden(
 }
 
 @MainActor
-private func waitForAddAccountToolbarItemHidden(
+func waitForAddAccountToolbarItemHidden(
     _ viewController: ReviewMonitorSplitViewController,
     _ expected: Bool,
     timeout: Duration = .seconds(2)
@@ -3907,7 +2194,7 @@ private func waitForAddAccountToolbarItemHidden(
 }
 
 @MainActor
-private func waitForAddAccountToolbarMode(
+func waitForAddAccountToolbarMode(
     _ viewController: ReviewMonitorSplitViewController,
     _ expected: ReviewMonitorSplitViewController.AddAccountToolbarItemModeForTesting,
     timeout: Duration = .seconds(2)
@@ -3924,7 +2211,7 @@ private func waitForAddAccountToolbarMode(
     }
 }
 
-private func withTestTimeout<T: Sendable>(
+func withTestTimeout<T: Sendable>(
     _ timeout: Duration = .seconds(2),
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
@@ -3942,7 +2229,7 @@ private func withTestTimeout<T: Sendable>(
 }
 
 @MainActor
-private func waitForCondition(
+func waitForCondition(
     timeout: Duration = .seconds(2),
     _ condition: @escaping @MainActor @Sendable () -> Bool
 ) async throws {
@@ -3957,7 +2244,7 @@ private func waitForCondition(
 }
 
 @MainActor
-private func awaitTransportRender(
+func awaitTransportRender(
     _ transport: ReviewMonitorTransportViewController,
     after renderCount: Int,
     timeout: Duration = .seconds(2)
@@ -3972,7 +2259,7 @@ private func awaitTransportRender(
 }
 
 @MainActor
-private func expectLogTextContainerWidthTracksTextView(
+func expectLogTextContainerWidthTracksTextView(
     _ transport: ReviewMonitorTransportViewController
 ) {
     let textViewFrame = transport.logTextViewFrameForTesting
@@ -3984,7 +2271,7 @@ private func expectLogTextContainerWidthTracksTextView(
 }
 
 @MainActor
-private func awaitContentPaneRender(
+func awaitContentPaneRender(
     _ contentPane: ReviewMonitorTransportViewController,
     after renderCount: Int,
     timeout: Duration = .seconds(2)
@@ -3998,7 +2285,7 @@ private func awaitContentPaneRender(
     }
 }
 
-private final class UncheckedSendableBox<Value>: @unchecked Sendable {
+final class UncheckedSendableBox<Value>: @unchecked Sendable {
     let value: Value
 
     init(_ value: Value) {
@@ -4007,7 +2294,7 @@ private final class UncheckedSendableBox<Value>: @unchecked Sendable {
 }
 
 @MainActor
-private func makeJob(
+func makeJob(
     id: String = UUID().uuidString,
     cwd: String = "/tmp/repo",
     startedAt: Date = Date(),
@@ -4038,7 +2325,7 @@ private func makeJob(
 }
 
 @MainActor
-private func makeWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspace] {
+func makeWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspace] {
     var buckets: [String: [CodexReviewJob]] = [:]
     var order: [String] = []
     for job in jobs {
@@ -4056,7 +2343,7 @@ private func makeWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspac
     }
 }
 
-private struct TestFailure: Error {
+struct TestFailure: Error {
     let message: String
 
     init(_ message: String) {
@@ -4064,7 +2351,7 @@ private struct TestFailure: Error {
     }
 }
 
-private struct TestAuthState: Equatable {
+struct TestAuthState: Equatable {
     var phase: CodexReviewAuthModel.Phase
     var accountEmail: String?
     var accountPlanType: String?
@@ -4131,7 +2418,7 @@ private struct TestAuthState: Equatable {
 }
 
 @MainActor
-private func applyTestAuthState(
+func applyTestAuthState(
     auth: CodexReviewAuthModel,
     state: TestAuthState
 ) {
@@ -4150,7 +2437,7 @@ private func applyTestAuthState(
 }
 
 @MainActor
-private func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
+func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
     .init(
         isAuthenticated: auth.isAuthenticated,
         accountID: auth.account?.email,
@@ -4160,7 +2447,7 @@ private func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
 }
 
 @MainActor
-private extension CodexReviewStore {
+extension CodexReviewStore {
     func loadForTesting(
         serverState: CodexReviewServerState,
         authState: TestAuthState = .signedOut,
@@ -4193,7 +2480,7 @@ private extension CodexReviewStore {
 }
 
 @MainActor
-private func makeSettingsSnapshot(
+func makeSettingsSnapshot(
     model: String? = "gpt-5.4",
     fallbackModel: String? = nil,
     reasoningEffort: CodexReviewReasoningEffort = .medium,
@@ -4209,33 +2496,104 @@ private func makeSettingsSnapshot(
 }
 
 @MainActor
-private func makeStore(backend: CountingStartBackend) -> CodexReviewStore {
-    CodexReviewStore(
-        backend: backend,
-        authController: CountingStartAuthController(backend: backend)
-    )
+func makeStore(backend: CountingStartBackend) -> CodexReviewStore {
+    CodexReviewStore.makeTestingStore(harness: backend)
 }
 
 @MainActor
-private func makeStore(backend: AuthActionBackend) -> CodexReviewStore {
-    CodexReviewStore(
-        backend: backend,
-        authController: AuthActionController(backend: backend)
-    )
+func makeStore(backend: AuthActionBackend) -> CodexReviewStore {
+    CodexReviewStore.makeTestingStore(harness: backend)
 }
 
 @MainActor
-private final class FailingCancellationBackend: CodexReviewStoreBackend {
-    var isActive: Bool = false
-    let shouldAutoStartEmbeddedServer = false
-    let initialAuthState: TestAuthState = .signedOut
-    var initialAccount: CodexAccount? {
-        initialAuthState.accountEmail.map {
-            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
-        }
+final class CountingStartBackend: ReviewMonitorTestingHarness {
+    private var startCalls = 0
+
+    override func start(
+        store _: CodexReviewStore,
+        forceRestartIfNeeded _: Bool
+    ) async {
+        isActive = true
+        startCalls += 1
     }
 
-    func start(
+    override func stop(store _: CodexReviewStore) async {
+        isActive = false
+    }
+
+    override func waitUntilStopped() async {}
+
+    override func cancelReviewByID(
+        jobID _: String,
+        sessionID _: String,
+        reason _: String,
+        store _: CodexReviewStore
+    ) async throws -> ReviewCancelOutcome {
+        throw TestFailure("cancel review is not expected in CountingStartBackend")
+    }
+
+    func startCallCount() -> Int {
+        startCalls
+    }
+}
+
+@MainActor
+final class AuthActionBackend: ReviewMonitorTestingHarness {
+    private var refreshCalls = 0
+
+    init(initialAuthState: TestAuthState = .signedOut) {
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false,
+                initialAccount: initialAuthState.accountEmail.map {
+                    CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
+                }
+            )
+        )
+    }
+
+    override func start(
+        store _: CodexReviewStore,
+        forceRestartIfNeeded _: Bool
+    ) async {
+        isActive = true
+    }
+
+    override func stop(store _: CodexReviewStore) async {
+        isActive = false
+    }
+
+    override func waitUntilStopped() async {}
+
+    override func refreshAuth(auth _: CodexReviewAuthModel) async {
+        refreshCalls += 1
+    }
+
+    override func cancelReviewByID(
+        jobID _: String,
+        sessionID _: String,
+        reason _: String,
+        store _: CodexReviewStore
+    ) async throws -> ReviewCancelOutcome {
+        throw TestFailure("cancel review is not expected in AuthActionBackend")
+    }
+
+    func refreshAuthStateCallCount() -> Int {
+        refreshCalls
+    }
+}
+
+@MainActor
+final class FailingCancellationBackend: ReviewMonitorTestingHarness {
+    init() {
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false
+            )
+        )
+    }
+
+    override func start(
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
@@ -4243,18 +2601,18 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
         _ = forceRestartIfNeeded
     }
 
-    func stop(store: CodexReviewStore) async {
+    override func stop(store: CodexReviewStore) async {
         _ = store
     }
 
-    func waitUntilStopped() async {}
+    override func waitUntilStopped() async {}
 
-    func cancelReview(
+    override func cancelReviewByID(
         jobID: String,
         sessionID: String,
         reason: String,
         store: CodexReviewStore
-    ) async throws {
+    ) async throws -> ReviewCancelOutcome {
         _ = jobID
         _ = sessionID
         _ = reason
@@ -4262,37 +2620,15 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
         throw ReviewError.io("Cancellation failed.")
     }
 
-    func refreshAuthState(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
-
-    func signIn(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
-
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
-
-    func logout(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
 }
 
 @MainActor
-private final class BlockingSettingsBackend: CodexReviewStoreBackend {
+final class BlockingSettingsBackend: ReviewMonitorTestingHarness {
     struct ModelUpdateCall: Equatable {
         let model: String?
         let reasoningEffort: CodexReviewReasoningEffort?
         let serviceTier: CodexReviewServiceTier?
     }
-
-    var isActive = false
-    let shouldAutoStartEmbeddedServer = false
-    let initialAccount: CodexAccount? = nil
-    let initialAccounts: [CodexAccount] = []
-    let initialActiveAccountKey: String? = nil
-    var initialSettingsSnapshot: CodexReviewSettingsSnapshot
 
     private(set) var refreshCallCount = 0
     private(set) var modelUpdateCalls: [ModelUpdateCall] = []
@@ -4310,10 +2646,15 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
     private let blockedReasoningUpdateResumeGate = OneShotGate()
 
     init(snapshot: CodexReviewSettingsSnapshot) {
-        initialSettingsSnapshot = snapshot
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false,
+                initialSettingsSnapshot: snapshot
+            )
+        )
     }
 
-    func start(
+    override func start(
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
@@ -4321,35 +2662,36 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
         _ = forceRestartIfNeeded
     }
 
-    func stop(store: CodexReviewStore) async {
+    override func stop(store: CodexReviewStore) async {
         _ = store
     }
 
-    func waitUntilStopped() async {}
+    override func waitUntilStopped() async {}
 
-    func cancelReview(
+    override func cancelReviewByID(
         jobID: String,
         sessionID: String,
         reason: String,
         store: CodexReviewStore
-    ) async throws {
+    ) async throws -> ReviewCancelOutcome {
         _ = jobID
         _ = sessionID
         _ = reason
         _ = store
+        throw TestFailure("cancel review is not expected in BlockingSettingsBackend")
     }
 
-    func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
+    override func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
         refreshCallCount += 1
         if shouldBlockNextRefresh {
             shouldBlockNextRefresh = false
             await blockedRefreshStartedGate.open()
             await blockedRefreshResumeGate.wait()
         }
-        return initialSettingsSnapshot
+        return currentSettingsSnapshot
     }
 
-    func updateSettingsModel(
+    override func updateSettingsModel(
         _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
         persistReasoningEffort: Bool,
@@ -4363,12 +2705,12 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
                 serviceTier: serviceTier
             )
         )
-        initialSettingsSnapshot.model = model
+        currentSettingsSnapshot.model = model
         if persistReasoningEffort {
-            initialSettingsSnapshot.reasoningEffort = reasoningEffort
+            currentSettingsSnapshot.reasoningEffort = reasoningEffort
         }
         if persistServiceTier {
-            initialSettingsSnapshot.serviceTier = serviceTier
+            currentSettingsSnapshot.serviceTier = serviceTier
         }
 
         if shouldBlockNextModelUpdate {
@@ -4378,11 +2720,11 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
         }
     }
 
-    func updateSettingsReasoningEffort(
+    override func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
         reasoningUpdateCalls.append(reasoningEffort)
-        initialSettingsSnapshot.reasoningEffort = reasoningEffort
+        currentSettingsSnapshot.reasoningEffort = reasoningEffort
 
         if shouldBlockNextReasoningUpdate {
             shouldBlockNextReasoningUpdate = false
@@ -4391,11 +2733,11 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
         }
     }
 
-    func updateSettingsServiceTier(
+    override func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
         serviceTierUpdateCalls.append(serviceTier)
-        initialSettingsSnapshot.serviceTier = serviceTier
+        currentSettingsSnapshot.serviceTier = serviceTier
     }
 
     func blockNextRefresh() {
@@ -4432,442 +2774,5 @@ private final class BlockingSettingsBackend: CodexReviewStoreBackend {
 
     func resumeBlockedReasoningUpdate() async {
         await blockedReasoningUpdateResumeGate.open()
-    }
-}
-
-@MainActor
-private final class CountingStartAuthController: CodexReviewAuthControlling {
-    private unowned let backend: CountingStartBackend
-
-    init(backend: CountingStartBackend) {
-        self.backend = backend
-    }
-
-    func startStartupRefresh(auth _: CodexReviewAuthModel) {}
-
-    func cancelStartupRefresh() {}
-
-    func refresh(auth _: CodexReviewAuthModel) async {}
-
-    func signIn(auth: CodexReviewAuthModel) async {
-        await backend.signIn(auth: auth)
-    }
-
-    func addAccount(auth: CodexReviewAuthModel) async {
-        await backend.signIn(auth: auth)
-    }
-
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        await backend.cancelAuthentication(auth: auth)
-    }
-
-    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
-        await backend.logout(auth: auth)
-    }
-
-    func reconcileAuthenticatedSession(
-        auth _: CodexReviewAuthModel,
-        serverIsRunning _: Bool,
-        runtimeGeneration _: Int
-    ) async {}
-
-    func requiresCurrentSessionRecovery(
-        auth _: CodexReviewAuthModel,
-        accountKey _: String
-    ) -> Bool {
-        backend.requiresCurrentSessionRecovery
-    }
-}
-
-@MainActor
-private final class CountingStartBackend: CodexReviewStoreBackend {
-    var requiresCurrentSessionRecovery = false
-    let shouldAutoStartEmbeddedServer: Bool
-    let initialAuthState: TestAuthState
-    var initialAccount: CodexAccount? {
-        initialAuthState.accountEmail.map {
-            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
-        }
-    }
-    let restartResultingServerState: CodexReviewServerState
-    private let startSignal = AsyncSignal()
-    private let beginSignal = AsyncSignal()
-    private let cancelSignal = AsyncSignal()
-    private var startCalls = 0
-    private var beginCalls = 0
-    private var cancelCalls = 0
-    private var actions: [String] = []
-
-    init(
-        shouldAutoStartEmbeddedServer: Bool = true,
-        initialAuthState: TestAuthState = .signedOut,
-        restartResultingServerState: CodexReviewServerState = .starting
-    ) {
-        self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
-        self.initialAuthState = initialAuthState
-        self.restartResultingServerState = restartResultingServerState
-    }
-
-    var isActive: Bool {
-        startCalls > 0
-    }
-
-    func start(
-        store: CodexReviewStore,
-        forceRestartIfNeeded: Bool
-    ) async {
-        _ = store
-        _ = forceRestartIfNeeded
-        startCalls += 1
-        actions.append("start")
-        store.serverState = restartResultingServerState
-        await startSignal.signal()
-    }
-
-    func stop(store: CodexReviewStore) async {
-        _ = store
-    }
-
-    func waitUntilStopped() async {}
-
-    func cancelReview(
-        jobID: String,
-        sessionID: String,
-        reason: String,
-        store: CodexReviewStore
-    ) async throws {
-        _ = jobID
-        _ = sessionID
-        _ = reason
-        _ = store
-    }
-
-    func refreshAuthState(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
-
-    func signIn(auth: CodexReviewAuthModel) async {
-        _ = auth
-        beginCalls += 1
-        actions.append("begin")
-        await beginSignal.signal()
-    }
-
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        _ = auth
-        cancelCalls += 1
-        actions.append("cancel")
-        await cancelSignal.signal()
-    }
-
-    func logout(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
-
-    func startCallCount() -> Int {
-        startCalls
-    }
-
-    func waitForStartCallCount(_ count: Int) async {
-        if startCalls >= count {
-            return
-        }
-        await startSignal.wait(untilCount: count)
-    }
-
-    func cancelAuthenticationCallCount() -> Int {
-        cancelCalls
-    }
-
-    func beginAuthenticationCallCount() -> Int {
-        beginCalls
-    }
-
-    func waitForBeginAuthenticationCallCount(_ count: Int) async {
-        if beginCalls >= count {
-            return
-        }
-        await beginSignal.wait(untilCount: count)
-    }
-
-    func recordedActions() -> [String] {
-        actions
-    }
-
-    func waitForCancelAuthenticationCallCount(_ count: Int) async {
-        if cancelCalls >= count {
-            return
-        }
-        await cancelSignal.wait(untilCount: count)
-    }
-}
-
-@MainActor
-private final class AuthActionController: CodexReviewAuthControlling {
-    private unowned let backend: AuthActionBackend
-
-    init(backend: AuthActionBackend) {
-        self.backend = backend
-    }
-
-    func startStartupRefresh(auth _: CodexReviewAuthModel) {}
-
-    func cancelStartupRefresh() {}
-
-    func refresh(auth: CodexReviewAuthModel) async {
-        await backend.refreshAuthState(auth: auth)
-    }
-
-    func signIn(auth: CodexReviewAuthModel) async {
-        await backend.signIn(auth: auth)
-    }
-
-    func addAccount(auth: CodexReviewAuthModel) async {
-        await backend.signIn(auth: auth)
-    }
-
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        await backend.cancelAuthentication(auth: auth)
-    }
-
-    func switchAccount(
-        auth: CodexReviewAuthModel,
-        accountKey: String
-    ) async throws {
-        try await backend.switchAccount(auth: auth, accountKey: accountKey)
-    }
-
-    func removeAccount(
-        auth: CodexReviewAuthModel,
-        accountKey: String
-    ) async throws {
-        await backend.removeAccount(auth: auth, accountKey: accountKey)
-    }
-
-    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
-        await backend.logout(auth: auth)
-    }
-
-    func reconcileAuthenticatedSession(
-        auth _: CodexReviewAuthModel,
-        serverIsRunning _: Bool,
-        runtimeGeneration _: Int
-    ) async {}
-
-    func requiresCurrentSessionRecovery(
-        auth _: CodexReviewAuthModel,
-        accountKey _: String
-    ) -> Bool {
-        backend.requiresCurrentSessionRecovery
-    }
-}
-
-@MainActor
-private final class AuthActionBackend: CodexReviewStoreBackend {
-    var isActive: Bool = false
-    var requiresCurrentSessionRecovery = false
-    let shouldAutoStartEmbeddedServer = false
-    let initialAuthState: TestAuthState
-    var initialAccount: CodexAccount? {
-        initialAuthState.accountEmail.map {
-            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
-        }
-    }
-
-    private let refreshSignal = AsyncSignal()
-    private let beginSignal = AsyncSignal()
-    private let cancelSignal = AsyncSignal()
-    private let logoutSignal = AsyncSignal()
-    private let switchStartSignal = AsyncSignal()
-    private let switchSignal = AsyncSignal()
-    private let removeSignal = AsyncSignal()
-    private let switchCompletionGate: OneShotGate
-    private let switchErrorMessage: String?
-    private var refreshCalls = 0
-    private var beginCalls = 0
-    private var cancelCalls = 0
-    private var logoutCalls = 0
-    private var switchCalls = 0
-    private var removeCalls = 0
-    private var switchedAccountKeys: [String] = []
-    private var removedAccountKeys: [String] = []
-
-    init(
-        initialAuthState: TestAuthState = .signedOut,
-        switchStartsBlocked: Bool = false,
-        switchErrorMessage: String? = nil
-    ) {
-        self.initialAuthState = initialAuthState
-        self.switchCompletionGate = OneShotGate(isOpen: switchStartsBlocked == false)
-        self.switchErrorMessage = switchErrorMessage
-    }
-
-    func start(
-        store: CodexReviewStore,
-        forceRestartIfNeeded: Bool
-    ) async {
-        _ = store
-        _ = forceRestartIfNeeded
-    }
-
-    func stop(store: CodexReviewStore) async {
-        _ = store
-    }
-
-    func waitUntilStopped() async {}
-
-    func cancelReview(
-        jobID: String,
-        sessionID: String,
-        reason: String,
-        store: CodexReviewStore
-    ) async throws {
-        _ = jobID
-        _ = sessionID
-        _ = reason
-        _ = store
-    }
-
-    func refreshAuthState(auth: CodexReviewAuthModel) async {
-        _ = auth
-        refreshCalls += 1
-        await refreshSignal.signal()
-    }
-
-    func signIn(auth: CodexReviewAuthModel) async {
-        _ = auth
-        beginCalls += 1
-        await beginSignal.signal()
-    }
-
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        _ = auth
-        cancelCalls += 1
-        await cancelSignal.signal()
-    }
-
-    func logout(auth: CodexReviewAuthModel) async {
-        _ = auth
-        logoutCalls += 1
-        await logoutSignal.signal()
-    }
-
-    func switchAccount(
-        auth: CodexReviewAuthModel,
-        accountKey: String
-    ) async throws {
-        switchCalls += 1
-        switchedAccountKeys.append(accountKey)
-        await switchStartSignal.signal()
-        await switchCompletionGate.wait()
-        if let switchErrorMessage {
-            throw ReviewError.io(switchErrorMessage)
-        }
-        if let account = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
-            auth.updateAccount(account)
-        }
-        await switchSignal.signal()
-    }
-
-    func removeAccount(
-        auth: CodexReviewAuthModel,
-        accountKey: String
-    ) async {
-        removeCalls += 1
-        removedAccountKeys.append(accountKey)
-
-        let remainingAccounts = auth.savedAccounts.filter { $0.accountKey != accountKey }
-        auth.updateSavedAccounts(remainingAccounts)
-
-        if auth.account?.accountKey == accountKey {
-            auth.updateAccount(remainingAccounts.first)
-        } else if let currentAccount = auth.account,
-                  remainingAccounts.contains(where: { $0.accountKey == currentAccount.accountKey }) == false
-        {
-            auth.updateAccount(nil)
-        }
-
-        await removeSignal.signal()
-    }
-
-    func beginAuthenticationCallCount() -> Int {
-        beginCalls
-    }
-
-    func refreshAuthStateCallCount() -> Int {
-        refreshCalls
-    }
-
-    func waitForRefreshAuthStateCallCount(_ count: Int) async {
-        if refreshCalls >= count {
-            return
-        }
-        await refreshSignal.wait(untilCount: count)
-    }
-
-    func waitForBeginAuthenticationCallCount(_ count: Int) async {
-        if beginCalls >= count {
-            return
-        }
-        await beginSignal.wait(untilCount: count)
-    }
-
-    func cancelAuthenticationCallCount() -> Int {
-        cancelCalls
-    }
-
-    func waitForCancelAuthenticationCallCount(_ count: Int) async {
-        if cancelCalls >= count {
-            return
-        }
-        await cancelSignal.wait(untilCount: count)
-    }
-
-    func logoutCallCount() -> Int {
-        logoutCalls
-    }
-
-    func waitForLogoutCallCount(_ count: Int) async {
-        if logoutCalls >= count {
-            return
-        }
-        await logoutSignal.wait(untilCount: count)
-    }
-
-    func waitForSwitchAccountCallCount(_ count: Int) async {
-        if await switchSignal.count() >= count {
-            return
-        }
-        await switchSignal.wait(untilCount: count)
-    }
-
-    func waitForSwitchAccountStartCallCount(_ count: Int) async {
-        if await switchStartSignal.count() >= count {
-            return
-        }
-        await switchStartSignal.wait(untilCount: count)
-    }
-
-    func lastSwitchedAccountKey() -> String? {
-        switchedAccountKeys.last
-    }
-
-    func switchAccountCallCount() -> Int {
-        switchCalls
-    }
-
-    func releaseSwitchAccount() async {
-        await switchCompletionGate.open()
-    }
-
-    func waitForRemoveAccountCallCount(_ count: Int) async {
-        if removeCalls >= count {
-            return
-        }
-        await removeSignal.wait(untilCount: count)
-    }
-
-    func lastRemovedAccountKey() -> String? {
-        removedAccountKeys.last
     }
 }

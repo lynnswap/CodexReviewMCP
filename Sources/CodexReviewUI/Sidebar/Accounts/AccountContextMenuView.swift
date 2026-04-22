@@ -1,5 +1,6 @@
-import CodexReviewModel
+import ReviewApp
 import SwiftUI
+import ReviewDomain
 
 struct AccountContextMenuView: View {
     let store: CodexReviewStore
@@ -14,7 +15,7 @@ struct AccountContextMenuView: View {
     }
 
     private var isSwitchActionDisabled: Bool {
-        auth.switchActionIsDisabled(for: account)
+        store.switchActionIsDisabled(for: account)
     }
 
     var sectionTitle: String {
@@ -29,21 +30,21 @@ struct AccountContextMenuView: View {
         "rectangle.portrait.and.arrow.right"
     }
 
-    func requestDestructiveAccountAction() {
+    private func requestDestructiveAccountAction() {
         if isCurrentAccount {
-            auth.requestSignOutActiveAccount(requiresConfirmation: store.hasRunningJobs)
+            store.requestSignOutActiveAccount(requiresConfirmation: store.hasRunningJobs)
         } else {
-            auth.requestRemoveAccount(account, requiresConfirmation: false)
+            store.requestRemoveAccount(account, requiresConfirmation: false)
         }
     }
 
     var body: some View {
         Section(sectionTitle){
             Button("Switch", systemImage: "arrow.triangle.swap") {
-                auth.requestSwitchAccount(
+                store.requestSwitchAccount(
                     account,
                     requiresConfirmation: store.hasRunningJobs
-                        && auth.switchActionRequiresRunningJobsConfirmation(for: account)
+                        && store.switchActionRequiresRunningJobsConfirmation(for: account)
                 )
             }
             .disabled(isSwitchActionDisabled)
@@ -64,19 +65,22 @@ struct AccountContextMenuView: View {
 
     private func refreshRateLimits() {
         Task {
-            await auth.refreshSavedAccountRateLimits(accountKey: account.accountKey)
+            await store.refreshSavedAccountRateLimits(accountKey: account.accountKey)
         }
     }
 }
 
 #if DEBUG
 #Preview {
-    let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
     let currentAccount = CodexAccount(email: "current@example.com")
     let otherAccount = CodexAccount(email: "other@example.com")
-    store.auth.updateSavedAccounts([currentAccount, otherAccount])
-    store.auth.updateAccount(currentAccount)
-    return AccountContextMenuView(
+    let store: CodexReviewStore = {
+        let store = CodexReviewStore.makePreviewStore()
+        store.auth.updateSavedAccounts([currentAccount, otherAccount])
+        store.auth.updateAccount(currentAccount)
+        return store
+    }()
+    AccountContextMenuView(
         store: store,
         account: otherAccount
     )

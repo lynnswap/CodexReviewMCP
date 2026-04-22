@@ -1,7 +1,7 @@
 import AppKit
-import CodexReviewModel
-import Observation
+import ReviewApp
 import SwiftUI
+import ReviewDomain
 
 private struct ReviewMonitorAccountsListView: View {
     let store: CodexReviewStore
@@ -40,10 +40,10 @@ private struct ReviewMonitorAccountsListView: View {
             isPresented: $auth.isPresentingPendingAccountActionConfirmation
         ) {
             Button(auth.pendingAccountActionConfirmationButtonTitle) {
-                auth.confirmPendingAccountAction()
+                store.confirmPendingAccountAction()
             }
             Button("Cancel", role: .cancel) {
-                auth.cancelPendingAccountAction()
+                store.cancelPendingAccountAction()
             }
         } message: {
             Text(auth.pendingAccountActionConfirmationMessage)
@@ -53,7 +53,7 @@ private struct ReviewMonitorAccountsListView: View {
             isPresented: $auth.isPresentingAccountActionAlert
         ) {
             Button("OK", role: .cancel) {
-                auth.dismissAccountActionAlert()
+                store.dismissAccountActionAlert()
             }
         } message: {
             Text(auth.accountActionAlertMessage)
@@ -85,7 +85,7 @@ private struct ReviewMonitorAccountsListView: View {
         let accountKey = accounts[sourceIndex].accountKey
         Task { @MainActor in
             do {
-                try await store.auth.reorderSavedAccount(accountKey: accountKey, toIndex: destinationIndex)
+                try await store.reorderSavedAccount(accountKey: accountKey, toIndex: destinationIndex)
             } catch {
                 store.auth.presentAccountActionAlert(
                     title: "Failed to Reorder Accounts",
@@ -147,13 +147,13 @@ private struct ReviewMonitorAccountsListView: View {
         _ account: CodexAccount,
         auth: CodexReviewAuthModel
     ) {
-        guard auth.switchActionIsDisabled(for: account) == false else {
+        guard store.switchActionIsDisabled(for: account) == false else {
             return
         }
-        auth.requestSwitchAccount(
+        store.requestSwitchAccount(
             account,
             requiresConfirmation: store.hasRunningJobs
-                && auth.switchActionRequiresRunningJobsConfirmation(for: account)
+                && store.switchActionRequiresRunningJobsConfirmation(for: account)
         )
     }
 }
@@ -218,7 +218,6 @@ private struct RowView: View{
 @MainActor
 final class ReviewMonitorAccountsViewController: NSViewController {
     private let store: CodexReviewStore
-    private var hostingView: NSHostingView<ReviewMonitorAccountsListView>?
 
     init(store: CodexReviewStore) {
         self.store = store
@@ -244,7 +243,6 @@ final class ReviewMonitorAccountsViewController: NSViewController {
             rootView: ReviewMonitorAccountsListView(store: store)
         )
         hostingView.translatesAutoresizingMaskIntoConstraints = false
-        self.hostingView = hostingView
 
         view.addSubview(hostingView)
         NSLayoutConstraint.activate([
@@ -257,27 +255,6 @@ final class ReviewMonitorAccountsViewController: NSViewController {
 }
 
 #if DEBUG
-private extension ReviewMonitorAccountsListView {
-    var showsAuthenticationProgressRowForTesting: Bool {
-        false
-    }
-
-    func tapAccountRowForTesting(_ account: CodexAccount) {
-        requestAccountRowSwitch(account, auth: store.auth)
-    }
-}
-
-@MainActor
-extension ReviewMonitorAccountsViewController {
-    var showsAuthenticationProgressRowForTesting: Bool {
-        hostingView?.rootView.showsAuthenticationProgressRowForTesting ?? false
-    }
-
-    func tapAccountRowForTesting(_ account: CodexAccount) {
-        hostingView?.rootView.tapAccountRowForTesting(account)
-    }
-}
-
 #Preview {
     ReviewMonitorAccountsViewController(
         store: makeReviewMonitorAccountsPreviewStore()

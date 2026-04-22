@@ -1,7 +1,8 @@
 import AppKit
 import ObservationBridge
-import CodexReviewModel
+import ReviewApp
 import ReviewRuntime
+import ReviewDomain
 
 @MainActor
 final class ReviewMonitorTransportViewController: NSViewController {

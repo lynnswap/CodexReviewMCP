@@ -1,6 +1,6 @@
 import Foundation
-package import ReviewCore
-import ReviewJobs
+package import ReviewInfra
+import ReviewDomain
 
 package enum MockAppServerMode: Sendable {
     case success(
@@ -887,7 +887,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         _ = method
     }
 
-    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    package func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let disconnected = self.disconnected
         let closed = self.closed
         var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation!
@@ -896,11 +896,11 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         }
         if let disconnected {
             continuation.finish(throwing: disconnected)
-            return .init(stream: stream, cancel: {})
+            return stream
         }
         if closed {
             continuation.finish()
-            return .init(stream: stream, cancel: {})
+            return stream
         }
 
         let subscriberID = UUID()
@@ -910,12 +910,7 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
                 await self.removeNotificationSubscriber(id: subscriberID)
             }
         }
-        return .init(
-            stream: stream,
-            cancel: { [weak self] in
-                await self?.cancelNotificationSubscriber(id: subscriberID)
-            }
-        )
+        return stream
     }
 
     package func isClosed() async -> Bool {
@@ -1096,13 +1091,6 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
     private func removeNotificationSubscriber(id: UUID) {
         notificationSubscribers[id] = nil
     }
-
-    private func cancelNotificationSubscriber(id: UUID) {
-        guard let continuation = notificationSubscribers.removeValue(forKey: id) else {
-            return
-        }
-        continuation.finish()
-    }
 }
 
 package actor MockAppServerManager: AppServerManaging {
@@ -1165,13 +1153,13 @@ package actor MockAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    package func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    package func diagnosticLineStream() async -> AsyncStream<String> {
         var continuation: AsyncStream<String>.Continuation!
         let stream = AsyncStream<String>(bufferingPolicy: .unbounded) {
             continuation = $0
         }
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     package func diagnosticsTail() async -> String {
@@ -1264,10 +1252,10 @@ package actor StubReviewAuthSession: ReviewAuthSession {
         accountResponse = .init(account: nil, requiresOpenAIAuth: true)
     }
 
-    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    package func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     package func close() async {}

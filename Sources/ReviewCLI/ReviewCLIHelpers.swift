@@ -2,9 +2,8 @@ import Darwin
 import Dispatch
 import Foundation
 import Logging
-import ReviewCore
-import ReviewHTTPServer
-import ReviewJobs
+import ReviewDomain
+import ReviewInfra
 
 struct ServerOptions {
     var host = "localhost"

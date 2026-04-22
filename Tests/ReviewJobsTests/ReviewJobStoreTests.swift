@@ -1,10 +1,9 @@
 import Foundation
 import Testing
 import ReviewTestSupport
-@testable import CodexReviewMCP
-@testable import CodexReviewModel
-@testable import ReviewCore
-@testable import ReviewJobs
+@testable import ReviewInfra
+@testable import ReviewApp
+@testable import ReviewDomain
 
 @Suite(.serialized)
 @MainActor

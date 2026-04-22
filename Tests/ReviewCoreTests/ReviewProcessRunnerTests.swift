@@ -1,8 +1,9 @@
 import Foundation
 import Testing
 import ReviewTestSupport
-@testable import ReviewCore
-@testable import ReviewJobs
+@testable import ReviewInfra
+
+@testable import ReviewDomain
 
 @Suite(.serialized)
 struct AppServerReviewRunnerTests {
@@ -22,7 +23,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { event in
                 await recorder.record(event)
@@ -60,7 +61,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -83,7 +84,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -109,7 +110,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await StateChangeSignal().subscription(),
+                stateChangeStream: await StateChangeSignal().subscription(),
                 onStart: { _ in },
                 onEvent: { _ in },
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -134,7 +135,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await stateChanges.subscription(),
+                stateChangeStream: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -173,7 +174,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await stateChanges.subscription(),
+                stateChangeStream: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -215,7 +216,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await StateChangeSignal().subscription(),
+                stateChangeStream: await StateChangeSignal().subscription(),
                 onStart: { _ in },
                 onEvent: { _ in },
                 requestedTerminationReason: {
@@ -249,7 +250,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await stateChanges.subscription(),
+                stateChangeStream: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -288,7 +289,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await stateChanges.subscription(),
+                stateChangeStream: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -324,7 +325,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: 0,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? },
@@ -355,7 +356,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil,
-                stateChangeSubscription: await stateChanges.subscription(),
+                stateChangeStream: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -393,7 +394,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await StateChangeSignal().subscription(),
+                stateChangeStream: await StateChangeSignal().subscription(),
                 onStart: { _ in },
                 onEvent: { _ in },
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -415,7 +416,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await StateChangeSignal().subscription(),
+                stateChangeStream: await StateChangeSignal().subscription(),
                 onStart: { _ in },
                 onEvent: { _ in },
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -440,7 +441,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { event in
                 await recorder.record(event)
@@ -466,7 +467,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -490,7 +491,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -515,7 +516,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -541,7 +542,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -571,7 +572,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await StateChangeSignal().subscription(),
+                stateChangeStream: await StateChangeSignal().subscription(),
                 onStart: { _ in },
                 onEvent: { _ in },
                 requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -608,7 +609,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -631,7 +632,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -656,7 +657,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -683,7 +684,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -708,7 +709,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -731,7 +732,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -754,7 +755,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -780,7 +781,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -806,7 +807,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -832,7 +833,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: nil as Int?,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -862,7 +863,7 @@ struct AppServerReviewRunnerTests {
                 session: session,
                 request: .init(cwd: cwd.path, target: .uncommittedChanges),
                 defaultTimeoutSeconds: nil as Int?,
-                stateChangeSubscription: await stateChanges.subscription(),
+                stateChangeStream: await stateChanges.subscription(),
                 onStart: { _ in },
                 onEvent: { event in
                     await reviewStarted.record(event)
@@ -898,7 +899,7 @@ struct AppServerReviewRunnerTests {
             session: session,
             request: .init(cwd: cwd.path, target: .uncommittedChanges),
             defaultTimeoutSeconds: 0,
-            stateChangeSubscription: await StateChangeSignal().subscription(),
+            stateChangeStream: await StateChangeSignal().subscription(),
             onStart: { _ in },
             onEvent: { _ in },
             requestedTerminationReason: { nil as ReviewTerminationReason? }
@@ -981,7 +982,7 @@ private actor CancellationFlag {
 private actor StateChangeSignal {
     private var continuation: AsyncStream<Void>.Continuation?
 
-    func subscription() -> AsyncStreamSubscription<Void> {
+    func subscription() -> AsyncStream<Void> {
         var continuation: AsyncStream<Void>.Continuation!
         let stream = AsyncStream<Void>(bufferingPolicy: .unbounded) {
             continuation = $0
@@ -992,12 +993,7 @@ private actor StateChangeSignal {
                 await self.finish()
             }
         }
-        return .init(
-            stream: stream,
-            cancel: { [weak self] in
-                await self?.finish()
-            }
-        )
+        return stream
     }
 
     func yield() {
@@ -1038,7 +1034,7 @@ private actor NotificationHookAppServerSessionTransport: AppServerSessionTranspo
         try await base.notify(method: method, params: params)
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         await onNotificationStream()
         return await base.notificationStream()
     }

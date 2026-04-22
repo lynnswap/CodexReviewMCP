@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import ReviewJobs
+import ReviewDomain
 
 package enum ReviewMonitorLogUpdate: Equatable {
     case append(String)
