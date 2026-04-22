@@ -416,14 +416,14 @@ struct CodexReviewMCPLifecycleTests {
 
     @Test func cancelAllRunningJobsThrowsWhenAnyReviewCancellationFails() async throws {
         let store = CodexReviewStore.makeTestingStore(
-            runtime: CancellationFailureStoreBackend(
+            harness: CancellationFailureStoreBackend(
                 failingSessionIDs: ["session-a"],
                 error: NSError(
                     domain: "CodexReviewMCPTests.CancellationFailureStoreBackend",
                     code: 1,
                     userInfo: [NSLocalizedDescriptionKey: "Cancellation failed."]
                 )
-            ).runtime
+            )
         )
         let failedJob = CodexReviewJob.makeForTesting(
             id: "job-a",

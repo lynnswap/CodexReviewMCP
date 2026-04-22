@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import ReviewApp
 import ObservationBridge
 import ReviewRuntime
@@ -6,6 +7,7 @@ import SwiftUI
 import ReviewDomain
 
 @MainActor
+@Observable
 final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {
     enum PresentationForTesting: Equatable {
         case unavailable
@@ -81,7 +83,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         configureOutlineView()
         bindObservation()
         reloadOutline(workspaces: store.workspaces)
-        updatePresentation()
+        applySidebarPresentation(sidebarPresentation)
     }
 
     override func viewDidLayout() {
@@ -171,18 +173,8 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     private func bindObservation() {
         storeObservationHandles.removeAll()
         rebindWorkspaceObservations(workspaces: store.workspaces)
-        store.observe(\.serverState) { [weak self] _ in
-            guard let self else {
-                return
-            }
-            self.updatePresentation()
-        }
-        .store(in: &storeObservationHandles)
-        uiState.observe(\.sidebarSelection) { [weak self] _ in
-            guard let self else {
-                return
-            }
-            self.updatePresentation()
+        observe(\.sidebarPresentation) { [weak self] presentation in
+            self?.applySidebarPresentation(presentation)
         }
         .store(in: &storeObservationHandles)
         store.observe([\.workspaces]) { [weak self] in
@@ -221,7 +213,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         applyWorkspaceExpansionState(for: workspaces)
         reconcileSelectionAfterReload()
         isReconcilingSelection = false
-        updatePresentation()
     }
 
     private func applyWorkspaceExpansionState(for workspaces: [CodexReviewWorkspace]) {
@@ -250,11 +241,20 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         applyWorkspaceExpansionState(for: [workspace])
         reconcileSelectionAfterReload()
         isReconcilingSelection = false
-        updatePresentation()
     }
 
-    private func updatePresentation() {
-        switch presentationForCurrentState {
+    private var sidebarPresentation: PresentationForTesting {
+        if uiState.sidebarSelection == .account {
+            return .accountList
+        }
+        if case .failed = store.serverState {
+            return .unavailable
+        }
+        return totalJobCount(in: store.workspaces) > 0 ? .jobList : .empty
+    }
+
+    private func applySidebarPresentation(_ presentation: PresentationForTesting) {
+        switch presentation {
         case .unavailable:
             unavailableView.isHidden = false
             scrollView.isHidden = true
@@ -276,16 +276,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             emptyStateView.isHidden = true
             accountsViewController.view.isHidden = false
         }
-    }
-
-    private var presentationForCurrentState: PresentationForTesting {
-        if uiState.sidebarSelection == .account {
-            return .accountList
-        }
-        if case .failed = store.serverState {
-            return .unavailable
-        }
-        return totalJobCount(in: store.workspaces) > 0 ? .jobList : .empty
     }
 
     private func reconcileSelectionAfterReload() {
@@ -941,7 +931,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 @MainActor
 extension ReviewMonitorSidebarViewController {
     var presentationForTesting: PresentationForTesting {
-        presentationForCurrentState
+        sidebarPresentation
     }
 
     var accountsViewControllerForTesting: ReviewMonitorAccountsViewController {

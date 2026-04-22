@@ -1,12 +1,19 @@
 import AppKit
 import ReviewApp
 import Foundation
+import Observation
 import ObservationBridge
 import ReviewRuntime
 import ReviewDomain
 
 @MainActor
+@Observable
 final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDelegate {
+    private struct AddAccountToolbarPresentation: Equatable {
+        var isHidden: Bool
+        var menuTitle: String
+    }
+
     private static let autosaveName = NSSplitView.AutosaveName("CodexReviewMCP.ReviewMonitorSplitView")
     private static let addAccountToolbarItemIdentifier = NSToolbarItem.Identifier(
         "CodexReviewMCP.ReviewMonitor.Toolbar.AddAccount"
@@ -23,6 +30,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var observationHandles: Set<ObservationHandle> = []
     private var sidebarCollapseObservation: NSKeyValueObservation?
     private weak var attachedWindow: NSWindow?
+    private var isSidebarCollapsed = false
 
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState = ReviewMonitorUIState()) {
         self.store = store
@@ -70,9 +78,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         self.transportViewController = transportViewController
         self.sidebarItem = sidebarItem
         self.contentItem = contentItem
-        sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, _ in
+        isSidebarCollapsed = sidebarItem.isCollapsed
+        sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] observedItem, _ in
+            let isCollapsed = observedItem.isCollapsed
             Task { @MainActor [weak self] in
-                self?.updateAddAccountToolbarItemVisibility()
+                self?.isSidebarCollapsed = isCollapsed
             }
         }
 
@@ -127,13 +137,8 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         }
         .store(in: &observationHandles)
 
-        uiState.observe(\.sidebarSelection) { [weak self] _ in
-            self?.updateAddAccountToolbarItemVisibility()
-        }
-        .store(in: &observationHandles)
-
-        store.auth.observe(\.phase) { [weak self] _ in
-            self?.updateAddAccountToolbarItemVisibility()
+        observe(\.addAccountToolbarPresentation) { [weak self] presentation in
+            self?.applyAddAccountToolbarPresentation(presentation)
         }
         .store(in: &observationHandles)
     }
@@ -157,7 +162,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             window.toolbar = toolbar
         }
 
-        updateAddAccountToolbarItemVisibility()
+        applyAddAccountToolbarPresentation(addAccountToolbarPresentation)
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -194,9 +199,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         case Self.addAccountToolbarItemIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = resolvedAddAccountToolbarView()
-            item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem()
+            item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem(
+                title: addAccountToolbarPresentation.menuTitle
+            )
             item.visibilityPriority = .high
-            item.isHidden = shouldHideAddAccountToolbarItem
+            item.isHidden = addAccountToolbarPresentation.isHidden
             return item
 
         case .sidebarTrackingSeparator:
@@ -239,22 +246,14 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             return addAccountToolbarView
         }
 
-        let view = AddAccountToolbarItemView(
-            store: store,
-            onAddAccount: { [weak self] in
-                self?.performAddAccountToolbarItemAction()
-            },
-            onCancel: { [weak self] in
-                self?.cancelAddAccountToolbarItemAction()
-            }
-        )
+        let view = AddAccountToolbarItemView(store: store)
         addAccountToolbarView = view
         return view
     }
 
-    private func resolvedAddAccountToolbarMenuItem() -> NSMenuItem {
+    private func resolvedAddAccountToolbarMenuItem(title: String) -> NSMenuItem {
         let item = NSMenuItem(
-            title: store.auth.isAuthenticating ? "Cancel Sign-In" : "Add Account",
+            title: title,
             action: #selector(performAddAccountToolbarOverflowAction(_:)),
             keyEquivalent: ""
         )
@@ -262,7 +261,18 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         return item
     }
 
-    private func updateAddAccountToolbarItemVisibility() {
+    private var addAccountToolbarPresentation: AddAccountToolbarPresentation {
+        let isAuthenticating = store.auth.isAuthenticating
+        return .init(
+            isHidden: isAuthenticating == false
+                && (uiState.sidebarSelection != .account || isSidebarCollapsed),
+            menuTitle: isAuthenticating ? "Cancel Sign-In" : "Add Account"
+        )
+    }
+
+    private func applyAddAccountToolbarPresentation(
+        _ presentation: AddAccountToolbarPresentation
+    ) {
         guard let toolbar else {
             return
         }
@@ -270,15 +280,8 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         guard let item = toolbar.items.first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier }) else {
             return
         }
-        item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem()
-        item.isHidden = shouldHideAddAccountToolbarItem
-    }
-
-    private var shouldHideAddAccountToolbarItem: Bool {
-        if store.auth.isAuthenticating {
-            return false
-        }
-        return uiState.sidebarSelection != .account || sidebarItem?.isCollapsed != false
+        item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem(title: presentation.menuTitle)
+        item.isHidden = presentation.isHidden
     }
 }
 
@@ -298,8 +301,6 @@ private final class AddAccountToolbarItemView: NSView {
 
     private let store: CodexReviewStore
     private let auth: CodexReviewAuthModel
-    private let onAddAccount: @MainActor () -> Void
-    private let onCancel: @MainActor () -> Void
     private var observationHandles: Set<ObservationHandle> = []
     private var displayedMode: Mode = .add
     private var pendingMode: Mode?
@@ -317,15 +318,9 @@ private final class AddAccountToolbarItemView: NSView {
         auth.isAuthenticating ? .progress : .add
     }
 
-    init(
-        store: CodexReviewStore,
-        onAddAccount: @escaping @MainActor () -> Void,
-        onCancel: @escaping @MainActor () -> Void
-    ) {
+    init(store: CodexReviewStore) {
         self.store = store
         auth = store.auth
-        self.onAddAccount = onAddAccount
-        self.onCancel = onCancel
         super.init(frame: .zero)
         configureHierarchy()
         startObservingAuth()
@@ -481,12 +476,17 @@ private final class AddAccountToolbarItemView: NSView {
 
     @objc
     private func handleAddAccount() {
-        onAddAccount()
+        ReviewMonitorAddAccountAction.perform(store: store)
     }
 
     @objc
     private func handleCancel() {
-        onCancel()
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await self.store.cancelAuthentication()
+        }
     }
 
     func performCancelForTesting() {

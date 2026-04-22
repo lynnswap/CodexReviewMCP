@@ -3,7 +3,7 @@ import ReviewDomain
 import ReviewInfra
 
 @MainActor
-struct CodexAuthRuntimeState {
+package struct CodexAuthRuntimeState {
     var serverIsRunning: Bool
     var runtimeGeneration: Int
 
@@ -21,7 +21,42 @@ package enum CodexAuthRuntimeEffect {
 }
 
 @MainActor
-package final class CodexAuthController {
+package class ReviewMonitorAuthRuntimeDriver {
+    package init() {}
+
+    package func runtimeState() -> CodexAuthRuntimeState {
+        .stopped
+    }
+
+    package func recycleServerIfRunning() async {}
+
+    package func resolveAddAccountRuntimeEffect(
+        accountKey: String,
+        runtimeGeneration: Int
+    ) -> CodexAuthRuntimeEffect {
+        .recycleNow(accountKey: accountKey, runtimeGeneration: runtimeGeneration)
+    }
+
+    package func applyAddAccountRuntimeEffect(
+        _ effect: CodexAuthRuntimeEffect,
+        auth: CodexReviewAuthModel
+    ) async {
+        _ = effect
+        _ = auth
+    }
+
+    package func cancelRunningJobs(reason: String) async throws {
+        _ = reason
+    }
+}
+
+@MainActor
+package final class ReviewMonitorAuthOrchestrator {
+    package enum RuntimeBridge {
+        case live(ReviewMonitorServerRuntime)
+        case testing(ReviewMonitorAuthRuntimeDriver)
+    }
+
     private enum AuthenticationIntent {
         case signIn
         case addAccount
@@ -77,13 +112,9 @@ package final class CodexAuthController {
     private let sharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession
     private let loginAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession
     private let probeAppServerManagerFactory: @Sendable ([String: String]) -> any AppServerManaging
-    private let accountSessionController: CodexAccountSessionController
-    private let inactiveAccountRateLimitController: InactiveSavedAccountRateLimitController
-    private let runtimeState: @MainActor @Sendable () -> CodexAuthRuntimeState
-    private let recycleServerIfRunning: @MainActor @Sendable () async -> Void
-    private let resolveAddAccountRuntimeEffect: @MainActor @Sendable (String, Int) -> CodexAuthRuntimeEffect
-    private let applyAddAccountRuntimeEffect: @MainActor @Sendable (CodexAuthRuntimeEffect, CodexReviewAuthModel) async -> Void
-    private let cancelRunningJobs: @MainActor @Sendable (String) async throws -> Void
+    private let accountSessionController: ActiveAccountRateLimitObserver
+    private let inactiveAccountRateLimitController: InactiveSavedAccountRateLimitScheduler
+    private let runtimeBridge: RuntimeBridge
     private var refreshTask: Task<Void, Never>?
     private var refreshTaskID: UUID?
     private var authenticationCancellationRestoreState: AuthPresentationSnapshot?
@@ -99,13 +130,7 @@ package final class CodexAuthController {
         sharedAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
         loginAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
         probeAppServerManagerFactory: (@Sendable ([String: String]) -> any AppServerManaging)? = nil,
-        runtimeState: @escaping @MainActor @Sendable () -> CodexAuthRuntimeState,
-        recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void,
-        resolveAddAccountRuntimeEffect: @escaping @MainActor @Sendable (String, Int) -> CodexAuthRuntimeEffect = { accountKey, runtimeGeneration in
-            .recycleNow(accountKey: accountKey, runtimeGeneration: runtimeGeneration)
-        },
-        applyAddAccountRuntimeEffect: @escaping @MainActor @Sendable (CodexAuthRuntimeEffect, CodexReviewAuthModel) async -> Void = { _, _ in },
-        cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in },
+        runtimeBridge: RuntimeBridge,
         rateLimitObservationClock: any ReviewClock = ContinuousClock(),
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
         inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60)
@@ -123,21 +148,74 @@ package final class CodexAuthController {
                 )
             )
         }
-        accountSessionController = CodexAccountSessionController(
+        accountSessionController = ActiveAccountRateLimitObserver(
             appServerManager: appServerManager,
             accountRegistryStore: accountRegistryStore,
             clock: rateLimitObservationClock,
             staleRefreshInterval: rateLimitStaleRefreshInterval
         )
-        inactiveAccountRateLimitController = InactiveSavedAccountRateLimitController(
+        inactiveAccountRateLimitController = InactiveSavedAccountRateLimitScheduler(
             clock: rateLimitObservationClock,
             refreshInterval: inactiveRateLimitRefreshInterval
         )
-        self.runtimeState = runtimeState
-        self.recycleServerIfRunning = recycleServerIfRunning
-        self.resolveAddAccountRuntimeEffect = resolveAddAccountRuntimeEffect
-        self.applyAddAccountRuntimeEffect = applyAddAccountRuntimeEffect
-        self.cancelRunningJobs = cancelRunningJobs
+        self.runtimeBridge = runtimeBridge
+    }
+
+    private func runtimeState() -> CodexAuthRuntimeState {
+        switch runtimeBridge {
+        case .live(let serverRuntime):
+            serverRuntime.authRuntimeState
+        case .testing(let runtimeDriver):
+            runtimeDriver.runtimeState()
+        }
+    }
+
+    private func recycleServerIfRunning() async {
+        switch runtimeBridge {
+        case .live(let serverRuntime):
+            await serverRuntime.recycleSharedAppServerAfterAuthChange()
+        case .testing(let runtimeDriver):
+            await runtimeDriver.recycleServerIfRunning()
+        }
+    }
+
+    private func resolveAddAccountRuntimeEffect(
+        accountKey: String,
+        runtimeGeneration: Int
+    ) -> CodexAuthRuntimeEffect {
+        switch runtimeBridge {
+        case .live(let serverRuntime):
+            serverRuntime.resolveAddAccountRuntimeEffect(
+                accountKey: accountKey,
+                runtimeGeneration: runtimeGeneration
+            )
+        case .testing(let runtimeDriver):
+            runtimeDriver.resolveAddAccountRuntimeEffect(
+                accountKey: accountKey,
+                runtimeGeneration: runtimeGeneration
+            )
+        }
+    }
+
+    private func applyAddAccountRuntimeEffect(
+        _ effect: CodexAuthRuntimeEffect,
+        auth: CodexReviewAuthModel
+    ) async {
+        switch runtimeBridge {
+        case .live(let serverRuntime):
+            await serverRuntime.applyAddAccountRuntimeEffect(effect, auth: auth)
+        case .testing(let runtimeDriver):
+            await runtimeDriver.applyAddAccountRuntimeEffect(effect, auth: auth)
+        }
+    }
+
+    private func cancelRunningJobs(reason: String) async throws {
+        switch runtimeBridge {
+        case .live(let serverRuntime):
+            try await serverRuntime.cancelRunningJobs(reason: reason)
+        case .testing(let runtimeDriver):
+            try await runtimeDriver.cancelRunningJobs(reason: reason)
+        }
     }
 
     package func startStartupRefresh(auth: CodexReviewAuthModel) {
@@ -297,7 +375,10 @@ package final class CodexAuthController {
                 auth: auth,
                 identityChanged: false
             )
-            await applyAddAccountRuntimeEffect(commitOutcome.runtimeEffect, auth)
+            await applyAddAccountRuntimeEffect(
+                commitOutcome.runtimeEffect,
+                auth: auth
+            )
             if case .recycleNow = commitOutcome.runtimeEffect {
                 await refreshSavedAccountRateLimits(auth: auth, accountKey: savedAccount.accountKey)
             }
@@ -1287,8 +1368,8 @@ package final class CodexAuthController {
             return .none
         }
         return resolveAddAccountRuntimeEffect(
-            accountKey,
-            currentRuntimeState.runtimeGeneration
+            accountKey: accountKey,
+            runtimeGeneration: currentRuntimeState.runtimeGeneration
         )
     }
 
@@ -1347,7 +1428,7 @@ package final class CodexAuthController {
             return nil
         }
         do {
-            try await cancelRunningJobs("Account change requested.")
+            try await cancelRunningJobs(reason: "Account change requested.")
             return nil
         } catch {
             return error.localizedDescription.nilIfEmpty ?? "Failed to cancel running reviews."
@@ -1501,7 +1582,7 @@ package final class CodexAuthController {
 }
 
 @MainActor
-private final class CodexAccountSessionController {
+private final class ActiveAccountRateLimitObserver {
     typealias AccountResolver = @MainActor @Sendable (String) -> [CodexAccount]
 
     private struct AttachmentTarget: Equatable {
@@ -1630,12 +1711,7 @@ private final class CodexAccountSessionController {
         }
 
         let session = SharedAppServerReviewAuthSession(transport: transport)
-        let subscription = await session.notificationStream()
-        defer {
-            Task {
-                await subscription.cancel()
-            }
-        }
+        let notificationStream = await session.notificationStream()
 
         do {
             let response = try await session.readRateLimits()
@@ -1721,7 +1797,7 @@ private final class CodexAccountSessionController {
         }
 
         do {
-            for try await notification in subscription.stream {
+            for try await notification in notificationStream {
                 guard case .accountRateLimitsUpdated(let payload) = notification else {
                     continue
                 }
@@ -1952,7 +2028,7 @@ private final class CodexAccountSessionController {
 }
 
 @MainActor
-private final class InactiveSavedAccountRateLimitController {
+private final class InactiveSavedAccountRateLimitScheduler {
     typealias SavedAccountsProvider = @MainActor @Sendable () -> [CodexAccount]
     typealias RefreshRateLimitsAction = @MainActor @Sendable (String) async -> Void
 

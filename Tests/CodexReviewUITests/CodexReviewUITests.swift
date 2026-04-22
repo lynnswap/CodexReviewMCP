@@ -1185,7 +1185,7 @@ struct CodexReviewUITests {
             targetSummary: "Uncommitted changes",
             summary: "Running review."
         )
-        let store = CodexReviewStore.makeTestingStore(runtime: FailingCancellationBackend().runtime)
+        let store = CodexReviewStore.makeTestingStore(harness: FailingCancellationBackend())
         store.loadForTesting(
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
@@ -2433,7 +2433,6 @@ struct CodexReviewUITests {
         store.loadForTesting(serverState: .running, authState: .signedOut, workspaces: [])
         let viewController = ReviewMonitorSignInViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
 
         viewController.performPrimaryAction()
         await backend.waitForBeginAuthenticationCallCount(1)
@@ -2456,7 +2455,6 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSignInViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
 
         viewController.performPrimaryAction()
         await backend.waitForCancelAuthenticationCallCount(1)
@@ -2477,7 +2475,6 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSignInViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
 
         viewController.performPrimaryAction()
         await backend.waitForStartCallCount(1)
@@ -2496,7 +2493,6 @@ struct CodexReviewUITests {
         store.loadForTesting(serverState: .stopped, authState: .signedOut, workspaces: [])
         let viewController = ReviewMonitorSignInViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
 
         viewController.performPrimaryAction()
         await backend.waitForStartCallCount(1)
@@ -2519,7 +2515,6 @@ struct CodexReviewUITests {
         )
         let viewController = ReviewMonitorSignInViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
 
         viewController.performPrimaryAction()
         await backend.waitForStartCallCount(1)
@@ -2534,7 +2529,6 @@ struct CodexReviewUITests {
         let store = makeStore(backend: backend)
         let viewController = ReviewMonitorSignInViewController(store: store)
         viewController.loadViewIfNeeded()
-        viewController.startObservingAuth()
 
         applyTestAuthState(auth: store.auth, state: 
             .signingIn(
@@ -2691,15 +2685,15 @@ func makeWindowHarness(
 
 
 @MainActor
-func waitForDisplayedContentKind(
+func waitForWindowContentKind(
     _ windowController: ReviewMonitorWindowController,
-    _ expected: ReviewMonitorWindowController.DisplayedContentKind,
+    _ expected: ReviewMonitorWindowController.WindowContentKind,
     timeout: Duration = .seconds(2)
 ) async throws {
     let windowControllerBox = UncheckedSendableBox(windowController)
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
-            windowControllerBox.value.displayedContentKindForTesting != expected
+            windowControllerBox.value.windowContentKindForTesting != expected
         }) {
             try Task.checkCancellation()
             await Task.yield()
@@ -3083,52 +3077,25 @@ func makeSettingsSnapshot(
 
 @MainActor
 func makeStore(backend: CountingStartBackend) -> CodexReviewStore {
-    CodexReviewStore.makeTestingStore(runtime: backend.runtime)
+    CodexReviewStore.makeTestingStore(harness: backend)
 }
 
 @MainActor
 func makeStore(backend: AuthActionBackend) -> CodexReviewStore {
-    CodexReviewStore.makeTestingStore(runtime: backend.runtime)
+    CodexReviewStore.makeTestingStore(harness: backend)
 }
 
 @MainActor
-final class FailingCancellationBackend {
-    var isActive: Bool = false
-    let shouldAutoStartEmbeddedServer = false
-    let initialAuthState: TestAuthState = .signedOut
-    var initialAccount: CodexAccount? {
-        initialAuthState.accountEmail.map {
-            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
-        }
-    }
-
-    lazy var runtime: ReviewMonitorRuntime = .testing(
-        seed: .init(
-            shouldAutoStartEmbeddedServer: shouldAutoStartEmbeddedServer,
-            initialAccount: initialAccount
-        )
-    ) { handlers in
-        handlers.isActive = { self.isActive }
-        handlers.start = { store, forceRestartIfNeeded in
-            await self.start(store: store, forceRestartIfNeeded: forceRestartIfNeeded)
-        }
-        handlers.stop = { store in
-            await self.stop(store: store)
-        }
-        handlers.waitUntilStopped = {
-            await self.waitUntilStopped()
-        }
-        handlers.cancelReviewByID = { jobID, sessionID, reason, store in
-            try await self.cancelReview(
-                jobID: jobID,
-                sessionID: sessionID,
-                reason: reason,
-                store: store
+final class FailingCancellationBackend: ReviewMonitorTestingHarness {
+    init() {
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false
             )
-        }
+        )
     }
 
-    func start(
+    override func start(
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
@@ -3136,13 +3103,13 @@ final class FailingCancellationBackend {
         _ = forceRestartIfNeeded
     }
 
-    func stop(store: CodexReviewStore) async {
+    override func stop(store: CodexReviewStore) async {
         _ = store
     }
 
-    func waitUntilStopped() async {}
+    override func waitUntilStopped() async {}
 
-    func cancelReview(
+    override func cancelReviewByID(
         jobID: String,
         sessionID: String,
         reason: String,
@@ -3155,74 +3122,14 @@ final class FailingCancellationBackend {
         throw ReviewError.io("Cancellation failed.")
     }
 
-    func refreshAuthState(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
-
-    func signIn(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
-
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
-
-    func logout(auth: CodexReviewAuthModel) async {
-        _ = auth
-    }
 }
 
 @MainActor
-final class BlockingSettingsBackend {
+final class BlockingSettingsBackend: ReviewMonitorTestingHarness {
     struct ModelUpdateCall: Equatable {
         let model: String?
         let reasoningEffort: CodexReviewReasoningEffort?
         let serviceTier: CodexReviewServiceTier?
-    }
-
-    var isActive = false
-    let shouldAutoStartEmbeddedServer = false
-    let initialAccount: CodexAccount? = nil
-    let initialAccounts: [CodexAccount] = []
-    let initialActiveAccountKey: String? = nil
-    var initialSettingsSnapshot: CodexReviewSettingsSnapshot
-
-    lazy var runtime: ReviewMonitorRuntime = .testing(
-        seed: .init(
-            shouldAutoStartEmbeddedServer: shouldAutoStartEmbeddedServer,
-            initialAccount: initialAccount,
-            initialAccounts: initialAccounts,
-            initialSettingsSnapshot: initialSettingsSnapshot
-        )
-    ) { handlers in
-        handlers.isActive = { self.isActive }
-        handlers.start = { store, forceRestartIfNeeded in
-            await self.start(store: store, forceRestartIfNeeded: forceRestartIfNeeded)
-        }
-        handlers.stop = { store in
-            await self.stop(store: store)
-        }
-        handlers.waitUntilStopped = {
-            await self.waitUntilStopped()
-        }
-        handlers.refreshSettings = {
-            try await self.refreshSettings()
-        }
-        handlers.updateSettingsModel = { model, reasoningEffort, persistReasoningEffort, serviceTier, persistServiceTier in
-            try await self.updateSettingsModel(
-                model,
-                reasoningEffort: reasoningEffort,
-                persistReasoningEffort: persistReasoningEffort,
-                serviceTier: serviceTier,
-                persistServiceTier: persistServiceTier
-            )
-        }
-        handlers.updateSettingsReasoningEffort = { reasoningEffort in
-            try await self.updateSettingsReasoningEffort(reasoningEffort)
-        }
-        handlers.updateSettingsServiceTier = { serviceTier in
-            try await self.updateSettingsServiceTier(serviceTier)
-        }
     }
 
     private(set) var refreshCallCount = 0
@@ -3241,10 +3148,15 @@ final class BlockingSettingsBackend {
     private let blockedReasoningUpdateResumeGate = OneShotGate()
 
     init(snapshot: CodexReviewSettingsSnapshot) {
-        initialSettingsSnapshot = snapshot
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false,
+                initialSettingsSnapshot: snapshot
+            )
+        )
     }
 
-    func start(
+    override func start(
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
@@ -3252,13 +3164,13 @@ final class BlockingSettingsBackend {
         _ = forceRestartIfNeeded
     }
 
-    func stop(store: CodexReviewStore) async {
+    override func stop(store: CodexReviewStore) async {
         _ = store
     }
 
-    func waitUntilStopped() async {}
+    override func waitUntilStopped() async {}
 
-    func cancelReview(
+    override func cancelReviewByID(
         jobID: String,
         sessionID: String,
         reason: String,
@@ -3271,17 +3183,17 @@ final class BlockingSettingsBackend {
         throw TestFailure("cancel review is not expected in BlockingSettingsBackend")
     }
 
-    func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
+    override func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
         refreshCallCount += 1
         if shouldBlockNextRefresh {
             shouldBlockNextRefresh = false
             await blockedRefreshStartedGate.open()
             await blockedRefreshResumeGate.wait()
         }
-        return initialSettingsSnapshot
+        return currentSettingsSnapshot
     }
 
-    func updateSettingsModel(
+    override func updateSettingsModel(
         _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
         persistReasoningEffort: Bool,
@@ -3295,12 +3207,12 @@ final class BlockingSettingsBackend {
                 serviceTier: serviceTier
             )
         )
-        initialSettingsSnapshot.model = model
+        currentSettingsSnapshot.model = model
         if persistReasoningEffort {
-            initialSettingsSnapshot.reasoningEffort = reasoningEffort
+            currentSettingsSnapshot.reasoningEffort = reasoningEffort
         }
         if persistServiceTier {
-            initialSettingsSnapshot.serviceTier = serviceTier
+            currentSettingsSnapshot.serviceTier = serviceTier
         }
 
         if shouldBlockNextModelUpdate {
@@ -3310,11 +3222,11 @@ final class BlockingSettingsBackend {
         }
     }
 
-    func updateSettingsReasoningEffort(
+    override func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
         reasoningUpdateCalls.append(reasoningEffort)
-        initialSettingsSnapshot.reasoningEffort = reasoningEffort
+        currentSettingsSnapshot.reasoningEffort = reasoningEffort
 
         if shouldBlockNextReasoningUpdate {
             shouldBlockNextReasoningUpdate = false
@@ -3323,11 +3235,11 @@ final class BlockingSettingsBackend {
         }
     }
 
-    func updateSettingsServiceTier(
+    override func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
         serviceTierUpdateCalls.append(serviceTier)
-        initialSettingsSnapshot.serviceTier = serviceTier
+        currentSettingsSnapshot.serviceTier = serviceTier
     }
 
     func blockNextRefresh() {
@@ -3368,59 +3280,8 @@ final class BlockingSettingsBackend {
 }
 
 @MainActor
-final class CountingStartAuthController {
-    private unowned let backend: CountingStartBackend
-
-    init(backend: CountingStartBackend) {
-        self.backend = backend
-    }
-
-    func startStartupRefresh(auth _: CodexReviewAuthModel) {}
-
-    func cancelStartupRefresh() {}
-
-    func refresh(auth _: CodexReviewAuthModel) async {}
-
-    func signIn(auth: CodexReviewAuthModel) async {
-        await backend.signIn(auth: auth)
-    }
-
-    func addAccount(auth: CodexReviewAuthModel) async {
-        await backend.signIn(auth: auth)
-    }
-
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        await backend.cancelAuthentication(auth: auth)
-    }
-
-    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
-        await backend.logout(auth: auth)
-    }
-
-    func reconcileAuthenticatedSession(
-        auth _: CodexReviewAuthModel,
-        serverIsRunning _: Bool,
-        runtimeGeneration _: Int
-    ) async {}
-
-    func requiresCurrentSessionRecovery(
-        auth _: CodexReviewAuthModel,
-        accountKey _: String
-    ) -> Bool {
-        backend.requiresCurrentSessionRecovery
-    }
-}
-
-@MainActor
-final class CountingStartBackend {
+final class CountingStartBackend: ReviewMonitorTestingHarness {
     var requiresCurrentSessionRecovery = false
-    let shouldAutoStartEmbeddedServer: Bool
-    let initialAuthState: TestAuthState
-    var initialAccount: CodexAccount? {
-        initialAuthState.accountEmail.map {
-            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
-        }
-    }
     let restartResultingServerState: CodexReviewServerState
     private let startSignal = AsyncSignal()
     private let beginSignal = AsyncSignal()
@@ -3430,72 +3291,43 @@ final class CountingStartBackend {
     private var cancelCalls = 0
     private var actions: [String] = []
 
-    lazy var runtime: ReviewMonitorRuntime = .testing(
-        seed: .init(
-            shouldAutoStartEmbeddedServer: shouldAutoStartEmbeddedServer,
-            initialAccount: initialAccount
-        )
-    ) { handlers in
-        handlers.isActive = { self.isActive }
-        handlers.start = { store, forceRestartIfNeeded in
-            await self.start(store: store, forceRestartIfNeeded: forceRestartIfNeeded)
-        }
-        handlers.stop = { store in
-            await self.stop(store: store)
-        }
-        handlers.waitUntilStopped = {
-            await self.waitUntilStopped()
-        }
-        handlers.signIn = { auth in
-            await self.signIn(auth: auth)
-        }
-        handlers.addAccount = { auth in
-            await self.signIn(auth: auth)
-        }
-        handlers.cancelAuthentication = { auth in
-            await self.cancelAuthentication(auth: auth)
-        }
-        handlers.signOutActiveAccount = { auth in
-            await self.logout(auth: auth)
-        }
-        handlers.requiresCurrentSessionRecovery = { _, _ in
-            self.requiresCurrentSessionRecovery
-        }
-    }
-
     init(
         shouldAutoStartEmbeddedServer: Bool = true,
         initialAuthState: TestAuthState = .signedOut,
         restartResultingServerState: CodexReviewServerState = .starting
     ) {
-        self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
-        self.initialAuthState = initialAuthState
         self.restartResultingServerState = restartResultingServerState
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: shouldAutoStartEmbeddedServer,
+                initialAccount: initialAuthState.accountEmail.map {
+                    CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
+                }
+            )
+        )
     }
 
-    var isActive: Bool {
-        startCalls > 0
-    }
-
-    func start(
+    override func start(
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
         _ = store
         _ = forceRestartIfNeeded
+        isActive = true
         startCalls += 1
         actions.append("start")
         store.serverState = restartResultingServerState
         await startSignal.signal()
     }
 
-    func stop(store: CodexReviewStore) async {
+    override func stop(store: CodexReviewStore) async {
         _ = store
+        isActive = false
     }
 
-    func waitUntilStopped() async {}
+    override func waitUntilStopped() async {}
 
-    func cancelReview(
+    override func cancelReviewByID(
         jobID: String,
         sessionID: String,
         reason: String,
@@ -3512,18 +3344,35 @@ final class CountingStartBackend {
         _ = auth
     }
 
-    func signIn(auth: CodexReviewAuthModel) async {
+    override func signIn(auth: CodexReviewAuthModel) async {
         _ = auth
         beginCalls += 1
         actions.append("begin")
         await beginSignal.signal()
     }
 
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+    override func addAccount(auth: CodexReviewAuthModel) async {
+        await signIn(auth: auth)
+    }
+
+    override func cancelAuthentication(auth: CodexReviewAuthModel) async {
         _ = auth
         cancelCalls += 1
         actions.append("cancel")
         await cancelSignal.signal()
+    }
+
+    override func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
+        await logout(auth: auth)
+    }
+
+    override func requiresCurrentSessionRecovery(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) -> Bool {
+        _ = auth
+        _ = accountKey
+        return requiresCurrentSessionRecovery
     }
 
     func logout(auth: CodexReviewAuthModel) async {
@@ -3569,77 +3418,9 @@ final class CountingStartBackend {
 }
 
 @MainActor
-final class AuthActionController {
-    private unowned let backend: AuthActionBackend
-
-    init(backend: AuthActionBackend) {
-        self.backend = backend
-    }
-
-    func startStartupRefresh(auth _: CodexReviewAuthModel) {}
-
-    func cancelStartupRefresh() {}
-
-    func refresh(auth: CodexReviewAuthModel) async {
-        await backend.refreshAuthState(auth: auth)
-    }
-
-    func signIn(auth: CodexReviewAuthModel) async {
-        await backend.signIn(auth: auth)
-    }
-
-    func addAccount(auth: CodexReviewAuthModel) async {
-        await backend.signIn(auth: auth)
-    }
-
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        await backend.cancelAuthentication(auth: auth)
-    }
-
-    func switchAccount(
-        auth: CodexReviewAuthModel,
-        accountKey: String
-    ) async throws {
-        try await backend.switchAccount(auth: auth, accountKey: accountKey)
-    }
-
-    func removeAccount(
-        auth: CodexReviewAuthModel,
-        accountKey: String
-    ) async throws {
-        await backend.removeAccount(auth: auth, accountKey: accountKey)
-    }
-
-    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
-        await backend.logout(auth: auth)
-    }
-
-    func reconcileAuthenticatedSession(
-        auth _: CodexReviewAuthModel,
-        serverIsRunning _: Bool,
-        runtimeGeneration _: Int
-    ) async {}
-
-    func requiresCurrentSessionRecovery(
-        auth _: CodexReviewAuthModel,
-        accountKey _: String
-    ) -> Bool {
-        backend.requiresCurrentSessionRecovery
-    }
-}
-
-@MainActor
-final class AuthActionBackend {
-    var isActive: Bool = false
+final class AuthActionBackend: ReviewMonitorTestingHarness {
     var requiresCurrentSessionRecovery = false
-    let shouldAutoStartEmbeddedServer = false
-    let initialAuthState: TestAuthState
-    var initialAccount: CodexAccount? {
-        initialAuthState.accountEmail.map {
-            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
-        }
-    }
-
+    private let initialAuthState: TestAuthState
     private let refreshSignal = AsyncSignal()
     private let beginSignal = AsyncSignal()
     private let cancelSignal = AsyncSignal()
@@ -3658,48 +3439,6 @@ final class AuthActionBackend {
     private var switchedAccountKeys: [String] = []
     private var removedAccountKeys: [String] = []
 
-    lazy var runtime: ReviewMonitorRuntime = .testing(
-        seed: .init(
-            shouldAutoStartEmbeddedServer: shouldAutoStartEmbeddedServer,
-            initialAccount: initialAccount
-        )
-    ) { handlers in
-        handlers.isActive = { self.isActive }
-        handlers.start = { store, forceRestartIfNeeded in
-            await self.start(store: store, forceRestartIfNeeded: forceRestartIfNeeded)
-        }
-        handlers.stop = { store in
-            await self.stop(store: store)
-        }
-        handlers.waitUntilStopped = {
-            await self.waitUntilStopped()
-        }
-        handlers.refreshAuth = { auth in
-            await self.refreshAuthState(auth: auth)
-        }
-        handlers.signIn = { auth in
-            await self.signIn(auth: auth)
-        }
-        handlers.addAccount = { auth in
-            await self.signIn(auth: auth)
-        }
-        handlers.cancelAuthentication = { auth in
-            await self.cancelAuthentication(auth: auth)
-        }
-        handlers.switchAccount = { auth, accountKey in
-            try await self.switchAccount(auth: auth, accountKey: accountKey)
-        }
-        handlers.removeAccount = { auth, accountKey in
-            await self.removeAccount(auth: auth, accountKey: accountKey)
-        }
-        handlers.signOutActiveAccount = { auth in
-            await self.logout(auth: auth)
-        }
-        handlers.requiresCurrentSessionRecovery = { _, _ in
-            self.requiresCurrentSessionRecovery
-        }
-    }
-
     init(
         initialAuthState: TestAuthState = .signedOut,
         switchStartsBlocked: Bool = false,
@@ -3708,23 +3447,33 @@ final class AuthActionBackend {
         self.initialAuthState = initialAuthState
         self.switchCompletionGate = OneShotGate(isOpen: switchStartsBlocked == false)
         self.switchErrorMessage = switchErrorMessage
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false,
+                initialAccount: initialAuthState.accountEmail.map {
+                    CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
+                }
+            )
+        )
     }
 
-    func start(
+    override func start(
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
         _ = store
         _ = forceRestartIfNeeded
+        isActive = true
     }
 
-    func stop(store: CodexReviewStore) async {
+    override func stop(store: CodexReviewStore) async {
         _ = store
+        isActive = false
     }
 
-    func waitUntilStopped() async {}
+    override func waitUntilStopped() async {}
 
-    func cancelReview(
+    override func cancelReviewByID(
         jobID: String,
         sessionID: String,
         reason: String,
@@ -3737,22 +3486,53 @@ final class AuthActionBackend {
         throw TestFailure("cancel review is not expected in AuthActionBackend")
     }
 
-    func refreshAuthState(auth: CodexReviewAuthModel) async {
+    override func refreshAuth(auth: CodexReviewAuthModel) async {
         _ = auth
         refreshCalls += 1
         await refreshSignal.signal()
     }
 
-    func signIn(auth: CodexReviewAuthModel) async {
+    override func signIn(auth: CodexReviewAuthModel) async {
         _ = auth
         beginCalls += 1
         await beginSignal.signal()
     }
 
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+    override func addAccount(auth: CodexReviewAuthModel) async {
+        await signIn(auth: auth)
+    }
+
+    override func cancelAuthentication(auth: CodexReviewAuthModel) async {
         _ = auth
         cancelCalls += 1
         await cancelSignal.signal()
+    }
+
+    override func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
+        await logout(auth: auth)
+    }
+
+    override func switchAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws {
+        try await performSwitchAccount(auth: auth, accountKey: accountKey)
+    }
+
+    override func removeAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws {
+        await performRemoveAccount(auth: auth, accountKey: accountKey)
+    }
+
+    override func requiresCurrentSessionRecovery(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) -> Bool {
+        _ = auth
+        _ = accountKey
+        return requiresCurrentSessionRecovery
     }
 
     func logout(auth: CodexReviewAuthModel) async {
@@ -3761,7 +3541,7 @@ final class AuthActionBackend {
         await logoutSignal.signal()
     }
 
-    func switchAccount(
+    private func performSwitchAccount(
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async throws {
@@ -3778,7 +3558,7 @@ final class AuthActionBackend {
         await switchSignal.signal()
     }
 
-    func removeAccount(
+    private func performRemoveAccount(
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async {

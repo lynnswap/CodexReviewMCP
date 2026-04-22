@@ -191,13 +191,16 @@ struct CodexReviewUISettingsTests {
     @Test func settingsStoreAppliesPendingSelectionAfterInFlightSave() async throws {
         let backend = BlockingSettingsBackend(snapshot: makeSettingsSnapshot())
         backend.blockNextModelUpdate()
-        let store = CodexReviewStore.makeTestingStore(runtime: backend.runtime)
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
 
-        store.settings.selectedModel = "gpt-5.4-mini"
+        let modelUpdateTask = Task { @MainActor in
+            await store.updateSettingsModel("gpt-5.4-mini")
+        }
         await backend.waitForBlockedModelUpdateToStart()
 
-        store.settings.selectedReasoningEffort = .low
+        await store.updateSettingsReasoningEffort(.low)
         await backend.resumeBlockedModelUpdate()
+        await modelUpdateTask.value
 
         try await waitForCondition {
             backend.reasoningUpdateCalls == [.low]
@@ -211,7 +214,7 @@ struct CodexReviewUISettingsTests {
     @Test func settingsStoreRunsQueuedRefreshAfterCurrentLoad() async throws {
         let backend = BlockingSettingsBackend(snapshot: makeSettingsSnapshot())
         backend.blockNextRefresh()
-        let store = CodexReviewStore.makeTestingStore(runtime: backend.runtime)
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
 
         let refreshTask = Task { @MainActor in
             await store.refreshSettings()
@@ -236,14 +239,17 @@ struct CodexReviewUISettingsTests {
             )
         )
         backend.blockNextReasoningUpdate()
-        let store = CodexReviewStore.makeTestingStore(runtime: backend.runtime)
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
 
-        store.settings.selectedReasoningEffort = .medium
+        let reasoningUpdateTask = Task { @MainActor in
+            await store.updateSettingsReasoningEffort(.medium)
+        }
         await backend.waitForBlockedReasoningUpdateToStart()
 
-        store.settings.selectedReasoningEffort = .minimal
-        store.settings.selectedServiceTier = .flex
+        await store.updateSettingsReasoningEffort(.minimal)
+        await store.updateSettingsServiceTier(.flex)
         await backend.resumeBlockedReasoningUpdate()
+        await reasoningUpdateTask.value
 
         try await waitForCondition {
             backend.reasoningUpdateCalls == [.medium, .minimal]
@@ -264,12 +270,15 @@ struct CodexReviewUISettingsTests {
             )
         )
         backend.blockNextReasoningUpdate()
-        let store = CodexReviewStore.makeTestingStore(runtime: backend.runtime)
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
 
-        store.settings.selectedReasoningEffort = .medium
-        store.settings.selectedServiceTier = .flex
+        let reasoningUpdateTask = Task { @MainActor in
+            await store.updateSettingsReasoningEffort(.medium)
+        }
         await backend.waitForBlockedReasoningUpdateToStart()
+        await store.updateSettingsServiceTier(.flex)
         await backend.resumeBlockedReasoningUpdate()
+        await reasoningUpdateTask.value
 
         try await waitForCondition {
             backend.reasoningUpdateCalls == [.medium]
@@ -289,9 +298,9 @@ struct CodexReviewUISettingsTests {
                 serviceTier: nil
             )
         )
-        let store = CodexReviewStore.makeTestingStore(runtime: backend.runtime)
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
 
-        store.settings.selectedModel = nil
+        await store.clearSettingsModelOverride()
 
         try await waitForCondition {
             backend.modelUpdateCalls == [
@@ -312,9 +321,9 @@ struct CodexReviewUISettingsTests {
                 serviceTier: .fast
             )
         )
-        let store = CodexReviewStore.makeTestingStore(runtime: backend.runtime)
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
 
-        store.settings.selectedReasoningEffort = nil
+        await store.clearSettingsReasoningEffort()
 
         try await waitForCondition {
             backend.reasoningUpdateCalls == [nil]

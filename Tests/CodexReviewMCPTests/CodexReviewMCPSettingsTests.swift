@@ -725,7 +725,7 @@ struct CodexReviewMCPSettingsTests {
             appServerManager: AuthCapableAppServerManager(authTransport: transport)
         )
 
-        store.settings.selectedModel = nil
+        await store.clearSettingsModelOverride()
         try await waitForMainActorCondition {
             store.settings.selectedModel == nil
         }

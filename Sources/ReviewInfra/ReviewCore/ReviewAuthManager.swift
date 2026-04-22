@@ -106,7 +106,7 @@ package protocol ReviewAuthSession: Sendable {
     func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse
     func cancelLogin(loginID: String) async throws
     func logout() async throws
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification>
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error>
     func close() async
 }
 
@@ -319,16 +319,11 @@ package actor ReviewAuthManager {
         loginID: String,
         onUpdate: @escaping @Sendable (ReviewAuthState) async -> Void
     ) async throws -> ReviewAuthState {
-        let subscription = await session.notificationStream()
-        defer {
-            Task {
-                await subscription.cancel()
-            }
-        }
+        let notificationStream = await session.notificationStream()
 
         var sawAccountUpdate = false
         do {
-            for try await notification in subscription.stream {
+            for try await notification in notificationStream {
                 guard isAttemptCurrent(attemptID, loginID: loginID) else {
                     throw ReviewAuthError.cancelled
                 }
@@ -650,8 +645,8 @@ package actor SharedAppServerReviewAuthSession: ReviewAuthSession {
         )
     }
 
-    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        return await transport.notificationStream()
+    package func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        await transport.notificationStream()
     }
 
     package func close() async {
@@ -811,7 +806,7 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         }
     }
 
-    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    package func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation!
         let stream = AsyncThrowingStream<AppServerServerNotification, Error>(bufferingPolicy: .unbounded) {
             continuation = $0
@@ -827,12 +822,7 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
                 await self.removeNotificationSubscriber(id: subscriberID)
             }
         }
-        return .init(
-            stream: stream,
-            cancel: { [self] in
-                await self.cancelNotificationSubscriber(id: subscriberID)
-            }
-        )
+        return stream
     }
 
     package func close() async {
@@ -1076,13 +1066,6 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
 
     private func removeNotificationSubscriber(id: UUID) {
         notificationSubscribers[id] = nil
-    }
-
-    private func cancelNotificationSubscriber(id: UUID) {
-        guard let continuation = notificationSubscribers.removeValue(forKey: id) else {
-            return
-        }
-        continuation.finish()
     }
 }
 

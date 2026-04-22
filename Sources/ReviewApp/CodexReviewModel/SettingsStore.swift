@@ -5,64 +5,32 @@ import ReviewDomain
 @MainActor
 @Observable
 package final class SettingsStore {
-    private struct Selection: Equatable {
+    package struct Selection: Equatable {
         let model: String?
         let reasoningEffort: CodexReviewReasoningEffort?
         let serviceTier: CodexReviewServiceTier?
     }
 
-    package var selectedModel: String? {
-        didSet {
-            scheduleSelectionChange(trigger: .model)
-        }
-    }
-    package var selectedReasoningEffort: CodexReviewReasoningEffort? {
-        didSet {
-            scheduleSelectionChange(trigger: .reasoningEffort)
-        }
-    }
-    package var selectedServiceTier: CodexReviewServiceTier? {
-        didSet {
-            scheduleSelectionChange(trigger: .serviceTier)
-        }
-    }
-    package private(set) var fallbackModel: String?
-    package private(set) var models: [CodexReviewModelCatalogItem]
-    package private(set) var isLoading = false
-    package private(set) var lastErrorMessage: String?
-
-    @ObservationIgnored
-    private let runtime: ReviewMonitorRuntime
-    @ObservationIgnored
-    private var suppressSelectionObservation = false
-    @ObservationIgnored
-    private var lastObservedSelection: Selection
-    @ObservationIgnored
-    private var pendingRefresh = false
-    @ObservationIgnored
-    private var pendingSelection: Selection?
-
-    private enum SelectionTrigger {
+    package enum SelectionTrigger {
         case model
         case reasoningEffort
         case serviceTier
     }
 
-    package init(
-        runtime: ReviewMonitorRuntime,
-        snapshot: CodexReviewSettingsSnapshot
-    ) {
-        self.runtime = runtime
-        self.selectedModel = snapshot.model
-        self.fallbackModel = snapshot.fallbackModel
-        self.selectedReasoningEffort = snapshot.reasoningEffort
-        self.selectedServiceTier = snapshot.serviceTier
-        self.models = snapshot.models
-        self.lastObservedSelection = .init(
-            model: snapshot.model,
-            reasoningEffort: snapshot.reasoningEffort,
-            serviceTier: snapshot.serviceTier
-        )
+    package private(set) var selectedModel: String?
+    package private(set) var selectedReasoningEffort: CodexReviewReasoningEffort?
+    package private(set) var selectedServiceTier: CodexReviewServiceTier?
+    package private(set) var fallbackModel: String?
+    package private(set) var models: [CodexReviewModelCatalogItem]
+    package private(set) var isLoading = false
+    package private(set) var lastErrorMessage: String?
+
+    package init(snapshot: CodexReviewSettingsSnapshot) {
+        selectedModel = snapshot.model
+        fallbackModel = snapshot.fallbackModel
+        selectedReasoningEffort = snapshot.reasoningEffort
+        selectedServiceTier = snapshot.serviceTier
+        models = snapshot.models
         applyNormalizedSelection(
             normalizeSelection(
                 model: snapshot.model,
@@ -129,110 +97,22 @@ package final class SettingsStore {
         selectedReasoningEffort ?? effectiveModelItem?.defaultReasoningEffort
     }
 
-    package func refreshIfRunning(
-        serverState: CodexReviewServerState
-    ) async {
-        guard case .running = serverState else {
-            return
-        }
-        await refresh()
-    }
-
-    package func refresh() async {
-        guard isLoading == false else {
-            pendingRefresh = true
-            return
-        }
-        isLoading = true
-
-        do {
-            let snapshot = try await runtime.refreshSettings()
-            apply(snapshot: snapshot)
-            lastErrorMessage = nil
-        } catch {
-            lastErrorMessage = error.localizedDescription
-        }
-        isLoading = false
-        await drainPendingWorkIfNeeded()
-    }
-
-    package func updateModel(_ model: String) async {
-        await applySelectionChange(
-            trigger: .model,
-            previous: currentSelection(),
-            candidate: .init(
-                model: model,
-                reasoningEffort: selectedReasoningEffort,
-                serviceTier: selectedServiceTier
-            )
-        )
-    }
-
-    package func clearModelOverride() async {
-        // Retained for programmatic/config-sync paths even though the status menu
-        // intentionally mirrors upstream pickers and does not add a synthetic clear row.
-        await applySelectionChange(
-            trigger: .model,
-            previous: currentSelection(),
-            candidate: .init(
-                model: nil,
-                reasoningEffort: selectedReasoningEffort,
-                serviceTier: selectedServiceTier
-            )
-        )
-    }
-
-    package func updateReasoningEffort(_ reasoningEffort: CodexReviewReasoningEffort?) async {
-        await applySelectionChange(
-            trigger: .reasoningEffort,
-            previous: currentSelection(),
-            candidate: .init(
-                model: selectedModel,
-                reasoningEffort: reasoningEffort,
-                serviceTier: selectedServiceTier
-            )
-        )
-    }
-
-    package func updateServiceTier(_ serviceTier: CodexReviewServiceTier?) async {
-        await applySelectionChange(
-            trigger: .serviceTier,
-            previous: currentSelection(),
-            candidate: .init(
-                model: selectedModel,
-                reasoningEffort: selectedReasoningEffort,
-                serviceTier: serviceTier
-            )
-        )
-    }
-
     package func loadForTesting(snapshot: CodexReviewSettingsSnapshot) {
         apply(snapshot: snapshot)
         lastErrorMessage = nil
         isLoading = false
     }
 
-    private func persist(
-        previous: CodexReviewSettingsSnapshot,
-        operation: @escaping () async throws -> Void
-    ) async {
-        guard isLoading == false else {
-            return
-        }
+    package func beginLoading() {
         isLoading = true
-
-        do {
-            try await operation()
-            lastErrorMessage = nil
-        } catch {
-            apply(snapshot: previous)
-            lastErrorMessage = error.localizedDescription
-        }
-        isLoading = false
-        await drainPendingWorkIfNeeded()
     }
 
-    private func apply(snapshot: CodexReviewSettingsSnapshot) {
+    package func finishLoading(errorMessage: String?) {
+        lastErrorMessage = errorMessage
+        isLoading = false
+    }
+
+    package func apply(snapshot: CodexReviewSettingsSnapshot) {
         fallbackModel = snapshot.fallbackModel
         models = snapshot.models
         applyNormalizedSelection(
@@ -247,11 +127,19 @@ package final class SettingsStore {
         )
     }
 
-    private func snapshot() -> CodexReviewSettingsSnapshot {
+    package func currentSelection() -> Selection {
+        .init(
+            model: selectedModel,
+            reasoningEffort: selectedReasoningEffort,
+            serviceTier: selectedServiceTier
+        )
+    }
+
+    package func snapshot() -> CodexReviewSettingsSnapshot {
         snapshot(selection: currentSelection())
     }
 
-    private func snapshot(selection: Selection) -> CodexReviewSettingsSnapshot {
+    package func snapshot(selection: Selection) -> CodexReviewSettingsSnapshot {
         .init(
             model: selection.model,
             fallbackModel: fallbackModel,
@@ -261,20 +149,7 @@ package final class SettingsStore {
         )
     }
 
-    private func applyNormalizedSelection(
-        _ selection: Selection,
-        catalog: [CodexReviewModelCatalogItem]
-    ) {
-        suppressSelectionObservation = true
-        models = catalog
-        selectedModel = selection.model
-        selectedReasoningEffort = selection.reasoningEffort
-        selectedServiceTier = selection.serviceTier
-        suppressSelectionObservation = false
-        lastObservedSelection = selection
-    }
-
-    private func normalizeSelection(
+    package func normalizeSelection(
         model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
         serviceTier: CodexReviewServiceTier?,
@@ -320,135 +195,17 @@ package final class SettingsStore {
         )
     }
 
-    private func currentSelection() -> Selection {
-        .init(
-            model: selectedModel,
-            reasoningEffort: selectedReasoningEffort,
-            serviceTier: selectedServiceTier
-        )
+    package func applyNormalizedSelection(
+        _ selection: Selection,
+        catalog: [CodexReviewModelCatalogItem]
+    ) {
+        models = catalog
+        selectedModel = selection.model
+        selectedReasoningEffort = selection.reasoningEffort
+        selectedServiceTier = selection.serviceTier
     }
 
-    private func scheduleSelectionChange(trigger: SelectionTrigger) {
-        guard suppressSelectionObservation == false else {
-            return
-        }
-        let previous = lastObservedSelection
-        let candidate = currentSelection()
-        guard candidate != previous else {
-            return
-        }
-        guard isLoading == false else {
-            pendingSelection = candidate
-            return
-        }
-        Task { @MainActor in
-            await self.applySelectionChange(
-                trigger: trigger,
-                previous: previous,
-                candidate: candidate
-            )
-        }
-    }
-
-    private func applySelectionChange(
-        trigger: SelectionTrigger,
-        previous: Selection,
-        candidate: Selection
-    ) async {
-        guard isLoading == false else {
-            pendingSelection = candidate
-            return
-        }
-
-        let normalized = normalizeSelection(
-            model: candidate.model,
-            reasoningEffort: candidate.reasoningEffort,
-            serviceTier: candidate.serviceTier,
-            catalog: models,
-            clearIncompatibleOverrides: trigger == .model
-        )
-        if normalized != currentSelection() {
-            applyNormalizedSelection(normalized, catalog: models)
-        } else {
-            lastObservedSelection = normalized
-        }
-        guard normalized != previous else {
-            return
-        }
-
-        switch trigger {
-        case .model:
-            let persistReasoningEffort = previous.reasoningEffort != normalized.reasoningEffort
-            let persistServiceTier = previous.serviceTier != normalized.serviceTier
-            await persist(
-                previous: snapshot(selection: previous),
-                operation: {
-                    try await self.runtime.updateSettingsModel(
-                        normalized.model,
-                        reasoningEffort: normalized.reasoningEffort,
-                        persistReasoningEffort: persistReasoningEffort,
-                        serviceTier: normalized.serviceTier,
-                        persistServiceTier: persistServiceTier
-                    )
-                }
-            )
-        case .reasoningEffort:
-            await persist(
-                previous: snapshot(selection: previous),
-                operation: {
-                    try await self.runtime.updateSettingsReasoningEffort(
-                        normalized.reasoningEffort
-                    )
-                }
-            )
-        case .serviceTier:
-            await persist(
-                previous: snapshot(selection: previous),
-                operation: {
-                    try await self.runtime.updateSettingsServiceTier(
-                        normalized.serviceTier
-                    )
-                }
-            )
-        }
-    }
-
-    private func drainPendingWorkIfNeeded() async {
-        if pendingRefresh {
-            pendingRefresh = false
-            await refresh()
-            return
-        }
-        guard let pendingSelection else {
-            return
-        }
-        self.pendingSelection = nil
-
-        let previous = lastObservedSelection
-        let triggers = selectionTriggers(previous: previous, candidate: pendingSelection)
-        guard triggers.isEmpty == false else {
-            return
-        }
-        var appliedSelection = previous
-
-        for trigger in triggers {
-            await applySelectionChange(
-                trigger: trigger,
-                previous: appliedSelection,
-                candidate: pendingSelection
-            )
-            guard currentSelection() == pendingSelection else {
-                return
-            }
-            appliedSelection = selectionAfterPersisting(
-                trigger: trigger,
-                previous: appliedSelection,
-                candidate: pendingSelection
-            )
-        }
-    }
-
-    private func selectionTriggers(
+    package func selectionTriggers(
         previous: Selection,
         candidate: Selection
     ) -> [SelectionTrigger] {
@@ -465,7 +222,7 @@ package final class SettingsStore {
         return triggers
     }
 
-    private func selectionAfterPersisting(
+    package func selectionAfterPersisting(
         trigger: SelectionTrigger,
         previous: Selection,
         candidate: Selection

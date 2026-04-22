@@ -6137,8 +6137,7 @@ struct CodexReviewMCPTests {
 
         await runtimeDriver.applyAddAccountRuntimeEffect(
             effect,
-            auth: auth.model,
-            store: auth.store
+            auth: auth.model
         )
         #expect(recycleCallCount == 0)
 
@@ -10016,13 +10015,7 @@ actor FailingAuthCheckoutAppServerManager: AppServerManaging {
 }
 
 @MainActor
-final class CancellationFailureStoreBackend {
-    let isActive = true
-    let shouldAutoStartEmbeddedServer = false
-    let initialAccount: CodexAccount? = nil
-    let initialAccounts: [CodexAccount] = []
-    let initialActiveAccountKey: String? = nil
-
+final class CancellationFailureStoreBackend: ReviewMonitorTestingHarness {
     private let failingSessionIDs: Set<String>
     private let error: any Error
 
@@ -10032,45 +10025,23 @@ final class CancellationFailureStoreBackend {
     ) {
         self.failingSessionIDs = failingSessionIDs
         self.error = error
-    }
-
-    lazy var runtime: ReviewMonitorRuntime = .testing(
-        seed: .init(
-            shouldAutoStartEmbeddedServer: shouldAutoStartEmbeddedServer,
-            initialAccount: initialAccount,
-            initialAccounts: initialAccounts
-        )
-    ) { handlers in
-        handlers.isActive = { self.isActive }
-        handlers.start = { store, forceRestartIfNeeded in
-            await self.start(store: store, forceRestartIfNeeded: forceRestartIfNeeded)
-        }
-        handlers.stop = { store in
-            await self.stop(store: store)
-        }
-        handlers.waitUntilStopped = {
-            await self.waitUntilStopped()
-        }
-        handlers.cancelReviewByID = { jobID, sessionID, reason, store in
-            try await self.cancelReview(
-                jobID: jobID,
-                sessionID: sessionID,
-                reason: reason,
-                store: store
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false
             )
-        }
+        )
     }
 
-    func start(
+    override func start(
         store _: CodexReviewStore,
         forceRestartIfNeeded _: Bool
     ) async {}
 
-    func stop(store _: CodexReviewStore) async {}
+    override func stop(store _: CodexReviewStore) async {}
 
-    func waitUntilStopped() async {}
+    override func waitUntilStopped() async {}
 
-    func cancelReview(
+    override func cancelReviewByID(
         jobID: String,
         sessionID: String,
         reason: String,
@@ -11353,28 +11324,41 @@ func makeInjectedAuthSessionStore(
 }
 
 @MainActor
-final class TestAuthRuntimeDriver {
+final class TestAuthRuntimeDriver: ReviewMonitorAuthRuntimeDriver {
     private struct DeferredAddAccountRuntimeEffect {
         var accountKey: String
         var runtimeGeneration: Int
     }
 
-    private let runtimeState: @MainActor @Sendable () -> CodexAuthRuntimeState
-    private let recycleServerIfRunning: @MainActor @Sendable () async -> Void
+    private let runtimeStateProvider: @MainActor @Sendable () -> CodexAuthRuntimeState
+    private let recycleServerIfRunningAction: @MainActor @Sendable () async -> Void
     private let hasRunningJobs: @MainActor @Sendable () -> Bool
+    private let cancelRunningJobsAction: @MainActor @Sendable (String) async throws -> Void
     private var deferredAddAccountRuntimeEffect: DeferredAddAccountRuntimeEffect?
+    weak var store: CodexReviewStore?
 
     init(
         runtimeState: @escaping @MainActor @Sendable () -> CodexAuthRuntimeState,
         recycleServerIfRunning: @escaping @MainActor @Sendable () async -> Void,
-        hasRunningJobs: @escaping @MainActor @Sendable () -> Bool
+        hasRunningJobs: @escaping @MainActor @Sendable () -> Bool,
+        cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in }
     ) {
-        self.runtimeState = runtimeState
-        self.recycleServerIfRunning = recycleServerIfRunning
+        runtimeStateProvider = runtimeState
+        recycleServerIfRunningAction = recycleServerIfRunning
         self.hasRunningJobs = hasRunningJobs
+        cancelRunningJobsAction = cancelRunningJobs
+        super.init()
     }
 
-    func resolveAddAccountRuntimeEffect(
+    override func runtimeState() -> CodexAuthRuntimeState {
+        runtimeStateProvider()
+    }
+
+    override func recycleServerIfRunning() async {
+        await recycleServerIfRunningAction()
+    }
+
+    override func resolveAddAccountRuntimeEffect(
         accountKey: String,
         runtimeGeneration: Int
     ) -> CodexAuthRuntimeEffect {
@@ -11390,10 +11374,9 @@ final class TestAuthRuntimeDriver {
         )
     }
 
-    func applyAddAccountRuntimeEffect(
+    override func applyAddAccountRuntimeEffect(
         _ effect: CodexAuthRuntimeEffect,
-        auth: CodexReviewAuthModel,
-        store: CodexReviewStore? = nil
+        auth: CodexReviewAuthModel
     ) async {
         switch effect {
         case .none:
@@ -11420,14 +11403,18 @@ final class TestAuthRuntimeDriver {
                 return
             }
             deferredAddAccountRuntimeEffect = nil
-            await recycleServerIfRunning()
+            await recycleServerIfRunningAction()
             if let store {
                 await store.reconcileAuthenticatedSession(
-                    serverIsRunning: runtimeState().serverIsRunning,
-                    runtimeGeneration: runtimeState().runtimeGeneration
+                    serverIsRunning: runtimeStateProvider().serverIsRunning,
+                    runtimeGeneration: runtimeStateProvider().runtimeGeneration
                 )
             }
         }
+    }
+
+    override func cancelRunningJobs(reason: String) async throws {
+        try await cancelRunningJobsAction(reason)
     }
 
     func reconcileDeferredAddAccountRuntimeEffectIfNeeded(
@@ -11449,12 +11436,12 @@ final class TestAuthRuntimeDriver {
             return
         }
         self.deferredAddAccountRuntimeEffect = nil
-        await recycleServerIfRunning()
+        await recycleServerIfRunningAction()
     }
 }
 
 @MainActor
-final class TestRuntimeOwningAuthController {
+final class TestRuntimeOwningAuthController: ReviewMonitorTestingHarness {
     private let base: ReviewMonitorAuthOrchestrator
     private let runtimeDriver: TestAuthRuntimeDriver
 
@@ -11464,47 +11451,48 @@ final class TestRuntimeOwningAuthController {
     ) {
         self.base = base
         self.runtimeDriver = runtimeDriver
+        super.init()
     }
 
-    func startStartupRefresh(auth: CodexReviewAuthModel) {
+    override func startStartupRefresh(auth: CodexReviewAuthModel) {
         base.startStartupRefresh(auth: auth)
     }
 
-    func cancelStartupRefresh() {
+    override func cancelStartupRefresh() {
         base.cancelStartupRefresh()
     }
 
-    func refresh(auth: CodexReviewAuthModel) async {
+    override func refreshAuth(auth: CodexReviewAuthModel) async {
         await base.refresh(auth: auth)
     }
 
-    func signIn(auth: CodexReviewAuthModel) async {
+    override func signIn(auth: CodexReviewAuthModel) async {
         await base.signIn(auth: auth)
     }
 
-    func addAccount(auth: CodexReviewAuthModel) async {
+    override func addAccount(auth: CodexReviewAuthModel) async {
         await base.addAccount(auth: auth)
     }
 
-    func cancelAuthentication(auth: CodexReviewAuthModel) async {
+    override func cancelAuthentication(auth: CodexReviewAuthModel) async {
         await base.cancelAuthentication(auth: auth)
     }
 
-    func switchAccount(
+    override func switchAccount(
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async throws {
         try await base.switchAccount(auth: auth, accountKey: accountKey)
     }
 
-    func removeAccount(
+    override func removeAccount(
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async throws {
         try await base.removeAccount(auth: auth, accountKey: accountKey)
     }
 
-    func reorderSavedAccount(
+    override func reorderSavedAccount(
         auth: CodexReviewAuthModel,
         accountKey: String,
         toIndex: Int
@@ -11516,11 +11504,11 @@ final class TestRuntimeOwningAuthController {
         )
     }
 
-    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
+    override func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
         try await base.signOutActiveAccount(auth: auth)
     }
 
-    func refreshSavedAccountRateLimits(
+    override func refreshSavedAccountRateLimits(
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async {
@@ -11530,7 +11518,7 @@ final class TestRuntimeOwningAuthController {
         )
     }
 
-    func reconcileAuthenticatedSession(
+    override func reconcileAuthenticatedSession(
         auth: CodexReviewAuthModel,
         serverIsRunning: Bool,
         runtimeGeneration: Int
@@ -11675,11 +11663,11 @@ func makeAuthModel(
     inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
     cancelRunningJobs: @escaping @MainActor @Sendable (String) async throws -> Void = { _ in }
 ) -> ReviewMonitorAuthTestHarness {
-    weak var attachedStore: CodexReviewStore?
     let runtimeDriver = TestAuthRuntimeDriver(
         runtimeState: runtimeState,
         recycleServerIfRunning: recycleServerIfRunning,
-        hasRunningJobs: hasRunningJobs
+        hasRunningJobs: hasRunningJobs,
+        cancelRunningJobs: cancelRunningJobs
     )
     let controller = ReviewMonitorAuthOrchestrator(
         configuration: configuration,
@@ -11688,22 +11676,7 @@ func makeAuthModel(
         sharedAuthSessionFactory: sharedAuthSessionFactory,
         loginAuthSessionFactory: loginAuthSessionFactory,
         probeAppServerManagerFactory: probeAppServerManagerFactory,
-        runtimeState: runtimeState,
-        recycleServerIfRunning: recycleServerIfRunning,
-        resolveAddAccountRuntimeEffect: { accountKey, runtimeGeneration in
-            runtimeDriver.resolveAddAccountRuntimeEffect(
-                accountKey: accountKey,
-                runtimeGeneration: runtimeGeneration
-            )
-        },
-        applyAddAccountRuntimeEffect: { effect, auth in
-            await runtimeDriver.applyAddAccountRuntimeEffect(
-                effect,
-                auth: auth,
-                store: attachedStore
-            )
-        },
-        cancelRunningJobs: cancelRunningJobs,
+        runtimeBridge: .testing(runtimeDriver),
         rateLimitObservationClock: rateLimitObservationClock,
         rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
         inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
@@ -11712,54 +11685,8 @@ func makeAuthModel(
         base: controller,
         runtimeDriver: runtimeDriver
     )
-    let runtime = ReviewMonitorRuntime.testing { handlers in
-        handlers.startStartupRefresh = { auth in
-            adapter.startStartupRefresh(auth: auth)
-        }
-        handlers.cancelStartupRefresh = {
-            adapter.cancelStartupRefresh()
-        }
-        handlers.refreshAuth = { auth in
-            await adapter.refresh(auth: auth)
-        }
-        handlers.signIn = { auth in
-            await adapter.signIn(auth: auth)
-        }
-        handlers.addAccount = { auth in
-            await adapter.addAccount(auth: auth)
-        }
-        handlers.cancelAuthentication = { auth in
-            await adapter.cancelAuthentication(auth: auth)
-        }
-        handlers.switchAccount = { auth, accountKey in
-            try await adapter.switchAccount(auth: auth, accountKey: accountKey)
-        }
-        handlers.removeAccount = { auth, accountKey in
-            try await adapter.removeAccount(auth: auth, accountKey: accountKey)
-        }
-        handlers.reorderSavedAccount = { auth, accountKey, toIndex in
-            try await adapter.reorderSavedAccount(
-                auth: auth,
-                accountKey: accountKey,
-                toIndex: toIndex
-            )
-        }
-        handlers.signOutActiveAccount = { auth in
-            try await adapter.signOutActiveAccount(auth: auth)
-        }
-        handlers.refreshSavedAccountRateLimits = { auth, accountKey in
-            await adapter.refreshSavedAccountRateLimits(auth: auth, accountKey: accountKey)
-        }
-        handlers.reconcileAuthenticatedSession = { auth, serverIsRunning, runtimeGeneration in
-            await adapter.reconcileAuthenticatedSession(
-                auth: auth,
-                serverIsRunning: serverIsRunning,
-                runtimeGeneration: runtimeGeneration
-            )
-        }
-    }
-    let store = CodexReviewStore.makeTestingStore(runtime: runtime)
-    attachedStore = store
+    let store = CodexReviewStore.makeTestingStore(harness: adapter)
+    runtimeDriver.store = store
     return ReviewMonitorAuthTestHarness(store: store)
 }
 

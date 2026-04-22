@@ -7,7 +7,7 @@ package protocol AppServerManaging: Sendable {
     func checkoutTransport(sessionID: String) async throws -> any AppServerSessionTransport
     func checkoutAuthTransport() async throws -> any AppServerSessionTransport
     func currentRuntimeState() async -> AppServerRuntimeState?
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String>
+    func diagnosticLineStream() async -> AsyncStream<String>
     func diagnosticsTail() async -> String
     func shutdown() async
 }
@@ -165,7 +165,7 @@ package actor AppServerSupervisor: AppServerManaging {
         }
     }
 
-    package func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    package func diagnosticLineStream() async -> AsyncStream<String> {
         var continuation: AsyncStream<String>.Continuation!
         let stream = AsyncStream<String>(bufferingPolicy: .unbounded) {
             continuation = $0
@@ -177,12 +177,7 @@ package actor AppServerSupervisor: AppServerManaging {
                 await self.removeDiagnosticSubscriber(id: subscriberID)
             }
         }
-        return .init(
-            stream: stream,
-            cancel: { [weak self] in
-                await self?.cancelDiagnosticSubscriber(id: subscriberID)
-            }
-        )
+        return stream
     }
 
     package func diagnosticsTail() async -> String {
@@ -635,13 +630,6 @@ package actor AppServerSupervisor: AppServerManaging {
 
     private func removeDiagnosticSubscriber(id: UUID) {
         diagnosticSubscribers[id] = nil
-    }
-
-    private func cancelDiagnosticSubscriber(id: UUID) {
-        guard let continuation = diagnosticSubscribers.removeValue(forKey: id) else {
-            return
-        }
-        continuation.finish()
     }
 
     private func terminateStartContext(_ startContext: StartContext) async {

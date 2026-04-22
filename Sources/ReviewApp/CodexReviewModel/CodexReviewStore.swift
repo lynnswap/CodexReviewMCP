@@ -1,48 +1,45 @@
 import Foundation
 import Observation
+import ObservationBridge
 import ReviewDomain
 
 @MainActor
 @Observable
 public final class CodexReviewStore {
-    public package(set) var serverState: CodexReviewServerState = .stopped {
-        didSet {
-            guard serverState != oldValue else {
-                return
-            }
-            scheduleSettingsRefreshIfNeeded()
-        }
-    }
+    public package(set) var serverState: CodexReviewServerState = .stopped
     public let auth: CodexReviewAuthModel
     package let settings: SettingsStore
     public package(set) var serverURL: URL?
     public package(set) var workspaces: [CodexReviewWorkspace] = []
     package var shouldAutoStartEmbeddedServer: Bool {
-        runtime.shouldAutoStartEmbeddedServer
+        coordinator.shouldAutoStartEmbeddedServer
     }
 
     @ObservationIgnored package let diagnosticsURL: URL?
-    @ObservationIgnored package let runtime: ReviewMonitorRuntime
+    @ObservationIgnored package let coordinator: ReviewMonitorCoordinator
+    @ObservationIgnored package let settingsService: ReviewMonitorSettingsService
     @ObservationIgnored package var previewSupportRetainer: AnyObject?
-    @ObservationIgnored package var onJobsDidMutate: (@MainActor () -> Void)?
-    @ObservationIgnored private var observedAuthAccountKey: String?
+    @ObservationIgnored private var observationHandles: Set<ObservationHandle> = []
+    @ObservationIgnored private var observedActiveAccountKey: String?
 
     package init(
-        runtime: ReviewMonitorRuntime,
+        coordinator: ReviewMonitorCoordinator,
+        settingsService: ReviewMonitorSettingsService,
         diagnosticsURL: URL? = nil
     ) {
-        self.runtime = runtime
+        self.coordinator = coordinator
+        self.settingsService = settingsService
         self.diagnosticsURL = diagnosticsURL
         self.auth = CodexReviewAuthModel()
         self.settings = SettingsStore(
-            runtime: runtime,
-            snapshot: runtime.initialSettingsSnapshot
+            snapshot: settingsService.initialSnapshot
         )
-        self.auth.updateSavedAccounts(runtime.initialAccounts)
-        self.auth.updateAccount(runtime.initialAccount)
-        observedAuthAccountKey = auth.account?.accountKey
-        observeAuthAccountChanges()
-        runtime.attachStore(self)
+        self.auth.updateSavedAccounts(coordinator.seed.initialAccounts)
+        self.auth.updateAccount(coordinator.seed.initialAccount)
+        observedActiveAccountKey = auth.account?.accountKey
+        observeSettingsRefreshCauses()
+        coordinator.attachStore(self)
+        settingsService.attach(settings: settings)
     }
 
     public func start(forceRestartIfNeeded: Bool = false) async {
@@ -57,14 +54,15 @@ public final class CodexReviewStore {
         serverURL = nil
         resetReviews()
         writeDiagnosticsIfNeeded()
-        await runtime.start(
+        await coordinator.start(
             store: self,
             forceRestartIfNeeded: forceRestartIfNeeded
         )
+        await refreshSettingsAfterServerStart()
     }
 
     public func stop() async {
-        await runtime.stop(store: self)
+        await coordinator.stop(store: self)
         transitionToStopped()
     }
 
@@ -74,27 +72,48 @@ public final class CodexReviewStore {
     }
 
     public func waitUntilStopped() async {
-        await runtime.waitUntilStopped()
+        await coordinator.waitUntilStopped()
     }
 
     public func refreshAuthentication() async {
-        await runtime.refreshAuth(auth: auth)
-        scheduleSettingsRefreshIfNeeded()
+        await coordinator.refreshAuth(auth: auth)
     }
 
     public func signIn() async {
-        await runtime.signIn(auth: auth)
-        scheduleSettingsRefreshIfNeeded()
+        await coordinator.signIn(auth: auth)
     }
 
     public func addAccount() async {
-        await runtime.addAccount(auth: auth)
-        scheduleSettingsRefreshIfNeeded()
+        await coordinator.addAccount(auth: auth)
     }
 
     public func cancelAuthentication() async {
-        await runtime.cancelAuthentication(auth: auth)
-        scheduleSettingsRefreshIfNeeded()
+        await coordinator.cancelAuthentication(auth: auth)
+    }
+
+    package func performPrimaryAuthenticationAction() async {
+        if auth.isAuthenticating {
+            await cancelAuthentication()
+            return
+        }
+
+        guard auth.isAuthenticated == false else {
+            return
+        }
+
+        switch serverState {
+        case .failed, .stopped:
+            await restart()
+        case .running, .starting:
+            break
+        }
+
+        guard auth.isAuthenticated == false,
+              auth.isAuthenticating == false
+        else {
+            return
+        }
+        await signIn()
     }
 
     public func logout() async {
@@ -112,8 +131,7 @@ public final class CodexReviewStore {
     }
 
     public func signOutActiveAccount() async throws {
-        try await runtime.signOutActiveAccount(auth: auth)
-        scheduleSettingsRefreshIfNeeded()
+        try await coordinator.signOutActiveAccount(auth: auth)
     }
 
     package func switchAccount(_ account: CodexAccount) async throws {
@@ -134,8 +152,7 @@ public final class CodexReviewStore {
         defer {
             targetAccount?.updateIsSwitching(false)
         }
-        try await runtime.switchAccount(auth: auth, accountKey: account.accountKey)
-        scheduleSettingsRefreshIfNeeded()
+        try await coordinator.switchAccount(auth: auth, accountKey: account.accountKey)
     }
 
     package func requestSwitchAccount(
@@ -202,12 +219,11 @@ public final class CodexReviewStore {
     }
 
     package func removeAccount(accountKey: String) async throws {
-        try await runtime.removeAccount(auth: auth, accountKey: accountKey)
-        scheduleSettingsRefreshIfNeeded()
+        try await coordinator.removeAccount(auth: auth, accountKey: accountKey)
     }
 
     package func reorderSavedAccount(accountKey: String, toIndex: Int) async throws {
-        try await runtime.reorderSavedAccount(
+        try await coordinator.reorderSavedAccount(
             auth: auth,
             accountKey: accountKey,
             toIndex: toIndex
@@ -215,30 +231,29 @@ public final class CodexReviewStore {
     }
 
     package func refreshSavedAccountRateLimits(accountKey: String) async {
-        await runtime.refreshSavedAccountRateLimits(
+        await coordinator.refreshSavedAccountRateLimits(
             auth: auth,
             accountKey: accountKey
         )
     }
 
     package func startStartupAuthRefresh() {
-        runtime.startStartupRefresh(auth: auth)
+        coordinator.startStartupRefresh(auth: auth)
     }
 
     package func cancelStartupAuthRefresh() {
-        runtime.cancelStartupRefresh()
+        coordinator.cancelStartupRefresh()
     }
 
     package func reconcileAuthenticatedSession(
         serverIsRunning: Bool,
         runtimeGeneration: Int
     ) async {
-        await runtime.reconcileAuthenticatedSession(
+        await coordinator.reconcileAuthenticatedSession(
             auth: auth,
             serverIsRunning: serverIsRunning,
             runtimeGeneration: runtimeGeneration
         )
-        scheduleSettingsRefreshIfNeeded()
     }
 
     package func switchActionIsDisabled(for account: CodexAccount) -> Bool {
@@ -251,28 +266,28 @@ public final class CodexReviewStore {
         if account.accountKey != auth.account?.accountKey {
             return true
         }
-        return runtime.requiresCurrentSessionRecovery(
+        return coordinator.requiresCurrentSessionRecovery(
             auth: auth,
             accountKey: account.accountKey
         )
     }
 
     package func refreshSettings() async {
-        await settings.refresh()
+        await settingsService.refresh()
     }
 
     package func updateSettingsModel(_ model: String) async {
-        await settings.updateModel(model)
+        await settingsService.updateModel(model)
     }
 
     package func clearSettingsModelOverride() async {
-        await settings.clearModelOverride()
+        await settingsService.clearModelOverride()
     }
 
     package func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async {
-        await settings.updateReasoningEffort(reasoningEffort)
+        await settingsService.updateReasoningEffort(reasoningEffort)
     }
 
     package func clearSettingsReasoningEffort() async {
@@ -282,7 +297,7 @@ public final class CodexReviewStore {
     package func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async {
-        await settings.updateServiceTier(serviceTier)
+        await settingsService.updateServiceTier(serviceTier)
     }
 
     package func transitionToRunning(serverURL: URL) {
@@ -352,7 +367,6 @@ public final class CodexReviewStore {
 
     package func noteJobMutation() {
         writeDiagnosticsIfNeeded()
-        onJobsDidMutate?()
     }
 
     private func resetReviews() {
@@ -374,7 +388,7 @@ public final class CodexReviewStore {
             return false
         }
         if isAlreadyUsingPersistedActiveAccount(account.accountKey) {
-            return runtime.requiresCurrentSessionRecovery(
+            return coordinator.requiresCurrentSessionRecovery(
                 auth: auth,
                 accountKey: account.accountKey
             )
@@ -398,31 +412,35 @@ public final class CodexReviewStore {
         }
     }
 
-    private func scheduleSettingsRefreshIfNeeded() {
-        Task { @MainActor [weak self] in
+    private var activeAccountKeyForSettingsRefresh: String? {
+        auth.account?.accountKey
+    }
+
+    private func observeSettingsRefreshCauses() {
+        guard observationHandles.isEmpty else {
+            return
+        }
+
+        observeTask(\.activeAccountKeyForSettingsRefresh) { [weak self] activeAccountKey in
             guard let self else {
                 return
             }
-            await self.settings.refreshIfRunning(serverState: self.serverState)
+            guard activeAccountKey != self.observedActiveAccountKey else {
+                return
+            }
+
+            self.observedActiveAccountKey = activeAccountKey
+            await self.refreshSettingsForActiveAccountKeyChange()
         }
+        .store(in: &observationHandles)
     }
 
-    private func observeAuthAccountChanges() {
-        withObservationTracking {
-            _ = auth.account?.accountKey
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else {
-                    return
-                }
-                let accountKey = self.auth.account?.accountKey
-                if accountKey != self.observedAuthAccountKey {
-                    self.observedAuthAccountKey = accountKey
-                    self.scheduleSettingsRefreshIfNeeded()
-                }
-                self.observeAuthAccountChanges()
-            }
-        }
+    private func refreshSettingsAfterServerStart() async {
+        await settingsService.refreshIfRunning(serverState: serverState)
+    }
+
+    private func refreshSettingsForActiveAccountKeyChange() async {
+        await settingsService.refreshIfRunning(serverState: serverState)
     }
 
     public var hasRunningJobs: Bool {

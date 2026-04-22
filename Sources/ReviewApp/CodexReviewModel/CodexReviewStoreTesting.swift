@@ -24,7 +24,7 @@ extension CodexReviewStore {
         settingsSnapshot: CodexReviewSettingsSnapshot? = nil
     ) {
         precondition(
-            runtime.isActive == false,
+            coordinator.isActive == false,
             "loadForTesting must be called before the embedded server starts."
         )
         self.serverState = serverState

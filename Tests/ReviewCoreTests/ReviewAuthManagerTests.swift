@@ -712,15 +712,10 @@ private actor FakeReviewAuthSession: ReviewAuthSession {
         logoutCalls += 1
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(
-            stream: stream,
-            cancel: { [self] in
-                await finishNotifications()
-            }
-        )
+        return stream
     }
 
     func close() async {
@@ -830,10 +825,10 @@ private actor PostLoginDurableCheckReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -901,10 +896,10 @@ private actor EventuallyPersistentLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -976,10 +971,10 @@ private actor SignedOutThenUnavailableReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {

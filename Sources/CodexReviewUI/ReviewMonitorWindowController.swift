@@ -1,4 +1,5 @@
 import AppKit
+import ObservationBridge
 import ReviewApp
 import ReviewDomain
 
@@ -20,8 +21,9 @@ private func configureReviewMonitorWindowForSplitPresentation(_ window: NSWindow
 }
 
 @MainActor
+@Observable
 public final class ReviewMonitorWindowController: NSWindowController {
-    enum DisplayedContentKind: Equatable, Sendable {
+    enum WindowContentKind: Equatable, Sendable {
         case splitView
         case signInView
     }
@@ -32,8 +34,8 @@ public final class ReviewMonitorWindowController: NSWindowController {
     private let rootContentViewController: ReviewMonitorWindowContentViewController
     private let auth: CodexReviewAuthModel
     private let forceSplitView: Bool
-    private var displayedContentKind: DisplayedContentKind?
-    private var presentedContentUpdateTask: Task<Void, Never>?
+    private var displayedWindowContentKind: WindowContentKind?
+    private var observationHandles: Set<ObservationHandle> = []
 
     public convenience init(
         store: CodexReviewStore,
@@ -70,17 +72,8 @@ public final class ReviewMonitorWindowController: NSWindowController {
         configureReviewMonitorWindowBase(window)
         window.setFrameAutosaveName(Self.frameAutosaveName)
 
-        signInViewController.onAuthenticationStateChanged = { [weak self] in
-            guard let self else {
-                return
-            }
-            if self.displayedContentKind == nil {
-                self.updatePresentedContent()
-            } else {
-                self.schedulePresentedContentUpdate()
-            }
-        }
-        signInViewController.startObservingAuth()
+        observeWindowContentKind()
+        applyWindowContentKind(windowContentKind)
         _ = performInitialAuthRefresh
     }
 
@@ -89,47 +82,26 @@ public final class ReviewMonitorWindowController: NSWindowController {
         nil
     }
 
-    deinit {
-        presentedContentUpdateTask?.cancel()
-    }
-
-    private func schedulePresentedContentUpdate() {
-        presentedContentUpdateTask?.cancel()
-        presentedContentUpdateTask = Task { @MainActor [weak self] in
-            await Task.yield()
-            guard Task.isCancelled == false else {
-                return
-            }
-            self?.updatePresentedContent()
-        }
-    }
-
-    private func updatePresentedContent() {
-        guard let window else {
+    private func observeWindowContentKind() {
+        guard observationHandles.isEmpty else {
             return
         }
 
-        switch desiredContentKind() {
-        case .splitView:
-            guard displayedContentKind != .splitView else {
-                return
-            }
-            showSplitView(in: window)
-        case .signInView:
-            guard displayedContentKind != .signInView else {
-                return
-            }
-            showSignInView(in: window)
+        observe(\.windowContentKind) { [weak self] contentKind in
+            self?.applyWindowContentKind(contentKind)
         }
+        .store(in: &observationHandles)
     }
 
-    private func desiredContentKind() -> DisplayedContentKind {
+    private var windowContentKind: WindowContentKind {
         if forceSplitView {
             return .splitView
         }
-        if auth.isAuthenticating,
-           displayedContentKind == .splitView {
-            return .splitView
+        if auth.isAuthenticating {
+            if displayedWindowContentKind == .splitView {
+                return .splitView
+            }
+            return .signInView
         }
         if auth.account != nil {
             return .splitView
@@ -138,13 +110,26 @@ public final class ReviewMonitorWindowController: NSWindowController {
             return .splitView
         }
         if auth.errorMessage != nil,
-           displayedContentKind == .splitView {
+           displayedWindowContentKind == .splitView {
             return .splitView
         }
-        if auth.isAuthenticating {
-            return .signInView
-        }
         return .signInView
+    }
+
+    private func applyWindowContentKind(_ contentKind: WindowContentKind) {
+        guard let window else {
+            return
+        }
+        guard displayedWindowContentKind != contentKind else {
+            return
+        }
+
+        switch contentKind {
+        case .splitView:
+            showSplitView(in: window)
+        case .signInView:
+            showSignInView(in: window)
+        }
     }
 
     private func showSplitView(in window: NSWindow) {
@@ -152,9 +137,9 @@ public final class ReviewMonitorWindowController: NSWindowController {
         splitViewController.attach(to: window)
         rootContentViewController.setContentViewController(
             splitViewController,
-            animated: displayedContentKind != nil
+            animated: displayedWindowContentKind != nil
         )
-        displayedContentKind = .splitView
+        displayedWindowContentKind = .splitView
     }
 
     private func showSignInView(in window: NSWindow) {
@@ -167,9 +152,9 @@ public final class ReviewMonitorWindowController: NSWindowController {
         window.titlebarSeparatorStyle = .none
         rootContentViewController.setContentViewController(
             signInViewController,
-            animated: displayedContentKind != nil
+            animated: displayedWindowContentKind != nil
         )
-        displayedContentKind = .signInView
+        displayedWindowContentKind = .signInView
     }
 }
 
@@ -379,11 +364,11 @@ extension ReviewMonitorWindowController {
         signInViewController.view.superview === rootContentViewController.view
     }
 
-    var displayedContentKindForTesting: DisplayedContentKind {
-        guard let displayedContentKind else {
+    var windowContentKindForTesting: WindowContentKind {
+        guard let displayedWindowContentKind else {
             fatalError("ReviewMonitorWindowController did not select content yet.")
         }
-        return displayedContentKind
+        return displayedWindowContentKind
     }
 
     var embeddedContentSubviewCountForTesting: Int {

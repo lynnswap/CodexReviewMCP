@@ -4,15 +4,6 @@ import ReviewDomain
 
 struct SignInView: View {
     let store: CodexReviewStore
-    let onPrimaryAction: @MainActor () -> Void
-
-    init(
-        store: CodexReviewStore,
-        onPrimaryAction: @escaping @MainActor () -> Void = {}
-    ) {
-        self.store = store
-        self.onPrimaryAction = onPrimaryAction
-    }
 
     var body: some View {
         ContentUnavailableView {
@@ -24,7 +15,9 @@ struct SignInView: View {
                 .scenePadding(.bottom)
             
             Button(role: authenticationActionRole) {
-                onPrimaryAction()
+                Task { @MainActor in
+                    await store.performPrimaryAuthenticationAction()
+                }
             } label: {
                 LabeledContent {
                     if store.auth.isAuthenticating {

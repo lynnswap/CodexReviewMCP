@@ -2,6 +2,8 @@ import AppKit
 import AuthenticationServices
 import Darwin
 import Foundation
+import Observation
+import ObservationBridge
 import ReviewDomain
 import ReviewRuntime
 import ReviewInfra
@@ -74,7 +76,7 @@ extension CodexReviewStore {
         inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
-        let runtime = ReviewMonitorRuntime.live(
+        let components = ReviewMonitorCoordinator.live(
             configuration: configuration,
             appServerManager: appServerManager,
             sharedAuthSessionFactory: sharedAuthSessionFactory,
@@ -85,7 +87,8 @@ extension CodexReviewStore {
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
         )
         self.init(
-            runtime: runtime,
+            coordinator: components.coordinator,
+            settingsService: components.settingsService,
             diagnosticsURL: diagnosticsURL
         )
     }
@@ -94,7 +97,7 @@ extension CodexReviewStore {
         sessionID: String,
         request: ReviewStartRequest
     ) async throws -> ReviewReadResult {
-        try await runtime.startReview(
+        try await coordinator.startReview(
             sessionID: sessionID,
             request: request,
             store: self
@@ -136,7 +139,7 @@ extension CodexReviewStore {
         sessionID: String,
         reason: String = "Cancellation requested."
     ) async throws -> ReviewCancelOutcome {
-        try await runtime.cancelReviewByID(
+        try await coordinator.cancelReviewByID(
             jobID: jobID,
             sessionID: sessionID,
             reason: reason,
@@ -148,7 +151,7 @@ extension CodexReviewStore {
         selector: ReviewJobSelector,
         sessionID: String
     ) async throws -> ReviewCancelOutcome {
-        try await runtime.cancelReviewBySelector(
+        try await coordinator.cancelReviewBySelector(
             selector: selector,
             sessionID: sessionID,
             store: self
@@ -165,7 +168,7 @@ extension CodexReviewStore {
     }
 
     package func closeSession(_ sessionID: String, reason: String) async {
-        await runtime.closeSession(sessionID, reason: reason, store: self)
+        await coordinator.closeSession(sessionID, reason: reason, store: self)
     }
 
     package func enqueueReview(
@@ -173,7 +176,7 @@ extension CodexReviewStore {
         request: ReviewRequestOptions,
         initialModel: String? = nil
     ) throws -> String {
-        if runtime.isSessionClosed(sessionID) {
+        if coordinator.isSessionClosed(sessionID) {
             throw ReviewError.accessDenied("Session \(sessionID) is already closed.")
         }
         let request = try request.validated()
@@ -384,7 +387,7 @@ extension CodexReviewStore {
     ) -> ReviewTerminationReason? {
         let defaultReason = "Cancellation requested."
         let closedSessionReason: ReviewTerminationReason? = {
-            guard runtime.isSessionClosed(sessionID) else {
+            guard coordinator.isSessionClosed(sessionID) else {
                 return nil
             }
             return .cancelled(defaultReason)
@@ -404,7 +407,7 @@ extension CodexReviewStore {
     }
 
     package func closeSessionState(_ sessionID: String) -> [String] {
-        runtime.closeSessionState(sessionID)
+        coordinator.closeSessionState(sessionID)
     }
 
     package func pruneClosedJobIfNeeded(jobID: String) {
@@ -413,7 +416,7 @@ extension CodexReviewStore {
             return
         }
         let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard runtime.isSessionClosed(job.sessionID),
+        guard coordinator.isSessionClosed(job.sessionID),
               job.isTerminal
         else {
             return
@@ -425,7 +428,7 @@ extension CodexReviewStore {
         sessionID: String,
         excludingJobIDs: Set<String> = []
     ) {
-        guard runtime.isSessionClosed(sessionID) else {
+        guard coordinator.isSessionClosed(sessionID) else {
             return
         }
 
@@ -689,21 +692,30 @@ extension CodexReviewStore {
     }
 
     package static func makePreviewStore(
-        seed: ReviewMonitorRuntime.Seed,
+        seed: ReviewMonitorCoordinator.Seed,
         diagnosticsURL: URL? = nil
     ) -> CodexReviewStore {
-        CodexReviewStore(
-            runtime: .preview(seed: seed),
+        let harness = ReviewMonitorTestingHarness(seed: seed)
+        return CodexReviewStore(
+            coordinator: .init(harness: harness),
+            settingsService: .init(
+                initialSnapshot: harness.currentSettingsSnapshot,
+                harness: harness
+            ),
             diagnosticsURL: diagnosticsURL
         )
     }
 
     package static func makeTestingStore(
-        runtime: ReviewMonitorRuntime,
+        harness: ReviewMonitorTestingHarness,
         diagnosticsURL: URL? = nil
     ) -> CodexReviewStore {
         CodexReviewStore(
-            runtime: runtime,
+            coordinator: .init(harness: harness),
+            settingsService: .init(
+                initialSnapshot: harness.currentSettingsSnapshot,
+                harness: harness
+            ),
             diagnosticsURL: diagnosticsURL
         )
     }
@@ -857,7 +869,7 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
         restoreSharedAuthIfNeeded()
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         await base.notificationStream()
     }
 
@@ -1115,7 +1127,6 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var notificationTerminalState: NotificationTerminalState?
     private var relayTask: Task<Void, Never>?
-    private var relayCancellation: (@Sendable () async -> Void)?
     private var activeLoginID: String?
     private var activeAuthenticationSession: ReviewMonitorWebAuthenticationSession?
     private var authenticationTask: Task<Void, Never>?
@@ -1236,14 +1247,14 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         try await sharedSession.logout()
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         if let notificationTerminalState {
             for notification in bufferedNotifications {
                 continuation.yield(notification)
             }
             finishNotificationContinuation(continuation, with: notificationTerminalState)
-            return .init(stream: stream, cancel: {})
+            return stream
         }
 
         let subscriberID = UUID()
@@ -1256,12 +1267,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
                 await self.removeNotificationSubscriber(id: subscriberID)
             }
         }
-        return .init(
-            stream: stream,
-            cancel: { [weak self] in
-                await self?.removeNotificationSubscriber(id: subscriberID)
-            }
-        )
+        return stream
     }
 
     func waitForAuthenticationTaskCompletion() async {
@@ -1287,10 +1293,6 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
             } catch {
             }
         }
-        if let relayCancellation {
-            await relayCancellation()
-            self.relayCancellation = nil
-        }
         relayTask?.cancel()
         relayTask = nil
         await sharedSession.close()
@@ -1303,11 +1305,10 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         guard relayTask == nil else {
             return
         }
-        let subscription = await sharedSession.notificationStream()
-        relayCancellation = subscription.cancel
+        let notificationStream = await sharedSession.notificationStream()
         relayTask = Task {
             do {
-                for try await notification in subscription.stream {
+                for try await notification in notificationStream {
                     await self.handleNotification(notification)
                 }
                 self.finishRelay(error: nil)
@@ -1475,7 +1476,6 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
 
     private func finishRelay(error: Error?) {
         relayTask = nil
-        relayCancellation = nil
         if let error {
             finishNotificationSubscribers(failing: error)
         } else {
@@ -1534,7 +1534,13 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
 }
 
 @MainActor
-extension ReviewMonitorRuntime {
+package struct ReviewMonitorCoordinatorComponents {
+    let coordinator: ReviewMonitorCoordinator
+    let settingsService: ReviewMonitorSettingsService
+}
+
+@MainActor
+extension ReviewMonitorCoordinator {
     static func live(
         configuration: ReviewServerConfiguration,
         appServerManager: (any AppServerManaging)? = nil,
@@ -1544,8 +1550,8 @@ extension ReviewMonitorRuntime {
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
         inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
-    ) -> ReviewMonitorRuntime {
-        let backend = CodexReviewEmbeddedServerBackend(
+    ) -> ReviewMonitorCoordinatorComponents {
+        let serverRuntime = ReviewMonitorServerRuntime(
             configuration: configuration,
             appServerManager: appServerManager,
             sharedAuthSessionFactory: sharedAuthSessionFactory,
@@ -1555,145 +1561,347 @@ extension ReviewMonitorRuntime {
             inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
         )
-        return .init(
-            seed: .init(
-                shouldAutoStartEmbeddedServer: backend.shouldAutoStartEmbeddedServer,
-                initialAccount: backend.initialAccount,
-                initialAccounts: backend.initialAccounts,
-                initialSettingsSnapshot: backend.initialSettingsSnapshot
+        let settingsService = ReviewMonitorSettingsService(
+            initialSnapshot: serverRuntime.initialSettingsSnapshot,
+            liveBackend: serverRuntime
+        )
+        let executionCoordinator = ReviewExecutionCoordinator(
+            configuration: .init(
+                codexCommand: configuration.codexCommand,
+                environment: configuration.environment
             ),
-            handlers: .init(
-                attachStore: { store in
-                    backend.attachStore(store)
-                },
-                isActive: {
-                    backend.isActive
-                },
-                start: { store, forceRestartIfNeeded in
-                    await backend.start(
-                        store: store,
-                        forceRestartIfNeeded: forceRestartIfNeeded
-                    )
-                },
-                stop: { store in
-                    await backend.stop(store: store)
-                },
-                waitUntilStopped: {
-                    await backend.waitUntilStopped()
-                },
-                refreshSettings: {
-                    try await backend.refreshSettings()
-                },
-                updateSettingsModel: { model, reasoningEffort, persistReasoningEffort, serviceTier, persistServiceTier in
-                    try await backend.updateSettingsModel(
-                        model,
-                        reasoningEffort: reasoningEffort,
-                        persistReasoningEffort: persistReasoningEffort,
-                        serviceTier: serviceTier,
-                        persistServiceTier: persistServiceTier
-                    )
-                },
-                updateSettingsReasoningEffort: { reasoningEffort in
-                    try await backend.updateSettingsReasoningEffort(reasoningEffort)
-                },
-                updateSettingsServiceTier: { serviceTier in
-                    try await backend.updateSettingsServiceTier(serviceTier)
-                },
-                startStartupRefresh: { auth in
-                    backend.authController.startStartupRefresh(auth: auth)
-                },
-                cancelStartupRefresh: {
-                    backend.authController.cancelStartupRefresh()
-                },
-                refreshAuth: { auth in
-                    await backend.authController.refresh(auth: auth)
-                },
-                signIn: { auth in
-                    await backend.authController.signIn(auth: auth)
-                },
-                addAccount: { auth in
-                    await backend.authController.addAccount(auth: auth)
-                },
-                cancelAuthentication: { auth in
-                    await backend.authController.cancelAuthentication(auth: auth)
-                },
-                switchAccount: { auth, accountKey in
-                    try await backend.authController.switchAccount(
-                        auth: auth,
-                        accountKey: accountKey
-                    )
-                },
-                removeAccount: { auth, accountKey in
-                    try await backend.authController.removeAccount(
-                        auth: auth,
-                        accountKey: accountKey
-                    )
-                },
-                reorderSavedAccount: { auth, accountKey, toIndex in
-                    try await backend.authController.reorderSavedAccount(
-                        auth: auth,
-                        accountKey: accountKey,
-                        toIndex: toIndex
-                    )
-                },
-                signOutActiveAccount: { auth in
-                    try await backend.authController.signOutActiveAccount(auth: auth)
-                },
-                refreshSavedAccountRateLimits: { auth, accountKey in
-                    await backend.authController.refreshSavedAccountRateLimits(
-                        auth: auth,
-                        accountKey: accountKey
-                    )
-                },
-                reconcileAuthenticatedSession: { auth, serverIsRunning, runtimeGeneration in
-                    await backend.authController.reconcileAuthenticatedSession(
-                        auth: auth,
-                        serverIsRunning: serverIsRunning,
-                        runtimeGeneration: runtimeGeneration
-                    )
-                },
-                requiresCurrentSessionRecovery: { auth, accountKey in
-                    backend.authController.requiresCurrentSessionRecovery(
-                        auth: auth,
-                        accountKey: accountKey
-                    )
-                },
-                startReview: { sessionID, request, store in
-                    try await backend.executionCoordinator.startReview(
-                        sessionID: sessionID,
-                        request: request,
-                        store: store
-                    )
-                },
-                cancelReviewByID: { jobID, sessionID, reason, store in
-                    try await backend.executionCoordinator.cancelReview(
-                        jobID: jobID,
-                        sessionID: sessionID,
-                        reason: reason,
-                        store: store
-                    )
-                },
-                cancelReviewBySelector: { selector, sessionID, store in
-                    try await backend.executionCoordinator.cancelReview(
-                        selector: selector,
-                        sessionID: sessionID,
-                        store: store
-                    )
-                },
-                closeSession: { sessionID, reason, store in
-                    await backend.executionCoordinator.closeSession(
-                        sessionID,
-                        reason: reason,
-                        store: store
+            appServerManager: serverRuntime.appServerManager,
+            runtimeStateDidChange: { [weak serverRuntime] runtimeState in
+                await MainActor.run {
+                    guard let serverRuntime, let server = serverRuntime.currentServer else {
+                        return
+                    }
+                    serverRuntime.writeRuntimeState(
+                        endpointRecord: server.currentEndpointRecord(),
+                        appServerRuntimeState: runtimeState
                     )
                 }
-            )
+            }
+        )
+        let authOrchestrator = ReviewMonitorAuthOrchestrator(
+            configuration: configuration,
+            accountRegistryStore: serverRuntime.accountRegistryStore,
+            appServerManager: serverRuntime.appServerManager,
+            sharedAuthSessionFactory: sharedAuthSessionFactory ?? serverRuntime.liveSharedAuthSessionFactory,
+            loginAuthSessionFactory: loginAuthSessionFactory ?? serverRuntime.liveCLIAuthSessionFactory,
+            runtimeBridge: .live(serverRuntime),
+            rateLimitObservationClock: rateLimitObservationClock,
+            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+            inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
+        )
+        serverRuntime.authOrchestrator = authOrchestrator
+        serverRuntime.executionCoordinator = executionCoordinator
+        serverRuntime.settingsService = settingsService
+        let seed = ReviewMonitorCoordinator.Seed(
+            shouldAutoStartEmbeddedServer: serverRuntime.shouldAutoStartEmbeddedServer,
+            initialAccount: serverRuntime.initialAccount,
+            initialAccounts: serverRuntime.initialAccounts,
+            initialSettingsSnapshot: serverRuntime.initialSettingsSnapshot
+        )
+        return .init(
+            coordinator: .init(
+                seed: seed,
+                serverRuntime: serverRuntime,
+                authOrchestrator: authOrchestrator,
+                executionCoordinator: executionCoordinator
+            ),
+            settingsService: settingsService
         )
     }
 }
 
 @MainActor
-private final class CodexReviewEmbeddedServerBackend {
+package final class ReviewMonitorSettingsService {
+    private enum Backend {
+        case live(ReviewMonitorServerRuntime)
+        case harness(ReviewMonitorTestingHarness)
+    }
+
+    let initialSnapshot: CodexReviewSettingsSnapshot
+
+    private let backend: Backend
+    private weak var settingsStore: SettingsStore?
+    private var pendingRefresh = false
+    private var pendingSelection: SettingsStore.Selection?
+    private var lastPersistedSelection: SettingsStore.Selection
+
+    init(
+        initialSnapshot: CodexReviewSettingsSnapshot,
+        liveBackend: ReviewMonitorServerRuntime
+    ) {
+        self.initialSnapshot = initialSnapshot
+        backend = .live(liveBackend)
+        lastPersistedSelection = .init(
+            model: initialSnapshot.model,
+            reasoningEffort: initialSnapshot.reasoningEffort,
+            serviceTier: initialSnapshot.serviceTier
+        )
+    }
+
+    init(
+        initialSnapshot: CodexReviewSettingsSnapshot,
+        harness: ReviewMonitorTestingHarness
+    ) {
+        self.initialSnapshot = initialSnapshot
+        backend = .harness(harness)
+        lastPersistedSelection = .init(
+            model: initialSnapshot.model,
+            reasoningEffort: initialSnapshot.reasoningEffort,
+            serviceTier: initialSnapshot.serviceTier
+        )
+    }
+
+    func attach(settings: SettingsStore) {
+        settingsStore = settings
+        lastPersistedSelection = settings.currentSelection()
+    }
+
+    func refreshIfRunning(serverState: CodexReviewServerState) async {
+        guard case .running = serverState else {
+            return
+        }
+        await refresh()
+    }
+
+    func refresh() async {
+        guard let settingsStore else {
+            return
+        }
+        guard settingsStore.isLoading == false else {
+            pendingRefresh = true
+            return
+        }
+
+        settingsStore.beginLoading()
+        do {
+            let snapshot = try await refreshSettings()
+            settingsStore.apply(snapshot: snapshot)
+            lastPersistedSelection = settingsStore.currentSelection()
+            settingsStore.finishLoading(errorMessage: nil)
+        } catch {
+            settingsStore.finishLoading(errorMessage: error.localizedDescription)
+        }
+        await drainPendingWorkIfNeeded()
+    }
+
+    func updateModel(_ model: String?) async {
+        await applySelectionChange(
+            trigger: .model,
+            candidate: { settingsStore in
+                .init(
+                    model: model,
+                    reasoningEffort: settingsStore.currentSelection().reasoningEffort,
+                    serviceTier: settingsStore.currentSelection().serviceTier
+                )
+            }
+        )
+    }
+
+    func clearModelOverride() async {
+        await updateModel(nil)
+    }
+
+    func updateReasoningEffort(_ reasoningEffort: CodexReviewReasoningEffort?) async {
+        await applySelectionChange(
+            trigger: .reasoningEffort,
+            candidate: { settingsStore in
+                .init(
+                    model: settingsStore.currentSelection().model,
+                    reasoningEffort: reasoningEffort,
+                    serviceTier: settingsStore.currentSelection().serviceTier
+                )
+            }
+        )
+    }
+
+    func updateServiceTier(_ serviceTier: CodexReviewServiceTier?) async {
+        await applySelectionChange(
+            trigger: .serviceTier,
+            candidate: { settingsStore in
+                .init(
+                    model: settingsStore.currentSelection().model,
+                    reasoningEffort: settingsStore.currentSelection().reasoningEffort,
+                    serviceTier: serviceTier
+                )
+            }
+        )
+    }
+
+    private func applySelectionChange(
+        trigger: SettingsStore.SelectionTrigger,
+        candidate: (SettingsStore) -> SettingsStore.Selection
+    ) async {
+        guard let settingsStore else {
+            return
+        }
+
+        let normalized = settingsStore.normalizeSelection(
+            model: candidate(settingsStore).model,
+            reasoningEffort: candidate(settingsStore).reasoningEffort,
+            serviceTier: candidate(settingsStore).serviceTier,
+            catalog: settingsStore.models,
+            clearIncompatibleOverrides: trigger == .model
+        )
+        settingsStore.applyNormalizedSelection(normalized, catalog: settingsStore.models)
+
+        guard normalized != lastPersistedSelection else {
+            pendingSelection = nil
+            return
+        }
+        guard settingsStore.isLoading == false else {
+            pendingSelection = normalized
+            return
+        }
+
+        await persistSelectionChange(
+            trigger: trigger,
+            previous: lastPersistedSelection,
+            candidate: normalized
+        )
+    }
+
+    private func persistSelectionChange(
+        trigger: SettingsStore.SelectionTrigger,
+        previous: SettingsStore.Selection,
+        candidate: SettingsStore.Selection
+    ) async {
+        guard let settingsStore else {
+            return
+        }
+
+        settingsStore.beginLoading()
+        do {
+            try await persistSelection(
+                trigger: trigger,
+                previous: previous,
+                candidate: candidate
+            )
+            lastPersistedSelection = settingsStore.selectionAfterPersisting(
+                trigger: trigger,
+                previous: previous,
+                candidate: candidate
+            )
+            settingsStore.finishLoading(errorMessage: nil)
+        } catch {
+            settingsStore.apply(snapshot: settingsStore.snapshot(selection: previous))
+            lastPersistedSelection = previous
+            settingsStore.finishLoading(errorMessage: error.localizedDescription)
+        }
+        await drainPendingWorkIfNeeded()
+    }
+
+    private func drainPendingWorkIfNeeded() async {
+        if pendingRefresh {
+            pendingRefresh = false
+            await refresh()
+            return
+        }
+        guard let pendingSelection, let settingsStore else {
+            return
+        }
+        self.pendingSelection = nil
+
+        let previous = lastPersistedSelection
+        let triggers = settingsStore.selectionTriggers(
+            previous: previous,
+            candidate: pendingSelection
+        )
+        guard triggers.isEmpty == false else {
+            return
+        }
+
+        var appliedSelection = previous
+        for trigger in triggers {
+            await persistSelectionChange(
+                trigger: trigger,
+                previous: appliedSelection,
+                candidate: pendingSelection
+            )
+            guard settingsStore.currentSelection() == pendingSelection else {
+                return
+            }
+            appliedSelection = settingsStore.selectionAfterPersisting(
+                trigger: trigger,
+                previous: appliedSelection,
+                candidate: pendingSelection
+            )
+        }
+    }
+
+    private func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
+        switch backend {
+        case .live(let liveBackend):
+            return try await liveBackend.refreshSettings()
+        case .harness(let harness):
+            return try await harness.refreshSettings()
+        }
+    }
+
+    private func persistSelection(
+        trigger: SettingsStore.SelectionTrigger,
+        previous: SettingsStore.Selection,
+        candidate: SettingsStore.Selection
+    ) async throws {
+        switch backend {
+        case .live(let liveBackend):
+            try await persistSelection(
+                trigger: trigger,
+                previous: previous,
+                candidate: candidate,
+                updateModel: liveBackend.updateSettingsModel,
+                updateReasoningEffort: liveBackend.updateSettingsReasoningEffort,
+                updateServiceTier: liveBackend.updateSettingsServiceTier
+            )
+        case .harness(let harness):
+            try await persistSelection(
+                trigger: trigger,
+                previous: previous,
+                candidate: candidate,
+                updateModel: harness.updateSettingsModel,
+                updateReasoningEffort: harness.updateSettingsReasoningEffort,
+                updateServiceTier: harness.updateSettingsServiceTier
+            )
+        }
+    }
+
+    private func persistSelection(
+        trigger: SettingsStore.SelectionTrigger,
+        previous: SettingsStore.Selection,
+        candidate: SettingsStore.Selection,
+        updateModel: @escaping @MainActor (
+            String?,
+            CodexReviewReasoningEffort?,
+            Bool,
+            CodexReviewServiceTier?,
+            Bool
+        ) async throws -> Void,
+        updateReasoningEffort: @escaping @MainActor (CodexReviewReasoningEffort?) async throws -> Void,
+        updateServiceTier: @escaping @MainActor (CodexReviewServiceTier?) async throws -> Void
+    ) async throws {
+        switch trigger {
+        case .model:
+            try await updateModel(
+                candidate.model,
+                candidate.reasoningEffort,
+                previous.reasoningEffort != candidate.reasoningEffort,
+                candidate.serviceTier,
+                previous.serviceTier != candidate.serviceTier
+            )
+        case .reasoningEffort:
+            try await updateReasoningEffort(candidate.reasoningEffort)
+        case .serviceTier:
+            try await updateServiceTier(candidate.serviceTier)
+        }
+    }
+}
+
+@MainActor
+package final class ReviewMonitorServerRuntime {
     private struct DeferredAddAccountRuntimeEffect {
         var accountKey: String
         var runtimeGeneration: Int
@@ -1712,6 +1920,9 @@ private final class CodexReviewEmbeddedServerBackend {
     let rateLimitObservationClock: any ReviewClock
     let rateLimitStaleRefreshInterval: Duration
     let inactiveRateLimitRefreshInterval: Duration
+    weak var authOrchestrator: ReviewMonitorAuthOrchestrator?
+    weak var settingsService: ReviewMonitorSettingsService?
+    var executionCoordinator: ReviewExecutionCoordinator?
     lazy var liveSharedAuthSessionFactory: @Sendable ([String: String]) async throws -> any ReviewAuthSession = { [weak self, appServerManager, configuration] environment in
         let makeCLISession = {
             CLIReviewAuthSession(
@@ -1746,76 +1957,6 @@ private final class CodexReviewEmbeddedServerBackend {
             )
         )
     }
-    lazy var authController: CodexAuthController = {
-        CodexAuthController(
-            configuration: configuration,
-            accountRegistryStore: accountRegistryStore,
-            appServerManager: appServerManager,
-            sharedAuthSessionFactory: sharedAuthSessionFactory ?? liveSharedAuthSessionFactory,
-            loginAuthSessionFactory: loginAuthSessionFactory ?? liveCLIAuthSessionFactory,
-            runtimeState: { [weak self] in
-                self?.authRuntimeState ?? .stopped
-            },
-            recycleServerIfRunning: { [weak self] in
-                await self?.recycleSharedAppServerAfterAuthChange()
-            },
-            resolveAddAccountRuntimeEffect: { [weak self] accountKey, runtimeGeneration in
-                guard let self else {
-                    return .none
-                }
-                if self.attachedStore?.hasRunningJobs ?? false {
-                    return .deferRecycleUntilJobsDrain(
-                        accountKey: accountKey,
-                        runtimeGeneration: runtimeGeneration
-                    )
-                }
-                return .recycleNow(
-                    accountKey: accountKey,
-                    runtimeGeneration: runtimeGeneration
-                )
-            },
-            applyAddAccountRuntimeEffect: { [weak self] effect, auth in
-                await self?.applyAddAccountRuntimeEffect(effect, auth: auth)
-            },
-            cancelRunningJobs: { [weak self] reason in
-                guard let store = self?.attachedStore else {
-                    return
-                }
-                do {
-                    try await store.cancelAllRunningJobs(reason: reason)
-                } catch {
-                    store.terminateAllRunningJobsLocally(
-                        reason: reason,
-                        failureMessage: error.localizedDescription
-                    )
-                    throw error
-                }
-            },
-            rateLimitObservationClock: rateLimitObservationClock,
-            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
-            inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
-        )
-    }()
-    lazy var executionCoordinator: ReviewExecutionCoordinator = {
-        ReviewExecutionCoordinator(
-            configuration: .init(
-                codexCommand: configuration.codexCommand,
-                environment: configuration.environment
-            ),
-            appServerManager: appServerManager,
-            runtimeStateDidChange: { [weak self] runtimeState in
-                await MainActor.run { [weak self] in
-                    guard let self, let server = self.server else {
-                        return
-                    }
-                    self.writeRuntimeState(
-                        endpointRecord: server.currentEndpointRecord(),
-                        appServerRuntimeState: runtimeState
-                    )
-                }
-            }
-        )
-    }()
 
     private var server: ReviewMCPHTTPServer?
     private var waitTask: Task<Void, Never>?
@@ -1825,21 +1966,41 @@ private final class CodexReviewEmbeddedServerBackend {
     private var deferredAddAccountRuntimeEffect: DeferredAddAccountRuntimeEffect?
     private var deferredAddAccountRuntimeReconcileTask: Task<Void, Never>?
     private weak var attachedStore: CodexReviewStore?
-    var closedSessions: Set<String> = []
+    private var observedHasRunningJobs: Bool?
+    private var observationHandles: Set<ObservationHandle> = []
     private var discoveryFileURL: URL {
         ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
     }
     private var runtimeStateFileURL: URL {
         ReviewHomePaths.runtimeStateFileURL(environment: configuration.environment)
     }
-    private var authRuntimeState: CodexAuthRuntimeState {
+    var currentServer: ReviewMCPHTTPServer? {
+        server
+    }
+    var authRuntimeState: CodexAuthRuntimeState {
         .init(
             serverIsRunning: server != nil,
             runtimeGeneration: appServerRuntimeGeneration
         )
     }
 
-    private func applyAddAccountRuntimeEffect(
+    func resolveAddAccountRuntimeEffect(
+        accountKey: String,
+        runtimeGeneration: Int
+    ) -> CodexAuthRuntimeEffect {
+        if attachedStore?.hasRunningJobs ?? false {
+            return .deferRecycleUntilJobsDrain(
+                accountKey: accountKey,
+                runtimeGeneration: runtimeGeneration
+            )
+        }
+        return .recycleNow(
+            accountKey: accountKey,
+            runtimeGeneration: runtimeGeneration
+        )
+    }
+
+    func applyAddAccountRuntimeEffect(
         _ effect: CodexAuthRuntimeEffect,
         auth: CodexReviewAuthModel
     ) async {
@@ -1873,7 +2034,8 @@ private final class CodexReviewEmbeddedServerBackend {
             }
             deferredAddAccountRuntimeEffect = nil
             await recycleSharedAppServerAfterAuthChange()
-            await store.reconcileAuthenticatedSession(
+            await authOrchestrator?.reconcileAuthenticatedSession(
+                auth: store.auth,
                 serverIsRunning: authRuntimeState.serverIsRunning,
                 runtimeGeneration: authRuntimeState.runtimeGeneration
             )
@@ -1924,7 +2086,8 @@ private final class CodexReviewEmbeddedServerBackend {
         }
         self.deferredAddAccountRuntimeEffect = nil
         await recycleSharedAppServerAfterAuthChange()
-        await store.reconcileAuthenticatedSession(
+        await authOrchestrator?.reconcileAuthenticatedSession(
+            auth: store.auth,
             serverIsRunning: authRuntimeState.serverIsRunning,
             runtimeGeneration: authRuntimeState.runtimeGeneration
         )
@@ -1941,7 +2104,8 @@ private final class CodexReviewEmbeddedServerBackend {
             cancelDeferredAddAccountRuntimeReconcileTask()
             deferredAddAccountRuntimeEffect = nil
         }
-        await store.reconcileAuthenticatedSession(
+        await authOrchestrator?.reconcileAuthenticatedSession(
+            auth: store.auth,
             serverIsRunning: serverIsRunning,
             runtimeGeneration: runtimeGeneration
         )
@@ -2058,18 +2222,34 @@ private final class CodexReviewEmbeddedServerBackend {
 
     func attachStore(_ store: CodexReviewStore) {
         attachedStore = store
-        store.onJobsDidMutate = { [weak self] in
-            self?.scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
+        observedHasRunningJobs = store.hasRunningJobs
+        observationHandles.removeAll()
+        observeRunningJobs()
+    }
+
+    private func observeRunningJobs() {
+        guard let attachedStore else {
+            return
         }
+        attachedStore.observe(\.hasRunningJobs) { [weak self] hasRunningJobs in
+            guard let self else {
+                return
+            }
+            guard hasRunningJobs != self.observedHasRunningJobs else {
+                return
+            }
+            self.observedHasRunningJobs = hasRunningJobs
+            self.scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
+        }
+        .store(in: &observationHandles)
     }
 
     func start(
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
-        closedSessions = []
         if deferStartupAuthRefreshUntilPrepared == false {
-            store.startStartupAuthRefresh()
+            authOrchestrator?.startStartupRefresh(auth: store.auth)
         }
         let startupID = UUID()
         let task = Task { @MainActor [weak self, weak store] in
@@ -2096,9 +2276,9 @@ private final class CodexReviewEmbeddedServerBackend {
         self.startupTask = nil
         startupTaskID = nil
         startupTask?.cancel()
-        store.cancelStartupAuthRefresh()
+        authOrchestrator?.cancelStartupRefresh()
         if store.auth.isAuthenticating {
-            await store.cancelAuthentication()
+            await authOrchestrator?.cancelAuthentication(auth: store.auth)
         }
         await reconcileAuthRuntime(
             store: store,
@@ -2107,7 +2287,7 @@ private final class CodexReviewEmbeddedServerBackend {
         )
         waitTask?.cancel()
         waitTask = nil
-        await executionCoordinator.shutdown(reason: "Review server stopped.", store: store)
+        await executionCoordinator?.shutdown(reason: "Review server stopped.", store: store)
         if let server {
             let endpointRecord = server.currentEndpointRecord()
             self.server = nil
@@ -2117,7 +2297,6 @@ private final class CodexReviewEmbeddedServerBackend {
         } else {
             await appServerManager.shutdown()
         }
-        closedSessions = []
         await startupTask?.value
     }
 
@@ -2423,7 +2602,7 @@ private final class CodexReviewEmbeddedServerBackend {
                 runtimeGeneration: appServerRuntimeGeneration
             )
             if deferStartupAuthRefreshUntilPrepared {
-                store.startStartupAuthRefresh()
+                authOrchestrator?.startStartupRefresh(auth: store.auth)
             }
             observeServerLifecycle(server: server, store: store)
         } catch is CancellationError {
@@ -2452,7 +2631,7 @@ private final class CodexReviewEmbeddedServerBackend {
             )
             store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
             if deferStartupAuthRefreshUntilPrepared {
-                store.startStartupAuthRefresh()
+                authOrchestrator?.startStartupRefresh(auth: store.auth)
             }
         }
     }
@@ -2540,38 +2719,36 @@ private final class CodexReviewEmbeddedServerBackend {
                 guard let self, let store, self.server === server else {
                     return
                 }
-                await self.executionCoordinator.shutdown(reason: "Review server stopped.", store: store)
+                await self.executionCoordinator?.shutdown(reason: "Review server stopped.", store: store)
                 let endpointRecord = server.currentEndpointRecord()
                 await server.stop()
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
-                store.cancelStartupAuthRefresh()
+                self.authOrchestrator?.cancelStartupRefresh()
                 await reconcileAuthRuntime(
                     store: store,
                     serverIsRunning: false,
                     runtimeGeneration: self.appServerRuntimeGeneration
                 )
-                self.closedSessions = []
                 store.transitionToStopped()
             } catch is CancellationError {
             } catch {
                 guard let self, let store, self.server === server else {
                     return
                 }
-                await self.executionCoordinator.shutdown(reason: "Review server failed.", store: store)
+                await self.executionCoordinator?.shutdown(reason: "Review server failed.", store: store)
                 let endpointRecord = server.currentEndpointRecord()
                 await server.stop()
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
-                store.cancelStartupAuthRefresh()
+                self.authOrchestrator?.cancelStartupRefresh()
                 await reconcileAuthRuntime(
                     store: store,
                     serverIsRunning: false,
                     runtimeGeneration: self.appServerRuntimeGeneration
                 )
-                self.closedSessions = []
                 store.transitionToFailed(
                     CodexReviewStore.errorMessage(from: error),
                     resetJobs: true
@@ -2580,7 +2757,22 @@ private final class CodexReviewEmbeddedServerBackend {
         }
     }
 
-    private func recycleSharedAppServerAfterAuthChange() async {
+    func cancelRunningJobs(reason: String) async throws {
+        guard let store = attachedStore else {
+            return
+        }
+        do {
+            try await store.cancelAllRunningJobs(reason: reason)
+        } catch {
+            store.terminateAllRunningJobsLocally(
+                reason: reason,
+                failureMessage: error.localizedDescription
+            )
+            throw error
+        }
+    }
+
+    func recycleSharedAppServerAfterAuthChange() async {
         guard let server else {
             return
         }
@@ -2594,21 +2786,20 @@ private final class CodexReviewEmbeddedServerBackend {
             )
             appServerRuntimeGeneration += 1
             if let store = attachedStore {
-                await store.settings.refreshIfRunning(serverState: store.serverState)
+                await settingsService?.refreshIfRunning(serverState: store.serverState)
             }
         } catch {
             let endpointRecord = server.currentEndpointRecord()
             removeRuntimeState(endpointRecord: endpointRecord)
             await server.stop()
             self.server = nil
-            self.closedSessions = []
             if let store = attachedStore {
-                await self.executionCoordinator.shutdown(reason: "Review server failed.", store: store)
+                await self.executionCoordinator?.shutdown(reason: "Review server failed.", store: store)
                 store.terminateAllRunningJobsLocally(
                     reason: "Review server failed.",
                     failureMessage: CodexReviewStore.errorMessage(from: error)
                 )
-                store.cancelStartupAuthRefresh()
+                authOrchestrator?.cancelStartupRefresh()
                 await reconcileAuthRuntime(
                     store: store,
                     serverIsRunning: false,
@@ -2622,7 +2813,7 @@ private final class CodexReviewEmbeddedServerBackend {
         }
     }
 
-    private func writeRuntimeState(
+    fileprivate func writeRuntimeState(
         endpointRecord: LiveEndpointRecord?,
         appServerRuntimeState: AppServerRuntimeState
     ) {
