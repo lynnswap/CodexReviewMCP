@@ -5,7 +5,8 @@ package protocol CodexReviewAuthControlling: AnyObject {
     func startStartupRefresh(auth: CodexReviewAuthModel)
     func cancelStartupRefresh()
     func refresh(auth: CodexReviewAuthModel) async
-    func beginAuthentication(auth: CodexReviewAuthModel) async
+    func signIn(auth: CodexReviewAuthModel) async
+    func addAccount(auth: CodexReviewAuthModel) async
     func cancelAuthentication(auth: CodexReviewAuthModel) async
     func switchAccount(
         auth: CodexReviewAuthModel,
@@ -30,6 +31,10 @@ package protocol CodexReviewAuthControlling: AnyObject {
         serverIsRunning: Bool,
         runtimeGeneration: Int
     ) async
+    func requiresCurrentSessionRecovery(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) -> Bool
 }
 
 extension CodexReviewAuthControlling {
@@ -73,6 +78,13 @@ extension CodexReviewAuthControlling {
         auth _: CodexReviewAuthModel,
         accountKey _: String
     ) async {}
+
+    package func requiresCurrentSessionRecovery(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) -> Bool {
+        false
+    }
 }
 
 @MainActor
@@ -89,7 +101,11 @@ package final class CodexReviewPreviewAuthController: CodexReviewAuthControlling
         }
     }
 
-    package func beginAuthentication(auth: CodexReviewAuthModel) async {
+    package func signIn(auth: CodexReviewAuthModel) async {
+        auth.updatePhase(.failed(message: "Authentication is unavailable in preview mode."))
+    }
+
+    package func addAccount(auth: CodexReviewAuthModel) async {
         auth.updatePhase(.failed(message: "Authentication is unavailable in preview mode."))
     }
 

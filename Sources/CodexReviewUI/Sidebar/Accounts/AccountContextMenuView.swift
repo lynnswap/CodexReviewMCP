@@ -13,6 +13,10 @@ struct AccountContextMenuView: View {
         auth.account?.accountKey == account.accountKey
     }
 
+    private var isSwitchActionDisabled: Bool {
+        auth.switchActionIsDisabled(for: account)
+    }
+
     var sectionTitle: String {
         account.email
     }
@@ -36,9 +40,13 @@ struct AccountContextMenuView: View {
     var body: some View {
         Section(sectionTitle){
             Button("Switch", systemImage: "arrow.triangle.swap") {
-                auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+                auth.requestSwitchAccount(
+                    account,
+                    requiresConfirmation: store.hasRunningJobs
+                        && auth.switchActionRequiresRunningJobsConfirmation(for: account)
+                )
             }
-            .disabled(isCurrentAccount)
+            .disabled(isSwitchActionDisabled)
             
             Button("Refresh", systemImage: "arrow.clockwise") {
                 refreshRateLimits()

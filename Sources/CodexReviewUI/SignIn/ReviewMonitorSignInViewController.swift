@@ -90,7 +90,7 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
             else {
                 return
             }
-            await self.store.auth.beginAuthentication()
+            await self.store.auth.signIn()
         }
     }
 

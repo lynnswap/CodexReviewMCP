@@ -1173,6 +1173,145 @@ struct CodexReviewUITests {
         #expect(backend.lastRemovedAccountKey() == otherAccount.accountKey)
     }
 
+    @Test func metadataOnlySwitchDoesNotPresentRunningJobsConfirmation() async {
+        let backend = AuthActionBackend()
+        let store = makeStore(backend: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let currentSavedAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        let currentSession = CodexAccount(email: "current@example.com", planType: "plus")
+        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: currentSession,
+            savedAccounts: [activeSavedAccount, currentSavedAccount],
+            workspaces: makeWorkspaces(from: [runningJob])
+        )
+
+        store.auth.requestSwitchAccount(
+            currentSavedAccount,
+            requiresConfirmation: store.hasRunningJobs && store.auth.account?.accountKey != currentSavedAccount.accountKey
+        )
+        await backend.waitForSwitchAccountCallCount(1)
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
+        #expect(backend.lastSwitchedAccountKey() == currentSavedAccount.accountKey)
+    }
+
+    @Test func persistedActiveCurrentRecoverySwitchStillDelegatesToController() async throws {
+        let backend = AuthActionBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = makeStore(backend: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: []
+        )
+
+        try await store.auth.switchAccount(currentAccount)
+
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
+    @Test func selectedAccountRowTapDelegatesSameAccountRecoverySwitch() async {
+        let backend = AuthActionBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = makeStore(backend: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: []
+        )
+        let viewController = ReviewMonitorAccountsViewController(store: store)
+        viewController.loadViewIfNeeded()
+
+        viewController.tapAccountRowForTesting(currentAccount)
+        await backend.waitForSwitchAccountCallCount(1)
+
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
+    @Test func sameAccountRecoverySwitchUsesRunningJobsConfirmation() async {
+        let backend = AuthActionBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = makeStore(backend: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: makeWorkspaces(from: [runningJob])
+        )
+
+        store.auth.requestSwitchAccount(
+            currentAccount,
+            requiresConfirmation: store.hasRunningJobs
+                && store.auth.switchActionRequiresRunningJobsConfirmation(for: currentAccount)
+        )
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(backend.switchAccountCallCount() == 0)
+
+        store.auth.confirmPendingAccountAction()
+        await backend.waitForSwitchAccountCallCount(1)
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
+    @Test func inactiveSavedCurrentRecoverySwitchUsesRunningJobsConfirmation() async {
+        let backend = AuthActionBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = makeStore(backend: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let currentSavedAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentSavedAccount,
+            savedAccounts: [activeSavedAccount, currentSavedAccount],
+            workspaces: makeWorkspaces(from: [runningJob])
+        )
+
+        store.auth.requestSwitchAccount(
+            currentSavedAccount,
+            requiresConfirmation: store.hasRunningJobs
+                && store.auth.switchActionRequiresRunningJobsConfirmation(for: currentSavedAccount)
+        )
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(backend.switchAccountCallCount() == 0)
+    }
+
+    @Test func detachedCurrentSessionCannotRequestNoOpSwitch() {
+        let backend = AuthActionBackend()
+        let store = makeStore(backend: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let detachedCurrent = CodexAccount(email: "current@example.com", planType: "plus")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: detachedCurrent,
+            savedAccounts: [activeSavedAccount],
+            workspaces: []
+        )
+
+        #expect(store.auth.switchActionIsDisabled(for: detachedCurrent))
+    }
+
     @Test func accountMenusUseFullEmailForSectionTitles() {
         let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
         let account = CodexAccount(email: "masked.user@example.com", planType: "pro")
@@ -1209,6 +1348,265 @@ struct CodexReviewUITests {
         #expect(backend.beginAuthenticationCallCount() == 1)
     }
 
+    @Test func addAccountToolbarItemBeginsAuthenticationEvenWhenJobsAreRunning() async throws {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let runningJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: makeWorkspaces(from: [runningJob])
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+
+        viewController.performAddAccountToolbarItemForTesting()
+        await backend.waitForBeginAuthenticationCallCount(1)
+
+        #expect(backend.beginAuthenticationCallCount() == 1)
+    }
+
+    @Test func addAccountToolbarItemShowsProgressAndRemovesInlineProgressRow() async throws {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+
+        #expect(viewController.addAccountToolbarItemModeForTesting == .progress)
+        #expect(
+            viewController
+                .sidebarViewControllerForTesting
+                .accountsViewControllerForTesting
+                .showsAuthenticationProgressRowForTesting == false
+        )
+    }
+
+    @Test func addAccountToolbarItemCancelCancelsAuthentication() async throws {
+        let backend = AuthActionBackend(initialAuthState: .signedIn(accountID: "first@example.com"))
+        let store = makeStore(backend: backend)
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+
+        #expect(viewController.addAccountToolbarItemModeForTesting == .progress)
+
+        viewController.performAddAccountToolbarCancelForTesting()
+        await backend.waitForCancelAuthenticationCallCount(1)
+
+        #expect(backend.cancelAuthenticationCallCount() == 1)
+    }
+
+    @Test func addAccountToolbarItemDoesNotStickInProgressModeWhenAuthenticationEndsImmediately() async throws {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+
+        #expect(viewController.addAccountToolbarItemModeForTesting == .add)
+
+        store.auth.updatePhase(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            )
+        )
+        store.auth.updatePhase(.signedOut)
+
+        try await waitForAddAccountToolbarMode(viewController, .add)
+        #expect(viewController.addAccountToolbarItemModeForTesting == .add)
+    }
+
+    @Test func addAccountToolbarItemProvidesOverflowMenuFallback() async throws {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+        try await waitForAddAccountToolbarItemHidden(viewController, false)
+        try await waitForAddAccountToolbarMode(viewController, .add)
+
+        #expect(viewController.addAccountToolbarMenuTitleForTesting == "Add Account")
+
+        store.auth.updatePhase(
+            .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            )
+        )
+
+        try await waitForAddAccountToolbarMode(viewController, .progress)
+        #expect(viewController.addAccountToolbarMenuTitleForTesting == "Cancel Sign-In")
+    }
+
+    @Test func addAccountToolbarItemStaysVisibleDuringAuthenticationOutsideAccountSidebar() async throws {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .workspace
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = true
+        window.layoutIfNeeded()
+
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting == false)
+        #expect(viewController.addAccountToolbarItemModeForTesting == .progress)
+    }
+
+    @Test func addAccountToolbarItemRehidesAfterAuthenticationEndsOutsideAccountSidebar() async throws {
+        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let activeAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            account: activeAccount,
+            savedAccounts: [activeAccount],
+            workspaces: []
+        )
+
+        let uiState = ReviewMonitorUIState()
+        uiState.sidebarSelection = .workspace
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+
+        viewController.attach(to: window)
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = true
+        window.layoutIfNeeded()
+
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting == false)
+
+        store.auth.updatePhase(.signedOut)
+
+        try await waitForCondition {
+            viewController.addAccountToolbarItemIsHiddenForTesting
+        }
+        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
+    }
+
     @Test func codexAccountStoresMaskedEmailUsingExpectedLocalPartRules() {
         #expect(CodexAccount(email: "ashurum.deck@gmail.com").maskedEmail == "as…ck@gmail.com")
         #expect(CodexAccount(email: "ab+z@example.com").maskedEmail == "a…z@example.com")
@@ -1236,7 +1634,7 @@ struct CodexReviewUITests {
         #expect(reloadedSecondAccount.isSwitching == false)
     }
 
-    @Test func updateAccountReusesSavedAccountInstanceForMatchingKey() {
+    @Test func updateAccountPreservesDetachedCurrentSessionForMatchingKey() {
         let auth = CodexReviewAuthModel(controller: CodexReviewPreviewAuthController())
         let savedAccount = CodexAccount(email: "review@example.com", planType: "pro")
         auth.updateSavedAccounts([savedAccount])
@@ -1244,8 +1642,9 @@ struct CodexReviewUITests {
         let detachedAccount = CodexAccount(email: "review@example.com", planType: "plus")
         auth.updateAccount(detachedAccount)
 
-        #expect(auth.account === savedAccount)
-        #expect(savedAccount.isActive)
+        #expect(auth.account === detachedAccount)
+        #expect(auth.account !== savedAccount)
+        #expect(savedAccount.isActive == false)
     }
 
     @Test func jobCellViewUpdatesHostedObservationReferenceWithoutReplacingHostingView() throws {
@@ -3507,6 +3906,24 @@ private func waitForAddAccountToolbarItemHidden(
     }
 }
 
+@MainActor
+private func waitForAddAccountToolbarMode(
+    _ viewController: ReviewMonitorSplitViewController,
+    _ expected: ReviewMonitorSplitViewController.AddAccountToolbarItemModeForTesting,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let viewControllerBox = UncheckedSendableBox(viewController)
+    try await withTestTimeout(timeout) {
+        await MainActor.run {
+            if let window = viewControllerBox.value.view.window {
+                window.layoutIfNeeded()
+            }
+            viewControllerBox.value.view.layoutSubtreeIfNeeded()
+        }
+        await viewControllerBox.value.waitForAddAccountToolbarItemModeForTesting(expected)
+    }
+}
+
 private func withTestTimeout<T: Sendable>(
     _ timeout: Duration = .seconds(2),
     operation: @escaping @Sendable () async throws -> T
@@ -3849,7 +4266,7 @@ private final class FailingCancellationBackend: CodexReviewStoreBackend {
         _ = auth
     }
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
+    func signIn(auth: CodexReviewAuthModel) async {
         _ = auth
     }
 
@@ -4032,8 +4449,12 @@ private final class CountingStartAuthController: CodexReviewAuthControlling {
 
     func refresh(auth _: CodexReviewAuthModel) async {}
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
-        await backend.beginAuthentication(auth: auth)
+    func signIn(auth: CodexReviewAuthModel) async {
+        await backend.signIn(auth: auth)
+    }
+
+    func addAccount(auth: CodexReviewAuthModel) async {
+        await backend.signIn(auth: auth)
     }
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
@@ -4049,10 +4470,18 @@ private final class CountingStartAuthController: CodexReviewAuthControlling {
         serverIsRunning _: Bool,
         runtimeGeneration _: Int
     ) async {}
+
+    func requiresCurrentSessionRecovery(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) -> Bool {
+        backend.requiresCurrentSessionRecovery
+    }
 }
 
 @MainActor
 private final class CountingStartBackend: CodexReviewStoreBackend {
+    var requiresCurrentSessionRecovery = false
     let shouldAutoStartEmbeddedServer: Bool
     let initialAuthState: TestAuthState
     var initialAccount: CodexAccount? {
@@ -4117,7 +4546,7 @@ private final class CountingStartBackend: CodexReviewStoreBackend {
         _ = auth
     }
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
+    func signIn(auth: CodexReviewAuthModel) async {
         _ = auth
         beginCalls += 1
         actions.append("begin")
@@ -4189,8 +4618,12 @@ private final class AuthActionController: CodexReviewAuthControlling {
         await backend.refreshAuthState(auth: auth)
     }
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
-        await backend.beginAuthentication(auth: auth)
+    func signIn(auth: CodexReviewAuthModel) async {
+        await backend.signIn(auth: auth)
+    }
+
+    func addAccount(auth: CodexReviewAuthModel) async {
+        await backend.signIn(auth: auth)
     }
 
     func cancelAuthentication(auth: CodexReviewAuthModel) async {
@@ -4220,11 +4653,19 @@ private final class AuthActionController: CodexReviewAuthControlling {
         serverIsRunning _: Bool,
         runtimeGeneration _: Int
     ) async {}
+
+    func requiresCurrentSessionRecovery(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) -> Bool {
+        backend.requiresCurrentSessionRecovery
+    }
 }
 
 @MainActor
 private final class AuthActionBackend: CodexReviewStoreBackend {
     var isActive: Bool = false
+    var requiresCurrentSessionRecovery = false
     let shouldAutoStartEmbeddedServer = false
     let initialAuthState: TestAuthState
     var initialAccount: CodexAccount? {
@@ -4293,7 +4734,7 @@ private final class AuthActionBackend: CodexReviewStoreBackend {
         await refreshSignal.signal()
     }
 
-    func beginAuthentication(auth: CodexReviewAuthModel) async {
+    func signIn(auth: CodexReviewAuthModel) async {
         _ = auth
         beginCalls += 1
         await beginSignal.signal()

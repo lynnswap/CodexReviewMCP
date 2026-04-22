@@ -20,18 +20,10 @@ private struct ReviewMonitorAccountsListView: View {
         return currentAccount
     }
 
-    private var shouldShowAuthenticationProgress: Bool {
-        store.auth.isAuthenticating && (store.auth.account != nil || store.auth.hasSavedAccounts)
-    }
-
     var body: some View {
         @Bindable var auth = store.auth
         
         List {
-            if shouldShowAuthenticationProgress,
-               let progress = auth.progress {
-                authenticationProgressRow(progress)
-            }
             if let unsavedCurrentAccount {
                 accountRow(unsavedCurrentAccount, auth: auth)
                     .moveDisabled(true)
@@ -129,10 +121,7 @@ private struct ReviewMonitorAccountsListView: View {
             .accessibilityHidden(true)
             .contentShape(.circle)
             .onTapGesture {
-                if isSelected {
-                    return
-                }
-                auth.requestSwitchAccount(account, requiresConfirmation: store.hasRunningJobs)
+                requestAccountRowSwitch(account, auth: auth)
             }
         }
         .contextMenu {
@@ -153,28 +142,19 @@ private struct ReviewMonitorAccountsListView: View {
             .padding(.horizontal, 10)
         )
     }
-    @ViewBuilder
-    private func authenticationProgressRow(
-        _ progress: CodexReviewAuthModel.Progress
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(progress.title)
-                .font(.headline)
-                .foregroundStyle(.primary)
-            Text(progress.detail)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            Button("Cancel", role: .cancel) {
-                Task { @MainActor in
-                    await store.auth.cancelAuthentication()
-                }
-            }
-            .controlSize(.small)
+
+    private func requestAccountRowSwitch(
+        _ account: CodexAccount,
+        auth: CodexReviewAuthModel
+    ) {
+        guard auth.switchActionIsDisabled(for: account) == false else {
+            return
         }
-        .padding(.vertical, 6)
-        .accessibilityIdentifier("review-monitor.account-auth-progress")
-        .listRowBackground(Color.clear)
-        .moveDisabled(true)
+        auth.requestSwitchAccount(
+            account,
+            requiresConfirmation: store.hasRunningJobs
+                && auth.switchActionRequiresRunningJobsConfirmation(for: account)
+        )
     }
 }
 
@@ -238,6 +218,7 @@ private struct RowView: View{
 @MainActor
 final class ReviewMonitorAccountsViewController: NSViewController {
     private let store: CodexReviewStore
+    private var hostingView: NSHostingView<ReviewMonitorAccountsListView>?
 
     init(store: CodexReviewStore) {
         self.store = store
@@ -263,6 +244,7 @@ final class ReviewMonitorAccountsViewController: NSViewController {
             rootView: ReviewMonitorAccountsListView(store: store)
         )
         hostingView.translatesAutoresizingMaskIntoConstraints = false
+        self.hostingView = hostingView
 
         view.addSubview(hostingView)
         NSLayoutConstraint.activate([
@@ -275,6 +257,27 @@ final class ReviewMonitorAccountsViewController: NSViewController {
 }
 
 #if DEBUG
+private extension ReviewMonitorAccountsListView {
+    var showsAuthenticationProgressRowForTesting: Bool {
+        false
+    }
+
+    func tapAccountRowForTesting(_ account: CodexAccount) {
+        requestAccountRowSwitch(account, auth: store.auth)
+    }
+}
+
+@MainActor
+extension ReviewMonitorAccountsViewController {
+    var showsAuthenticationProgressRowForTesting: Bool {
+        hostingView?.rootView.showsAuthenticationProgressRowForTesting ?? false
+    }
+
+    func tapAccountRowForTesting(_ account: CodexAccount) {
+        hostingView?.rootView.tapAccountRowForTesting(account)
+    }
+}
+
 #Preview {
     ReviewMonitorAccountsViewController(
         store: makeReviewMonitorAccountsPreviewStore()

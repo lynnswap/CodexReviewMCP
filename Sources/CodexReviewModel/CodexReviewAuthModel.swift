@@ -127,8 +127,12 @@ public final class CodexReviewAuthModel {
         await controller.refresh(auth: self)
     }
 
-    public func beginAuthentication() async {
-        await controller.beginAuthentication(auth: self)
+    public func signIn() async {
+        await controller.signIn(auth: self)
+    }
+
+    public func addAccount() async {
+        await controller.addAccount(auth: self)
     }
 
     public func cancelAuthentication() async {
@@ -136,7 +140,7 @@ public final class CodexReviewAuthModel {
     }
 
     package func switchAccount(_ account: CodexAccount) async throws {
-        guard self.account?.accountKey != account.accountKey else {
+        guard canSwitchAccount(account) else {
             return
         }
         let targetAccount = savedAccounts.first(where: { $0.accountKey == account.accountKey })
@@ -160,7 +164,7 @@ public final class CodexReviewAuthModel {
         _ account: CodexAccount,
         requiresConfirmation: Bool
     ) {
-        guard self.account?.accountKey != account.accountKey else {
+        guard canSwitchAccount(account) else {
             return
         }
         requestAccountAction(
@@ -285,25 +289,14 @@ public final class CodexReviewAuthModel {
     }
 
     package func updateAccount(_ account: CodexAccount?) {
-        if let account,
-           let savedAccount = savedAccounts.first(where: { $0.accountKey == account.accountKey })
-        {
-            self.account = savedAccount
-        } else {
-            self.account = account
-        }
-        let activeAccountKey = self.account?.accountKey
-        for savedAccount in savedAccounts {
-            savedAccount.updateIsActive(savedAccount.accountKey == activeAccountKey)
-        }
+        self.account = account
     }
 
     package func updateSavedAccounts(_ incomingSavedAccounts: [CodexAccount]) {
-        let activeAccountKey = account?.accountKey
         self.savedAccounts = incomingSavedAccounts.map { incomingAccount in
             let reconciledAccount = reusableAccount(for: incomingAccount.accountKey) ?? incomingAccount
             guard reconciledAccount !== incomingAccount else {
-                reconciledAccount.updateIsActive(reconciledAccount.accountKey == activeAccountKey)
+                reconciledAccount.updateIsActive(incomingAccount.isActive)
                 return reconciledAccount
             }
             reconciledAccount.updateEmail(incomingAccount.email)
@@ -321,14 +314,48 @@ public final class CodexReviewAuthModel {
                 fetchedAt: incomingAccount.lastRateLimitFetchAt,
                 error: incomingAccount.lastRateLimitError
             )
-            reconciledAccount.updateIsActive(reconciledAccount.accountKey == activeAccountKey)
+            reconciledAccount.updateIsActive(incomingAccount.isActive)
             return reconciledAccount
         }
-        if let account,
-           let savedAccount = self.savedAccounts.first(where: { $0.accountKey == account.accountKey })
-        {
-            self.account = savedAccount
+    }
+
+    package var persistedActiveAccountKey: String? {
+        savedAccounts.first(where: \.isActive)?.accountKey
+    }
+
+    package func isAlreadyUsingPersistedActiveAccount(
+        _ accountKey: String
+    ) -> Bool {
+        persistedActiveAccountKey == accountKey && account?.accountKey == accountKey
+    }
+
+    package func switchActionIsDisabled(for account: CodexAccount) -> Bool {
+        canSwitchAccount(account) == false
+    }
+
+    package func switchActionRequiresRunningJobsConfirmation(
+        for account: CodexAccount
+    ) -> Bool {
+        if account.accountKey != self.account?.accountKey {
+            return true
         }
+        return controller.requiresCurrentSessionRecovery(
+            auth: self,
+            accountKey: account.accountKey
+        )
+    }
+
+    private func canSwitchAccount(_ account: CodexAccount) -> Bool {
+        guard savedAccounts.contains(where: { $0.accountKey == account.accountKey }) else {
+            return false
+        }
+        if isAlreadyUsingPersistedActiveAccount(account.accountKey) {
+            return controller.requiresCurrentSessionRecovery(
+                auth: self,
+                accountKey: account.accountKey
+            )
+        }
+        return true
     }
 
     private func reusableAccount(for accountKey: String) -> CodexAccount? {

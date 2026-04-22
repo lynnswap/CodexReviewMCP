@@ -40,7 +40,7 @@ extension CodexReviewStore {
         job.hasFinalReview = false
         job.errorMessage = reason.nilIfEmpty ?? job.errorMessage
         job.endedAt = Date()
-        writeDiagnosticsIfNeeded()
+        noteJobMutation()
     }
 
     package func recordCancellationFailure(
@@ -120,6 +120,6 @@ extension CodexReviewStore {
             job.errorMessage = resolvedError ?? reason.nilIfEmpty ?? job.errorMessage
             job.endedAt = Date()
         }
-        writeDiagnosticsIfNeeded()
+        noteJobMutation()
     }
 }

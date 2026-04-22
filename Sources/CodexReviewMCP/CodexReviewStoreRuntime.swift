@@ -589,7 +589,7 @@ extension CodexReviewStore {
             )
             workspaces = [workspace] + workspaces
         }
-        writeDiagnosticsIfNeeded()
+        noteJobMutation()
     }
 
     private func updateJob(
@@ -601,7 +601,7 @@ extension CodexReviewStore {
         }
         let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
         update(job)
-        writeDiagnosticsIfNeeded()
+        noteJobMutation()
     }
 
     private func removeJob(id: String) {
@@ -614,7 +614,7 @@ extension CodexReviewStore {
         if workspace.jobs.isEmpty {
             workspaces.remove(at: location.workspaceIndex)
         }
-        writeDiagnosticsIfNeeded()
+        noteJobMutation()
     }
 
     private func filteredJobs(
@@ -1537,6 +1537,11 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
 
 @MainActor
 private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
+    private struct DeferredAddAccountRuntimeEffect {
+        var accountKey: String
+        var runtimeGeneration: Int
+    }
+
     let configuration: ReviewServerConfiguration
     let appServerManager: any AppServerManaging
     let accountRegistryStore: ReviewAccountRegistryStore
@@ -1597,6 +1602,24 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             recycleServerIfRunning: { [weak self] in
                 await self?.recycleSharedAppServerAfterAuthChange()
             },
+            resolveAddAccountRuntimeEffect: { [weak self] accountKey, runtimeGeneration in
+                guard let self else {
+                    return .none
+                }
+                if self.attachedStore?.hasRunningJobs ?? false {
+                    return .deferRecycleUntilJobsDrain(
+                        accountKey: accountKey,
+                        runtimeGeneration: runtimeGeneration
+                    )
+                }
+                return .recycleNow(
+                    accountKey: accountKey,
+                    runtimeGeneration: runtimeGeneration
+                )
+            },
+            applyAddAccountRuntimeEffect: { [weak self] effect, auth in
+                await self?.applyAddAccountRuntimeEffect(effect, auth: auth)
+            },
             cancelRunningJobs: { [weak self] reason in
                 guard let store = self?.attachedStore else {
                     return
@@ -1642,6 +1665,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
     private var startupTask: Task<Void, Never>?
     private var startupTaskID: UUID?
     private var appServerRuntimeGeneration = 0
+    private var deferredAddAccountRuntimeEffect: DeferredAddAccountRuntimeEffect?
+    private var deferredAddAccountRuntimeReconcileTask: Task<Void, Never>?
     private weak var attachedStore: CodexReviewStore?
     var closedSessions: Set<String> = []
     private var discoveryFileURL: URL {
@@ -1654,6 +1679,114 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         .init(
             serverIsRunning: server != nil,
             runtimeGeneration: appServerRuntimeGeneration
+        )
+    }
+
+    private func applyAddAccountRuntimeEffect(
+        _ effect: CodexAuthRuntimeEffect,
+        auth: CodexReviewAuthModel
+    ) async {
+        switch effect {
+        case .none:
+            scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
+        case .deferRecycleUntilJobsDrain(let accountKey, let runtimeGeneration):
+            cancelDeferredAddAccountRuntimeReconcileTask()
+            deferredAddAccountRuntimeEffect = .init(
+                accountKey: accountKey,
+                runtimeGeneration: runtimeGeneration
+            )
+            scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
+        case .recycleNow(let accountKey, let runtimeGeneration):
+            cancelDeferredAddAccountRuntimeReconcileTask()
+            guard let store = attachedStore,
+                  authRuntimeState.serverIsRunning,
+                  authRuntimeState.runtimeGeneration == runtimeGeneration,
+                  auth.account?.accountKey == accountKey
+            else {
+                deferredAddAccountRuntimeEffect = nil
+                return
+            }
+            guard store.hasRunningJobs == false else {
+                deferredAddAccountRuntimeEffect = .init(
+                    accountKey: accountKey,
+                    runtimeGeneration: runtimeGeneration
+                )
+                scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
+                return
+            }
+            deferredAddAccountRuntimeEffect = nil
+            await recycleSharedAppServerAfterAuthChange()
+            await auth.reconcileAuthenticatedSession(
+                serverIsRunning: authRuntimeState.serverIsRunning,
+                runtimeGeneration: authRuntimeState.runtimeGeneration
+            )
+            await reconcileDeferredAddAccountRuntimeEffectIfNeeded(store: store)
+        }
+    }
+
+    fileprivate func scheduleDeferredAddAccountRuntimeReconciliationIfNeeded() {
+        guard deferredAddAccountRuntimeEffect != nil,
+              deferredAddAccountRuntimeReconcileTask == nil,
+              let store = attachedStore,
+              authRuntimeState.serverIsRunning,
+              store.hasRunningJobs == false
+        else {
+            return
+        }
+        deferredAddAccountRuntimeReconcileTask = Task { @MainActor [weak self, weak store] in
+            guard let self, let store else {
+                return
+            }
+            defer {
+                self.deferredAddAccountRuntimeReconcileTask = nil
+            }
+            await self.reconcileDeferredAddAccountRuntimeEffectIfNeeded(store: store)
+        }
+    }
+
+    private func cancelDeferredAddAccountRuntimeReconcileTask() {
+        deferredAddAccountRuntimeReconcileTask?.cancel()
+        deferredAddAccountRuntimeReconcileTask = nil
+    }
+
+    private func reconcileDeferredAddAccountRuntimeEffectIfNeeded(
+        store: CodexReviewStore
+    ) async {
+        guard let deferredAddAccountRuntimeEffect else {
+            return
+        }
+        guard authRuntimeState.serverIsRunning,
+              authRuntimeState.runtimeGeneration == deferredAddAccountRuntimeEffect.runtimeGeneration,
+              store.auth.account?.accountKey == deferredAddAccountRuntimeEffect.accountKey
+        else {
+            self.deferredAddAccountRuntimeEffect = nil
+            return
+        }
+        guard store.hasRunningJobs == false else {
+            return
+        }
+        self.deferredAddAccountRuntimeEffect = nil
+        await recycleSharedAppServerAfterAuthChange()
+        await store.auth.reconcileAuthenticatedSession(
+            serverIsRunning: authRuntimeState.serverIsRunning,
+            runtimeGeneration: authRuntimeState.runtimeGeneration
+        )
+    }
+
+    private func reconcileAuthRuntime(
+        store: CodexReviewStore,
+        serverIsRunning: Bool,
+        runtimeGeneration: Int
+    ) async {
+        if serverIsRunning {
+            await reconcileDeferredAddAccountRuntimeEffectIfNeeded(store: store)
+        } else {
+            cancelDeferredAddAccountRuntimeReconcileTask()
+            deferredAddAccountRuntimeEffect = nil
+        }
+        await store.auth.reconcileAuthenticatedSession(
+            serverIsRunning: serverIsRunning,
+            runtimeGeneration: runtimeGeneration
         )
     }
 
@@ -1768,6 +1901,9 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
 
     func attachStore(_ store: CodexReviewStore) {
         attachedStore = store
+        store.onJobsDidMutate = { [weak self] in
+            self?.scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
+        }
     }
 
     func start(
@@ -1807,7 +1943,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
         if store.auth.isAuthenticating {
             await store.auth.cancelAuthentication()
         }
-        await store.auth.reconcileAuthenticatedSession(
+        await reconcileAuthRuntime(
+            store: store,
             serverIsRunning: false,
             runtimeGeneration: appServerRuntimeGeneration
         )
@@ -2123,7 +2260,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             )
             appServerRuntimeGeneration += 1
             store.transitionToRunning(serverURL: url)
-            await store.auth.reconcileAuthenticatedSession(
+            await reconcileAuthRuntime(
+                store: store,
                 serverIsRunning: true,
                 runtimeGeneration: appServerRuntimeGeneration
             )
@@ -2138,7 +2276,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             await server.stop()
             await appServerManager.shutdown()
             self.server = nil
-            await store.auth.reconcileAuthenticatedSession(
+            await reconcileAuthRuntime(
+                store: store,
                 serverIsRunning: false,
                 runtimeGeneration: appServerRuntimeGeneration
             )
@@ -2149,7 +2288,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
             await server.stop()
             await appServerManager.shutdown()
             self.server = nil
-            await store.auth.reconcileAuthenticatedSession(
+            await reconcileAuthRuntime(
+                store: store,
                 serverIsRunning: false,
                 runtimeGeneration: appServerRuntimeGeneration
             )
@@ -2250,7 +2390,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
                 store.auth.cancelStartupRefresh()
-                await store.auth.reconcileAuthenticatedSession(
+                await reconcileAuthRuntime(
+                    store: store,
                     serverIsRunning: false,
                     runtimeGeneration: self.appServerRuntimeGeneration
                 )
@@ -2268,7 +2409,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
                 store.auth.cancelStartupRefresh()
-                await store.auth.reconcileAuthenticatedSession(
+                await reconcileAuthRuntime(
+                    store: store,
                     serverIsRunning: false,
                     runtimeGeneration: self.appServerRuntimeGeneration
                 )
@@ -2310,7 +2452,8 @@ private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
                     failureMessage: CodexReviewStore.errorMessage(from: error)
                 )
                 store.auth.cancelStartupRefresh()
-                await store.auth.reconcileAuthenticatedSession(
+                await reconcileAuthRuntime(
+                    store: store,
                     serverIsRunning: false,
                     runtimeGeneration: self.appServerRuntimeGeneration
                 )

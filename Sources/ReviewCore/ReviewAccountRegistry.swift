@@ -175,14 +175,16 @@ package actor ReviewAccountRegistryStore {
             in: &registry,
             sourceAuthURL: ReviewHomePaths.reviewAuthURL(environment: environment),
             snapshot: snapshot,
-            makeActive: makeActive
+            makeActive: makeActive,
+            refreshSharedAuth: false
         )
     }
 
     @MainActor
     package func saveAuthSnapshot(
         sourceAuthURL: URL,
-        makeActive: Bool
+        makeActive: Bool,
+        refreshSharedAuth: Bool = false
     ) throws -> CodexAccount {
         guard let snapshot = loadAuthSnapshot(at: sourceAuthURL) else {
             throw ReviewAuthError.authenticationRequired("Authenticated account is missing email.")
@@ -192,7 +194,8 @@ package actor ReviewAccountRegistryStore {
             in: &registry,
             sourceAuthURL: sourceAuthURL,
             snapshot: snapshot,
-            makeActive: makeActive
+            makeActive: makeActive,
+            refreshSharedAuth: refreshSharedAuth
         )
     }
 
@@ -232,6 +235,24 @@ package actor ReviewAccountRegistryStore {
             )
             throw error
         }
+    }
+
+    package func restoreSharedAuthFromSavedAccount(_ accountKey: String) throws {
+        let registry = try loadRegistry()
+        guard let record = storedAccount(
+            in: registry,
+            matchingRuntimeAccountKey: accountKey,
+            environment: environment
+        ) else {
+            throw ReviewAuthError.authenticationRequired("Saved account was not found.")
+        }
+        try persistAuthSnapshot(
+            from: persistedSavedAccountAuthURL(
+                accountKey: record.accountKey,
+                environment: environment
+            ),
+            to: ReviewHomePaths.reviewAuthURL(environment: environment)
+        )
     }
 
     package func clearActiveAccount(accountKey: String? = nil) throws {
@@ -613,7 +634,8 @@ package actor ReviewAccountRegistryStore {
         in registry: inout ReviewAccountRegistryRecord,
         sourceAuthURL: URL,
         snapshot: ReviewStoredAuthSnapshot,
-        makeActive: Bool
+        makeActive: Bool,
+        refreshSharedAuth: Bool
     ) throws -> CodexAccount {
         let originalRegistry = registry
         let record = upsertSavedAccountRecord(
@@ -635,7 +657,7 @@ package actor ReviewAccountRegistryStore {
                 from: sourceAuthURL,
                 to: savedAuthURL
             )
-            if makeActive {
+            if makeActive || refreshSharedAuth {
                 try persistAuthSnapshot(
                     from: sourceAuthURL,
                     to: sharedAuthURL
