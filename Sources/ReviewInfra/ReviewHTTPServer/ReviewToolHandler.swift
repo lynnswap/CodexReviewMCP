@@ -1,6 +1,5 @@
 import Foundation
 import MCP
-import ReviewCore
 import ReviewDomain
 
 struct ReviewToolHandler {

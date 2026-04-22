@@ -2,7 +2,8 @@ import Foundation
 import Testing
 import ReviewDomain
 import ReviewTestSupport
-@testable import ReviewCore
+@testable import ReviewInfra
+
 
 @Suite(.serialized)
 struct ReviewAuthManagerTests {

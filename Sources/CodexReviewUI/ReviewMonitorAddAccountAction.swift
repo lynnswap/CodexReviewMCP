@@ -1,5 +1,5 @@
 import AppKit
-import CodexReviewModel
+import ReviewApp
 import ReviewDomain
 
 @MainActor

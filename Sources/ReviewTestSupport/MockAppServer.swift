@@ -1,5 +1,5 @@
 import Foundation
-package import ReviewCore
+package import ReviewInfra
 import ReviewDomain
 
 package enum MockAppServerMode: Sendable {

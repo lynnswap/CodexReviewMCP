@@ -1,6 +1,7 @@
 import Foundation
 import Testing
-@testable import ReviewCore
+@testable import ReviewInfra
+
 @testable import ReviewDomain
 
 @Suite

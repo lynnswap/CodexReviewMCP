@@ -1,7 +1,8 @@
 import Foundation
 import Testing
 import ReviewTestSupport
-@testable import ReviewStdioAdapter
+@testable import ReviewInfra
+
 
 @Suite(.serialized) struct ReviewStdioAdapterTests {
     @Test func stdioFramerSplitsNewlineDelimitedJSON() {

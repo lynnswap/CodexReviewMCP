@@ -1,12 +1,10 @@
 import AppKit
 import AuthenticationServices
 import Darwin
-import CodexReviewModel
 import Foundation
-import ReviewCore
-import ReviewHTTPServer
 import ReviewDomain
 import ReviewRuntime
+import ReviewInfra
 
 extension CodexReviewStore {
     public convenience init() {

@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 import Testing
-@_spi(Testing) @testable import CodexReviewModel
+@_spi(Testing) @testable import ReviewApp
 @_spi(PreviewSupport) @testable import CodexReviewUI
 import ReviewTestSupport
 import ReviewDomain

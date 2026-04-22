@@ -25,13 +25,13 @@ package struct ForcedRestartRuntime: Sendable {
 
     package static var live: Self {
         Self(
-            isProcessAlive: { pid in ReviewCore.isProcessAlive(pid) },
-            processStartTime: { pid in ReviewCore.processStartTime(of: pid) },
+            isProcessAlive: runtimeIsProcessAlive,
+            processStartTime: runtimeProcessStartTime,
             isMatchingExecutable: { pid, expectedName in
                 ReviewDiscovery.isMatchingExecutable(Int(pid), expectedName: expectedName)
             },
-            childProcessIDs: { pid in ReviewCore.childProcessIDs(of: pid) },
-            currentProcessGroupID: { pid in ReviewCore.currentProcessGroupID(of: pid) },
+            childProcessIDs: runtimeChildProcessIDs,
+            currentProcessGroupID: runtimeCurrentProcessGroupID,
             signalProcess: { pid, signal in
                 errno = 0
                 let result = kill(pid, signal)
@@ -44,6 +44,22 @@ package struct ForcedRestartRuntime: Sendable {
             }
         )
     }
+}
+
+private func runtimeIsProcessAlive(_ pid: pid_t) -> Bool {
+    isProcessAlive(pid)
+}
+
+private func runtimeProcessStartTime(_ pid: pid_t) -> ProcessStartTime? {
+    processStartTime(of: pid)
+}
+
+private func runtimeChildProcessIDs(_ pid: pid_t) -> [pid_t] {
+    childProcessIDs(of: pid)
+}
+
+private func runtimeCurrentProcessGroupID(_ pid: pid_t) -> pid_t? {
+    currentProcessGroupID(of: pid)
 }
 
 package func forceRestart(

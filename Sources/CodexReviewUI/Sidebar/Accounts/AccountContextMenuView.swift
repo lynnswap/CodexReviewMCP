@@ -1,4 +1,4 @@
-import CodexReviewModel
+import ReviewApp
 import SwiftUI
 import ReviewDomain
 

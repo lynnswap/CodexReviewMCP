@@ -1,7 +1,7 @@
 import Foundation
 import Testing
-@testable import CodexReviewModel
-@testable import ReviewCore
+@testable import ReviewInfra
+@testable import ReviewApp
 @testable import ReviewDomain
 
 @Suite struct ReviewExecutionSettingsBuilderTests {

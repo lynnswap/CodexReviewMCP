@@ -1,7 +1,8 @@
 import Foundation
 import Testing
 import MCP
-@testable import ReviewHTTPServer
+@testable import ReviewInfra
+
 
 @Suite
 struct ReviewHTTPServerTests {

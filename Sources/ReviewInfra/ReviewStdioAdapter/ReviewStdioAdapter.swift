@@ -1,7 +1,6 @@
 import Foundation
 import Logging
 import MCP
-import ReviewCore
 import ReviewDomain
 
 public actor ReviewStdioAdapter {

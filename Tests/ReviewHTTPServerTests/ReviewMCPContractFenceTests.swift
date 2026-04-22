@@ -1,9 +1,9 @@
 import Foundation
 import MCP
-@testable import ReviewCore
+@testable import ReviewInfra
+
 import ReviewDomain
 import Testing
-@testable import ReviewHTTPServer
 
 @Suite
 struct ReviewMCPContractFenceTests {

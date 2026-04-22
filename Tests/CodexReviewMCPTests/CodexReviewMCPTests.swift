@@ -5,10 +5,8 @@ import Observation
 import Testing
 import ReviewTestSupport
 import ReviewDomain
-@_spi(Testing) @testable import CodexReviewMCP
-@_spi(Testing) @testable import CodexReviewModel
-@testable import ReviewCore
-@testable import ReviewHTTPServer
+@testable import ReviewInfra
+@_spi(Testing) @testable import ReviewApp
 @testable import ReviewRuntime
 
 @Suite(.serialized)

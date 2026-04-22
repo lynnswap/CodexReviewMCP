@@ -1,9 +1,7 @@
 import Foundation
 import Logging
-import CodexReviewMCP
-import CodexReviewModel
-import ReviewHTTPServer
-import ReviewStdioAdapter
+import ReviewInfra
+import ReviewApp
 
 public enum ReviewCLI {
     public static func runServer(args: [String], environment: [String: String]) async -> Int32 {

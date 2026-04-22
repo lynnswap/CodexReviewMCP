@@ -1,7 +1,8 @@
 import Foundation
 import Testing
 import ReviewTestSupport
-@testable import ReviewCore
+@testable import ReviewInfra
+
 @testable import ReviewDomain
 
 @Suite(.serialized)

@@ -1,5 +1,5 @@
 import AppKit
-import CodexReviewModel
+import ReviewApp
 import ObservationBridge
 import SwiftUI
 import ReviewDomain

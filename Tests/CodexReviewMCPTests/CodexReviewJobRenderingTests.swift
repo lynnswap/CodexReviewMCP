@@ -1,6 +1,6 @@
 import Testing
 import ReviewDomain
-@_spi(Testing) @testable import CodexReviewModel
+@_spi(Testing) @testable import ReviewApp
 @testable import ReviewDomain
 @testable import ReviewRuntime
 

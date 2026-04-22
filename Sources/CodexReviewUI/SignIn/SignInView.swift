@@ -1,5 +1,5 @@
 import SwiftUI
-import CodexReviewModel
+import ReviewApp
 import ReviewDomain
 
 struct SignInView: View {
