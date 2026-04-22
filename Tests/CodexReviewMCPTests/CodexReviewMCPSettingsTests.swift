@@ -145,7 +145,7 @@ struct CodexReviewMCPSettingsTests {
             appServerManager: AuthCapableAppServerManager(authTransport: transport)
         )
 
-        await store.settings.refresh()
+        await store.refreshSettings()
 
         #expect(store.settings.selectedModel == "gpt-5.4-mini")
         #expect(store.settings.fallbackModel == "gpt-5.4")
@@ -186,7 +186,7 @@ struct CodexReviewMCPSettingsTests {
             appServerManager: AuthCapableAppServerManager(authTransport: transport)
         )
 
-        await store.settings.refresh()
+        await store.refreshSettings()
 
         #expect(store.settings.selectedModel == "gpt-5.4-mini")
         #expect(store.settings.fallbackModel == "gpt-5.4")
@@ -226,7 +226,7 @@ struct CodexReviewMCPSettingsTests {
             appServerManager: AuthCapableAppServerManager(authTransport: transport)
         )
 
-        await store.settings.refresh()
+        await store.refreshSettings()
 
         #expect(store.settings.selectedModel == "gpt-5.4-mini")
         #expect(store.settings.fallbackModel == "gpt-5.4")
@@ -261,8 +261,8 @@ struct CodexReviewMCPSettingsTests {
             appServerManager: AuthCapableAppServerManager(authTransport: transport)
         )
 
-        await store.settings.updateReasoningEffort(.high)
-        await store.settings.updateServiceTier(.fast)
+        await store.updateSettingsReasoningEffort(.high)
+        await store.updateSettingsServiceTier(.fast)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["profiles.reviewer.model_reasoning_effort"],
@@ -330,7 +330,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateModel("gpt-5.4-mini")
+        await store.updateSettingsModel("gpt-5.4-mini")
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["review_model"],
@@ -397,7 +397,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateModel("gpt-5.4-mini")
+        await store.updateSettingsModel("gpt-5.4-mini")
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["profiles.reviewer.review_model"],
@@ -441,7 +441,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateReasoningEffort(.low)
+        await store.updateSettingsReasoningEffort(.low)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["model_reasoning_effort"],
@@ -485,7 +485,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateReasoningEffort(.low)
+        await store.updateSettingsReasoningEffort(.low)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["profiles.reviewer.model_reasoning_effort"],
@@ -549,7 +549,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateModel("gpt-5.4-mini")
+        await store.updateSettingsModel("gpt-5.4-mini")
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["review_model"],
@@ -590,7 +590,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateReasoningEffort(.low)
+        await store.updateSettingsReasoningEffort(.low)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["model_reasoning_effort"],
@@ -625,7 +625,7 @@ struct CodexReviewMCPSettingsTests {
             appServerManager: AuthCapableAppServerManager(authTransport: transport)
         )
 
-        await store.settings.updateServiceTier(.fast)
+        await store.updateSettingsServiceTier(.fast)
 
         #expect(await transport.recordedEditKeyPaths() == [
             [#"profiles."qa.us".service_tier"#],
@@ -659,7 +659,7 @@ struct CodexReviewMCPSettingsTests {
             appServerManager: AuthCapableAppServerManager(authTransport: transport)
         )
 
-        await store.settings.updateReasoningEffort(.high)
+        await store.updateSettingsReasoningEffort(.high)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["profiles.reviewer.model_reasoning_effort"],
@@ -690,7 +690,7 @@ struct CodexReviewMCPSettingsTests {
             appServerManager: AuthCapableAppServerManager(authTransport: transport)
         )
 
-        await store.settings.updateReasoningEffort(.high)
+        await store.updateSettingsReasoningEffort(.high)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["profiles.reviewer.model_reasoning_effort"],
@@ -797,7 +797,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateModel("gpt-5.4-mini")
+        await store.updateSettingsModel("gpt-5.4-mini")
 
         let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
         #expect(firstWrite.contains("service_tier"))
@@ -838,7 +838,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateServiceTier(nil)
+        await store.updateSettingsServiceTier(nil)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["service_tier"],
@@ -879,7 +879,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateServiceTier(.flex)
+        await store.updateSettingsServiceTier(.flex)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["service_tier"],
@@ -920,7 +920,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateServiceTier(.flex)
+        await store.updateSettingsServiceTier(.flex)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["service_tier"],
@@ -964,7 +964,7 @@ struct CodexReviewMCPSettingsTests {
             )
         )
 
-        await store.settings.updateServiceTier(nil)
+        await store.updateSettingsServiceTier(nil)
 
         #expect(await transport.recordedEditKeyPaths() == [
             ["profiles.reviewer.service_tier"],

@@ -15,7 +15,7 @@ struct AccountContextMenuView: View {
     }
 
     private var isSwitchActionDisabled: Bool {
-        auth.switchActionIsDisabled(for: account)
+        store.switchActionIsDisabled(for: account)
     }
 
     var sectionTitle: String {
@@ -44,7 +44,7 @@ struct AccountContextMenuView: View {
                 store.requestSwitchAccount(
                     account,
                     requiresConfirmation: store.hasRunningJobs
-                        && auth.switchActionRequiresRunningJobsConfirmation(for: account)
+                        && store.switchActionRequiresRunningJobsConfirmation(for: account)
                 )
             }
             .disabled(isSwitchActionDisabled)

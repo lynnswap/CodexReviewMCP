@@ -73,7 +73,7 @@ struct CodexReviewUISettingsTests {
             )
         )
 
-        await store.settings.updateModel("gpt-5.4-mini")
+        await store.updateSettingsModel("gpt-5.4-mini")
 
         #expect(store.settings.selectedModel == "gpt-5.4-mini")
         #expect(store.settings.selectedReasoningEffort == nil)
@@ -214,11 +214,11 @@ struct CodexReviewUISettingsTests {
         let store = CodexReviewStore.makeTestingStore(runtime: backend.runtime)
 
         let refreshTask = Task { @MainActor in
-            await store.settings.refresh()
+            await store.refreshSettings()
         }
         await backend.waitForBlockedRefreshToStart()
 
-        await store.settings.refresh()
+        await store.refreshSettings()
         await backend.resumeBlockedRefresh()
         await refreshTask.value
 

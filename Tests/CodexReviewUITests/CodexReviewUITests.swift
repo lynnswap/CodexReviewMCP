@@ -277,7 +277,7 @@ struct CodexReviewUITests {
         store.auth.updateAccount(firstAccount)
 
         let switchTask = Task {
-            try await store.auth.switchAccount(secondAccount)
+            try await store.switchAccount(secondAccount)
         }
 
         await backend.waitForSwitchAccountStartCallCount(1)
@@ -315,7 +315,7 @@ struct CodexReviewUITests {
         #expect(backend.logoutCallCount() == 0)
         #expect(backend.lastRemovedAccountKey() == nil)
 
-        store.auth.confirmPendingAccountAction()
+        store.confirmPendingAccountAction()
         await backend.waitForLogoutCallCount(1)
 
         #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
@@ -363,7 +363,7 @@ struct CodexReviewUITests {
             workspaces: makeWorkspaces(from: [runningJob])
         )
 
-        store.auth.requestSwitchAccount(
+        store.requestSwitchAccount(
             currentSavedAccount,
             requiresConfirmation: store.hasRunningJobs && store.auth.account?.accountKey != currentSavedAccount.accountKey
         )
@@ -387,7 +387,7 @@ struct CodexReviewUITests {
             workspaces: []
         )
 
-        try await store.auth.switchAccount(currentAccount)
+        try await store.switchAccount(currentAccount)
 
         #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
     }
@@ -429,16 +429,16 @@ struct CodexReviewUITests {
             workspaces: makeWorkspaces(from: [runningJob])
         )
 
-        store.auth.requestSwitchAccount(
+        store.requestSwitchAccount(
             currentAccount,
             requiresConfirmation: store.hasRunningJobs
-                && store.auth.switchActionRequiresRunningJobsConfirmation(for: currentAccount)
+                && store.switchActionRequiresRunningJobsConfirmation(for: currentAccount)
         )
 
         #expect(store.auth.isPresentingPendingAccountActionConfirmation)
         #expect(backend.switchAccountCallCount() == 0)
 
-        store.auth.confirmPendingAccountAction()
+        store.confirmPendingAccountAction()
         await backend.waitForSwitchAccountCallCount(1)
         #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
     }
@@ -459,10 +459,10 @@ struct CodexReviewUITests {
             workspaces: makeWorkspaces(from: [runningJob])
         )
 
-        store.auth.requestSwitchAccount(
+        store.requestSwitchAccount(
             currentSavedAccount,
             requiresConfirmation: store.hasRunningJobs
-                && store.auth.switchActionRequiresRunningJobsConfirmation(for: currentSavedAccount)
+                && store.switchActionRequiresRunningJobsConfirmation(for: currentSavedAccount)
         )
 
         #expect(store.auth.isPresentingPendingAccountActionConfirmation)
@@ -483,7 +483,7 @@ struct CodexReviewUITests {
             workspaces: []
         )
 
-        #expect(store.auth.switchActionIsDisabled(for: detachedCurrent))
+        #expect(store.switchActionIsDisabled(for: detachedCurrent))
     }
 
     @Test func accountMenusUseFullEmailForSectionTitles() {

@@ -41,10 +41,10 @@ private struct ReviewMonitorAccountsListView: View {
             isPresented: $auth.isPresentingPendingAccountActionConfirmation
         ) {
             Button(auth.pendingAccountActionConfirmationButtonTitle) {
-                auth.confirmPendingAccountAction()
+                store.confirmPendingAccountAction()
             }
             Button("Cancel", role: .cancel) {
-                auth.cancelPendingAccountAction()
+                store.cancelPendingAccountAction()
             }
         } message: {
             Text(auth.pendingAccountActionConfirmationMessage)
@@ -54,7 +54,7 @@ private struct ReviewMonitorAccountsListView: View {
             isPresented: $auth.isPresentingAccountActionAlert
         ) {
             Button("OK", role: .cancel) {
-                auth.dismissAccountActionAlert()
+                store.dismissAccountActionAlert()
             }
         } message: {
             Text(auth.accountActionAlertMessage)
@@ -148,13 +148,13 @@ private struct ReviewMonitorAccountsListView: View {
         _ account: CodexAccount,
         auth: CodexReviewAuthModel
     ) {
-        guard auth.switchActionIsDisabled(for: account) == false else {
+        guard store.switchActionIsDisabled(for: account) == false else {
             return
         }
         store.requestSwitchAccount(
             account,
             requiresConfirmation: store.hasRunningJobs
-                && auth.switchActionRequiresRunningJobsConfirmation(for: account)
+                && store.switchActionRequiresRunningJobsConfirmation(for: account)
         )
     }
 }

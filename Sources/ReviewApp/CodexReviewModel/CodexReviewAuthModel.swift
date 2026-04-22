@@ -5,7 +5,7 @@ import ReviewDomain
 @MainActor
 @Observable
 public final class CodexReviewAuthModel {
-    private enum PendingAccountAction {
+    package enum PendingAccountAction {
         case switchAccount(accountKey: String)
         case signOutActiveAccount
         case removeAccount(accountKey: String)
@@ -71,14 +71,7 @@ public final class CodexReviewAuthModel {
     }
 
     public package(set) var phase: Phase = .signedOut
-    public package(set) var account: CodexAccount? {
-        didSet {
-            guard account?.accountKey != oldValue?.accountKey else {
-                return
-            }
-            onAccountDidChange?()
-        }
-    }
+    public package(set) var account: CodexAccount?
     public package(set) var savedAccounts: [CodexAccount] = []
     public package(set) var authenticationFailureCount = 0
     public package(set) var warningMessage: String?
@@ -90,9 +83,7 @@ public final class CodexReviewAuthModel {
     public package(set) var accountActionAlertTitle = ""
     public package(set) var accountActionAlertMessage = ""
 
-    @ObservationIgnored private let runtime: ReviewMonitorRuntime
     @ObservationIgnored private var pendingAccountAction: PendingAccountAction?
-    @ObservationIgnored package var onAccountDidChange: (@MainActor () -> Void)?
 
     public var progress: Progress? {
         guard case .signingIn(let progress) = phase else {
@@ -121,109 +112,16 @@ public final class CodexReviewAuthModel {
     }
 
     package static func makePreview() -> CodexReviewAuthModel {
-        .init(runtime: .preview())
+        .init()
     }
 
-    package convenience init(controller: CodexAuthController) {
-        self.init(
-            runtime: .testing { handlers in
-                handlers.startStartupRefresh = { auth in
-                    controller.startStartupRefresh(auth: auth)
-                }
-                handlers.cancelStartupRefresh = {
-                    controller.cancelStartupRefresh()
-                }
-                handlers.refreshAuth = { auth in
-                    await controller.refresh(auth: auth)
-                }
-                handlers.signIn = { auth in
-                    await controller.signIn(auth: auth)
-                }
-                handlers.addAccount = { auth in
-                    await controller.addAccount(auth: auth)
-                }
-                handlers.cancelAuthentication = { auth in
-                    await controller.cancelAuthentication(auth: auth)
-                }
-                handlers.switchAccount = { auth, accountKey in
-                    try await controller.switchAccount(auth: auth, accountKey: accountKey)
-                }
-                handlers.removeAccount = { auth, accountKey in
-                    try await controller.removeAccount(auth: auth, accountKey: accountKey)
-                }
-                handlers.reorderSavedAccount = { auth, accountKey, toIndex in
-                    try await controller.reorderSavedAccount(
-                        auth: auth,
-                        accountKey: accountKey,
-                        toIndex: toIndex
-                    )
-                }
-                handlers.signOutActiveAccount = { auth in
-                    try await controller.signOutActiveAccount(auth: auth)
-                }
-                handlers.refreshSavedAccountRateLimits = { auth, accountKey in
-                    await controller.refreshSavedAccountRateLimits(auth: auth, accountKey: accountKey)
-                }
-                handlers.reconcileAuthenticatedSession = { auth, serverIsRunning, runtimeGeneration in
-                    await controller.reconcileAuthenticatedSession(
-                        auth: auth,
-                        serverIsRunning: serverIsRunning,
-                        runtimeGeneration: runtimeGeneration
-                    )
-                }
-                handlers.requiresCurrentSessionRecovery = { auth, accountKey in
-                    controller.requiresCurrentSessionRecovery(auth: auth, accountKey: accountKey)
-                }
-            }
-        )
-    }
-
-    package init(runtime: ReviewMonitorRuntime) {
-        self.runtime = runtime
-    }
-
-    public func refresh() async {
-        await runtime.refreshAuth(auth: self)
-    }
-
-    public func signIn() async {
-        await runtime.signIn(auth: self)
-    }
-
-    public func addAccount() async {
-        await runtime.addAccount(auth: self)
-    }
-
-    public func cancelAuthentication() async {
-        await runtime.cancelAuthentication(auth: self)
-    }
-
-    package func switchAccount(_ account: CodexAccount) async throws {
-        guard canSwitchAccount(account) else {
-            return
-        }
-        let targetAccount = savedAccounts.first(where: { $0.accountKey == account.accountKey })
-        if savedAccounts.contains(where: { $0.isSwitching }) {
-            return
-        }
-        if let currentAccount = self.account,
-           currentAccount.isSwitching,
-           savedAccounts.contains(where: { $0 === currentAccount }) == false
-        {
-            return
-        }
-        targetAccount?.updateIsSwitching(true)
-        defer {
-            targetAccount?.updateIsSwitching(false)
-        }
-        try await runtime.switchAccount(auth: self, accountKey: account.accountKey)
-    }
+    package init() {}
 
     package func requestSwitchAccount(
         _ account: CodexAccount,
         requiresConfirmation: Bool
     ) {
-        guard canSwitchAccount(account) else {
+        guard savedAccounts.contains(where: { $0.accountKey == account.accountKey }) else {
             return
         }
         requestAccountAction(
@@ -252,16 +150,14 @@ public final class CodexReviewAuthModel {
         )
     }
 
-    package func confirmPendingAccountAction() {
-        guard let pendingAccountAction else {
-            return
-        }
-        clearPendingAccountActionConfirmation()
-        performAccountAction(pendingAccountAction)
-    }
-
     package func cancelPendingAccountAction() {
         clearPendingAccountActionConfirmation()
+    }
+
+    package func consumePendingAccountAction() -> PendingAccountAction? {
+        let action = pendingAccountAction
+        clearPendingAccountActionConfirmation()
+        return action
     }
 
     package func presentAccountActionAlert(
@@ -278,59 +174,6 @@ public final class CodexReviewAuthModel {
         isPresentingAccountActionAlert = false
         accountActionAlertTitle = ""
         accountActionAlertMessage = ""
-    }
-
-    public func removeAccount(accountKey: String) async throws {
-        try await runtime.removeAccount(auth: self, accountKey: accountKey)
-    }
-
-    package func reorderSavedAccount(accountKey: String, toIndex: Int) async throws {
-        try await runtime.reorderSavedAccount(
-            auth: self,
-            accountKey: accountKey,
-            toIndex: toIndex
-        )
-    }
-
-    public func signOutActiveAccount() async throws {
-        try await runtime.signOutActiveAccount(auth: self)
-    }
-
-    public func logout() async {
-        if isAuthenticating, account == nil {
-            await cancelAuthentication()
-            return
-        }
-        do {
-            try await signOutActiveAccount()
-        } catch {
-            if errorMessage == nil, isAuthenticated {
-                updatePhase(.failed(message: error.localizedDescription))
-            }
-        }
-    }
-
-    public func refreshSavedAccountRateLimits(accountKey: String) async {
-        await runtime.refreshSavedAccountRateLimits(auth: self, accountKey: accountKey)
-    }
-
-    package func startStartupRefresh() {
-        runtime.startStartupRefresh(auth: self)
-    }
-
-    package func cancelStartupRefresh() {
-        runtime.cancelStartupRefresh()
-    }
-
-    package func reconcileAuthenticatedSession(
-        serverIsRunning: Bool,
-        runtimeGeneration: Int
-    ) async {
-        await runtime.reconcileAuthenticatedSession(
-            auth: self,
-            serverIsRunning: serverIsRunning,
-            runtimeGeneration: runtimeGeneration
-        )
     }
 
     package func updatePhase(_ phase: Phase) {
@@ -378,45 +221,6 @@ public final class CodexReviewAuthModel {
         }
     }
 
-    package var persistedActiveAccountKey: String? {
-        savedAccounts.first(where: \.isActive)?.accountKey
-    }
-
-    package func isAlreadyUsingPersistedActiveAccount(
-        _ accountKey: String
-    ) -> Bool {
-        persistedActiveAccountKey == accountKey && account?.accountKey == accountKey
-    }
-
-    package func switchActionIsDisabled(for account: CodexAccount) -> Bool {
-        canSwitchAccount(account) == false
-    }
-
-    package func switchActionRequiresRunningJobsConfirmation(
-        for account: CodexAccount
-    ) -> Bool {
-        if account.accountKey != self.account?.accountKey {
-            return true
-        }
-        return runtime.requiresCurrentSessionRecovery(
-            auth: self,
-            accountKey: account.accountKey
-        )
-    }
-
-    private func canSwitchAccount(_ account: CodexAccount) -> Bool {
-        guard savedAccounts.contains(where: { $0.accountKey == account.accountKey }) else {
-            return false
-        }
-        if isAlreadyUsingPersistedActiveAccount(account.accountKey) {
-            return runtime.requiresCurrentSessionRecovery(
-                auth: self,
-                accountKey: account.accountKey
-            )
-        }
-        return true
-    }
-
     private func reusableAccount(for accountKey: String) -> CodexAccount? {
         savedAccounts.first(where: { $0.accountKey == accountKey })
     }
@@ -434,7 +238,7 @@ public final class CodexReviewAuthModel {
             return
         }
         clearPendingAccountActionConfirmation()
-        performAccountAction(action)
+        pendingAccountAction = action
     }
 
     private func clearPendingAccountActionConfirmation() {
@@ -445,39 +249,4 @@ public final class CodexReviewAuthModel {
         pendingAccountActionConfirmationButtonTitle = ""
     }
 
-    private func performAccountAction(_ action: PendingAccountAction) {
-        Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-            do {
-                try await executeAccountAction(action)
-                if let warningMessage {
-                    presentAccountActionAlert(
-                        title: "Account Updated With Warning",
-                        message: warningMessage
-                    )
-                }
-            } catch {
-                presentAccountActionAlert(
-                    title: action.failureTitle,
-                    message: error.localizedDescription
-                )
-            }
-        }
-    }
-
-    private func executeAccountAction(_ action: PendingAccountAction) async throws {
-        switch action {
-        case .switchAccount(let accountKey):
-            guard let account = savedAccounts.first(where: { $0.accountKey == accountKey }) else {
-                return
-            }
-            try await switchAccount(account)
-        case .signOutActiveAccount:
-            try await signOutActiveAccount()
-        case .removeAccount(let accountKey):
-            try await removeAccount(accountKey: accountKey)
-        }
-    }
 }

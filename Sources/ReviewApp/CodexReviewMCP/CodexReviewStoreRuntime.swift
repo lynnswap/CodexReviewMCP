@@ -1873,7 +1873,7 @@ private final class CodexReviewEmbeddedServerBackend {
             }
             deferredAddAccountRuntimeEffect = nil
             await recycleSharedAppServerAfterAuthChange()
-            await auth.reconcileAuthenticatedSession(
+            await store.reconcileAuthenticatedSession(
                 serverIsRunning: authRuntimeState.serverIsRunning,
                 runtimeGeneration: authRuntimeState.runtimeGeneration
             )
@@ -1924,7 +1924,7 @@ private final class CodexReviewEmbeddedServerBackend {
         }
         self.deferredAddAccountRuntimeEffect = nil
         await recycleSharedAppServerAfterAuthChange()
-        await store.auth.reconcileAuthenticatedSession(
+        await store.reconcileAuthenticatedSession(
             serverIsRunning: authRuntimeState.serverIsRunning,
             runtimeGeneration: authRuntimeState.runtimeGeneration
         )
@@ -1941,7 +1941,7 @@ private final class CodexReviewEmbeddedServerBackend {
             cancelDeferredAddAccountRuntimeReconcileTask()
             deferredAddAccountRuntimeEffect = nil
         }
-        await store.auth.reconcileAuthenticatedSession(
+        await store.reconcileAuthenticatedSession(
             serverIsRunning: serverIsRunning,
             runtimeGeneration: runtimeGeneration
         )
@@ -2069,7 +2069,7 @@ private final class CodexReviewEmbeddedServerBackend {
     ) async {
         closedSessions = []
         if deferStartupAuthRefreshUntilPrepared == false {
-            store.auth.startStartupRefresh()
+            store.startStartupAuthRefresh()
         }
         let startupID = UUID()
         let task = Task { @MainActor [weak self, weak store] in
@@ -2096,9 +2096,9 @@ private final class CodexReviewEmbeddedServerBackend {
         self.startupTask = nil
         startupTaskID = nil
         startupTask?.cancel()
-        store.auth.cancelStartupRefresh()
+        store.cancelStartupAuthRefresh()
         if store.auth.isAuthenticating {
-            await store.auth.cancelAuthentication()
+            await store.cancelAuthentication()
         }
         await reconcileAuthRuntime(
             store: store,
@@ -2423,7 +2423,7 @@ private final class CodexReviewEmbeddedServerBackend {
                 runtimeGeneration: appServerRuntimeGeneration
             )
             if deferStartupAuthRefreshUntilPrepared {
-                store.auth.startStartupRefresh()
+                store.startStartupAuthRefresh()
             }
             observeServerLifecycle(server: server, store: store)
         } catch is CancellationError {
@@ -2452,7 +2452,7 @@ private final class CodexReviewEmbeddedServerBackend {
             )
             store.transitionToFailed(CodexReviewStore.errorMessage(from: error))
             if deferStartupAuthRefreshUntilPrepared {
-                store.auth.startStartupRefresh()
+                store.startStartupAuthRefresh()
             }
         }
     }
@@ -2546,7 +2546,7 @@ private final class CodexReviewEmbeddedServerBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
-                store.auth.cancelStartupRefresh()
+                store.cancelStartupAuthRefresh()
                 await reconcileAuthRuntime(
                     store: store,
                     serverIsRunning: false,
@@ -2565,7 +2565,7 @@ private final class CodexReviewEmbeddedServerBackend {
                 await self.appServerManager.shutdown()
                 self.removeRuntimeState(endpointRecord: endpointRecord)
                 self.server = nil
-                store.auth.cancelStartupRefresh()
+                store.cancelStartupAuthRefresh()
                 await reconcileAuthRuntime(
                     store: store,
                     serverIsRunning: false,
@@ -2608,7 +2608,7 @@ private final class CodexReviewEmbeddedServerBackend {
                     reason: "Review server failed.",
                     failureMessage: CodexReviewStore.errorMessage(from: error)
                 )
-                store.auth.cancelStartupRefresh()
+                store.cancelStartupAuthRefresh()
                 await reconcileAuthRuntime(
                     store: store,
                     serverIsRunning: false,
