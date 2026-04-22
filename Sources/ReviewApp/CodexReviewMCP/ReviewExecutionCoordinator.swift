@@ -385,12 +385,14 @@ package actor ReviewExecutionCoordinator {
         guard let handle = executions[jobID] else {
             return
         }
-        guard handle.phase == .bootstrapping,
-              let bootstrapTransport = handle.bootstrapTransport
-        else {
+        guard handle.phase == .bootstrapping else {
             return
         }
-        await bootstrapTransport.close()
+        if let bootstrapTransport = handle.bootstrapTransport {
+            await bootstrapTransport.close()
+            return
+        }
+        handle.task.cancel()
     }
 
     private func cancelResolvedJob(
