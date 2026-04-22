@@ -43,19 +43,19 @@ struct SignInView: View {
         .scenePadding()
     }
 
-    var authenticationActionTitle: String {
+    private var authenticationActionTitle: String {
         store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT"
     }
 
-    var authenticationActionRole: ButtonRole? {
+    private var authenticationActionRole: ButtonRole? {
         store.auth.isAuthenticating ? .cancel : .confirm
     }
 
-    var descriptionText: String? {
+    private var descriptionText: String? {
         store.auth.errorMessage ?? serverFailureMessage
     }
 
-    var serverFailureMessage: String? {
+    private var serverFailureMessage: String? {
         guard case .failed(let message) = store.serverState else {
             return nil
         }

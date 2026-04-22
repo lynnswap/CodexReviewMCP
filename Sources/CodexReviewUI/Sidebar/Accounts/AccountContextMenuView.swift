@@ -30,7 +30,7 @@ struct AccountContextMenuView: View {
         "rectangle.portrait.and.arrow.right"
     }
 
-    func requestDestructiveAccountAction() {
+    private func requestDestructiveAccountAction() {
         if isCurrentAccount {
             store.requestSignOutActiveAccount(requiresConfirmation: store.hasRunningJobs)
         } else {

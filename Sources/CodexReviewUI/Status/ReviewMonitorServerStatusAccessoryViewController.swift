@@ -226,7 +226,7 @@ struct StatusView: View {
         .padding(8)
     }
 
-    var showsServerRestartAction: Bool {
+    private var showsServerRestartAction: Bool {
         switch store.serverState {
         case .failed, .stopped, .starting:
             true

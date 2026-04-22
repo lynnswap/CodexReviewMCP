@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import SwiftUI
 import Testing
 @_spi(Testing) @testable import ReviewApp
 @_spi(PreviewSupport) @testable import CodexReviewUI
@@ -11,18 +10,6 @@ import ReviewRuntime
 @Suite(.serialized)
 @MainActor
 struct CodexReviewUISettingsTests {
-    @Test func statusViewShowsRestartActionWhileServerStarting() {
-        let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(
-            serverState: .starting,
-            authState: .signedIn(accountID: "review@example.com"),
-            workspaces: []
-        )
-        let view = StatusView(store: store)
-
-        #expect(view.showsServerRestartAction)
-    }
-
     @Test func statusViewUsesSettingsStoreLabels() {
         let settingsSnapshot = makeSettingsSnapshot(
             model: "gpt-5.4-mini",
@@ -39,12 +26,9 @@ struct CodexReviewUISettingsTests {
             settingsSnapshot: settingsSnapshot
         )
 
-        let view = StatusView(store: store)
-
         #expect(store.settings.currentModelDisplayText == "GPT-5.4 Mini")
         #expect(store.settings.currentReasoningDisplayText == "Low")
         #expect(store.settings.currentServiceTierDisplayText == "Normal")
-        _ = view
     }
 
     @Test func statusViewDisablesSettingsControlsWhenServerIsNotRunning() {

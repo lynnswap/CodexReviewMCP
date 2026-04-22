@@ -4290,6 +4290,240 @@ struct CodexReviewMCPTests {
         #expect(remainingProbeEntries.isEmpty)
     }
 
+    @Test func performPrimaryAuthenticationActionBeginsAuthenticationWhenSignedOutAndServerRunning() async {
+        let backend = PrimaryAuthenticationStoreBackend()
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["begin"])
+    }
+
+    @Test func performPrimaryAuthenticationActionCancelsAuthenticationWhenAuthenticating() async {
+        let backend = PrimaryAuthenticationStoreBackend()
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signingIn(
+                .init(
+                    title: "Sign in with ChatGPT",
+                    detail: "Open the browser to continue."
+                )
+            ),
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["cancel"])
+    }
+
+    @Test func performPrimaryAuthenticationActionRestartsFailedServerBeforeBeginningAuthentication() async {
+        let backend = PrimaryAuthenticationStoreBackend(
+            restartResultingServerState: .running
+        )
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authPhase: .signedOut,
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["start", "begin"])
+        #expect(store.serverState == .running)
+    }
+
+    @Test func performPrimaryAuthenticationActionRestartsStoppedServerBeforeBeginningAuthentication() async {
+        let backend = PrimaryAuthenticationStoreBackend(
+            restartResultingServerState: .running
+        )
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .stopped,
+            authPhase: .signedOut,
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["start", "begin"])
+        #expect(store.serverState == .running)
+    }
+
+    @Test func performPrimaryAuthenticationActionBeginsAuthenticationEvenWhenRestartFails() async {
+        let backend = PrimaryAuthenticationStoreBackend(
+            restartResultingServerState: .failed("Still unavailable.")
+        )
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        store.loadForTesting(
+            serverState: .failed("The embedded server stopped responding."),
+            authPhase: .signedOut,
+            workspaces: []
+        )
+
+        await store.performPrimaryAuthenticationAction()
+
+        #expect(backend.recordedActions() == ["start", "begin"])
+        #expect(store.serverState == .failed("Still unavailable."))
+    }
+
+    @Test func switchingAccountFailureClearsProgressStateAndPreservesActiveAccount() async {
+        let backend = AccountActionStoreBackend(
+            switchStartsBlocked: true,
+            switchErrorMessage: "Switch failed."
+        )
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        store.auth.updateSavedAccounts([firstAccount, secondAccount])
+        store.auth.updateAccount(firstAccount)
+
+        let switchTask = Task {
+            try await store.switchAccount(secondAccount)
+        }
+
+        await backend.waitForSwitchAccountStartCallCount(1)
+        #expect(
+            store.auth.savedAccounts.contains(
+                where: { $0.accountKey == secondAccount.accountKey && $0.isSwitching }
+            )
+        )
+
+        await backend.releaseSwitchAccount()
+        await #expect(throws: Error.self) {
+            try await switchTask.value
+        }
+
+        #expect(store.auth.savedAccounts.contains(where: { $0.isSwitching }) == false)
+        #expect(store.auth.account?.accountKey == firstAccount.accountKey)
+    }
+
+    @Test func metadataOnlySwitchDoesNotPresentRunningJobsConfirmation() async {
+        let backend = AccountActionStoreBackend()
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let currentSavedAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        let currentSession = CodexAccount(email: "current@example.com", planType: "plus")
+        let runningJob = makeStoreTestJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: currentSession,
+            savedAccounts: [activeSavedAccount, currentSavedAccount],
+            workspaces: makeStoreTestWorkspaces(from: [runningJob])
+        )
+
+        store.requestSwitchAccount(
+            currentSavedAccount,
+            requiresConfirmation: store.hasRunningJobs
+                && store.auth.account?.accountKey != currentSavedAccount.accountKey
+        )
+        await backend.waitForSwitchAccountCallCount(1)
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
+        #expect(backend.lastSwitchedAccountKey() == currentSavedAccount.accountKey)
+    }
+
+    @Test func persistedActiveCurrentRecoverySwitchStillDelegatesToController() async throws {
+        let backend = AccountActionStoreBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: []
+        )
+
+        try await store.switchAccount(currentAccount)
+
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
+    @Test func sameAccountRecoverySwitchUsesRunningJobsConfirmation() async {
+        let backend = AccountActionStoreBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        currentAccount.updateIsActive(true)
+        let runningJob = makeStoreTestJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentAccount,
+            savedAccounts: [currentAccount],
+            workspaces: makeStoreTestWorkspaces(from: [runningJob])
+        )
+
+        store.requestSwitchAccount(
+            currentAccount,
+            requiresConfirmation: store.hasRunningJobs
+                && store.switchActionRequiresRunningJobsConfirmation(for: currentAccount)
+        )
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(backend.switchAccountCallCount() == 0)
+
+        store.confirmPendingAccountAction()
+        await backend.waitForSwitchAccountCallCount(1)
+
+        #expect(backend.lastSwitchedAccountKey() == currentAccount.accountKey)
+    }
+
+    @Test func inactiveSavedCurrentRecoverySwitchUsesRunningJobsConfirmation() async {
+        let backend = AccountActionStoreBackend()
+        backend.requiresCurrentSessionRecovery = true
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let currentSavedAccount = CodexAccount(email: "current@example.com", planType: "plus")
+        let runningJob = makeStoreTestJob(status: .running, targetSummary: "Uncommitted changes")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .failed(message: "Authentication required."),
+            account: currentSavedAccount,
+            savedAccounts: [activeSavedAccount, currentSavedAccount],
+            workspaces: makeStoreTestWorkspaces(from: [runningJob])
+        )
+
+        store.requestSwitchAccount(
+            currentSavedAccount,
+            requiresConfirmation: store.hasRunningJobs
+                && store.switchActionRequiresRunningJobsConfirmation(for: currentSavedAccount)
+        )
+
+        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(backend.switchAccountCallCount() == 0)
+    }
+
+    @Test func detachedCurrentSessionCannotRequestNoOpSwitch() {
+        let backend = AccountActionStoreBackend()
+        let store = CodexReviewStore.makeTestingStore(harness: backend)
+        let activeSavedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        activeSavedAccount.updateIsActive(true)
+        let detachedCurrent = CodexAccount(email: "current@example.com", planType: "plus")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: detachedCurrent,
+            savedAccounts: [activeSavedAccount],
+            workspaces: []
+        )
+
+        #expect(store.switchActionIsDisabled(for: detachedCurrent))
+    }
+
     @Test func signInIgnoresConcurrentRetryWhileLoginIsInProgress() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = BlockingLoginReviewAuthSession()
@@ -10015,6 +10249,152 @@ actor FailingAuthCheckoutAppServerManager: AppServerManaging {
 }
 
 @MainActor
+final class PrimaryAuthenticationStoreBackend: ReviewMonitorTestingHarness {
+    private let restartResultingServerState: CodexReviewServerState
+    private var actions: [String] = []
+
+    init(
+        restartResultingServerState: CodexReviewServerState = .starting
+    ) {
+        self.restartResultingServerState = restartResultingServerState
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false
+            )
+        )
+    }
+
+    override func start(
+        store: CodexReviewStore,
+        forceRestartIfNeeded _: Bool
+    ) async {
+        isActive = true
+        actions.append("start")
+        store.serverState = restartResultingServerState
+    }
+
+    override func stop(store _: CodexReviewStore) async {
+        isActive = false
+    }
+
+    override func waitUntilStopped() async {}
+
+    override func signIn(auth _: CodexReviewAuthModel) async {
+        actions.append("begin")
+    }
+
+    override func cancelAuthentication(auth _: CodexReviewAuthModel) async {
+        actions.append("cancel")
+    }
+
+    override func cancelReviewByID(
+        jobID _: String,
+        sessionID _: String,
+        reason _: String,
+        store _: CodexReviewStore
+    ) async throws -> ReviewCancelOutcome {
+        throw TestFailure("cancel review is not expected in PrimaryAuthenticationStoreBackend")
+    }
+
+    func recordedActions() -> [String] {
+        actions
+    }
+}
+
+@MainActor
+final class AccountActionStoreBackend: ReviewMonitorTestingHarness {
+    var requiresCurrentSessionRecovery = false
+
+    private let switchStartSignal = AsyncSignal()
+    private let switchSignal = AsyncSignal()
+    private let switchCompletionGate: OneShotGate
+    private let switchErrorMessage: String?
+    private var switchCalls = 0
+    private var switchedAccountKeys: [String] = []
+
+    init(
+        switchStartsBlocked: Bool = false,
+        switchErrorMessage: String? = nil
+    ) {
+        self.switchCompletionGate = OneShotGate(isOpen: switchStartsBlocked == false)
+        self.switchErrorMessage = switchErrorMessage
+        super.init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: false
+            )
+        )
+    }
+
+    override func start(
+        store _: CodexReviewStore,
+        forceRestartIfNeeded _: Bool
+    ) async {}
+
+    override func stop(store _: CodexReviewStore) async {}
+
+    override func waitUntilStopped() async {}
+
+    override func switchAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) async throws {
+        switchCalls += 1
+        switchedAccountKeys.append(accountKey)
+        await switchStartSignal.signal()
+        await switchCompletionGate.wait()
+        if let switchErrorMessage {
+            throw ReviewError.io(switchErrorMessage)
+        }
+        if let account = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
+            auth.updateAccount(account)
+        }
+        await switchSignal.signal()
+    }
+
+    override func requiresCurrentSessionRecovery(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) -> Bool {
+        requiresCurrentSessionRecovery
+    }
+
+    override func cancelReviewByID(
+        jobID _: String,
+        sessionID _: String,
+        reason _: String,
+        store _: CodexReviewStore
+    ) async throws -> ReviewCancelOutcome {
+        throw TestFailure("cancel review is not expected in AccountActionStoreBackend")
+    }
+
+    func switchAccountCallCount() -> Int {
+        switchCalls
+    }
+
+    func waitForSwitchAccountStartCallCount(_ count: Int) async {
+        if await switchStartSignal.count() >= count {
+            return
+        }
+        await switchStartSignal.wait(untilCount: count)
+    }
+
+    func waitForSwitchAccountCallCount(_ count: Int) async {
+        if await switchSignal.count() >= count {
+            return
+        }
+        await switchSignal.wait(untilCount: count)
+    }
+
+    func releaseSwitchAccount() async {
+        await switchCompletionGate.open()
+    }
+
+    func lastSwitchedAccountKey() -> String? {
+        switchedAccountKeys.last
+    }
+}
+
+@MainActor
 final class CancellationFailureStoreBackend: ReviewMonitorTestingHarness {
     private let failingSessionIDs: Set<String>
     private let error: any Error
@@ -11321,6 +11701,50 @@ func makeInjectedAuthSessionStore(
         inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
         deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
     )
+}
+
+@MainActor
+func makeStoreTestJob(
+    id: String = UUID().uuidString,
+    cwd: String = "/tmp/repo",
+    startedAt: Date = Date(),
+    status: CodexReviewJobStatus,
+    targetSummary: String,
+    summary: String? = nil
+) -> CodexReviewJob {
+    CodexReviewJob.makeForTesting(
+        id: id,
+        cwd: cwd,
+        targetSummary: targetSummary,
+        threadID: status == .queued ? nil : UUID().uuidString,
+        turnID: UUID().uuidString,
+        status: status,
+        startedAt: startedAt,
+        endedAt: status.isTerminal ? startedAt.addingTimeInterval(1) : nil,
+        summary: summary ?? status.displayText,
+        lastAgentMessage: "",
+        logEntries: [],
+        errorMessage: status == .failed ? summary ?? status.displayText : nil
+    )
+}
+
+@MainActor
+func makeStoreTestWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspace] {
+    var buckets: [String: [CodexReviewJob]] = [:]
+    var order: [String] = []
+    for job in jobs {
+        if buckets[job.cwd] == nil {
+            order.insert(job.cwd, at: 0)
+            buckets[job.cwd] = []
+        }
+        buckets[job.cwd, default: []].insert(job, at: 0)
+    }
+    return order.map { cwd in
+        CodexReviewWorkspace(
+            cwd: cwd,
+            jobs: buckets[cwd] ?? []
+        )
+    }
 }
 
 @MainActor

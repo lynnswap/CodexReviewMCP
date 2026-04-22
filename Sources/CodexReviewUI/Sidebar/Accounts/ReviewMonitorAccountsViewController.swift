@@ -1,6 +1,5 @@
 import AppKit
 import ReviewApp
-import Observation
 import SwiftUI
 import ReviewDomain
 
@@ -219,7 +218,6 @@ private struct RowView: View{
 @MainActor
 final class ReviewMonitorAccountsViewController: NSViewController {
     private let store: CodexReviewStore
-    private var hostingView: NSHostingView<ReviewMonitorAccountsListView>?
 
     init(store: CodexReviewStore) {
         self.store = store
@@ -245,7 +243,6 @@ final class ReviewMonitorAccountsViewController: NSViewController {
             rootView: ReviewMonitorAccountsListView(store: store)
         )
         hostingView.translatesAutoresizingMaskIntoConstraints = false
-        self.hostingView = hostingView
 
         view.addSubview(hostingView)
         NSLayoutConstraint.activate([
@@ -258,27 +255,6 @@ final class ReviewMonitorAccountsViewController: NSViewController {
 }
 
 #if DEBUG
-private extension ReviewMonitorAccountsListView {
-    var showsAuthenticationProgressRowForTesting: Bool {
-        false
-    }
-
-    func tapAccountRowForTesting(_ account: CodexAccount) {
-        requestAccountRowSwitch(account, auth: store.auth)
-    }
-}
-
-@MainActor
-extension ReviewMonitorAccountsViewController {
-    var showsAuthenticationProgressRowForTesting: Bool {
-        hostingView?.rootView.showsAuthenticationProgressRowForTesting ?? false
-    }
-
-    func tapAccountRowForTesting(_ account: CodexAccount) {
-        hostingView?.rootView.tapAccountRowForTesting(account)
-    }
-}
-
 #Preview {
     ReviewMonitorAccountsViewController(
         store: makeReviewMonitorAccountsPreviewStore()

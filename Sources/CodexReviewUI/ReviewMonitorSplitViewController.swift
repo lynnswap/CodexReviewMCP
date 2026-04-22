@@ -489,10 +489,6 @@ private final class AddAccountToolbarItemView: NSView {
         }
     }
 
-    func performCancelForTesting() {
-        handleCancel()
-    }
-
 #if DEBUG
     var displayedModeForTesting: Mode {
         displayedMode
@@ -735,14 +731,6 @@ extension ReviewMonitorSplitViewController {
             targetMode = .progress
         }
         await addAccountToolbarView.waitForStableModeForTesting(targetMode)
-    }
-
-    func performAddAccountToolbarItemForTesting() {
-        performAddAccountToolbarItemAction()
-    }
-
-    func performAddAccountToolbarCancelForTesting() {
-        addAccountToolbarView?.performCancelForTesting()
     }
 
     var sidebarAllowsFullHeightLayoutForTesting: Bool {

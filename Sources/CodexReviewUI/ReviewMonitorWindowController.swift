@@ -2,6 +2,7 @@ import AppKit
 import ObservationBridge
 import ReviewApp
 import ReviewDomain
+import SwiftUI
 
 @MainActor
 private func configureReviewMonitorWindowBase(_ window: NSWindow) {
@@ -30,7 +31,7 @@ public final class ReviewMonitorWindowController: NSWindowController {
 
     private static let frameAutosaveName = NSWindow.FrameAutosaveName("CodexReviewMonitor.MainWindow")
     private let splitViewController: ReviewMonitorSplitViewController
-    private let signInViewController: ReviewMonitorSignInViewController
+    private let signInViewController: NSHostingController<SignInView>
     private let rootContentViewController: ReviewMonitorWindowContentViewController
     private let auth: CodexReviewAuthModel
     private let forceSplitView: Bool
@@ -55,7 +56,8 @@ public final class ReviewMonitorWindowController: NSWindowController {
     ) {
         let splitViewController = ReviewMonitorSplitViewController(store: store)
         splitViewController.loadViewIfNeeded()
-        let signInViewController = ReviewMonitorSignInViewController(store: store)
+        let signInViewController = NSHostingController(rootView: SignInView(store: store))
+        signInViewController.sizingOptions = []
         let contentViewController = ReviewMonitorWindowContentViewController()
 
         let window = NSWindow(contentViewController: contentViewController)
