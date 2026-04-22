@@ -57,7 +57,7 @@ struct MCPServerUnavailableView: View {
                 isRestarting = false
             }
             if store.auth.isAuthenticating {
-                await store.auth.cancelAuthentication()
+                await store.cancelAuthentication()
             }
             await store.restart()
         }

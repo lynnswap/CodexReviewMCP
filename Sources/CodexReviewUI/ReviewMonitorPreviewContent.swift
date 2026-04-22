@@ -85,9 +85,9 @@ public enum ReviewMonitorPreviewContent {
     public static func makeStore(
         streamInterval: Duration = .seconds(1)
     ) -> CodexReviewStore {
-        let backend = CodexReviewPreviewStoreBackend()
-        backend.initialSettingsSnapshot = makePreviewSettingsSnapshot()
-        let store = CodexReviewStore(backend: backend)
+        let store = CodexReviewStore.makePreviewStore(
+            seed: .init(initialSettingsSnapshot: makePreviewSettingsSnapshot())
+        )
         let accounts = makePreviewAccounts()
         store.loadForTesting(
             serverState: .running,

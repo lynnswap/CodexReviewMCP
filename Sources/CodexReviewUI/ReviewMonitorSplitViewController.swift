@@ -220,7 +220,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             guard let self else {
                 return
             }
-            await self.store.auth.cancelAuthentication()
+            await self.store.cancelAuthentication()
         }
     }
 

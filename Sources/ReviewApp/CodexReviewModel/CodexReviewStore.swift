@@ -18,34 +18,33 @@ public final class CodexReviewStore {
     public package(set) var serverURL: URL?
     public package(set) var workspaces: [CodexReviewWorkspace] = []
     package var shouldAutoStartEmbeddedServer: Bool {
-        backend.shouldAutoStartEmbeddedServer
+        runtime.shouldAutoStartEmbeddedServer
     }
 
     @ObservationIgnored package let diagnosticsURL: URL?
-    @ObservationIgnored package let backend: any CodexReviewStoreBackend
+    @ObservationIgnored package let runtime: ReviewMonitorRuntime
     @ObservationIgnored package var previewSupportRetainer: AnyObject?
     @ObservationIgnored package var onJobsDidMutate: (@MainActor () -> Void)?
 
     package init(
-        backend: any CodexReviewStoreBackend,
-        authController: (any CodexReviewAuthControlling)? = nil,
+        runtime: ReviewMonitorRuntime,
         diagnosticsURL: URL? = nil
     ) {
-        self.backend = backend
+        self.runtime = runtime
         self.diagnosticsURL = diagnosticsURL
         self.auth = CodexReviewAuthModel(
-            controller: authController ?? CodexReviewPreviewAuthController()
+            runtime: runtime
         )
         self.settings = SettingsStore(
-            backend: backend,
-            snapshot: backend.initialSettingsSnapshot
+            runtime: runtime,
+            snapshot: runtime.initialSettingsSnapshot
         )
         self.auth.onAccountDidChange = { [weak self] in
             self?.scheduleSettingsRefreshIfNeeded()
         }
-        self.auth.updateSavedAccounts(backend.initialAccounts)
-        self.auth.updateAccount(backend.initialAccount)
-        backend.attachStore(self)
+        self.auth.updateSavedAccounts(runtime.initialAccounts)
+        self.auth.updateAccount(runtime.initialAccount)
+        runtime.attachStore(self)
     }
 
     public func start(forceRestartIfNeeded: Bool = false) async {
@@ -60,14 +59,14 @@ public final class CodexReviewStore {
         serverURL = nil
         resetReviews()
         writeDiagnosticsIfNeeded()
-        await backend.start(
+        await runtime.start(
             store: self,
             forceRestartIfNeeded: forceRestartIfNeeded
         )
     }
 
     public func stop() async {
-        await backend.stop(store: self)
+        await runtime.stop(store: self)
         transitionToStopped()
     }
 
@@ -77,7 +76,97 @@ public final class CodexReviewStore {
     }
 
     public func waitUntilStopped() async {
-        await backend.waitUntilStopped()
+        await runtime.waitUntilStopped()
+    }
+
+    public func refreshAuthentication() async {
+        await auth.refresh()
+    }
+
+    public func signIn() async {
+        await auth.signIn()
+    }
+
+    public func addAccount() async {
+        await auth.addAccount()
+    }
+
+    public func cancelAuthentication() async {
+        await auth.cancelAuthentication()
+    }
+
+    public func logout() async {
+        await auth.logout()
+    }
+
+    public func signOutActiveAccount() async throws {
+        try await auth.signOutActiveAccount()
+    }
+
+    package func switchAccount(_ account: CodexAccount) async throws {
+        try await auth.switchAccount(account)
+    }
+
+    package func requestSwitchAccount(
+        _ account: CodexAccount,
+        requiresConfirmation: Bool
+    ) {
+        auth.requestSwitchAccount(account, requiresConfirmation: requiresConfirmation)
+    }
+
+    package func requestSignOutActiveAccount(requiresConfirmation: Bool) {
+        auth.requestSignOutActiveAccount(requiresConfirmation: requiresConfirmation)
+    }
+
+    package func requestRemoveAccount(
+        _ account: CodexAccount,
+        requiresConfirmation: Bool
+    ) {
+        auth.requestRemoveAccount(account, requiresConfirmation: requiresConfirmation)
+    }
+
+    package func confirmPendingAccountAction() {
+        auth.confirmPendingAccountAction()
+    }
+
+    package func cancelPendingAccountAction() {
+        auth.cancelPendingAccountAction()
+    }
+
+    package func reorderSavedAccount(accountKey: String, toIndex: Int) async throws {
+        try await auth.reorderSavedAccount(accountKey: accountKey, toIndex: toIndex)
+    }
+
+    package func refreshSavedAccountRateLimits(accountKey: String) async {
+        await auth.refreshSavedAccountRateLimits(accountKey: accountKey)
+    }
+
+    package func refreshSettings() async {
+        await settings.refresh()
+    }
+
+    package func updateSettingsModel(_ model: String) async {
+        await settings.updateModel(model)
+    }
+
+    package func clearSettingsModelOverride() async {
+        await settings.clearModelOverride()
+    }
+
+    package func updateSettingsReasoningEffort(
+        _ reasoningEffort: CodexReviewReasoningEffort
+    ) async {
+        await settings.updateReasoningEffort(reasoningEffort)
+    }
+
+    package func clearSettingsReasoningEffort() async {
+        await settings.updateReasoningEffort(nil)
+    }
+
+    package func updateSettingsServiceTier(
+        _ serviceTier: CodexReviewServiceTier?
+    ) async {
+        await settings.updateServiceTier(serviceTier)
     }
 
     package func transitionToRunning(serverURL: URL) {
@@ -172,6 +261,14 @@ public final class CodexReviewStore {
     public var runningJobCount: Int {
         workspaces.reduce(into: 0) { count, workspace in
             count += workspace.jobs.filter { $0.isTerminal == false }.count
+        }
+    }
+
+    package func activeJobIDs(for sessionID: String) -> [String] {
+        workspaces.flatMap { workspace in
+            workspace.jobs
+                .filter { $0.sessionID == sessionID && $0.isTerminal == false }
+                .map(\.id)
         }
     }
 }

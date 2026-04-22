@@ -5520,15 +5520,15 @@ struct CodexReviewMCPTests {
     }
 
     @Test func cancelAllRunningJobsThrowsWhenAnyReviewCancellationFails() async throws {
-        let store = CodexReviewStore(
-            backend: CancellationFailureStoreBackend(
+        let store = CodexReviewStore.makeTestingStore(
+            runtime: CancellationFailureStoreBackend(
                 failingSessionIDs: ["session-a"],
                 error: NSError(
                     domain: "CodexReviewMCPTests.CancellationFailureStoreBackend",
                     code: 1,
                     userInfo: [NSLocalizedDescriptionKey: "Cancellation failed."]
                 )
-            )
+            ).runtime
         )
         let failedJob = CodexReviewJob.makeForTesting(
             id: "job-a",
@@ -5562,7 +5562,7 @@ struct CodexReviewMCPTests {
     }
 
     @Test func terminateAllRunningJobsLocallyFinalizesCancellationRequestedJobs() {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = CodexReviewStore.makePreviewStore()
         let requestedJob = CodexReviewJob.makeForTesting(
             id: "job-requested",
             sessionID: "session-a",
@@ -11405,7 +11405,7 @@ private actor FailingAuthCheckoutAppServerManager: AppServerManaging {
 }
 
 @MainActor
-private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
+private final class CancellationFailureStoreBackend {
     let isActive = true
     let shouldAutoStartEmbeddedServer = false
     let initialAccount: CodexAccount? = nil
@@ -11423,6 +11423,33 @@ private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
         self.error = error
     }
 
+    lazy var runtime: ReviewMonitorRuntime = .testing(
+        seed: .init(
+            shouldAutoStartEmbeddedServer: shouldAutoStartEmbeddedServer,
+            initialAccount: initialAccount,
+            initialAccounts: initialAccounts
+        )
+    ) { handlers in
+        handlers.isActive = { self.isActive }
+        handlers.start = { store, forceRestartIfNeeded in
+            await self.start(store: store, forceRestartIfNeeded: forceRestartIfNeeded)
+        }
+        handlers.stop = { store in
+            await self.stop(store: store)
+        }
+        handlers.waitUntilStopped = {
+            await self.waitUntilStopped()
+        }
+        handlers.cancelReviewByID = { jobID, sessionID, reason, store in
+            try await self.cancelReview(
+                jobID: jobID,
+                sessionID: sessionID,
+                reason: reason,
+                store: store
+            )
+        }
+    }
+
     func start(
         store _: CodexReviewStore,
         forceRestartIfNeeded _: Bool
@@ -11437,7 +11464,7 @@ private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
         sessionID: String,
         reason: String,
         store: CodexReviewStore
-    ) async throws {
+    ) async throws -> ReviewCancelOutcome {
         if failingSessionIDs.contains(sessionID) {
             throw error
         }
@@ -11445,6 +11472,13 @@ private final class CancellationFailureStoreBackend: CodexReviewStoreBackend {
             jobID: jobID,
             sessionID: sessionID,
             reason: reason
+        )
+        let job = try store.resolveJob(jobID: jobID, sessionID: sessionID)
+        return .init(
+            jobID: jobID,
+            threadID: job.threadID,
+            cancelled: true,
+            status: job.status.state
         )
     }
 }
@@ -12777,7 +12811,7 @@ private final class TestAuthRuntimeDriver {
 }
 
 @MainActor
-private final class TestRuntimeOwningAuthController: CodexReviewAuthControlling {
+private final class TestRuntimeOwningAuthController {
     private let base: CodexAuthController
     private let runtimeDriver: TestAuthRuntimeDriver
 
@@ -12915,10 +12949,56 @@ private func makeAuthModel(
         inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
     )
     return CodexReviewAuthModel(
-        controller: TestRuntimeOwningAuthController(
-            base: controller,
-            runtimeDriver: runtimeDriver
-        )
+        runtime: .testing { handlers in
+            let adapter = TestRuntimeOwningAuthController(
+                base: controller,
+                runtimeDriver: runtimeDriver
+            )
+            handlers.startStartupRefresh = { auth in
+                adapter.startStartupRefresh(auth: auth)
+            }
+            handlers.cancelStartupRefresh = {
+                adapter.cancelStartupRefresh()
+            }
+            handlers.refreshAuth = { auth in
+                await adapter.refresh(auth: auth)
+            }
+            handlers.signIn = { auth in
+                await adapter.signIn(auth: auth)
+            }
+            handlers.addAccount = { auth in
+                await adapter.addAccount(auth: auth)
+            }
+            handlers.cancelAuthentication = { auth in
+                await adapter.cancelAuthentication(auth: auth)
+            }
+            handlers.switchAccount = { auth, accountKey in
+                try await adapter.switchAccount(auth: auth, accountKey: accountKey)
+            }
+            handlers.removeAccount = { auth, accountKey in
+                try await adapter.removeAccount(auth: auth, accountKey: accountKey)
+            }
+            handlers.reorderSavedAccount = { auth, accountKey, toIndex in
+                try await adapter.reorderSavedAccount(
+                    auth: auth,
+                    accountKey: accountKey,
+                    toIndex: toIndex
+                )
+            }
+            handlers.signOutActiveAccount = { auth in
+                try await adapter.signOutActiveAccount(auth: auth)
+            }
+            handlers.refreshSavedAccountRateLimits = { auth, accountKey in
+                await adapter.refreshSavedAccountRateLimits(auth: auth, accountKey: accountKey)
+            }
+            handlers.reconcileAuthenticatedSession = { auth, serverIsRunning, runtimeGeneration in
+                await adapter.reconcileAuthenticatedSession(
+                    auth: auth,
+                    serverIsRunning: serverIsRunning,
+                    runtimeGeneration: runtimeGeneration
+                )
+            }
+        }
     )
 }
 

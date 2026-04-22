@@ -7,7 +7,7 @@ extension CodexReviewStore {
         sessionID: String,
         reason: String = "Cancellation requested."
     ) async throws {
-        try await backend.cancelReview(
+        _ = try await runtime.cancelReviewByID(
             jobID: jobID,
             sessionID: sessionID,
             reason: reason,

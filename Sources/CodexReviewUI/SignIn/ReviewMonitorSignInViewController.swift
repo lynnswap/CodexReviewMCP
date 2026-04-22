@@ -69,7 +69,7 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
                 return
             }
             if self.auth.isAuthenticating {
-                await self.store.auth.cancelAuthentication()
+                await self.store.cancelAuthentication()
                 return
             }
 
@@ -91,7 +91,7 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
             else {
                 return
             }
-            await self.store.auth.signIn()
+            await self.store.signIn()
         }
     }
 

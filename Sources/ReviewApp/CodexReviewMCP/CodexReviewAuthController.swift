@@ -21,7 +21,7 @@ package enum CodexAuthRuntimeEffect {
 }
 
 @MainActor
-package final class CodexAuthController: CodexReviewAuthControlling {
+package final class CodexAuthController {
     private enum AuthenticationIntent {
         case signIn
         case addAccount

@@ -74,7 +74,7 @@ extension CodexReviewStore {
         inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
-        let backend = CodexReviewEmbeddedServerBackend(
+        let runtime = ReviewMonitorRuntime.live(
             configuration: configuration,
             appServerManager: appServerManager,
             sharedAuthSessionFactory: sharedAuthSessionFactory,
@@ -85,8 +85,7 @@ extension CodexReviewStore {
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
         )
         self.init(
-            backend: backend,
-            authController: backend.authController,
+            runtime: runtime,
             diagnosticsURL: diagnosticsURL
         )
     }
@@ -95,7 +94,7 @@ extension CodexReviewStore {
         sessionID: String,
         request: ReviewStartRequest
     ) async throws -> ReviewReadResult {
-        try await liveBackend().executionCoordinator.startReview(
+        try await runtime.startReview(
             sessionID: sessionID,
             request: request,
             store: self
@@ -137,7 +136,7 @@ extension CodexReviewStore {
         sessionID: String,
         reason: String = "Cancellation requested."
     ) async throws -> ReviewCancelOutcome {
-        try await liveBackend().executionCoordinator.cancelReview(
+        try await runtime.cancelReviewByID(
             jobID: jobID,
             sessionID: sessionID,
             reason: reason,
@@ -149,7 +148,7 @@ extension CodexReviewStore {
         selector: ReviewJobSelector,
         sessionID: String
     ) async throws -> ReviewCancelOutcome {
-        try await liveBackend().executionCoordinator.cancelReview(
+        try await runtime.cancelReviewBySelector(
             selector: selector,
             sessionID: sessionID,
             store: self
@@ -166,10 +165,7 @@ extension CodexReviewStore {
     }
 
     package func closeSession(_ sessionID: String, reason: String) async {
-        guard let backend = backend as? CodexReviewEmbeddedServerBackend else {
-            return
-        }
-        await backend.executionCoordinator.closeSession(sessionID, reason: reason, store: self)
+        await runtime.closeSession(sessionID, reason: reason, store: self)
     }
 
     package func enqueueReview(
@@ -177,8 +173,7 @@ extension CodexReviewStore {
         request: ReviewRequestOptions,
         initialModel: String? = nil
     ) throws -> String {
-        let backend = try liveBackend()
-        if backend.closedSessions.contains(sessionID) {
+        if runtime.isSessionClosed(sessionID) {
             throw ReviewError.accessDenied("Session \(sessionID) is already closed.")
         }
         let request = try request.validated()
@@ -389,9 +384,7 @@ extension CodexReviewStore {
     ) -> ReviewTerminationReason? {
         let defaultReason = "Cancellation requested."
         let closedSessionReason: ReviewTerminationReason? = {
-            guard let backend = backend as? CodexReviewEmbeddedServerBackend,
-                  backend.closedSessions.contains(sessionID)
-            else {
+            guard runtime.isSessionClosed(sessionID) else {
                 return nil
             }
             return .cancelled(defaultReason)
@@ -411,29 +404,16 @@ extension CodexReviewStore {
     }
 
     package func closeSessionState(_ sessionID: String) -> [String] {
-        guard let backend = backend as? CodexReviewEmbeddedServerBackend else {
-            return []
-        }
-        backend.closedSessions.insert(sessionID)
-        var activeJobIDs: [String] = []
-        for workspace in workspaces {
-            activeJobIDs.append(
-                contentsOf: workspace.jobs
-                    .filter { $0.sessionID == sessionID && $0.isTerminal == false }
-                    .map(\.id)
-            )
-        }
-        return activeJobIDs
+        runtime.closeSessionState(sessionID)
     }
 
     package func pruneClosedJobIfNeeded(jobID: String) {
-        guard let backend = backend as? CodexReviewEmbeddedServerBackend,
-              let location = jobLocation(id: jobID)
+        guard let location = jobLocation(id: jobID)
         else {
             return
         }
         let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard backend.closedSessions.contains(job.sessionID),
+        guard runtime.isSessionClosed(job.sessionID),
               job.isTerminal
         else {
             return
@@ -445,9 +425,7 @@ extension CodexReviewStore {
         sessionID: String,
         excludingJobIDs: Set<String> = []
     ) {
-        guard let backend = backend as? CodexReviewEmbeddedServerBackend,
-              backend.closedSessions.contains(sessionID)
-        else {
+        guard runtime.isSessionClosed(sessionID) else {
             return
         }
 
@@ -483,13 +461,6 @@ extension CodexReviewStore {
             throw ReviewJobSelectionError.ambiguous(candidates.map(makeListItem))
         }
         return candidates[0]
-    }
-
-    private func liveBackend() throws -> CodexReviewEmbeddedServerBackend {
-        guard let backend = backend as? CodexReviewEmbeddedServerBackend else {
-            throw ReviewError.io("CodexReviewStore live runtime is unavailable.")
-        }
-        return backend
     }
 
     fileprivate static func errorMessage(from error: Error) -> String {
@@ -708,9 +679,38 @@ public struct ReviewMonitorNativeAuthenticationConfiguration: Sendable {
 
 @MainActor
 extension CodexReviewStore {
+    public static func makePreviewStore(
+        diagnosticsURL: URL? = nil
+    ) -> CodexReviewStore {
+        makePreviewStore(
+            seed: .init(),
+            diagnosticsURL: diagnosticsURL
+        )
+    }
+
+    package static func makePreviewStore(
+        seed: ReviewMonitorRuntime.Seed,
+        diagnosticsURL: URL? = nil
+    ) -> CodexReviewStore {
+        CodexReviewStore(
+            runtime: .preview(seed: seed),
+            diagnosticsURL: diagnosticsURL
+        )
+    }
+
+    package static func makeTestingStore(
+        runtime: ReviewMonitorRuntime,
+        diagnosticsURL: URL? = nil
+    ) -> CodexReviewStore {
+        CodexReviewStore(
+            runtime: runtime,
+            diagnosticsURL: diagnosticsURL
+        )
+    }
+
     @MainActor
     public static func makeReviewMonitorUITestStore() -> CodexReviewStore {
-        let store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        let store = makePreviewStore()
         store.serverState = .running
         store.serverURL = URL(string: "http://127.0.0.1:9417/mcp")
         let account = CodexAccount(email: "ui-test@example.com", planType: "unknown")
@@ -1534,7 +1534,166 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
 }
 
 @MainActor
-private final class CodexReviewEmbeddedServerBackend: CodexReviewStoreBackend {
+extension ReviewMonitorRuntime {
+    static func live(
+        configuration: ReviewServerConfiguration,
+        appServerManager: (any AppServerManaging)? = nil,
+        sharedAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
+        loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
+        rateLimitObservationClock: any ReviewClock = ContinuousClock(),
+        rateLimitStaleRefreshInterval: Duration = .seconds(60),
+        inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
+        deferStartupAuthRefreshUntilPrepared: Bool = false
+    ) -> ReviewMonitorRuntime {
+        let backend = CodexReviewEmbeddedServerBackend(
+            configuration: configuration,
+            appServerManager: appServerManager,
+            sharedAuthSessionFactory: sharedAuthSessionFactory,
+            loginAuthSessionFactory: loginAuthSessionFactory,
+            rateLimitObservationClock: rateLimitObservationClock,
+            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+            inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
+            deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
+        )
+        return .init(
+            seed: .init(
+                shouldAutoStartEmbeddedServer: backend.shouldAutoStartEmbeddedServer,
+                initialAccount: backend.initialAccount,
+                initialAccounts: backend.initialAccounts,
+                initialSettingsSnapshot: backend.initialSettingsSnapshot
+            ),
+            handlers: .init(
+                attachStore: { store in
+                    backend.attachStore(store)
+                },
+                isActive: {
+                    backend.isActive
+                },
+                start: { store, forceRestartIfNeeded in
+                    await backend.start(
+                        store: store,
+                        forceRestartIfNeeded: forceRestartIfNeeded
+                    )
+                },
+                stop: { store in
+                    await backend.stop(store: store)
+                },
+                waitUntilStopped: {
+                    await backend.waitUntilStopped()
+                },
+                refreshSettings: {
+                    try await backend.refreshSettings()
+                },
+                updateSettingsModel: { model, reasoningEffort, persistReasoningEffort, serviceTier, persistServiceTier in
+                    try await backend.updateSettingsModel(
+                        model,
+                        reasoningEffort: reasoningEffort,
+                        persistReasoningEffort: persistReasoningEffort,
+                        serviceTier: serviceTier,
+                        persistServiceTier: persistServiceTier
+                    )
+                },
+                updateSettingsReasoningEffort: { reasoningEffort in
+                    try await backend.updateSettingsReasoningEffort(reasoningEffort)
+                },
+                updateSettingsServiceTier: { serviceTier in
+                    try await backend.updateSettingsServiceTier(serviceTier)
+                },
+                startStartupRefresh: { auth in
+                    backend.authController.startStartupRefresh(auth: auth)
+                },
+                cancelStartupRefresh: {
+                    backend.authController.cancelStartupRefresh()
+                },
+                refreshAuth: { auth in
+                    await backend.authController.refresh(auth: auth)
+                },
+                signIn: { auth in
+                    await backend.authController.signIn(auth: auth)
+                },
+                addAccount: { auth in
+                    await backend.authController.addAccount(auth: auth)
+                },
+                cancelAuthentication: { auth in
+                    await backend.authController.cancelAuthentication(auth: auth)
+                },
+                switchAccount: { auth, accountKey in
+                    try await backend.authController.switchAccount(
+                        auth: auth,
+                        accountKey: accountKey
+                    )
+                },
+                removeAccount: { auth, accountKey in
+                    try await backend.authController.removeAccount(
+                        auth: auth,
+                        accountKey: accountKey
+                    )
+                },
+                reorderSavedAccount: { auth, accountKey, toIndex in
+                    try await backend.authController.reorderSavedAccount(
+                        auth: auth,
+                        accountKey: accountKey,
+                        toIndex: toIndex
+                    )
+                },
+                signOutActiveAccount: { auth in
+                    try await backend.authController.signOutActiveAccount(auth: auth)
+                },
+                refreshSavedAccountRateLimits: { auth, accountKey in
+                    await backend.authController.refreshSavedAccountRateLimits(
+                        auth: auth,
+                        accountKey: accountKey
+                    )
+                },
+                reconcileAuthenticatedSession: { auth, serverIsRunning, runtimeGeneration in
+                    await backend.authController.reconcileAuthenticatedSession(
+                        auth: auth,
+                        serverIsRunning: serverIsRunning,
+                        runtimeGeneration: runtimeGeneration
+                    )
+                },
+                requiresCurrentSessionRecovery: { auth, accountKey in
+                    backend.authController.requiresCurrentSessionRecovery(
+                        auth: auth,
+                        accountKey: accountKey
+                    )
+                },
+                startReview: { sessionID, request, store in
+                    try await backend.executionCoordinator.startReview(
+                        sessionID: sessionID,
+                        request: request,
+                        store: store
+                    )
+                },
+                cancelReviewByID: { jobID, sessionID, reason, store in
+                    try await backend.executionCoordinator.cancelReview(
+                        jobID: jobID,
+                        sessionID: sessionID,
+                        reason: reason,
+                        store: store
+                    )
+                },
+                cancelReviewBySelector: { selector, sessionID, store in
+                    try await backend.executionCoordinator.cancelReview(
+                        selector: selector,
+                        sessionID: sessionID,
+                        store: store
+                    )
+                },
+                closeSession: { sessionID, reason, store in
+                    await backend.executionCoordinator.closeSession(
+                        sessionID,
+                        reason: reason,
+                        store: store
+                    )
+                }
+            )
+        )
+    }
+}
+
+@MainActor
+private final class CodexReviewEmbeddedServerBackend {
     private struct DeferredAddAccountRuntimeEffect {
         var accountKey: String
         var runtimeGeneration: Int

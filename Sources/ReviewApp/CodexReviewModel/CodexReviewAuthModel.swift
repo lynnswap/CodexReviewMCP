@@ -90,7 +90,7 @@ public final class CodexReviewAuthModel {
     public package(set) var accountActionAlertTitle = ""
     public package(set) var accountActionAlertMessage = ""
 
-    @ObservationIgnored private let controller: any CodexReviewAuthControlling
+    @ObservationIgnored private let runtime: ReviewMonitorRuntime
     @ObservationIgnored private var pendingAccountAction: PendingAccountAction?
     @ObservationIgnored package var onAccountDidChange: (@MainActor () -> Void)?
 
@@ -120,24 +120,82 @@ public final class CodexReviewAuthModel {
         return message
     }
 
-    package init(controller: any CodexReviewAuthControlling) {
-        self.controller = controller
+    package static func makePreview() -> CodexReviewAuthModel {
+        .init(runtime: .preview())
+    }
+
+    package convenience init(controller: CodexAuthController) {
+        self.init(
+            runtime: .testing { handlers in
+                handlers.startStartupRefresh = { auth in
+                    controller.startStartupRefresh(auth: auth)
+                }
+                handlers.cancelStartupRefresh = {
+                    controller.cancelStartupRefresh()
+                }
+                handlers.refreshAuth = { auth in
+                    await controller.refresh(auth: auth)
+                }
+                handlers.signIn = { auth in
+                    await controller.signIn(auth: auth)
+                }
+                handlers.addAccount = { auth in
+                    await controller.addAccount(auth: auth)
+                }
+                handlers.cancelAuthentication = { auth in
+                    await controller.cancelAuthentication(auth: auth)
+                }
+                handlers.switchAccount = { auth, accountKey in
+                    try await controller.switchAccount(auth: auth, accountKey: accountKey)
+                }
+                handlers.removeAccount = { auth, accountKey in
+                    try await controller.removeAccount(auth: auth, accountKey: accountKey)
+                }
+                handlers.reorderSavedAccount = { auth, accountKey, toIndex in
+                    try await controller.reorderSavedAccount(
+                        auth: auth,
+                        accountKey: accountKey,
+                        toIndex: toIndex
+                    )
+                }
+                handlers.signOutActiveAccount = { auth in
+                    try await controller.signOutActiveAccount(auth: auth)
+                }
+                handlers.refreshSavedAccountRateLimits = { auth, accountKey in
+                    await controller.refreshSavedAccountRateLimits(auth: auth, accountKey: accountKey)
+                }
+                handlers.reconcileAuthenticatedSession = { auth, serverIsRunning, runtimeGeneration in
+                    await controller.reconcileAuthenticatedSession(
+                        auth: auth,
+                        serverIsRunning: serverIsRunning,
+                        runtimeGeneration: runtimeGeneration
+                    )
+                }
+                handlers.requiresCurrentSessionRecovery = { auth, accountKey in
+                    controller.requiresCurrentSessionRecovery(auth: auth, accountKey: accountKey)
+                }
+            }
+        )
+    }
+
+    package init(runtime: ReviewMonitorRuntime) {
+        self.runtime = runtime
     }
 
     public func refresh() async {
-        await controller.refresh(auth: self)
+        await runtime.refreshAuth(auth: self)
     }
 
     public func signIn() async {
-        await controller.signIn(auth: self)
+        await runtime.signIn(auth: self)
     }
 
     public func addAccount() async {
-        await controller.addAccount(auth: self)
+        await runtime.addAccount(auth: self)
     }
 
     public func cancelAuthentication() async {
-        await controller.cancelAuthentication(auth: self)
+        await runtime.cancelAuthentication(auth: self)
     }
 
     package func switchAccount(_ account: CodexAccount) async throws {
@@ -158,7 +216,7 @@ public final class CodexReviewAuthModel {
         defer {
             targetAccount?.updateIsSwitching(false)
         }
-        try await controller.switchAccount(auth: self, accountKey: account.accountKey)
+        try await runtime.switchAccount(auth: self, accountKey: account.accountKey)
     }
 
     package func requestSwitchAccount(
@@ -223,11 +281,11 @@ public final class CodexReviewAuthModel {
     }
 
     public func removeAccount(accountKey: String) async throws {
-        try await controller.removeAccount(auth: self, accountKey: accountKey)
+        try await runtime.removeAccount(auth: self, accountKey: accountKey)
     }
 
     package func reorderSavedAccount(accountKey: String, toIndex: Int) async throws {
-        try await controller.reorderSavedAccount(
+        try await runtime.reorderSavedAccount(
             auth: self,
             accountKey: accountKey,
             toIndex: toIndex
@@ -235,7 +293,7 @@ public final class CodexReviewAuthModel {
     }
 
     public func signOutActiveAccount() async throws {
-        try await controller.signOutActiveAccount(auth: self)
+        try await runtime.signOutActiveAccount(auth: self)
     }
 
     public func logout() async {
@@ -253,22 +311,22 @@ public final class CodexReviewAuthModel {
     }
 
     public func refreshSavedAccountRateLimits(accountKey: String) async {
-        await controller.refreshSavedAccountRateLimits(auth: self, accountKey: accountKey)
+        await runtime.refreshSavedAccountRateLimits(auth: self, accountKey: accountKey)
     }
 
     package func startStartupRefresh() {
-        controller.startStartupRefresh(auth: self)
+        runtime.startStartupRefresh(auth: self)
     }
 
     package func cancelStartupRefresh() {
-        controller.cancelStartupRefresh()
+        runtime.cancelStartupRefresh()
     }
 
     package func reconcileAuthenticatedSession(
         serverIsRunning: Bool,
         runtimeGeneration: Int
     ) async {
-        await controller.reconcileAuthenticatedSession(
+        await runtime.reconcileAuthenticatedSession(
             auth: self,
             serverIsRunning: serverIsRunning,
             runtimeGeneration: runtimeGeneration
@@ -340,7 +398,7 @@ public final class CodexReviewAuthModel {
         if account.accountKey != self.account?.accountKey {
             return true
         }
-        return controller.requiresCurrentSessionRecovery(
+        return runtime.requiresCurrentSessionRecovery(
             auth: self,
             accountKey: account.accountKey
         )
@@ -351,7 +409,7 @@ public final class CodexReviewAuthModel {
             return false
         }
         if isAlreadyUsingPersistedActiveAccount(account.accountKey) {
-            return controller.requiresCurrentSessionRecovery(
+            return runtime.requiresCurrentSessionRecovery(
                 auth: self,
                 accountKey: account.accountKey
             )

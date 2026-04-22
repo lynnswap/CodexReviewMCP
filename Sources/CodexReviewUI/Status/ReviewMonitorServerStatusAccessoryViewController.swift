@@ -124,7 +124,39 @@ struct StatusView: View {
     var store: CodexReviewStore
 
     var body: some View {
-        @Bindable var settings = store.settings
+        let settings = store.settings
+        let modelSelection = Binding<String?>(
+            get: { settings.selectedModel },
+            set: { model in
+                Task { @MainActor in
+                    if let model {
+                        await store.updateSettingsModel(model)
+                    } else {
+                        await store.clearSettingsModelOverride()
+                    }
+                }
+            }
+        )
+        let serviceTierSelection = Binding<CodexReviewServiceTier?>(
+            get: { settings.selectedServiceTier },
+            set: { serviceTier in
+                Task { @MainActor in
+                    await store.updateSettingsServiceTier(serviceTier)
+                }
+            }
+        )
+        let reasoningSelection = Binding<CodexReviewReasoningEffort?>(
+            get: { settings.selectedReasoningEffort },
+            set: { reasoningEffort in
+                Task { @MainActor in
+                    if let reasoningEffort {
+                        await store.updateSettingsReasoningEffort(reasoningEffort)
+                    } else {
+                        await store.clearSettingsReasoningEffort()
+                    }
+                }
+            }
+        )
         VStack{
             Menu {
                 Section(store.auth.account?.email ?? "") {
@@ -152,14 +184,14 @@ struct StatusView: View {
                 Menu{
                     // Keep this picker aligned with Codex CLI/App behavior and avoid
                     // inventing a synthetic inherited/default row that those clients do not expose.
-                    Picker("Model", selection: $settings.selectedModel) {
+                    Picker("Model", selection: modelSelection) {
                         ForEach(settings.displayedModels) { item in
                             Text(item.displayName).tag(Optional(item.model))
                         }
                     }
                     .pickerStyle(.inline)
                     
-                    Picker("Tier", selection: $settings.selectedServiceTier) {
+                    Picker("Tier", selection: serviceTierSelection) {
                         Text("Normal").tag(Optional<CodexReviewServiceTier>.none)
                         ForEach(settings.availableServiceTiers, id: \.self) { item in
                             Text(item.displayText).tag(Optional(item))
@@ -172,7 +204,7 @@ struct StatusView: View {
                 Menu{
                     // Deliberately mirror the concrete reasoning choices from the model catalog
                     // instead of adding an extra "default" menu row that upstream clients lack.
-                    Picker("Reasoning", selection: $settings.selectedReasoningEffort) {
+                    Picker("Reasoning", selection: reasoningSelection) {
                         ForEach(settings.availableReasoningOptions) { item in
                             Text(item.reasoningEffort.displayText)
                                 .tag(Optional(item.reasoningEffort))

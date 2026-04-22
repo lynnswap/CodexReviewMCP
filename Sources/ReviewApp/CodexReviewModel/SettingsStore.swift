@@ -32,7 +32,7 @@ package final class SettingsStore {
     package private(set) var lastErrorMessage: String?
 
     @ObservationIgnored
-    private let backend: any CodexReviewStoreBackend
+    private let runtime: ReviewMonitorRuntime
     @ObservationIgnored
     private var suppressSelectionObservation = false
     @ObservationIgnored
@@ -49,10 +49,10 @@ package final class SettingsStore {
     }
 
     package init(
-        backend: any CodexReviewStoreBackend,
+        runtime: ReviewMonitorRuntime,
         snapshot: CodexReviewSettingsSnapshot
     ) {
-        self.backend = backend
+        self.runtime = runtime
         self.selectedModel = snapshot.model
         self.fallbackModel = snapshot.fallbackModel
         self.selectedReasoningEffort = snapshot.reasoningEffort
@@ -146,7 +146,7 @@ package final class SettingsStore {
         isLoading = true
 
         do {
-            let snapshot = try await backend.refreshSettings()
+            let snapshot = try await runtime.refreshSettings()
             apply(snapshot: snapshot)
             lastErrorMessage = nil
         } catch {
@@ -182,7 +182,7 @@ package final class SettingsStore {
         )
     }
 
-    package func updateReasoningEffort(_ reasoningEffort: CodexReviewReasoningEffort) async {
+    package func updateReasoningEffort(_ reasoningEffort: CodexReviewReasoningEffort?) async {
         await applySelectionChange(
             trigger: .reasoningEffort,
             previous: currentSelection(),
@@ -383,7 +383,7 @@ package final class SettingsStore {
             await persist(
                 previous: snapshot(selection: previous),
                 operation: {
-                    try await self.backend.updateSettingsModel(
+                    try await self.runtime.updateSettingsModel(
                         normalized.model,
                         reasoningEffort: normalized.reasoningEffort,
                         persistReasoningEffort: persistReasoningEffort,
@@ -396,7 +396,7 @@ package final class SettingsStore {
             await persist(
                 previous: snapshot(selection: previous),
                 operation: {
-                    try await self.backend.updateSettingsReasoningEffort(
+                    try await self.runtime.updateSettingsReasoningEffort(
                         normalized.reasoningEffort
                     )
                 }
@@ -405,7 +405,7 @@ package final class SettingsStore {
             await persist(
                 previous: snapshot(selection: previous),
                 operation: {
-                    try await self.backend.updateSettingsServiceTier(
+                    try await self.runtime.updateSettingsServiceTier(
                         normalized.serviceTier
                     )
                 }

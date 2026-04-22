@@ -335,7 +335,7 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
     case .running:
         store = ReviewMonitorPreviewContent.makeStore()
     case .failed, .starting, .stopped:
-        store = CodexReviewStore(backend: CodexReviewPreviewStoreBackend())
+        store = CodexReviewStore.makePreviewStore()
         store.serverState = serverState
         store.serverURL = nil
     }

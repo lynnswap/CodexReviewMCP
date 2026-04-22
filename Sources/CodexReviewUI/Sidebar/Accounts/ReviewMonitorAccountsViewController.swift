@@ -86,7 +86,7 @@ private struct ReviewMonitorAccountsListView: View {
         let accountKey = accounts[sourceIndex].accountKey
         Task { @MainActor in
             do {
-                try await store.auth.reorderSavedAccount(accountKey: accountKey, toIndex: destinationIndex)
+                try await store.reorderSavedAccount(accountKey: accountKey, toIndex: destinationIndex)
             } catch {
                 store.auth.presentAccountActionAlert(
                     title: "Failed to Reorder Accounts",
@@ -151,7 +151,7 @@ private struct ReviewMonitorAccountsListView: View {
         guard auth.switchActionIsDisabled(for: account) == false else {
             return
         }
-        auth.requestSwitchAccount(
+        store.requestSwitchAccount(
             account,
             requiresConfirmation: store.hasRunningJobs
                 && auth.switchActionRequiresRunningJobsConfirmation(for: account)
