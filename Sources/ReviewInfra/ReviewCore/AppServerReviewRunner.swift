@@ -18,13 +18,10 @@ package struct AppServerReviewRunner: Sendable {
         request: ReviewRequestOptions,
         defaultTimeoutSeconds: Int?,
         resolvedModelHint: String? = nil,
-        diagnosticLineSubscription: AsyncStreamSubscription<String> = .init(
-            stream: AsyncStream { continuation in
-                continuation.finish()
-            },
-            cancel: {}
-        ),
-        stateChangeSubscription: AsyncStreamSubscription<Void>,
+        diagnosticLineStream: AsyncStream<String> = .init { continuation in
+            continuation.finish()
+        },
+        stateChangeStream: AsyncStream<Void>,
         diagnosticsTail: @escaping @Sendable () async -> String = { "" },
         onStart: @escaping @Sendable (Date) async -> Void,
         onReviewStarted: @escaping @Sendable () async -> Void = {},
@@ -86,7 +83,7 @@ package struct AppServerReviewRunner: Sendable {
 
         let resolvedConfig: AppServerConfigReadResponse.Config
         do {
-            let configResponse: AppServerConfigReadResponse = try await runWithinRemainingReviewTimeout(
+            let configResponse: AppServerConfigReadResponse = try await runBootstrapRequestWithinRemainingReviewTimeout(
                 timeoutSeconds: bootstrapTimeoutSeconds,
                 startedAt: startedAtInstant,
                 clock: clock
@@ -160,7 +157,7 @@ package struct AppServerReviewRunner: Sendable {
 
         let threadResponse: AppServerThreadStartResponse
         do {
-            threadResponse = try await runWithinRemainingReviewTimeout(
+            threadResponse = try await runBootstrapRequestWithinRemainingReviewTimeout(
                 timeoutSeconds: bootstrapTimeoutSeconds,
                 startedAt: startedAtInstant,
                 clock: clock
@@ -209,9 +206,9 @@ package struct AppServerReviewRunner: Sendable {
         }
         let signalEmitter = AppServerReviewRunnerSignalEmitter(continuation: signalContinuation)
         var sourceTasks: [Task<Void, Never>] = [
-            makeNotificationSourceTask(subscription: notificationSubscription, emitter: signalEmitter),
-            makeStringSourceTask(subscription: diagnosticLineSubscription, emitter: signalEmitter),
-            makeVoidSourceTask(subscription: stateChangeSubscription, emitter: signalEmitter),
+            makeNotificationSourceTask(notificationStream: notificationSubscription, emitter: signalEmitter),
+            makeStringSourceTask(stream: diagnosticLineStream, emitter: signalEmitter),
+            makeVoidSourceTask(stream: stateChangeStream, emitter: signalEmitter),
         ]
         if await requestedTerminationReason() != nil {
             await signalEmitter.yield(.stateChanged)
@@ -475,7 +472,7 @@ package struct AppServerReviewRunner: Sendable {
 
         let reviewResponse: AppServerReviewStartResponse
         do {
-            reviewResponse = try await runWithinRemainingReviewTimeout(
+            reviewResponse = try await runBootstrapRequestWithinRemainingReviewTimeout(
                 timeoutSeconds: bootstrapTimeoutSeconds,
                 startedAt: startedAtInstant,
                 clock: clock

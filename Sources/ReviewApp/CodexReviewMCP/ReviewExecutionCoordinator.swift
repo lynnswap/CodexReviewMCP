@@ -4,6 +4,11 @@ import ReviewRuntime
 import ReviewInfra
 
 package actor ReviewExecutionCoordinator {
+    private enum ExecutionPhase {
+        case bootstrapping
+        case running
+    }
+
     package struct Configuration: Sendable {
         package var defaultTimeoutSeconds: Int?
         package var codexCommand: String
@@ -24,8 +29,9 @@ package actor ReviewExecutionCoordinator {
         var sessionID: String
         var task: Task<Void, Error>
         var requestedTerminationReason: ReviewTerminationReason?
-        var stateChangeSignal: ReviewExecutionStateChangeSignal
-        var bootstrapInterrupter: (@Sendable () async -> Void)?
+        var stateChangeContinuation: AsyncStream<Void>.Continuation
+        var phase: ExecutionPhase
+        var bootstrapTransport: (any AppServerSessionTransport)?
     }
 
     private let configuration: Configuration
@@ -58,7 +64,7 @@ package actor ReviewExecutionCoordinator {
         )
 
         let startupGate = StartupGate()
-        let stateChangeSignal = ReviewExecutionStateChangeSignal()
+        let (stateChangeStream, stateChangeContinuation) = makeStateChangeStream()
         let task = Task {
             await startupGate.wait()
             try await self.runReview(
@@ -66,7 +72,7 @@ package actor ReviewExecutionCoordinator {
                 sessionID: sessionID,
                 request: requestOptions,
                 initialModel: initialResolvedModel,
-                stateChangeSubscription: await stateChangeSignal.subscription(),
+                stateChangeStream: stateChangeStream,
                 store: store
             )
         }
@@ -74,10 +80,9 @@ package actor ReviewExecutionCoordinator {
             sessionID: sessionID,
             task: task,
             requestedTerminationReason: nil,
-            stateChangeSignal: stateChangeSignal,
-            bootstrapInterrupter: {
-                task.cancel()
-            }
+            stateChangeContinuation: stateChangeContinuation,
+            phase: .bootstrapping,
+            bootstrapTransport: nil
         )
         if let pendingTerminationReason = await store.pendingTerminationReason(
             jobID: jobID,
@@ -184,7 +189,7 @@ package actor ReviewExecutionCoordinator {
         sessionID: String,
         request: ReviewRequestOptions,
         initialModel: String?,
-        stateChangeSubscription: AsyncStreamSubscription<Void>,
+        stateChangeStream: AsyncStream<Void>,
         store: CodexReviewStore
     ) async throws {
         let now = Date()
@@ -208,13 +213,17 @@ package actor ReviewExecutionCoordinator {
 
             let transport = try await appServerManager.checkoutTransport(sessionID: sessionID)
             defer {
-                clearBootstrapInterrupter(jobID: jobID)
+                clearBootstrapState(jobID: jobID)
             }
             defer {
                 Task {
                     await transport.close()
                 }
             }
+            setBootstrapTransport(
+                jobID: jobID,
+                transport: transport
+            )
             if let runtimeState = await appServerManager.currentRuntimeState() {
                 await runtimeStateDidChange(runtimeState)
             }
@@ -227,8 +236,8 @@ package actor ReviewExecutionCoordinator {
                 request: request,
                 defaultTimeoutSeconds: configuration.defaultTimeoutSeconds,
                 resolvedModelHint: initialModel,
-                diagnosticLineSubscription: await appServerManager.diagnosticLineStream(),
-                stateChangeSubscription: stateChangeSubscription,
+                diagnosticLineStream: await appServerManager.diagnosticLineStream(),
+                stateChangeStream: stateChangeStream,
                 diagnosticsTail: { [appServerManager] in
                     await appServerManager.diagnosticsTail()
                 },
@@ -239,7 +248,7 @@ package actor ReviewExecutionCoordinator {
                     )
                 },
                 onReviewStarted: {
-                    await self.clearBootstrapInterrupter(jobID: jobID)
+                    await self.markExecutionRunning(jobID: jobID)
                 },
                 onEvent: { event in
                     await store.handle(jobID: jobID, event: event)
@@ -328,29 +337,60 @@ package actor ReviewExecutionCoordinator {
         }
         handle.requestedTerminationReason = reason
         executions[jobID] = handle
-        await handle.stateChangeSignal.yield()
+        handle.stateChangeContinuation.yield(())
     }
 
     private func removeExecution(jobID: String) async {
         guard let handle = executions.removeValue(forKey: jobID) else {
             return
         }
-        await handle.stateChangeSignal.finish()
+        handle.stateChangeContinuation.finish()
     }
 
-    private func clearBootstrapInterrupter(jobID: String) {
+    private func setBootstrapTransport(
+        jobID: String,
+        transport: any AppServerSessionTransport
+    ) {
         guard var handle = executions[jobID] else {
             return
         }
-        handle.bootstrapInterrupter = nil
+        guard handle.phase == .bootstrapping else {
+            return
+        }
+        handle.bootstrapTransport = transport
         executions[jobID] = handle
     }
 
-    private func interruptBootstrapIfPresent(jobID: String) async {
-        guard let interrupter = executions[jobID]?.bootstrapInterrupter else {
+    private func markExecutionRunning(jobID: String) {
+        guard var handle = executions[jobID] else {
             return
         }
-        await interrupter()
+        handle.phase = .running
+        handle.bootstrapTransport = nil
+        executions[jobID] = handle
+    }
+
+    private func clearBootstrapState(jobID: String) {
+        guard var handle = executions[jobID] else {
+            return
+        }
+        handle.bootstrapTransport = nil
+        if handle.phase == .bootstrapping {
+            handle.phase = .running
+        }
+        executions[jobID] = handle
+    }
+
+    private func interruptExecutionIfNeeded(jobID: String) async {
+        guard let handle = executions[jobID] else {
+            return
+        }
+        guard handle.phase == .bootstrapping,
+              let bootstrapTransport = handle.bootstrapTransport
+        else {
+            return
+        }
+        await bootstrapTransport.close()
     }
 
     private func cancelResolvedJob(
@@ -368,7 +408,7 @@ package actor ReviewExecutionCoordinator {
             reason: normalizedReason
         )
         if result.signalled {
-            await interruptBootstrapIfPresent(jobID: job.id)
+            await interruptExecutionIfNeeded(jobID: job.id)
         }
         let resolvedThreadID = await job.threadID
         let status = await job.status.state
@@ -384,28 +424,12 @@ package actor ReviewExecutionCoordinator {
     }
 }
 
-private actor ReviewExecutionStateChangeSignal {
-    private var continuation: AsyncStream<Void>.Continuation?
-
-    func subscription() -> AsyncStreamSubscription<Void> {
-        let (stream, continuation) = AsyncStream<Void>.makeStream()
-        self.continuation = continuation
-        return .init(
-            stream: stream,
-            cancel: {
-                await self.finish()
-            }
-        )
+private func makeStateChangeStream() -> (AsyncStream<Void>, AsyncStream<Void>.Continuation) {
+    var continuation: AsyncStream<Void>.Continuation!
+    let stream = AsyncStream<Void>(bufferingPolicy: .unbounded) {
+        continuation = $0
     }
-
-    func yield() {
-        continuation?.yield(())
-    }
-
-    func finish() {
-        continuation?.finish()
-        continuation = nil
-    }
+    return (stream, continuation)
 }
 
 private actor StartupGate {

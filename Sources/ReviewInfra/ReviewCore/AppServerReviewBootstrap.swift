@@ -82,63 +82,45 @@ actor AppServerReviewRunnerSignalEmitter {
 }
 
 func makeNotificationSourceTask(
-    subscription: AsyncThrowingStreamSubscription<AppServerServerNotification>,
+    notificationStream: AsyncThrowingStream<AppServerServerNotification, Error>,
     emitter: AppServerReviewRunnerSignalEmitter
 ) -> Task<Void, Never> {
     Task {
-        await withTaskCancellationHandler {
-            do {
-                for try await notification in subscription.stream {
-                    await emitter.yield(.notification(notification))
-                }
-                guard Task.isCancelled == false else {
-                    return
-                }
-                await emitter.yield(.transportClosed)
-            } catch {
-                guard Task.isCancelled == false else {
-                    return
-                }
-                await emitter.yield(.transportDisconnected(error.localizedDescription))
+        do {
+            for try await notification in notificationStream {
+                await emitter.yield(.notification(notification))
             }
-        } onCancel: {
-            Task {
-                await subscription.cancel()
+            guard Task.isCancelled == false else {
+                return
             }
+            await emitter.yield(.transportClosed)
+        } catch {
+            guard Task.isCancelled == false else {
+                return
+            }
+            await emitter.yield(.transportDisconnected(error.localizedDescription))
         }
     }
 }
 
 func makeStringSourceTask(
-    subscription: AsyncStreamSubscription<String>,
+    stream: AsyncStream<String>,
     emitter: AppServerReviewRunnerSignalEmitter
 ) -> Task<Void, Never> {
     Task {
-        await withTaskCancellationHandler {
-            for await line in subscription.stream {
-                await emitter.yield(.diagnosticLine(line))
-            }
-        } onCancel: {
-            Task {
-                await subscription.cancel()
-            }
+        for await line in stream {
+            await emitter.yield(.diagnosticLine(line))
         }
     }
 }
 
 func makeVoidSourceTask(
-    subscription: AsyncStreamSubscription<Void>,
+    stream: AsyncStream<Void>,
     emitter: AppServerReviewRunnerSignalEmitter
 ) -> Task<Void, Never> {
     Task {
-        await withTaskCancellationHandler {
-            for await _ in subscription.stream {
-                await emitter.yield(.stateChanged)
-            }
-        } onCancel: {
-            Task {
-                await subscription.cancel()
-            }
+        for await _ in stream {
+            await emitter.yield(.stateChanged)
         }
     }
 }
@@ -165,12 +147,12 @@ func makeDelayedSignalTask(
     }
 }
 
-func runWithinRemainingReviewTimeout<Result: Sendable>(
+func runBootstrapRequestWithinRemainingReviewTimeout<Output: Sendable>(
     timeoutSeconds: Int?,
     startedAt: ContinuousClock.Instant,
     clock: any ReviewClock,
-    operation: @escaping @Sendable () async throws -> Result
-) async throws -> Result {
+    operation: @escaping @Sendable () async throws -> Output
+) async throws -> Output {
     guard let timeoutDuration = try remainingReviewTimeoutDuration(
         timeoutSeconds: timeoutSeconds,
         startedAt: startedAt,
@@ -178,20 +160,42 @@ func runWithinRemainingReviewTimeout<Result: Sendable>(
     ) else {
         return try await operation()
     }
-    return try await withThrowingTaskGroup(of: Result.self) { group in
-        group.addTask {
-            try await operation()
+    let resultBox = BootstrapRequestResultBox<Output>()
+    let operationTask = Task {
+        do {
+            resultBox.resume(with: .success(try await operation()))
+        } catch {
+            resultBox.resume(with: .failure(error))
         }
-        group.addTask {
+    }
+    let timeoutTask = Task {
+        do {
             try await clock.sleep(for: timeoutDuration)
             let timeoutSeconds = timeoutSeconds ?? 0
-            throw ReviewError.io("Review timed out after \(timeoutSeconds) seconds.")
+            resultBox.resume(
+                with: .failure(
+                    ReviewError.io("Review timed out after \(timeoutSeconds) seconds.")
+                )
+            )
+        } catch is CancellationError {
+        } catch {
+            resultBox.resume(with: .failure(error))
         }
-        defer { group.cancelAll() }
-        guard let result = try await group.next() else {
-            throw ReviewError.io("review operation finished without a result.")
+    }
+
+    return try await withTaskCancellationHandler {
+        defer {
+            operationTask.cancel()
+            timeoutTask.cancel()
         }
-        return result
+
+        return try await withCheckedThrowingContinuation { continuation in
+            resultBox.install(continuation)
+        }
+    } onCancel: {
+        resultBox.resume(with: .failure(CancellationError()))
+        operationTask.cancel()
+        timeoutTask.cancel()
     }
 }
 
@@ -212,4 +216,59 @@ package func remainingReviewTimeoutDuration(
     }
 
     return remaining
+}
+
+private final class BootstrapRequestResultBox<Output: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Output, Error>?
+    private var pendingResult: Swift.Result<Output, Error>?
+
+    func install(_ continuation: CheckedContinuation<Output, Error>) {
+        let pendingResult = lock.withLock { () -> Swift.Result<Output, Error>? in
+            self.continuation = continuation
+            let pendingResult = self.pendingResult
+            self.pendingResult = nil
+            return pendingResult
+        }
+        if let pendingResult {
+            resume(continuation: continuation, with: pendingResult)
+        }
+    }
+
+    func resume(with result: sending Swift.Result<Output, Error>) {
+        let continuation = lock.withLock { () -> CheckedContinuation<Output, Error>? in
+            let continuation = self.continuation
+            if continuation == nil, self.pendingResult == nil {
+                self.pendingResult = result
+                return nil
+            }
+            self.continuation = nil
+            return continuation
+        }
+        guard let continuation else {
+            return
+        }
+
+        resume(continuation: continuation, with: result)
+    }
+
+    private func resume(
+        continuation: CheckedContinuation<Output, Error>,
+        with result: Swift.Result<Output, Error>
+    ) {
+        switch result {
+        case .success(let value):
+            continuation.resume(returning: value)
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () -> T) -> T {
+        lock()
+        defer { unlock() }
+        return body()
+    }
 }

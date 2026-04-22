@@ -1,32 +1,6 @@
 import Foundation
 import ReviewDomain
 
-package struct AsyncStreamSubscription<Element: Sendable>: Sendable {
-    package var stream: AsyncStream<Element>
-    package var cancel: @Sendable () async -> Void
-
-    package init(
-        stream: AsyncStream<Element>,
-        cancel: @escaping @Sendable () async -> Void
-    ) {
-        self.stream = stream
-        self.cancel = cancel
-    }
-}
-
-package struct AsyncThrowingStreamSubscription<Element: Sendable>: Sendable {
-    package var stream: AsyncThrowingStream<Element, Error>
-    package var cancel: @Sendable () async -> Void
-
-    package init(
-        stream: AsyncThrowingStream<Element, Error>,
-        cancel: @escaping @Sendable () async -> Void
-    ) {
-        self.stream = stream
-        self.cancel = cancel
-    }
-}
-
 package protocol AppServerSessionTransport: Sendable {
     func initializeResponse() async -> AppServerInitializeResponse
     func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
@@ -35,8 +9,9 @@ package protocol AppServerSessionTransport: Sendable {
         responseType: Response.Type
     ) async throws -> Response
     func notify<Params: Encodable & Sendable>(method: String, params: Params) async throws
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification>
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error>
     func isClosed() async -> Bool
+    /// Closes this transport lease and aborts any in-flight work started through it.
     func close() async
 }
 
@@ -52,8 +27,7 @@ package actor AppServerSharedTransportConnection {
     private let decoder = JSONDecoder()
     private let requestTimeout: Duration = .seconds(30)
     private var nextRequestID = 1
-    private var pendingResponses: [AppServerRequestID: CheckedContinuation<Data, Error>] = [:]
-    private var pendingRequestMethods: [AppServerRequestID: String] = [:]
+    private var pendingResponses: [AppServerRequestID: PendingResponse] = [:]
     private var notificationSubscribers: [UUID: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation] = [:]
     private var closed = false
     private var disconnected: Error?
@@ -113,6 +87,7 @@ package actor AppServerSharedTransportConnection {
         clientVersion: String
     ) async throws -> AppServerInitializeResponse {
         let initializeResponse: AppServerInitializeResponse = try await request(
+            ownerID: UUID(),
             method: "initialize",
             params: AppServerInitializeParams(
                 clientInfo: .init(
@@ -130,7 +105,10 @@ package actor AppServerSharedTransportConnection {
     }
 
     package func checkoutTransport() -> any AppServerSessionTransport {
-        AppServerStdioTransportLease(connection: self)
+        AppServerStdioTransportLease(
+            connection: self,
+            ownerID: UUID()
+        )
     }
 
     package func isClosed() -> Bool {
@@ -176,6 +154,7 @@ package actor AppServerSharedTransportConnection {
     }
 
     package func request<Params: Encodable & Sendable, Response: Decodable & Sendable>(
+        ownerID: UUID,
         method: String,
         params: Params,
         responseType: Response.Type
@@ -206,8 +185,11 @@ package actor AppServerSharedTransportConnection {
 
         let responseData = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-                pendingResponses[id] = continuation
-                pendingRequestMethods[id] = method
+                pendingResponses[id] = .init(
+                    ownerID: ownerID,
+                    method: method,
+                    continuation: continuation
+                )
                 Task {
                     do {
                         try await self.sendPayload(payload)
@@ -225,6 +207,10 @@ package actor AppServerSharedTransportConnection {
         return try decoder.decode(AppServerResponseEnvelope<Response>.self, from: responseData).result
     }
 
+    package func closeLease(ownerID: UUID) {
+        failPendingResponses(ownerID: ownerID, error: CancellationError())
+    }
+
     package func notify<Params: Encodable & Sendable>(method: String, params: Params) async throws {
         try throwIfClosed()
         let payload = try encoder.encode(
@@ -236,7 +222,7 @@ package actor AppServerSharedTransportConnection {
         try await sendPayload(payload)
     }
 
-    package func notificationStream() -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    package func notificationStream() -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let disconnected = self.disconnected
         let closed = self.closed
         var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation!
@@ -245,11 +231,11 @@ package actor AppServerSharedTransportConnection {
         }
         if let disconnected {
             continuation.finish(throwing: disconnected)
-            return .init(stream: stream, cancel: {})
+            return stream
         }
         if closed {
             continuation.finish()
-            return .init(stream: stream, cancel: {})
+            return stream
         }
 
         let subscriberID = UUID()
@@ -259,12 +245,7 @@ package actor AppServerSharedTransportConnection {
                 await self.removeNotificationSubscriber(id: subscriberID)
             }
         }
-        return .init(
-            stream: stream,
-            cancel: { [self] in
-                await self.cancelNotificationSubscriber(id: subscriberID)
-            }
-        )
+        return stream
     }
 
     private func storeInitializeResponse(_ response: AppServerInitializeResponse) {
@@ -303,16 +284,13 @@ package actor AppServerSharedTransportConnection {
                 await rejectServerRequest(id: requestID, method: method)
                 return
             }
-            guard let continuation = pendingResponses.removeValue(forKey: requestID) else {
+            guard let pendingResponse = pendingResponses.removeValue(forKey: requestID) else {
                 return
             }
-            let requestMethod = pendingRequestMethods.removeValue(forKey: requestID)
             if let error = parseResponseError(from: object) {
-                _ = requestMethod
-                continuation.resume(throwing: error)
+                pendingResponse.continuation.resume(throwing: error)
             } else {
-                _ = requestMethod
-                continuation.resume(returning: data)
+                pendingResponse.continuation.resume(returning: data)
             }
             return
         }
@@ -366,24 +344,30 @@ package actor AppServerSharedTransportConnection {
     }
 
     private func failPendingResponses(with error: Error) {
-        for (_, continuation) in pendingResponses {
-            continuation.resume(throwing: error)
+        for (_, pendingResponse) in pendingResponses {
+            pendingResponse.continuation.resume(throwing: error)
         }
         pendingResponses.removeAll()
-        pendingRequestMethods.removeAll()
     }
 
     private func failPendingResponse(id: AppServerRequestID, error: Error) {
-        let requestMethod = pendingRequestMethods.removeValue(forKey: id)
-        _ = requestMethod
-        guard let continuation = pendingResponses.removeValue(forKey: id) else {
+        guard let pendingResponse = pendingResponses.removeValue(forKey: id) else {
             return
         }
-        continuation.resume(throwing: error)
+        pendingResponse.continuation.resume(throwing: error)
     }
 
     private func failPendingResponseIfPresent(id: AppServerRequestID, error: Error) {
         failPendingResponse(id: id, error: error)
+    }
+
+    private func failPendingResponses(ownerID: UUID, error: Error) {
+        let requestIDs = pendingResponses.compactMap { requestID, pendingResponse in
+            pendingResponse.ownerID == ownerID ? requestID : nil
+        }
+        for requestID in requestIDs {
+            failPendingResponse(id: requestID, error: error)
+        }
     }
 
     private func broadcastNotification(_ notification: AppServerServerNotification) {
@@ -418,11 +402,17 @@ package actor AppServerSharedTransportConnection {
 
 package actor AppServerStdioTransportLease: AppServerSessionTransport {
     private let connection: AppServerSharedTransportConnection
+    private let ownerID: UUID
     private var closed = false
-    private var notificationCancels: [UUID: @Sendable () async -> Void] = [:]
+    private var notificationRelayTasks: [UUID: Task<Void, Never>] = [:]
+    private var notificationContinuations: [UUID: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation] = [:]
 
-    package init(connection: AppServerSharedTransportConnection) {
+    package init(
+        connection: AppServerSharedTransportConnection,
+        ownerID: UUID
+    ) {
         self.connection = connection
+        self.ownerID = ownerID
     }
 
     package func initializeResponse() async -> AppServerInitializeResponse {
@@ -436,6 +426,7 @@ package actor AppServerStdioTransportLease: AppServerSessionTransport {
     ) async throws -> Response {
         try throwIfLeaseClosed()
         return try await connection.request(
+            ownerID: ownerID,
             method: method,
             params: params,
             responseType: responseType
@@ -447,25 +438,28 @@ package actor AppServerStdioTransportLease: AppServerSessionTransport {
         try await connection.notify(method: method, params: params)
     }
 
-    package func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    package func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         if closed {
-            return .init(
-                stream: .init { continuation in
-                    continuation.finish()
-                },
-                cancel: {}
-            )
+            return .init { continuation in
+                continuation.finish()
+            }
         }
 
         let token = UUID()
-        let baseSubscription = await connection.notificationStream()
-        notificationCancels[token] = baseSubscription.cancel
-        return .init(
-            stream: baseSubscription.stream,
-            cancel: { [self] in
-                await self.cancelNotificationSubscription(id: token)
+        let baseStream = await connection.notificationStream()
+        return AsyncThrowingStream(bufferingPolicy: .unbounded) { continuation in
+            Task { [weak self] in
+                guard let self else {
+                    continuation.finish()
+                    return
+                }
+                await self.installNotificationRelay(
+                    id: token,
+                    continuation: continuation,
+                    baseStream: baseStream
+                )
             }
-        )
+        }
     }
 
     package func isClosed() async -> Bool {
@@ -480,10 +474,16 @@ package actor AppServerStdioTransportLease: AppServerSessionTransport {
             return
         }
         closed = true
-        let cancels = Array(notificationCancels.values)
-        notificationCancels.removeAll()
-        for cancel in cancels {
-            await cancel()
+        await connection.closeLease(ownerID: ownerID)
+        let relayTasks = Array(notificationRelayTasks.values)
+        notificationRelayTasks.removeAll()
+        let continuations = Array(notificationContinuations.values)
+        notificationContinuations.removeAll()
+        for relayTask in relayTasks {
+            relayTask.cancel()
+        }
+        for continuation in continuations {
+            continuation.finish()
         }
     }
 
@@ -493,11 +493,60 @@ package actor AppServerStdioTransportLease: AppServerSessionTransport {
         }
     }
 
-    private func cancelNotificationSubscription(id: UUID) async {
-        guard let cancel = notificationCancels.removeValue(forKey: id) else {
+    private func installNotificationRelay(
+        id: UUID,
+        continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation,
+        baseStream: AsyncThrowingStream<AppServerServerNotification, Error>
+    ) {
+        guard closed == false else {
+            continuation.finish()
             return
         }
-        await cancel()
+        notificationContinuations[id] = continuation
+        let relayTask = Task { [weak self] in
+            do {
+                for try await notification in baseStream {
+                    await self?.yieldNotification(notification, for: id)
+                }
+                await self?.finishNotificationRelay(id: id, error: nil)
+            } catch {
+                guard error is CancellationError == false else {
+                    await self?.finishNotificationRelay(id: id, error: nil)
+                    return
+                }
+                await self?.finishNotificationRelay(id: id, error: error)
+            }
+        }
+        notificationRelayTasks[id] = relayTask
+        continuation.onTermination = { _ in
+            Task {
+                await self.cancelNotificationRelay(id: id)
+            }
+        }
+    }
+
+    private func yieldNotification(
+        _ notification: AppServerServerNotification,
+        for id: UUID
+    ) {
+        notificationContinuations[id]?.yield(notification)
+    }
+
+    private func finishNotificationRelay(id: UUID, error: Error?) {
+        notificationRelayTasks[id] = nil
+        guard let continuation = notificationContinuations.removeValue(forKey: id) else {
+            return
+        }
+        if let error {
+            continuation.finish(throwing: error)
+        } else {
+            continuation.finish()
+        }
+    }
+
+    private func cancelNotificationRelay(id: UUID) {
+        notificationRelayTasks.removeValue(forKey: id)?.cancel()
+        notificationContinuations.removeValue(forKey: id)?.finish()
     }
 }
 
@@ -672,3 +721,8 @@ private struct AppServerIncomingNotificationEnvelope<Params: Decodable>: Decodab
     var method: String
     var params: Params
 }
+    private struct PendingResponse {
+        var ownerID: UUID
+        var method: String
+        var continuation: CheckedContinuation<Data, Error>
+    }

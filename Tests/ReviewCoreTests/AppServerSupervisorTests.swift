@@ -181,12 +181,7 @@ struct AppServerSupervisorTests {
             sendMessage: { _ in },
             closeInput: {}
         )
-        let subscription = await connection.notificationStream()
-        defer {
-            Task {
-                await subscription.cancel()
-            }
-        }
+        let notificationStream = await connection.notificationStream()
 
         let payload = try JSONSerialization.data(
             withJSONObject: [
@@ -208,7 +203,7 @@ struct AppServerSupervisorTests {
         await connection.receive(payload + Data([0x0A]))
 
         let receivedNotification = try await withTestTimeout {
-            var iterator = subscription.stream.makeAsyncIterator()
+            var iterator = notificationStream.makeAsyncIterator()
             return try await iterator.next()
         }
         let notification = try #require(receivedNotification)
@@ -222,6 +217,90 @@ struct AppServerSupervisorTests {
         #expect(updated.rateLimits.primary?.usedPercent == 72)
         #expect(updated.rateLimits.primary?.windowDurationMins == 300)
         #expect(updated.rateLimits.secondary == nil)
+    }
+
+    @Test func sharedTransportLeaseCloseCancelsOnlyOwnedPendingRequests() async throws {
+        let box = ConnectionBox()
+        let recorder = SharedTransportRequestRecorder()
+        let connection = AppServerSharedTransportConnection(
+            sendMessage: { message in
+                await recorder.record(message)
+            },
+            closeInput: {}
+        )
+        await box.setConnection(connection)
+
+        let firstTransport = await connection.checkoutTransport()
+        let secondTransport = await connection.checkoutTransport()
+
+        let firstTask = Task<Result<AppServerConfigReadResponse, Error>, Never> {
+            do {
+                return .success(
+                    try await firstTransport.request(
+                        method: "config/read",
+                        params: AppServerConfigReadParams(
+                            cwd: nil,
+                            includeLayers: false
+                        ),
+                        responseType: AppServerConfigReadResponse.self
+                    )
+                )
+            } catch {
+                return .failure(error)
+            }
+        }
+        let secondTask = Task<Result<AppServerConfigReadResponse, Error>, Never> {
+            do {
+                return .success(
+                    try await secondTransport.request(
+                        method: "config/read",
+                        params: AppServerConfigReadParams(
+                            cwd: nil,
+                            includeLayers: false
+                        ),
+                        responseType: AppServerConfigReadResponse.self
+                    )
+                )
+            } catch {
+                return .failure(error)
+            }
+        }
+
+        try await withTestTimeout {
+            while await recorder.requestCount() < 2 {
+                await Task.yield()
+            }
+        }
+
+        await firstTransport.close()
+        try await recorder.respond(
+            toRequestAt: 1,
+            result: [
+                "config": [
+                    "model": "gpt-5.4-mini",
+                    "review_model": "gpt-5.4-mini",
+                ]
+            ],
+            connectionBox: box
+        )
+
+        let firstResult = try await withTestTimeout { await firstTask.value }
+        let secondResult = try await withTestTimeout { await secondTask.value }
+
+        switch firstResult {
+        case .success:
+            Issue.record("First lease request unexpectedly succeeded after lease close.")
+        case .failure(let error):
+            #expect(error is CancellationError)
+        }
+
+        switch secondResult {
+        case .success(let response):
+            #expect(response.config.model == "gpt-5.4-mini")
+            #expect(response.config.reviewModel == "gpt-5.4-mini")
+        case .failure(let error):
+            Issue.record("Second lease request unexpectedly failed: \(error.localizedDescription)")
+        }
     }
 
     @Test func supervisorStreamsLargeConfigResponseOverChunkedStdout() async throws {
@@ -863,6 +942,46 @@ private actor ConnectionBox {
 
     func connection() -> AppServerSharedTransportConnection? {
         storedConnection
+    }
+}
+
+private actor SharedTransportRequestRecorder {
+    private var requests: [[String: Any]] = []
+
+    func record(_ message: String) {
+        guard let data = message.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return
+        }
+        requests.append(object)
+    }
+
+    func requestCount() -> Int {
+        requests.count
+    }
+
+    func respond(
+        toRequestAt index: Int,
+        result: [String: Any],
+        connectionBox: ConnectionBox
+    ) async throws {
+        guard requests.indices.contains(index) else {
+            throw TimeoutError()
+        }
+        guard let id = requests[index]["id"] else {
+            throw TimeoutError()
+        }
+        guard let connection = await connectionBox.connection() else {
+            throw TimeoutError()
+        }
+        let payload = try JSONSerialization.data(
+            withJSONObject: [
+                "id": id,
+                "result": result,
+            ]
+        )
+        await connection.receive(payload + Data([0x0A]))
     }
 }
 

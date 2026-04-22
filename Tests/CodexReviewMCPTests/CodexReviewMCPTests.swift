@@ -793,6 +793,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -821,6 +822,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.refreshAuthentication()
 
         #expect(
@@ -872,6 +874,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -952,6 +955,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         #expect(store.serverState == .failed("prepare failed"))
         try await waitForObservedValue(authStateProbe) {
@@ -984,6 +988,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -1049,6 +1054,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
@@ -1109,6 +1115,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -1159,6 +1166,7 @@ struct CodexReviewMCPTests {
         defer { weeklyProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(weeklyProbe) {
             $0 == 20
@@ -1210,6 +1218,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -1275,6 +1284,7 @@ struct CodexReviewMCPTests {
         defer { currentProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(currentProbe) {
             $0 == 40
@@ -1369,6 +1379,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
@@ -1404,6 +1415,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1467,6 +1479,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1540,6 +1553,7 @@ struct CodexReviewMCPTests {
         defer { codexProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         await authTransport.waitForNotificationStream()
 
         try await authTransport.sendRateLimitsUpdated(
@@ -1610,6 +1624,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1653,6 +1668,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1713,6 +1729,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1820,6 +1837,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1887,6 +1905,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1926,6 +1945,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1993,6 +2013,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2077,6 +2098,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2157,6 +2179,7 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
         }
@@ -2243,6 +2266,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2315,6 +2339,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2420,6 +2445,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             store.auth.account?.email == "active@example.com"
                 && store.settings.selectedModel == "gpt-old"
@@ -2468,6 +2494,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -2500,6 +2527,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2537,6 +2565,7 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -2576,6 +2605,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForTotalRateLimitsReadCount(
             [firstTransport, secondTransport],
             expectedCount: 1
@@ -2626,6 +2656,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
@@ -2671,6 +2702,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
@@ -2722,6 +2754,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
         #expect(store.auth.account?.email == "review@example.com")
         #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
@@ -2861,6 +2894,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
         let initialCheckoutCount = await manager.authTransportCheckoutCount()
         #expect(store.auth.account?.email == "active@example.com")
@@ -2901,6 +2935,7 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
+        defer { Task { await store.stop() } }
         await authTransport.waitForNotificationStream()
 
         try await authTransport.sendRateLimitsUpdated(
@@ -2952,6 +2987,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         await authTransport.waitForNotificationStream()
 
         try await authTransport.sendRateLimitsUpdated(
@@ -4109,6 +4145,7 @@ struct CodexReviewMCPTests {
 
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .failed(
@@ -4143,6 +4180,7 @@ struct CodexReviewMCPTests {
 
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.start()
+        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .failed(
@@ -4387,6 +4425,7 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
@@ -4422,6 +4461,7 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
@@ -4794,6 +4834,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             store.auth.savedAccounts.map(\.email) == ["review@example.com"]
         }
@@ -5116,6 +5157,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -5142,6 +5184,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -5168,6 +5211,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedOut)
@@ -5195,6 +5239,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -5222,6 +5267,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(store.auth.isAuthenticating == false)
@@ -7299,6 +7345,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
@@ -7325,6 +7372,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
@@ -7354,6 +7402,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
@@ -7387,6 +7436,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
@@ -7417,6 +7467,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.logout()
 
@@ -7444,6 +7495,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.logout()
 
@@ -7516,6 +7568,7 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.logout()
 
@@ -7587,6 +7640,7 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
+        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -8133,11 +8187,10 @@ struct CodexReviewMCPTests {
         _ = try await session.startLogin(.chatGPT)
         await session.waitForAuthenticationTaskCompletion()
 
-        let subscription = await session.notificationStream()
-        defer { Task { await subscription.cancel() } }
+        let notificationStream = await session.notificationStream()
 
         try await withTestTimeout {
-            for try await _ in subscription.stream {
+            for try await _ in notificationStream {
                 Issue.record("Expected late native-auth subscribers to observe terminal cancellation without buffered notifications.")
             }
         }
@@ -8163,12 +8216,11 @@ struct CodexReviewMCPTests {
         _ = try await session.startLogin(.chatGPT)
         await session.waitForAuthenticationTaskCompletion()
 
-        let subscription = await session.notificationStream()
-        defer { Task { await subscription.cancel() } }
+        let notificationStream = await session.notificationStream()
 
         await #expect(throws: ReviewAuthError.loginFailed("Authentication failed.")) {
             try await withTestTimeout {
-                for try await _ in subscription.stream {
+                for try await _ in notificationStream {
                     Issue.record("Expected late native-auth subscribers to fail before receiving notifications.")
                 }
             }
@@ -8659,10 +8711,10 @@ actor DelayedShutdownAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -8748,10 +8800,10 @@ actor DelayedConnectAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -8827,10 +8879,10 @@ actor BlockingPrepareAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -8911,15 +8963,15 @@ actor BlockingLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(
-            stream: stream,
-            cancel: { [self] in
-                await close()
+        continuation.onTermination = { _ in
+            Task {
+                await self.close()
             }
-        )
+        }
+        return stream
     }
 
     func close() async {
@@ -8974,15 +9026,15 @@ actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         self.continuation = continuation
-        return .init(
-            stream: stream,
-            cancel: { [self] in
-                await close()
+        continuation.onTermination = { _ in
+            Task {
+                await self.close()
             }
-        )
+        }
+        return stream
     }
 
     func close() async {
@@ -9047,8 +9099,8 @@ actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9089,8 +9141,8 @@ actor ImmediateReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9123,8 +9175,8 @@ actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9147,8 +9199,8 @@ actor SignedOutReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9190,8 +9242,8 @@ actor FileBackedSharedReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9219,8 +9271,8 @@ actor BlockingReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9261,8 +9313,8 @@ actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9303,8 +9355,8 @@ actor SequencedReadAccountThenFailingReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9340,10 +9392,10 @@ actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -9388,8 +9440,8 @@ actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9420,10 +9472,10 @@ actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -9493,10 +9545,10 @@ actor MutableAuthenticatedLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -9563,10 +9615,10 @@ actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -9613,8 +9665,8 @@ actor FailingLogoutReviewAuthSession: ReviewAuthSession {
         throw ReviewAuthError.logoutFailed("Failed to sign out.")
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9642,8 +9694,8 @@ actor LogoutFailureWithPersistedAuthReviewAuthSession: ReviewAuthSession {
         throw ReviewAuthError.logoutFailed("Failed to sign out.")
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9680,8 +9732,8 @@ actor LogoutFailureWithChangedAccountReviewAuthSession: ReviewAuthSession {
         throw ReviewAuthError.logoutFailed("Failed to sign out.")
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func close() async {}
@@ -9714,10 +9766,10 @@ actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
 
     func logout() async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func close() async {
@@ -9818,10 +9870,10 @@ actor AuthCapableAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -9899,10 +9951,10 @@ actor PreparedSettingsRefreshAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -9950,10 +10002,10 @@ actor FailingAuthCheckoutAppServerManager: AppServerManaging {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -10050,6 +10102,32 @@ actor BlockingBootstrapAppServerManager: AppServerManaging {
         processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
     )
     private let transportStorage = BlockingBootstrapTransport()
+    private let authTransport = SettingsRefreshTransport(
+        config: .init(
+            model: "gpt-5.4-mini",
+            reviewModel: "gpt-5.4-mini"
+        ),
+        firstPage: .init(
+            data: [
+                .init(
+                    id: "gpt-5.4-mini",
+                    model: "gpt-5.4-mini",
+                    displayName: "GPT-5.4 Mini",
+                    hidden: false,
+                    supportedReasoningEfforts: [
+                        .init(
+                            reasoningEffort: .medium,
+                            description: "Medium reasoning"
+                        )
+                    ],
+                    defaultReasoningEffort: .medium,
+                    supportedServiceTiers: []
+                )
+            ],
+            nextCursor: nil
+        ),
+        secondPage: .init(data: [], nextCursor: nil)
+    )
 
     func prepare() async throws -> AppServerRuntimeState {
         runtimeState
@@ -10060,17 +10138,17 @@ actor BlockingBootstrapAppServerManager: AppServerManaging {
     }
 
     func checkoutAuthTransport() async throws -> any AppServerSessionTransport {
-        transportStorage
+        authTransport
     }
 
     func currentRuntimeState() async -> AppServerRuntimeState? {
         runtimeState
     }
 
-    func diagnosticLineStream() async -> AsyncStreamSubscription<String> {
+    func diagnosticLineStream() async -> AsyncStream<String> {
         let (stream, continuation) = AsyncStream<String>.makeStream()
         continuation.finish()
-        return .init(stream: stream, cancel: {})
+        return stream
     }
 
     func diagnosticsTail() async -> String {
@@ -10088,7 +10166,6 @@ actor BlockingBootstrapTransport: AppServerSessionTransport {
     private var requestCounts: [String: Int] = [:]
     private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var closedStorage = false
-    private let configReadGate = OneShotGate()
 
     func initializeResponse() async -> AppServerInitializeResponse {
         .init(
@@ -10107,9 +10184,13 @@ actor BlockingBootstrapTransport: AppServerSessionTransport {
         noteRequest(method)
         switch method {
         case "config/read":
-            await configReadGate.wait()
-            try Task.checkCancellation()
-            throw TestFailure("config/read should have been interrupted")
+            while true {
+                if closedStorage {
+                    throw CancellationError()
+                }
+                try Task.checkCancellation()
+                try? await Task.sleep(for: .milliseconds(10))
+            }
         default:
             throw TestFailure("unexpected bootstrap request: \(method)")
         }
@@ -10117,8 +10198,8 @@ actor BlockingBootstrapTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func isClosed() async -> Bool {
@@ -10205,8 +10286,8 @@ actor SettingsRefreshTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func isClosed() async -> Bool {
@@ -10252,8 +10333,8 @@ actor SettingsWriteTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func isClosed() async -> Bool {
@@ -10484,15 +10565,15 @@ actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         let (stream, continuation) = AsyncThrowingStream<AppServerServerNotification, Error>.makeStream()
         setContinuation(continuation)
-        return .init(
-            stream: stream,
-            cancel: { [self] in
-                await close()
+        continuation.onTermination = { _ in
+            Task {
+                await self.close()
             }
-        )
+        }
+        return stream
     }
 
     func waitForNotificationStream() async {
@@ -10739,8 +10820,8 @@ actor DisconnectingRateLimitReadTransport: AppServerSessionTransport {
 
     func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {}
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
-        .init(stream: .init { $0.finish() }, cancel: {})
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
+        .init { $0.finish() }
     }
 
     func isClosed() async -> Bool {
@@ -11374,11 +11455,11 @@ final class TestAuthRuntimeDriver {
 
 @MainActor
 final class TestRuntimeOwningAuthController {
-    private let base: CodexAuthController
+    private let base: ReviewMonitorAuthOrchestrator
     private let runtimeDriver: TestAuthRuntimeDriver
 
     init(
-        base: CodexAuthController,
+        base: ReviewMonitorAuthOrchestrator,
         runtimeDriver: TestAuthRuntimeDriver
     ) {
         self.base = base
@@ -11600,7 +11681,7 @@ func makeAuthModel(
         recycleServerIfRunning: recycleServerIfRunning,
         hasRunningJobs: hasRunningJobs
     )
-    let controller = CodexAuthController(
+    let controller = ReviewMonitorAuthOrchestrator(
         configuration: configuration,
         accountRegistryStore: ReviewAccountRegistryStore(environment: configuration.environment),
         appServerManager: appServerManager,
@@ -11725,7 +11806,7 @@ actor PersistingReviewAuthSession: ReviewAuthSession {
         )
     }
 
-    func notificationStream() async -> AsyncThrowingStreamSubscription<AppServerServerNotification> {
+    func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
         await base.notificationStream()
     }
 

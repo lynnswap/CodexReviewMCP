@@ -39,6 +39,7 @@ struct CodexReviewMCPLifecycleTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
 
         let result = try await store.startReview(
             sessionID: "session-diagnostics",
@@ -86,6 +87,7 @@ struct CodexReviewMCPLifecycleTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         await store.stop()
 
         #expect(ReviewDiscovery.read(from: discoveryFileURL) == nil)
@@ -116,6 +118,7 @@ struct CodexReviewMCPLifecycleTests {
         )
 
         await store.start()
+        defer { Task { await store.stop() } }
         let stopTask = Task { await store.stop() }
         await manager.waitForShutdownStart()
 
