@@ -1,10 +1,6 @@
 import Foundation
 
-package protocol ReviewStdioOutputSink: Sendable {
-    func send(_ data: Data)
-}
-
-final class StdioWriter: ReviewStdioOutputSink, @unchecked Sendable {
+final class StdioWriter: @unchecked Sendable {
     private let handle: FileHandle
     private let lock = NSLock()
 

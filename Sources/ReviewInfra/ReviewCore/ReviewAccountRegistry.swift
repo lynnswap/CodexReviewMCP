@@ -1,155 +1,5 @@
-import ReviewDomain
 import Foundation
 import ReviewDomain
-
-package struct ReviewSavedRateLimitWindowRecord: Codable, Equatable, Sendable {
-    package var windowDurationMinutes: Int
-    package var usedPercent: Int
-    package var resetsAt: Date?
-
-    package init(
-        windowDurationMinutes: Int,
-        usedPercent: Int,
-        resetsAt: Date?
-    ) {
-        self.windowDurationMinutes = windowDurationMinutes
-        self.usedPercent = usedPercent
-        self.resetsAt = resetsAt
-    }
-}
-
-package struct ReviewSavedAccountRecord: Codable, Equatable, Sendable {
-    package var accountKey: String
-    package var email: String
-    package var planType: String?
-    package var lastActivatedAt: Date?
-    package var lastRateLimitFetchAt: Date?
-    package var lastRateLimitError: String?
-    package var cachedRateLimits: [ReviewSavedRateLimitWindowRecord]
-}
-
-package struct ReviewAccountRegistryRecord: Codable, Equatable, Sendable {
-    package var activeAccountKey: String?
-    package var accounts: [ReviewSavedAccountRecord]
-
-    package init(
-        activeAccountKey: String? = nil,
-        accounts: [ReviewSavedAccountRecord] = []
-    ) {
-        self.activeAccountKey = activeAccountKey
-        self.accounts = accounts
-    }
-}
-
-package struct PreparedInactiveAccountProbe: Sendable {
-    package var environment: [String: String]
-    package var homeRootURL: URL
-}
-
-@MainActor
-package func loadRegisteredReviewAccounts(
-    environment: [String: String] = ProcessInfo.processInfo.environment
-) -> (activeAccountKey: String?, accounts: [CodexAccount]) {
-    let persistedRegistry = (try? loadRegistryRecord(environment: environment)) ?? .init()
-    let registry = runtimeRegistryRecord(
-        from: persistedRegistry,
-        environment: environment
-    )
-    let records = registry.accounts
-    let accounts = records.map { makeCodexAccount($0) }
-    let activeAccountKey = records.contains(where: { $0.accountKey == registry.activeAccountKey })
-        ? registry.activeAccountKey
-        : nil
-    if let activeAccountKey {
-        for account in accounts {
-            account.updateIsActive(account.accountKey == activeAccountKey)
-        }
-    }
-    return (activeAccountKey, accounts)
-}
-
-private func runtimeRegistryRecord(
-    from persistedRegistry: ReviewAccountRegistryRecord,
-    environment: [String: String]
-) -> ReviewAccountRegistryRecord {
-    let canonicalPersistedRegistry = canonicalizeRegistryRecord(
-        persistedRegistry,
-        environment: environment
-    )
-    let persistedAccounts = canonicalPersistedRegistry.accounts.filter {
-        savedAccountAuthSnapshotExists(
-            accountKey: $0.accountKey,
-            environment: environment
-        )
-    }
-    let filteredPersistedRegistry = canonicalizeRegistryRecord(
-        .init(
-            activeAccountKey: canonicalPersistedRegistry.activeAccountKey,
-            accounts: persistedAccounts
-        ),
-        environment: environment
-    )
-    let runtimeAccounts = filteredPersistedRegistry.accounts.map { account in
-        var runtimeAccount = account
-        runtimeAccount.accountKey = normalizedReviewAccountEmail(email: account.email)
-        return runtimeAccount
-    }
-    let runtimeActiveAccountKey = filteredPersistedRegistry.activeAccountKey.flatMap { activeAccountKey in
-        if let activeAccount = filteredPersistedRegistry.accounts.first(where: { $0.accountKey == activeAccountKey }) {
-            return normalizedReviewAccountEmail(email: activeAccount.email)
-        }
-        return activeAccountKey.contains("@") ? normalizedReviewAccountEmail(email: activeAccountKey) : nil
-    }
-    return .init(
-        activeAccountKey: runtimeActiveAccountKey,
-        accounts: runtimeAccounts
-    )
-}
-
-private func storedAccount(
-    in registry: ReviewAccountRegistryRecord,
-    matchingRuntimeAccountKey accountKey: String,
-    environment: [String: String]
-) -> ReviewSavedAccountRecord? {
-    storedAccountIndex(
-        in: registry,
-        matchingRuntimeAccountKey: accountKey,
-        environment: environment
-    )
-    .map { registry.accounts[$0] }
-}
-
-private func storedAccountIndex(
-    in registry: ReviewAccountRegistryRecord,
-    matchingRuntimeAccountKey accountKey: String,
-    environment: [String: String]
-) -> Int? {
-    if let exactIndex = registry.accounts.firstIndex(where: { $0.accountKey == accountKey }) {
-        return exactIndex
-    }
-    let canonicalAccountsByEmail = canonicalAccountsByNormalizedEmail(
-        in: registry,
-        environment: environment
-    )
-    let normalizedAccountKey = normalizedReviewAccountEmail(email: accountKey)
-    guard let canonicalAccount = canonicalAccountsByEmail[normalizedAccountKey] else {
-        return nil
-    }
-    return registry.accounts.firstIndex(of: canonicalAccount)
-}
-
-@MainActor
-package func loadSharedReviewAccount(
-    environment: [String: String] = ProcessInfo.processInfo.environment
-) -> CodexAccount? {
-    guard let snapshot = loadAuthSnapshot(at: ReviewHomePaths.reviewAuthURL(environment: environment)) else {
-        return nil
-    }
-    return CodexAccount(
-        email: snapshot.email,
-        planType: snapshot.planType
-    )
-}
 
 package actor ReviewAccountRegistryStore {
     nonisolated(unsafe) static var saveRegistryRecordFailureMessageForTesting: String?
@@ -326,12 +176,12 @@ package actor ReviewAccountRegistryStore {
     package func removeAccount(_ accountKey: String) throws -> String? {
         let originalRegistry = try loadRegistry()
         var registry = originalRegistry
-        let storedAccount = storedAccount(
+        let resolvedStoredAccount = storedAccount(
             in: originalRegistry,
             matchingRuntimeAccountKey: accountKey,
             environment: environment
         )
-        let removedAccountKey = storedAccount?.accountKey
+        let removedAccountKey = resolvedStoredAccount?.accountKey
         let removedActive = removedAccountKey != nil
             && originalRegistry.activeAccountKey == removedAccountKey
         registry.accounts.removeAll { account in
@@ -356,7 +206,7 @@ package actor ReviewAccountRegistryStore {
         try saveRegistry(registry)
         let sharedAuthBackup = loadSharedAuthData()
         let savedAccountDirectoryBackups = savedAccountDirectoryBackups(
-            for: storedAccount.map {
+            for: resolvedStoredAccount.map {
                 savedAccountDirectories(
                     matchingNormalizedEmail: normalizedReviewAccountEmail(email: $0.email),
                     fallbackAccountKey: $0.accountKey,
@@ -378,10 +228,10 @@ package actor ReviewAccountRegistryStore {
                     try removeItemIfExists(at: ReviewHomePaths.reviewAuthURL(environment: environment))
                 }
             }
-            if let storedAccount {
+            if let resolvedStoredAccount {
                 for directoryURL in savedAccountDirectories(
-                    matchingNormalizedEmail: normalizedReviewAccountEmail(email: storedAccount.email),
-                    fallbackAccountKey: storedAccount.accountKey,
+                    matchingNormalizedEmail: normalizedReviewAccountEmail(email: resolvedStoredAccount.email),
+                    fallbackAccountKey: resolvedStoredAccount.accountKey,
                     environment: environment
                 ) {
                     try removeSavedAccountDirectory(directoryURL)
@@ -688,7 +538,7 @@ package actor ReviewAccountRegistryStore {
     }
 }
 
-private func loadRegistryRecord(
+func loadRegistryRecord(
     environment: [String: String]
 ) throws -> ReviewAccountRegistryRecord {
     try migrateLegacySharedAuthIfNeeded(environment: environment)
@@ -909,7 +759,7 @@ private func persistAuthSnapshot(
 }
 
 @MainActor
-private func makeCodexAccount(
+func makeCodexAccount(
     _ record: ReviewSavedAccountRecord,
     isActive: Bool = false
 ) -> CodexAccount {
@@ -935,7 +785,7 @@ private func makeCodexAccount(
     return account
 }
 
-private func canonicalizeRegistryRecord(
+func canonicalizeRegistryRecord(
     _ registry: ReviewAccountRegistryRecord,
     environment: [String: String]
 ) -> ReviewAccountRegistryRecord {
@@ -1016,7 +866,7 @@ private func shouldReplaceCanonicalAccount(
     return candidate.accountKey < current.accountKey
 }
 
-private func canonicalAccountsByNormalizedEmail(
+func canonicalAccountsByNormalizedEmail(
     in registry: ReviewAccountRegistryRecord,
     environment: [String: String]
 ) -> [String: ReviewSavedAccountRecord] {
@@ -1214,7 +1064,7 @@ private func savedAccountDirectoryCandidateURLs(
     ].uniqued()
 }
 
-private func savedAccountAuthSnapshotExists(
+func savedAccountAuthSnapshotExists(
     accountKey: String,
     environment: [String: String]
 ) -> Bool {
@@ -1313,12 +1163,12 @@ private extension Array where Element: Hashable {
     }
 }
 
-private struct ReviewStoredAuthSnapshot: Equatable, Sendable {
+struct ReviewStoredAuthSnapshot: Equatable, Sendable {
     var email: String
     var planType: String?
 }
 
-private func loadAuthSnapshot(at authURL: URL) -> ReviewStoredAuthSnapshot? {
+func loadAuthSnapshot(at authURL: URL) -> ReviewStoredAuthSnapshot? {
     guard let data = try? Data(contentsOf: authURL),
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let authMode = object["auth_mode"] as? String,

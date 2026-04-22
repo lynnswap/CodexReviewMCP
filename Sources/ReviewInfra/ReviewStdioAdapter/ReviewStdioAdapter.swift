@@ -83,7 +83,7 @@ public actor ReviewStdioAdapter {
 
     private let configuration: Configuration
     private let inputHandle: FileHandle
-    private let outputWriter: any ReviewStdioOutputSink
+    private let writeOutput: @Sendable (Data) -> Void
     private let logger = Logger(label: "codex-review-mcp.stdio")
     private let transport: any ReviewStdioUpstreamTransport
 
@@ -114,7 +114,8 @@ public actor ReviewStdioAdapter {
     ) {
         self.configuration = configuration
         self.inputHandle = input
-        self.outputWriter = StdioWriter(handle: output)
+        let writer = StdioWriter(handle: output)
+        self.writeOutput = writer.send
         self.transport = URLSessionReviewStdioTransport()
     }
 
@@ -126,19 +127,20 @@ public actor ReviewStdioAdapter {
     ) {
         self.configuration = configuration
         self.inputHandle = input
-        self.outputWriter = StdioWriter(handle: output)
+        let writer = StdioWriter(handle: output)
+        self.writeOutput = writer.send
         self.transport = transport
     }
 
     package init(
         configuration: Configuration,
         input: FileHandle = .standardInput,
-        outputSink: any ReviewStdioOutputSink,
+        outputSink: @escaping @Sendable (Data) -> Void,
         transport: any ReviewStdioUpstreamTransport
     ) {
         self.configuration = configuration
         self.inputHandle = input
-        self.outputWriter = outputSink
+        self.writeOutput = outputSink
         self.transport = transport
     }
 
@@ -645,7 +647,7 @@ public actor ReviewStdioAdapter {
                     if let eventID = event.id {
                         lastSSEEventID = eventID
                     }
-                    outputWriter.send(event.payload)
+                    writeOutput(event.payload)
                 }
                 attempt = 0
             } catch is CancellationError {
@@ -761,7 +763,7 @@ public actor ReviewStdioAdapter {
 
     private func respond(to envelope: RequestEnvelope, with body: Data?, fallbackError: String) {
         if let body, envelope.expectsResponse {
-            outputWriter.send(body)
+            writeOutput(body)
         } else if envelope.expectsResponse {
             emitError(for: envelope, message: fallbackError)
         }
@@ -924,7 +926,7 @@ public actor ReviewStdioAdapter {
             ]
         }
         if let payload = try? JSONSerialization.data(withJSONObject: responses.count == 1 ? responses[0] : responses) {
-            outputWriter.send(payload)
+            writeOutput(payload)
         }
     }
 

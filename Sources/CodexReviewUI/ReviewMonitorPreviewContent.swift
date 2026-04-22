@@ -1,5 +1,5 @@
 import Foundation
-@_spi(Testing) import CodexReviewModel
+@_spi(Testing) import ReviewApp
 import ReviewDomain
 import ReviewRuntime
 
