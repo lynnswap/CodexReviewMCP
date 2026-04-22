@@ -1,4 +1,5 @@
 import Foundation
+import ReviewDomain
 
 @MainActor
 package protocol CodexReviewStoreBackend: AnyObject {

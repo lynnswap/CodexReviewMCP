@@ -4,7 +4,7 @@ import Foundation
 import Logging
 import ReviewCore
 import ReviewHTTPServer
-import ReviewJobs
+import ReviewDomain
 
 struct ServerOptions {
     var host = "localhost"

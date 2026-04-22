@@ -1,5 +1,5 @@
 import Foundation
-import ReviewJobs
+import ReviewDomain
 import ReviewRuntime
 
 extension CodexReviewJob {

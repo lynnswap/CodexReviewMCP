@@ -1,4 +1,5 @@
 import Foundation
+import ReviewDomain
 
 public enum CodexReviewStoreTestEnvironment {
     public static let uiTestModeKey = "CODEX_REVIEW_MONITOR_UI_TEST_MODE"

@@ -5,7 +5,7 @@ import CodexReviewModel
 import Foundation
 import ReviewCore
 import ReviewHTTPServer
-import ReviewJobs
+import ReviewDomain
 import ReviewRuntime
 
 extension CodexReviewStore {

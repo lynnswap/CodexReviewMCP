@@ -1,6 +1,6 @@
 import Foundation
 import MCP
-import ReviewJobs
+import ReviewDomain
 
 package enum ReviewHelpCatalog {
     package static let overviewURI = "codex-review://help/overview"

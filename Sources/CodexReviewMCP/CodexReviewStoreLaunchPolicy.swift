@@ -1,5 +1,6 @@
 import CodexReviewModel
 import Foundation
+import ReviewDomain
 
 package enum CodexReviewStoreLaunchPolicy {
     package static let xctestConfigurationKey = "XCTestConfigurationFilePath"

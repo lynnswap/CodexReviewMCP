@@ -3,6 +3,7 @@ import CodexReviewModel
 import Foundation
 import ObservationBridge
 import ReviewRuntime
+import ReviewDomain
 
 @MainActor
 final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDelegate {

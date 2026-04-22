@@ -1,6 +1,6 @@
 import Foundation
-import CodexReviewModel
-import ReviewJobs
+import ReviewDomain
+import ReviewDomain
 import TOMLDecoder
 
 package struct AppServerCommand: Sendable {

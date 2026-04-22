@@ -2,6 +2,7 @@ import AppKit
 import CodexReviewModel
 import Observation
 import SwiftUI
+import ReviewDomain
 
 private struct ReviewMonitorAccountsListView: View {
     let store: CodexReviewStore

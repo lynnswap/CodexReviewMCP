@@ -1,9 +1,10 @@
 import Foundation
 import Testing
+import ReviewDomain
 @_spi(Testing) @testable import CodexReviewMCP
 @_spi(Testing) @testable import CodexReviewModel
 @testable import ReviewCore
-@testable import ReviewJobs
+@testable import ReviewDomain
 @testable import ReviewRuntime
 
 @Suite

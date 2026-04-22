@@ -1,6 +1,6 @@
 import Foundation
 @_spi(Testing) import CodexReviewModel
-import ReviewJobs
+import ReviewDomain
 import ReviewRuntime
 
 @_spi(PreviewSupport)

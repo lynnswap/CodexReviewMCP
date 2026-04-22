@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import ReviewRuntime
+import ReviewDomain
 
 @MainActor
 @Observable

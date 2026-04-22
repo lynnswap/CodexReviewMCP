@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import ReviewTestSupport
 @testable import ReviewCore
-@testable import ReviewJobs
+@testable import ReviewDomain
 
 @Suite(.serialized)
 struct AppServerReviewRunnerTests {

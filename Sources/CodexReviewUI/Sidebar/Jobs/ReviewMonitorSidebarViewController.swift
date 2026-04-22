@@ -3,6 +3,7 @@ import CodexReviewModel
 import ObservationBridge
 import ReviewRuntime
 import SwiftUI
+import ReviewDomain
 
 @MainActor
 final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewDataSource, NSOutlineViewDelegate {

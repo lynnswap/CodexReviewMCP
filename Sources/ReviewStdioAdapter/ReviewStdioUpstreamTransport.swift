@@ -1,6 +1,6 @@
 import Foundation
 import MCP
-import ReviewJobs
+import ReviewDomain
 
 package struct ReviewStdioHTTPResponse: Sendable {
     package var statusCode: Int

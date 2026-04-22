@@ -1,6 +1,7 @@
 import AppKit
 import ObjectiveC.runtime
 import ReviewRuntime
+import ReviewDomain
 
 @MainActor
 final class ReviewMonitorLogScrollView: NSScrollView {

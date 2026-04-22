@@ -1,5 +1,5 @@
 import Foundation
-import ReviewJobs
+import ReviewDomain
 
 package struct AsyncStreamSubscription<Element: Sendable>: Sendable {
     package var stream: AsyncStream<Element>

@@ -1,7 +1,7 @@
 import Foundation
 import MCP
 @testable import ReviewCore
-import ReviewJobs
+import ReviewDomain
 import Testing
 @testable import ReviewHTTPServer
 

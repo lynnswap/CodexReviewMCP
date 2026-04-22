@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import CodexReviewMCP
+import CodexReviewModel
 import ReviewHTTPServer
 import ReviewStdioAdapter
 

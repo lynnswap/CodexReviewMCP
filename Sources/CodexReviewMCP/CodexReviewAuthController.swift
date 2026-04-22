@@ -2,7 +2,7 @@ import CodexReviewModel
 import Foundation
 import ReviewCore
 import ReviewHTTPServer
-import ReviewJobs
+import ReviewDomain
 
 @MainActor
 struct CodexAuthRuntimeState {

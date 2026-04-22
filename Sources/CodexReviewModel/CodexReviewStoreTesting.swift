@@ -1,4 +1,5 @@
 import Foundation
+import ReviewDomain
 
 extension CodexReviewStore {
     nonisolated(unsafe) private static var requestCancellationDelayForTestingStorage: TimeInterval = 0

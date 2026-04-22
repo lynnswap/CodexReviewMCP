@@ -1,6 +1,6 @@
-import CodexReviewModel
+import ReviewDomain
 import Foundation
-import ReviewJobs
+import ReviewDomain
 
 package struct ReviewSavedRateLimitWindowRecord: Codable, Equatable, Sendable {
     package var windowDurationMinutes: Int

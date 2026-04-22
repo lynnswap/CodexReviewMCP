@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import ReviewJobs
+import ReviewDomain
 
 package protocol AppServerManaging: Sendable {
     func prepare() async throws -> AppServerRuntimeState

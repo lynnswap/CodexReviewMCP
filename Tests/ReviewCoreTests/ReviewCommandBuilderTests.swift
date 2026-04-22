@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import CodexReviewModel
 @testable import ReviewCore
-@testable import ReviewJobs
+@testable import ReviewDomain
 
 @Suite struct ReviewExecutionSettingsBuilderTests {
     @Test func reviewExecutionSettingsBuilderReturnsRawRequestAndFixedOverrides() throws {

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import ReviewRuntime
+import ReviewDomain
 
 struct ReviewMonitorJobRowView: View {
     var job: CodexReviewJob

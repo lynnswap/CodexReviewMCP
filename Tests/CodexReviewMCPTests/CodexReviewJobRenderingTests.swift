@@ -1,6 +1,7 @@
 import Testing
+import ReviewDomain
 @_spi(Testing) @testable import CodexReviewModel
-@testable import ReviewJobs
+@testable import ReviewDomain
 @testable import ReviewRuntime
 
 @Suite

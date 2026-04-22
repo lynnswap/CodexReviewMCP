@@ -1,7 +1,7 @@
 import Foundation
 import MCP
 import ReviewCore
-import ReviewJobs
+import ReviewDomain
 
 struct ReviewToolHandler {
     let sessionID: String

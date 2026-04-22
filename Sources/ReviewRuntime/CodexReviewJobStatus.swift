@@ -1,4 +1,4 @@
-import ReviewJobs
+import ReviewDomain
 
 public enum CodexReviewJobStatus: String, Sendable, Hashable {
     case queued

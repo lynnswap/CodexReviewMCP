@@ -1,6 +1,6 @@
 import Foundation
-import CodexReviewModel
-import ReviewJobs
+import ReviewDomain
+import ReviewDomain
 
 package enum AppServerJSONValue: Codable, Sendable, Equatable {
     case string(String)

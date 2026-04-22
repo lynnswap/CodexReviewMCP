@@ -1,5 +1,6 @@
 import AppKit
 import CodexReviewModel
+import ReviewDomain
 
 @MainActor
 enum ReviewMonitorAddAccountAction {

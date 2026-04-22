@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import CodexReviewModel
+import ReviewDomain
 import ReviewTestSupport
 @testable import ReviewCore
 

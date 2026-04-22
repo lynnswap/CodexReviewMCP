@@ -1,5 +1,5 @@
 import Foundation
-import ReviewJobs
+import ReviewDomain
 
 package struct ReviewLocalConfig: Sendable, Equatable {
     package var reviewModel: String?

@@ -2,6 +2,7 @@ import AppKit
 import CodexReviewModel
 import ObservationBridge
 import SwiftUI
+import ReviewDomain
 
 @MainActor
 final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {

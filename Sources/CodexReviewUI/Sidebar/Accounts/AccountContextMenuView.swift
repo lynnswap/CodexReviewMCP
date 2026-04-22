@@ -1,5 +1,6 @@
 import CodexReviewModel
 import SwiftUI
+import ReviewDomain
 
 struct AccountContextMenuView: View {
     let store: CodexReviewStore

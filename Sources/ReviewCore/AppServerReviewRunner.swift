@@ -1,5 +1,5 @@
 import Foundation
-import ReviewJobs
+import ReviewDomain
 
 package struct ReviewBootstrapFailure: Error, LocalizedError, Sendable {
     package var message: String

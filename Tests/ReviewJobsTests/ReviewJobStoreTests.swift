@@ -4,7 +4,7 @@ import ReviewTestSupport
 @testable import CodexReviewMCP
 @testable import CodexReviewModel
 @testable import ReviewCore
-@testable import ReviewJobs
+@testable import ReviewDomain
 
 @Suite(.serialized)
 @MainActor

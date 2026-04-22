@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import CodexReviewModel
 import ObservationBridge
+import ReviewDomain
 
 @MainActor
 final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAccessoryViewController {

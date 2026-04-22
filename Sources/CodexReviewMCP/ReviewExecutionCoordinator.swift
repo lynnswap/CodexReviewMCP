@@ -1,6 +1,8 @@
+import CodexReviewModel
 import Foundation
 import ReviewCore
-import ReviewJobs
+import ReviewDomain
+import ReviewRuntime
 
 package actor ReviewExecutionCoordinator {
     package struct Configuration: Sendable {

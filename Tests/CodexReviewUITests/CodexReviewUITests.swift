@@ -5,7 +5,7 @@ import Testing
 @_spi(Testing) @testable import CodexReviewModel
 @_spi(PreviewSupport) @testable import CodexReviewUI
 import ReviewTestSupport
-import ReviewJobs
+import ReviewDomain
 import ReviewRuntime
 
 @Suite(.serialized)

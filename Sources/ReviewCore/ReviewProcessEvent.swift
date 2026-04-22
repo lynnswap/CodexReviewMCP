@@ -1,4 +1,4 @@
-import ReviewJobs
+import ReviewDomain
 
 package enum ReviewProcessEvent: Sendable {
     case progress(ReviewProgressStage, String?)

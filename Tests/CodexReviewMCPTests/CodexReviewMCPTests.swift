@@ -4,10 +4,12 @@ import Foundation
 import Observation
 import Testing
 import ReviewTestSupport
+import ReviewDomain
 @_spi(Testing) @testable import CodexReviewMCP
-@testable import CodexReviewModel
+@_spi(Testing) @testable import CodexReviewModel
 @testable import ReviewCore
 @testable import ReviewHTTPServer
+@testable import ReviewRuntime
 
 @Suite(.serialized)
 @MainActor
