@@ -12,965 +12,6 @@ import ReviewDomain
 @Suite(.serialized)
 @MainActor
 struct CodexReviewMCPTests {
-    @Test func startingStoreWritesDiscoveryAndRuntimeState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        let reviewConfigURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        let reviewAgentsURL = ReviewHomePaths.reviewAgentsURL(environment: environment)
-        ReviewDiscovery.remove(at: discoveryFileURL)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer {
-            ReviewDiscovery.remove(at: discoveryFileURL)
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        }
-
-        let runtimeState = AppServerRuntimeState(
-            pid: 200,
-            startTime: .init(seconds: 2, microseconds: 0),
-            processGroupLeaderPID: 200,
-            processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
-        )
-        let manager = MockAppServerManager(modeProvider: { _ in .success() }, runtimeState: runtimeState)
-        let store = makeInjectedAuthSessionStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager,
-            authSessionFactory: {
-                SignedOutReviewAuthSession()
-            }
-        )
-
-        try await withAsyncCleanup {
-            await store.start()
-
-            #expect(store.serverState == .running)
-            let discovery = try #require(ReviewDiscovery.read(from: discoveryFileURL))
-            let persistedRuntimeState = try #require(ReviewRuntimeStateStore.read(from: runtimeStateFileURL))
-            #expect(persistedRuntimeState.serverPID == discovery.pid)
-            #expect(persistedRuntimeState.serverStartTime == discovery.serverStartTime)
-            #expect(persistedRuntimeState.appServerPID == runtimeState.pid)
-            #expect(FileManager.default.fileExists(atPath: reviewConfigURL.path))
-            #expect(FileManager.default.fileExists(atPath: reviewAgentsURL.path))
-        } cleanup: {
-            await store.stop()
-        }
-    }
-
-    @Test func initialSettingsSnapshotUsesEffectiveFallbackModelWhenReviewModelIsUnset() throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.4-mini"
-        model_reasoning_effort = "high"
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: MockAppServerManager { _ in .success() }
-        )
-
-        #expect(store.settings.selectedModel == nil)
-        #expect(store.settings.effectiveModel == "gpt-5.4-mini")
-        #expect(store.settings.currentModelDisplayText == "gpt-5.4-mini")
-        #expect(store.settings.selectedReasoningEffort == .high)
-        #expect(store.settings.selectedServiceTier == .flex)
-    }
-
-    @Test func refreshSettingsPagesThroughEntireModelCatalog() async throws {
-        let transport = SettingsRefreshTransport(
-            config: .init(
-                model: "gpt-5.4",
-                reviewModel: "gpt-5.4-mini"
-            ),
-            firstPage: .init(
-                data: [
-                    .init(
-                        id: "gpt-5.4",
-                        model: "gpt-5.4",
-                        displayName: "GPT-5.4",
-                        hidden: false,
-                        supportedReasoningEfforts: [
-                            .init(reasoningEffort: .medium, description: "Balanced default.")
-                        ],
-                        defaultReasoningEffort: .medium,
-                        supportedServiceTiers: [.fast]
-                    )
-                ],
-                nextCursor: "page-2"
-            ),
-            secondPage: .init(
-                data: [
-                    .init(
-                        id: "gpt-5.4-mini",
-                        model: "gpt-5.4-mini",
-                        displayName: "GPT-5.4 Mini",
-                        hidden: false,
-                        supportedReasoningEfforts: [
-                            .init(reasoningEffort: .low, description: "Quick pass."),
-                            .init(reasoningEffort: .medium, description: "Balanced default.")
-                        ],
-                        defaultReasoningEffort: .medium,
-                        supportedServiceTiers: []
-                    )
-                ],
-                nextCursor: nil
-            )
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.refresh()
-
-        #expect(store.settings.selectedModel == "gpt-5.4-mini")
-        #expect(store.settings.fallbackModel == "gpt-5.4")
-        #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-5.4-mini"])
-        #expect(await transport.requestedModelListCursors() == [nil, "page-2"])
-    }
-
-    @Test func refreshSettingsMergesFallbackConfigWhenConfigReadOmitsOverrides() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        review_model = "gpt-5.4-mini"
-        model_reasoning_effort = "high"
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsRefreshTransport(
-            config: .init(model: "gpt-5.4"),
-            firstPage: .init(data: [], nextCursor: nil),
-            secondPage: .init(data: [], nextCursor: nil)
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.refresh()
-
-        #expect(store.settings.selectedModel == "gpt-5.4-mini")
-        #expect(store.settings.fallbackModel == "gpt-5.4")
-        #expect(store.settings.selectedReasoningEffort == .high)
-        #expect(store.settings.selectedServiceTier == .flex)
-    }
-
-    @Test func refreshSettingsPrefersReviewLocalModelOverrideOverProfileModel() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = "gpt-5.4-mini"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.4"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsRefreshTransport(
-            config: .init(model: "gpt-5.4"),
-            firstPage: .init(data: [], nextCursor: nil),
-            secondPage: .init(data: [], nextCursor: nil)
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.refresh()
-
-        #expect(store.settings.selectedModel == "gpt-5.4-mini")
-        #expect(store.settings.fallbackModel == "gpt-5.4")
-    }
-
-    @Test func standaloneSettingsWritesTargetActiveProfileWhenRootOverrideIsAbsent() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.3-codex"
-        model_reasoning_effort = "low"
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.updateReasoningEffort(.high)
-        await store.settings.updateServiceTier(.fast)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.model_reasoning_effort"],
-            ["profiles.reviewer.service_tier"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesModelOverrideToRootWhenRootOverrideExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = "gpt-5.4"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.3-codex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        let gpt54 = CodexReviewModelCatalogItem(
-            id: "gpt-5.4",
-            model: "gpt-5.4",
-            displayName: "GPT-5.4",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast]
-        )
-        let gpt54Mini = CodexReviewModelCatalogItem(
-            id: "gpt-5.4-mini",
-            model: "gpt-5.4-mini",
-            displayName: "GPT-5.4 Mini",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .low, description: "Quick pass."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: "gpt-5.4",
-                fallbackModel: nil,
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: [gpt54, gpt54Mini]
-            )
-        )
-
-        await store.settings.updateModel("gpt-5.4-mini")
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["review_model"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesModelOverrideToProfileWhenProfileClearsRootOverride() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = "gpt-5.4"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        review_model = null
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        let gpt54 = CodexReviewModelCatalogItem(
-            id: "gpt-5.4",
-            model: "gpt-5.4",
-            displayName: "GPT-5.4",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast]
-        )
-        let gpt54Mini = CodexReviewModelCatalogItem(
-            id: "gpt-5.4-mini",
-            model: "gpt-5.4-mini",
-            displayName: "GPT-5.4 Mini",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .low, description: "Quick pass."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: [gpt54, gpt54Mini]
-            )
-        )
-
-        await store.settings.updateModel("gpt-5.4-mini")
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.review_model"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesReasoningOverrideToRootWhenRootOverrideExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        model_reasoning_effort = "high"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.4"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: .high,
-                serviceTier: nil,
-                models: []
-            )
-        )
-
-        await store.settings.updateReasoningEffort(.low)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesReasoningOverrideToProfileWhenProfileClearsRootOverride() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        model_reasoning_effort = "high"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model_reasoning_effort = null
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: []
-            )
-        )
-
-        await store.settings.updateReasoningEffort(.low)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesModelOverrideToRootWhenRootNullClearExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = null
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        let gpt54 = CodexReviewModelCatalogItem(
-            id: "gpt-5.4",
-            model: "gpt-5.4",
-            displayName: "GPT-5.4",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast]
-        )
-        let gpt54Mini = CodexReviewModelCatalogItem(
-            id: "gpt-5.4-mini",
-            model: "gpt-5.4-mini",
-            displayName: "GPT-5.4 Mini",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .low, description: "Quick pass."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: [gpt54, gpt54Mini]
-            )
-        )
-
-        await store.settings.updateModel("gpt-5.4-mini")
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["review_model"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesReasoningOverrideToRootWhenRootNullClearExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        model_reasoning_effort = null
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: []
-            )
-        )
-
-        await store.settings.updateReasoningEffort(.low)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesTargetQuotedDottedActiveProfile() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "qa.us"
-
-        [profiles."qa.us"]
-        model = "gpt-5.3-codex"
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.updateServiceTier(.fast)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            [#"profiles."qa.us".service_tier"#],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesTargetActiveProfileBeforeTrackedKeysExist() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        sandbox_mode = "danger-full-access"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.updateReasoningEffort(.high)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsWritesTargetActiveProfileWhenSectionIsMissing() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        await store.settings.updateReasoningEffort(.high)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.model_reasoning_effort"],
-        ])
-    }
-
-    @Test func standaloneSettingsClearsRootOverrideAtRootWhenRootOverrideExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        review_model = "gpt-5.4-mini"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.4"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-
-        store.settings.selectedModel = nil
-        try await waitForMainActorCondition {
-            store.settings.selectedModel == nil
-        }
-        try await waitForSettingsWriteCount(transport, expectedCount: 1)
-
-        let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.first == "review_model")
-    }
-
-    @Test func profileModelChangeClearsInheritedRootTierAtRoot() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = "fast"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        model = "gpt-5.3-codex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        let gpt54Mini = CodexReviewModelCatalogItem(
-            id: "gpt-5.4-mini",
-            model: "gpt-5.4-mini",
-            displayName: "GPT-5.4 Mini",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .low, description: "Quick pass."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: []
-        )
-        let gpt53Codex = CodexReviewModelCatalogItem(
-            id: "gpt-5.3-codex",
-            model: "gpt-5.3-codex",
-            displayName: "GPT-5.3 Codex",
-            hidden: false,
-            supportedReasoningEfforts: [
-                .init(reasoningEffort: .minimal, description: "Lowest overhead."),
-                .init(reasoningEffort: .low, description: "Faster iteration."),
-                .init(reasoningEffort: .medium, description: "Balanced default."),
-            ],
-            defaultReasoningEffort: .medium,
-            supportedServiceTiers: [.fast, .flex]
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.3-codex",
-                reasoningEffort: nil,
-                serviceTier: .fast,
-                models: [gpt53Codex, gpt54Mini]
-            )
-        )
-
-        await store.settings.updateModel("gpt-5.4-mini")
-
-        let firstWrite = try #require(await transport.recordedEditKeyPaths().first)
-        #expect(firstWrite.contains("service_tier"))
-        #expect(firstWrite.contains("profiles.reviewer.service_tier") == false)
-    }
-
-    @Test func standaloneSettingsClearsInheritedRootTierAtRoot() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = "fast"
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: .fast,
-                models: []
-            )
-        )
-
-        await store.settings.updateServiceTier(nil)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["service_tier"],
-        ])
-    }
-
-    @Test func standaloneSettingsUpdatesInheritedRootTierAtRoot() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = "fast"
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: .fast,
-                models: []
-            )
-        )
-
-        await store.settings.updateServiceTier(.flex)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["service_tier"],
-        ])
-    }
-
-    @Test func standaloneSettingsUpdatesRootNullClearedTierAtRoot() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = null
-        profile = "reviewer"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: nil,
-                models: []
-            )
-        )
-
-        await store.settings.updateServiceTier(.flex)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["service_tier"],
-        ])
-    }
-
-    @Test func standaloneSettingsClearsProfileTierToNormalAtProfileWhenRootTierExists() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let configURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        try FileManager.default.createDirectory(
-            at: configURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try """
-        service_tier = "fast"
-        profile = "reviewer"
-
-        [profiles.reviewer]
-        service_tier = "flex"
-        """.write(
-            to: configURL,
-            atomically: true,
-            encoding: .utf8
-        )
-        let transport = SettingsWriteTransport()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: AuthCapableAppServerManager(authTransport: transport)
-        )
-        store.settings.loadForTesting(
-            snapshot: .init(
-                model: nil,
-                fallbackModel: "gpt-5.4",
-                reasoningEffort: nil,
-                serviceTier: .flex,
-                models: []
-            )
-        )
-
-        await store.settings.updateServiceTier(nil)
-
-        #expect(await transport.recordedEditKeyPaths() == [
-            ["profiles.reviewer.service_tier"],
-        ])
-    }
-
     @Test func storeSkipsRegistryAccountsWithoutSavedAuthSnapshots() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
@@ -5118,490 +4159,6 @@ struct CodexReviewMCPTests {
         #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
 
         await store.stop()
-    }
-
-    @Test func diagnosticsSnapshotIncludesServerAndCompletedReviewState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let diagnosticsDirectoryURL = try makeTemporaryDirectory()
-        let diagnosticsURL = diagnosticsDirectoryURL.appendingPathComponent("diagnostics.json")
-        let reviewDirectoryURL = try makeTemporaryDirectory()
-        defer {
-            try? FileManager.default.removeItem(at: diagnosticsDirectoryURL)
-            try? FileManager.default.removeItem(at: reviewDirectoryURL)
-        }
-
-        let manager = MockAppServerManager { _ in
-            .commandOutputThenSuccessThenTransportDisconnect(
-                finalReview: "Looks solid overall.",
-                outputDelta: "README.md | 1 +"
-            )
-        }
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            diagnosticsURL: diagnosticsURL,
-            appServerManager: manager
-        )
-
-        await store.start()
-
-        let result = try await store.startReview(
-            sessionID: "session-diagnostics",
-            request: .init(
-                cwd: reviewDirectoryURL.path,
-                target: .uncommittedChanges
-            )
-        )
-
-        let snapshot = try readStoreDiagnosticsSnapshot(from: diagnosticsURL)
-        let job = try #require(snapshot.jobs.first)
-
-        #expect(result.status == .succeeded)
-        #expect(snapshot.serverState == "Running")
-        #expect(snapshot.failureMessage == nil)
-        #expect(snapshot.serverURL == store.serverURL?.absoluteString)
-        #expect(snapshot.childRuntimePath == nil)
-        #expect(job.status == "succeeded")
-        #expect(job.logText.contains("Looks solid overall."))
-        #expect(job.logText.contains("README.md | 1 +"))
-        #expect(job.rawLogText.isEmpty)
-
-        await store.stop()
-    }
-
-    @Test func stoppingStoreRemovesDiscoveryAndRuntimeState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewDiscovery.remove(at: discoveryFileURL)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer {
-            ReviewDiscovery.remove(at: discoveryFileURL)
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        }
-
-        let manager = MockAppServerManager { _ in .success() }
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        await store.start()
-        await store.stop()
-
-        #expect(ReviewDiscovery.read(from: discoveryFileURL) == nil)
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
-    }
-
-    @Test func stopKeepsRuntimeStateUntilAppServerShutdownFinishes() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
-
-        let manager = DelayedShutdownAppServerManager(
-            runtimeState: .init(
-                pid: 200,
-                startTime: .init(seconds: 2, microseconds: 0),
-                processGroupLeaderPID: 200,
-                processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
-            )
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        await store.start()
-        let stopTask = Task { await store.stop() }
-        await manager.waitForShutdownStart()
-
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) != nil)
-
-        await manager.resumeShutdown()
-        _ = await stopTask.value
-
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
-    }
-
-    @Test func stopCancelsPartialStartupAndRemovesDiscoveryState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewDiscovery.remove(at: discoveryFileURL)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer {
-            ReviewDiscovery.remove(at: discoveryFileURL)
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        }
-
-        let manager = BlockingPrepareAppServerManager(runtimeState: .init(
-            pid: 300,
-            startTime: .init(seconds: 3, microseconds: 0),
-            processGroupLeaderPID: 300,
-            processGroupLeaderStartTime: .init(seconds: 3, microseconds: 0)
-        ))
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        let startTask = Task { await store.start() }
-
-        await manager.waitForPrepareStart()
-        try await waitForFileAppearance(at: discoveryFileURL)
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
-
-        await store.stop()
-        _ = await startTask.value
-
-        #expect(store.serverState == .stopped)
-        #expect(ReviewDiscovery.readPersisted(from: discoveryFileURL) == nil)
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) == nil)
-        #expect(await manager.shutdownCount() == 1)
-    }
-
-    @Test func stopWithoutLocalServerPreservesPersistedDiscoveryAndRuntimeState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let discoveryFileURL = ReviewHomePaths.discoveryFileURL(environment: environment)
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewDiscovery.remove(at: discoveryFileURL)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer {
-            ReviewDiscovery.remove(at: discoveryFileURL)
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        }
-
-        let serverPID = getpid()
-        let serverStartTime = try #require(processStartTime(of: serverPID))
-        let endpointRecord = try #require(
-            ReviewDiscovery.makeRecord(host: "127.0.0.1", port: 9417, pid: Int(serverPID))
-        )
-        let runtimeState = ReviewRuntimeStateRecord(
-            serverPID: Int(serverPID),
-            serverStartTime: serverStartTime,
-            appServerPID: 999,
-            appServerStartTime: .init(seconds: 9, microseconds: 0),
-            appServerProcessGroupLeaderPID: 999,
-            appServerProcessGroupLeaderStartTime: .init(seconds: 9, microseconds: 0),
-            updatedAt: Date()
-        )
-        try ReviewDiscovery.write(endpointRecord, to: discoveryFileURL)
-        try ReviewRuntimeStateStore.write(runtimeState, to: runtimeStateFileURL)
-
-        let manager = MockAppServerManager { _ in .success() }
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        await store.stop()
-
-        #expect(ReviewDiscovery.readPersisted(from: discoveryFileURL)?.pid == Int(serverPID))
-        #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL)?.serverPID == Int(serverPID))
-    }
-
-    @Test func restartRecoversFromPartialStartup() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
-
-        let manager = BlockingPrepareAppServerManager(runtimeState: .init(
-            pid: 400,
-            startTime: .init(seconds: 4, microseconds: 0),
-            processGroupLeaderPID: 400,
-            processGroupLeaderStartTime: .init(seconds: 4, microseconds: 0)
-        ))
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        let firstStartTask = Task { await store.start() }
-
-        await manager.waitForPrepareStart()
-        await store.restart()
-        _ = await firstStartTask.value
-
-        #expect(store.serverState == .running)
-        let runtimeState = try #require(ReviewRuntimeStateStore.read(from: runtimeStateFileURL))
-        #expect(runtimeState.appServerPID == 400)
-        #expect(await manager.prepareCount() == 2)
-        #expect(await manager.shutdownCount() >= 1)
-
-        await store.stop()
-        #expect(store.serverState == .stopped)
-    }
-
-    @Test func sessionTransportFailureDoesNotDropOtherSessionsOrRuntimeState() async throws {
-        let environment = try isolatedHomeEnvironment()
-        let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
-        ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
-        defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
-
-        let manager = MockAppServerManager { sessionID in
-            sessionID == "session-a" ? .interruptFailure() : .longRunning()
-        }
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: environment
-            ),
-            appServerManager: manager
-        )
-
-        try await withAsyncCleanup {
-            await store.start()
-
-            let sessionAReview = Task {
-                try await store.startReview(
-                    sessionID: "session-a",
-                    request: .init(
-                        cwd: FileManager.default.temporaryDirectory.path,
-                        target: .uncommittedChanges
-                    )
-                )
-            }
-            let sessionBReview = Task {
-                try await store.startReview(
-                    sessionID: "session-b",
-                    request: .init(
-                        cwd: FileManager.default.temporaryDirectory.path,
-                        target: .uncommittedChanges
-                    )
-                )
-            }
-
-            let sessionATransport = await manager.waitForTransport(sessionID: "session-a")
-            let sessionBTransport = await manager.waitForTransport(sessionID: "session-b")
-            await sessionATransport.waitForRequest("review/start")
-            await sessionBTransport.waitForRequest("review/start")
-
-            _ = try await store.cancelReview(
-                selector: .init(cwd: nil, statuses: [.running]),
-                sessionID: "session-a"
-            )
-            let cancelledResult = try await sessionAReview.value
-
-            #expect(cancelledResult.status == .cancelled)
-            #expect(await sessionATransport.isClosed())
-            #expect(await sessionBTransport.isClosed() == false)
-            #expect(await manager.shutdownCount() == 0)
-            #expect(ReviewRuntimeStateStore.read(from: runtimeStateFileURL) != nil)
-
-            await store.closeSession("session-b", reason: "test cleanup")
-            let sessionBResult = try await sessionBReview.value
-            #expect(sessionBResult.status == .cancelled)
-        } cleanup: {
-            await store.stop()
-        }
-    }
-
-    @Test func closeSessionClosesTransportThatFinishesConnectingLater() async throws {
-        let manager = DelayedConnectAppServerManager(
-            runtimeState: .init(
-                pid: 200,
-                startTime: .init(seconds: 2, microseconds: 0),
-                processGroupLeaderPID: 200,
-                processGroupLeaderStartTime: .init(seconds: 2, microseconds: 0)
-            )
-        )
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
-
-        try await withAsyncCleanup {
-            await store.start()
-
-            let reviewTask = Task {
-                try await store.startReview(
-                    sessionID: "session-delayed-connect",
-                    request: .init(
-                        cwd: FileManager.default.temporaryDirectory.path,
-                        target: .uncommittedChanges
-                    )
-                )
-            }
-
-            await manager.waitForConnectStart()
-            await store.closeSession("session-delayed-connect", reason: "session closed")
-            await manager.resumeConnect()
-
-            let result = try await reviewTask.value
-            let transport = try #require(await manager.createdTransport())
-            #expect(result.status == .cancelled)
-            #expect(await transport.isClosed())
-        } cleanup: {
-            await store.stop()
-        }
-    }
-
-    @Test func cancelReviewInterruptsInFlightBootstrapRequest() async throws {
-        let manager = BlockingBootstrapAppServerManager()
-        let store = makeTestStore(
-            configuration: .init(
-                port: 0,
-                codexCommand: "codex",
-                environment: try isolatedHomeEnvironment()
-            ),
-            appServerManager: manager
-        )
-
-        try await withAsyncCleanup {
-            await store.start()
-
-            let reviewTask = Task {
-                try await store.startReview(
-                    sessionID: "session-bootstrap",
-                    request: .init(
-                        cwd: FileManager.default.temporaryDirectory.path,
-                        target: .uncommittedChanges
-                    )
-                )
-            }
-
-            let transport = await manager.sessionTransport()
-            await transport.waitForRequest("config/read")
-            try await waitForMainActorCondition {
-                store.workspaces.contains { workspace in
-                    workspace.jobs.contains { job in
-                        job.sessionID == "session-bootstrap" && job.status == .running
-                    }
-                }
-            }
-
-            let cancelResult = try await store.cancelReview(
-                selector: .init(cwd: nil, statuses: [.running]),
-                sessionID: "session-bootstrap"
-            )
-
-            #expect(cancelResult.cancelled)
-
-            let result = try await withTestTimeout {
-                try await reviewTask.value
-            }
-
-            #expect(result.status == .cancelled)
-            #expect(result.error == "Cancellation requested.")
-            #expect(await transport.isClosed())
-        } cleanup: {
-            await store.stop()
-        }
-    }
-
-    @Test func cancelAllRunningJobsThrowsWhenAnyReviewCancellationFails() async throws {
-        let store = CodexReviewStore.makeTestingStore(
-            runtime: CancellationFailureStoreBackend(
-                failingSessionIDs: ["session-a"],
-                error: NSError(
-                    domain: "CodexReviewMCPTests.CancellationFailureStoreBackend",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Cancellation failed."]
-                )
-            ).runtime
-        )
-        let failedJob = CodexReviewJob.makeForTesting(
-            id: "job-a",
-            sessionID: "session-a",
-            targetSummary: "target-a",
-            status: .running,
-            summary: "Running"
-        )
-        let cancelledJob = CodexReviewJob.makeForTesting(
-            id: "job-b",
-            sessionID: "session-b",
-            targetSummary: "target-b",
-            status: .running,
-            summary: "Running"
-        )
-        store.workspaces = [
-            CodexReviewWorkspace(
-                cwd: "/tmp/repo",
-                jobs: [failedJob, cancelledJob]
-            )
-        ]
-
-        await #expect(throws: Error.self) {
-            try await store.cancelAllRunningJobs(reason: "Account change requested.")
-        }
-
-        #expect(failedJob.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(failedJob.errorMessage == "Cancellation failed.")
-        #expect(cancelledJob.status == .cancelled)
-        #expect(cancelledJob.errorMessage == "Account change requested.")
-    }
-
-    @Test func terminateAllRunningJobsLocallyFinalizesCancellationRequestedJobs() {
-        let store = CodexReviewStore.makePreviewStore()
-        let requestedJob = CodexReviewJob.makeForTesting(
-            id: "job-requested",
-            sessionID: "session-a",
-            targetSummary: "target-a",
-            status: .running,
-            summary: "Cancellation requested."
-        )
-        requestedJob.cancellationRequested = true
-        requestedJob.errorMessage = "Account change requested."
-        let failedJob = CodexReviewJob.makeForTesting(
-            id: "job-failed",
-            sessionID: "session-b",
-            targetSummary: "target-b",
-            status: .running,
-            summary: "Running"
-        )
-        store.workspaces = [
-            CodexReviewWorkspace(
-                cwd: "/tmp/repo",
-                jobs: [requestedJob, failedJob]
-            )
-        ]
-
-        store.terminateAllRunningJobsLocally(
-            reason: "Account change requested.",
-            failureMessage: "Cancellation failed."
-        )
-
-        #expect(requestedJob.status == .failed)
-        #expect(requestedJob.cancellationRequested == false)
-        #expect(requestedJob.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(requestedJob.errorMessage == "Cancellation failed.")
-        #expect(requestedJob.endedAt != nil)
-
-        #expect(failedJob.status == .failed)
-        #expect(failedJob.cancellationRequested == false)
-        #expect(failedJob.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(failedJob.errorMessage == "Cancellation failed.")
-        #expect(failedJob.endedAt != nil)
     }
 
     @Test func cancelAuthenticationClosesStateWithoutStartingAnotherAuthSession() async throws {
@@ -9976,7 +8533,7 @@ struct CodexReviewMCPTests {
     }
 }
 
-private final class TestRestartClock: Clock, @unchecked Sendable {
+final class TestRestartClock: Clock, @unchecked Sendable {
     typealias Instant = ContinuousClock.Instant
     typealias Duration = Swift.Duration
 
@@ -10061,7 +8618,7 @@ private final class TestRestartClock: Clock, @unchecked Sendable {
     }
 }
 
-private actor RestartTaskResultBox {
+actor RestartTaskResultBox {
     private var result: Result<Void, Error>?
 
     func store(_ result: Result<Void, Error>) {
@@ -10073,7 +8630,7 @@ private actor RestartTaskResultBox {
     }
 }
 
-private actor DelayedShutdownAppServerManager: AppServerManaging {
+actor DelayedShutdownAppServerManager: AppServerManaging {
     private let runtimeState: AppServerRuntimeState
     private var shutdownStarted = false
     private var shutdownWaiters: [CheckedContinuation<Void, Never>] = []
@@ -10148,7 +8705,7 @@ private actor DelayedShutdownAppServerManager: AppServerManaging {
     }
 }
 
-private actor DelayedConnectAppServerManager: AppServerManaging {
+actor DelayedConnectAppServerManager: AppServerManaging {
     private let runtimeState: AppServerRuntimeState
     private var connectStarted = false
     private var connectStartWaiters: [CheckedContinuation<Void, Never>] = []
@@ -10228,7 +8785,7 @@ private actor DelayedConnectAppServerManager: AppServerManaging {
     }
 }
 
-private actor BlockingPrepareAppServerManager: AppServerManaging {
+actor BlockingPrepareAppServerManager: AppServerManaging {
     private let runtimeState: AppServerRuntimeState
     private var prepareCountStorage = 0
     private var shutdownCountStorage = 0
@@ -10309,7 +8866,7 @@ private actor BlockingPrepareAppServerManager: AppServerManaging {
     }
 }
 
-private actor CountingReviewAuthSessionFactory {
+actor CountingReviewAuthSessionFactory {
     private let session: BlockingLoginReviewAuthSession
     private var creationCountStorage = 0
 
@@ -10327,7 +8884,7 @@ private actor CountingReviewAuthSessionFactory {
     }
 }
 
-private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
+actor BlockingLoginReviewAuthSession: ReviewAuthSession {
     private var loginParams: [AppServerLoginAccountParams] = []
     private var cancelledIDs: [String] = []
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
@@ -10387,7 +8944,7 @@ private actor BlockingLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
+actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
     private var loginParams: [AppServerLoginAccountParams] = []
     private var cancelledIDs: [String] = []
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
@@ -10463,7 +9020,7 @@ private actor DeferredCloseLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
+actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
     private var readAccountCallCountStorage = 0
     private let readStartedSignal = AsyncSignal()
     private let readResumeGate = OneShotGate()
@@ -10507,7 +9064,7 @@ private actor SlowReadAccountReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor ImmediateReadAccountReviewAuthSession: ReviewAuthSession {
+actor ImmediateReadAccountReviewAuthSession: ReviewAuthSession {
     private let response: AppServerAccountReadResponse
 
     init(response: AppServerAccountReadResponse) {
@@ -10537,7 +9094,7 @@ private actor ImmediateReadAccountReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
-private actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
+actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
     private let message: String
 
     init(message: String) {
@@ -10571,7 +9128,7 @@ private actor FailingReadAccountReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
-private actor SignedOutReviewAuthSession: ReviewAuthSession {
+actor SignedOutReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
     }
@@ -10595,7 +9152,7 @@ private actor SignedOutReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
-private actor FileBackedSharedReviewAuthSession: ReviewAuthSession {
+actor FileBackedSharedReviewAuthSession: ReviewAuthSession {
     private let environment: [String: String]
 
     init(environment: [String: String]) {
@@ -10638,7 +9195,7 @@ private actor FileBackedSharedReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
-private actor BlockingReadAccountReviewAuthSession: ReviewAuthSession {
+actor BlockingReadAccountReviewAuthSession: ReviewAuthSession {
     private let readStartedSignal = AsyncSignal()
     private let finishReadSignal = AsyncSignal()
 
@@ -10675,7 +9232,7 @@ private actor BlockingReadAccountReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
+actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
     private var responses: [AppServerAccountReadResponse]
 
     init(responses: [AppServerAccountReadResponse]) {
@@ -10709,7 +9266,7 @@ private actor SequencedReadAccountReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
-private actor SequencedReadAccountThenFailingReviewAuthSession: ReviewAuthSession {
+actor SequencedReadAccountThenFailingReviewAuthSession: ReviewAuthSession {
     private var responses: [AppServerAccountReadResponse]
     private let failureMessage: String
 
@@ -10751,7 +9308,7 @@ private actor SequencedReadAccountThenFailingReviewAuthSession: ReviewAuthSessio
     func close() async {}
 }
 
-private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
+actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var didLogin = false
@@ -10812,7 +9369,7 @@ private actor SuccessfulLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
+actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
     }
@@ -10836,7 +9393,7 @@ private actor SuccessfulLogoutReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
-private actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
+actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
 
@@ -10892,7 +9449,7 @@ private actor SameAccountSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor MutableAuthenticatedLoginReviewAuthSession: ReviewAuthSession {
+actor MutableAuthenticatedLoginReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var currentEmail: String
@@ -10965,7 +9522,7 @@ private actor MutableAuthenticatedLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSession {
+actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var didLogin = false
@@ -11035,7 +9592,7 @@ private actor SuccessfulLoginThenFailingRefreshReviewAuthSession: ReviewAuthSess
     }
 }
 
-private actor FailingLogoutReviewAuthSession: ReviewAuthSession {
+actor FailingLogoutReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(account: nil, requiresOpenAIAuth: true)
     }
@@ -11061,7 +9618,7 @@ private actor FailingLogoutReviewAuthSession: ReviewAuthSession {
     func close() async {}
 }
 
-private actor LogoutFailureWithPersistedAuthReviewAuthSession: ReviewAuthSession {
+actor LogoutFailureWithPersistedAuthReviewAuthSession: ReviewAuthSession {
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         .init(
             account: .chatGPT(email: "review@example.com", planType: "pro"),
@@ -11090,7 +9647,7 @@ private actor LogoutFailureWithPersistedAuthReviewAuthSession: ReviewAuthSession
     func close() async {}
 }
 
-private actor LogoutFailureWithChangedAccountReviewAuthSession: ReviewAuthSession {
+actor LogoutFailureWithChangedAccountReviewAuthSession: ReviewAuthSession {
     private var readCount = 0
 
     func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
@@ -11128,7 +9685,7 @@ private actor LogoutFailureWithChangedAccountReviewAuthSession: ReviewAuthSessio
     func close() async {}
 }
 
-private actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
+actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     private var continuation: AsyncThrowingStream<AppServerServerNotification, Error>.Continuation?
     private var bufferedNotifications: [AppServerServerNotification] = []
     private var refreshRequests: [Bool] = []
@@ -11190,7 +9747,7 @@ private actor NonPersistentSuccessfulLoginReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private actor AuthCapableAppServerManager: AppServerManaging {
+actor AuthCapableAppServerManager: AppServerManaging {
     private let runtimeState = AppServerRuntimeState(
         pid: 200,
         startTime: .init(seconds: 2, microseconds: 0),
@@ -11303,7 +9860,7 @@ private actor AuthCapableAppServerManager: AppServerManaging {
     }
 }
 
-private actor PreparedSettingsRefreshAppServerManager: AppServerManaging {
+actor PreparedSettingsRefreshAppServerManager: AppServerManaging {
     private let runtimeState = AppServerRuntimeState(
         pid: 200,
         startTime: .init(seconds: 2, microseconds: 0),
@@ -11363,7 +9920,7 @@ private actor PreparedSettingsRefreshAppServerManager: AppServerManaging {
     }
 }
 
-private actor FailingAuthCheckoutAppServerManager: AppServerManaging {
+actor FailingAuthCheckoutAppServerManager: AppServerManaging {
     private let runtimeState = AppServerRuntimeState(
         pid: 200,
         startTime: .init(seconds: 2, microseconds: 0),
@@ -11405,7 +9962,7 @@ private actor FailingAuthCheckoutAppServerManager: AppServerManaging {
 }
 
 @MainActor
-private final class CancellationFailureStoreBackend {
+final class CancellationFailureStoreBackend {
     let isActive = true
     let shouldAutoStartEmbeddedServer = false
     let initialAccount: CodexAccount? = nil
@@ -11483,7 +10040,7 @@ private final class CancellationFailureStoreBackend {
     }
 }
 
-private actor BlockingBootstrapAppServerManager: AppServerManaging {
+actor BlockingBootstrapAppServerManager: AppServerManaging {
     private let runtimeState = AppServerRuntimeState(
         pid: 200,
         startTime: .init(seconds: 2, microseconds: 0),
@@ -11525,7 +10082,7 @@ private actor BlockingBootstrapAppServerManager: AppServerManaging {
     }
 }
 
-private actor BlockingBootstrapTransport: AppServerSessionTransport {
+actor BlockingBootstrapTransport: AppServerSessionTransport {
     private var requestCounts: [String: Int] = [:]
     private var requestWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var closedStorage = false
@@ -11592,7 +10149,7 @@ private actor BlockingBootstrapTransport: AppServerSessionTransport {
     }
 }
 
-private actor SettingsRefreshTransport: AppServerSessionTransport {
+actor SettingsRefreshTransport: AppServerSessionTransport {
     private let config: AppServerConfigReadResponse.Config
     private let firstPage: AppServerModelListResponse
     private let secondPage: AppServerModelListResponse
@@ -11663,7 +10220,7 @@ private actor SettingsRefreshTransport: AppServerSessionTransport {
     }
 }
 
-private actor SettingsWriteTransport: AppServerSessionTransport {
+actor SettingsWriteTransport: AppServerSessionTransport {
     private var recordedEditKeyPathsStorage: [[String]] = []
     private var closedStorage = false
 
@@ -11710,7 +10267,7 @@ private actor SettingsWriteTransport: AppServerSessionTransport {
     }
 }
 
-private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
+actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     enum StartLoginBehavior {
         case nativeCallback
         case legacyBrowser
@@ -12149,7 +10706,7 @@ private actor AuthCapableAppServerSessionTransport: AppServerSessionTransport {
     }
 }
 
-private actor DisconnectingRateLimitReadTransport: AppServerSessionTransport {
+actor DisconnectingRateLimitReadTransport: AppServerSessionTransport {
     func initializeResponse() async -> AppServerInitializeResponse {
         .init(
             userAgent: nil,
@@ -12191,13 +10748,13 @@ private actor DisconnectingRateLimitReadTransport: AppServerSessionTransport {
     func close() async {}
 }
 
-private struct TestWebAuthenticationRequest: Equatable {
+struct TestWebAuthenticationRequest: Equatable {
     var url: URL
     var callbackScheme: String
     var prefersEphemeral: Bool
 }
 
-private actor TestWebAuthenticationSessionRecorder {
+actor TestWebAuthenticationSessionRecorder {
     private let authenticateStartedSignal = AsyncSignal()
     private var lastRequest: TestWebAuthenticationRequest?
     private var cancelCalls = 0
@@ -12236,7 +10793,7 @@ private actor TestWebAuthenticationSessionRecorder {
     }
 }
 
-private func makeWebAuthenticationSessionFactory(
+func makeWebAuthenticationSessionFactory(
     recorder: TestWebAuthenticationSessionRecorder,
     autoResult: Result<URL, ReviewAuthError>? = nil
 ) -> ReviewMonitorWebAuthenticationSessionFactory {
@@ -12271,7 +10828,7 @@ private func makeWebAuthenticationSessionFactory(
     }
 }
 
-private func makeInjectedNativeLoginAuthSessionFactory(
+func makeInjectedNativeLoginAuthSessionFactory(
     manager: any AppServerManaging,
     nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration,
     webAuthenticationSessionFactory: @escaping ReviewMonitorWebAuthenticationSessionFactory
@@ -12292,7 +10849,7 @@ private func makeInjectedNativeLoginAuthSessionFactory(
     }
 }
 
-private func runWithRestartClock(
+func runWithRestartClock(
     _ clock: TestRestartClock,
     maxSteps: Int = 40,
     step: Duration = .milliseconds(100),
@@ -12329,7 +10886,7 @@ private func runWithRestartClock(
 }
 
 @MainActor
-private final class ObservableValueProbe<Value: Sendable>: @unchecked Sendable {
+final class ObservableValueProbe<Value: Sendable>: @unchecked Sendable {
     private let read: @MainActor () -> Value
     private let queue = AsyncValueQueue<Value>()
     private var isCancelled = false
@@ -12366,7 +10923,7 @@ private final class ObservableValueProbe<Value: Sendable>: @unchecked Sendable {
     }
 }
 
-private func waitForFileAppearance(
+func waitForFileAppearance(
     at fileURL: URL,
     timeout: Duration = .seconds(2)
 ) async throws {
@@ -12386,7 +10943,7 @@ private func waitForFileAppearance(
     }
 }
 
-private func waitForObservedValue<Value: Sendable>(
+func waitForObservedValue<Value: Sendable>(
     _ probe: ObservableValueProbe<Value>,
     predicate: @escaping @Sendable (Value) -> Bool
 ) async throws {
@@ -12400,7 +10957,7 @@ private func waitForObservedValue<Value: Sendable>(
     }
 }
 
-private func waitForClockSuspension(
+func waitForClockSuspension(
     _ clock: ManualTestClock,
     timeout: Duration = .seconds(2)
 ) async throws {
@@ -12411,7 +10968,7 @@ private func waitForClockSuspension(
     }
 }
 
-private func waitForRateLimitsReadCount(
+func waitForRateLimitsReadCount(
     _ transport: AuthCapableAppServerSessionTransport,
     expectedCount: Int,
     timeout: Duration = .seconds(2)
@@ -12423,7 +10980,7 @@ private func waitForRateLimitsReadCount(
     }
 }
 
-private func totalRateLimitsReadCount(
+func totalRateLimitsReadCount(
     _ transports: [AuthCapableAppServerSessionTransport]
 ) async -> Int {
     var total = 0
@@ -12433,7 +10990,7 @@ private func totalRateLimitsReadCount(
     return total
 }
 
-private func waitForTotalRateLimitsReadCount(
+func waitForTotalRateLimitsReadCount(
     _ transports: [AuthCapableAppServerSessionTransport],
     expectedCount: Int,
     timeout: Duration = .seconds(2)
@@ -12445,7 +11002,7 @@ private func waitForTotalRateLimitsReadCount(
     }
 }
 
-private func waitForSettingsWriteCount(
+func waitForSettingsWriteCount(
     _ transport: SettingsWriteTransport,
     expectedCount: Int,
     timeout: Duration = .seconds(2)
@@ -12457,7 +11014,7 @@ private func waitForSettingsWriteCount(
     }
 }
 
-private func waitForAuthTransportCheckoutCount(
+func waitForAuthTransportCheckoutCount(
     _ manager: AuthCapableAppServerManager,
     expectedCount: Int,
     timeout: Duration = .seconds(2)
@@ -12469,7 +11026,7 @@ private func waitForAuthTransportCheckoutCount(
     }
 }
 
-private func waitForAppServerLifecycleCounts(
+func waitForAppServerLifecycleCounts(
     _ manager: AuthCapableAppServerManager,
     prepareCount expectedPrepareCount: Int,
     shutdownCount expectedShutdownCount: Int,
@@ -12482,7 +11039,7 @@ private func waitForAppServerLifecycleCounts(
     }
 }
 
-private func withTestTimeout<T: Sendable>(
+func withTestTimeout<T: Sendable>(
     _ timeout: Duration = .seconds(2),
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
@@ -12502,7 +11059,7 @@ private func withTestTimeout<T: Sendable>(
     }
 }
 
-private final class FakeForcedRestartEnvironment: @unchecked Sendable {
+final class FakeForcedRestartEnvironment: @unchecked Sendable {
     enum TermAction {
         case ignore
         case exit
@@ -12637,7 +11194,7 @@ private final class FakeForcedRestartEnvironment: @unchecked Sendable {
     }
 }
 
-private func waitForMainActorCondition(
+func waitForMainActorCondition(
     timeout: Duration = .seconds(2),
     condition: @escaping @MainActor @Sendable () -> Bool
 ) async throws {
@@ -12651,7 +11208,7 @@ private func waitForMainActorCondition(
     }
 }
 
-private extension NSLock {
+extension NSLock {
     func withLock<T>(_ body: () -> T) -> T {
         lock()
         defer { unlock() }
@@ -12659,7 +11216,7 @@ private extension NSLock {
     }
 }
 
-private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [String: String] {
+func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [String: String] {
     var environment = ["HOME": try makeTemporaryDirectory().path]
     for (key, value) in extra {
         environment[key] = value
@@ -12668,7 +11225,7 @@ private func isolatedHomeEnvironment(extra: [String: String] = [:]) throws -> [S
 }
 
 @MainActor
-private func makeTestStore(
+func makeTestStore(
     configuration: ReviewServerConfiguration,
     diagnosticsURL: URL? = nil,
     appServerManager: any AppServerManaging
@@ -12682,7 +11239,7 @@ private func makeTestStore(
 }
 
 @MainActor
-private func makeInjectedAuthSessionStore(
+func makeInjectedAuthSessionStore(
     configuration: ReviewServerConfiguration,
     diagnosticsURL: URL? = nil,
     appServerManager: any AppServerManaging,
@@ -12713,7 +11270,7 @@ private func makeInjectedAuthSessionStore(
 }
 
 @MainActor
-private final class TestAuthRuntimeDriver {
+final class TestAuthRuntimeDriver {
     private struct DeferredAddAccountRuntimeEffect {
         var accountKey: String
         var runtimeGeneration: Int
@@ -12811,7 +11368,7 @@ private final class TestAuthRuntimeDriver {
 }
 
 @MainActor
-private final class TestRuntimeOwningAuthController {
+final class TestRuntimeOwningAuthController {
     private let base: CodexAuthController
     private let runtimeDriver: TestAuthRuntimeDriver
 
@@ -12906,7 +11463,7 @@ private final class TestRuntimeOwningAuthController {
 }
 
 @MainActor
-private func makeAuthModel(
+func makeAuthModel(
     configuration: ReviewServerConfiguration,
     appServerManager: any AppServerManaging = MockAppServerManager { _ in .success() },
     sharedAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
@@ -13002,7 +11559,7 @@ private func makeAuthModel(
     )
 }
 
-private actor PersistingReviewAuthSession: ReviewAuthSession {
+actor PersistingReviewAuthSession: ReviewAuthSession {
     private let base: any ReviewAuthSession
     private let environment: [String: String]
 
@@ -13054,7 +11611,7 @@ private actor PersistingReviewAuthSession: ReviewAuthSession {
     }
 }
 
-private func writeReviewAuthSnapshot(
+func writeReviewAuthSnapshot(
     email: String,
     planType: String?,
     environment: [String: String]
@@ -13083,7 +11640,7 @@ private func writeReviewAuthSnapshot(
 }
 
 @MainActor
-private func saveReviewAccount(
+func saveReviewAccount(
     email: String,
     planType: String? = "pro",
     makeActive: Bool,
@@ -13101,7 +11658,7 @@ private func saveReviewAccount(
     return savedAccount
 }
 
-private func writeSavedAccountAuthSnapshot(
+func writeSavedAccountAuthSnapshot(
     email: String,
     planType: String?,
     accountKey: String,
@@ -13133,7 +11690,7 @@ private func writeSavedAccountAuthSnapshot(
         )
 }
 
-private func makeReviewAuthTestJWT(payload: [String: Any]) -> String {
+func makeReviewAuthTestJWT(payload: [String: Any]) -> String {
     let header = ["alg": "none", "typ": "JWT"]
     let headerData = try? JSONSerialization.data(withJSONObject: header)
     let payloadData = try? JSONSerialization.data(withJSONObject: payload)
@@ -13142,14 +11699,14 @@ private func makeReviewAuthTestJWT(payload: [String: Any]) -> String {
     return "\(headerComponent).\(payloadComponent)."
 }
 
-private func makeReviewAuthJWTComponent(_ data: Data) -> String {
+func makeReviewAuthJWTComponent(_ data: Data) -> String {
     data.base64EncodedString()
         .replacingOccurrences(of: "+", with: "-")
         .replacingOccurrences(of: "/", with: "_")
         .replacingOccurrences(of: "=", with: "")
 }
 
-private struct StoreDiagnosticsSnapshot: Decodable {
+struct StoreDiagnosticsSnapshot: Decodable {
     struct Job: Decodable {
         var status: String
         var summary: String
@@ -13164,18 +11721,18 @@ private struct StoreDiagnosticsSnapshot: Decodable {
     var jobs: [Job]
 }
 
-private func readStoreDiagnosticsSnapshot(from fileURL: URL) throws -> StoreDiagnosticsSnapshot {
+func readStoreDiagnosticsSnapshot(from fileURL: URL) throws -> StoreDiagnosticsSnapshot {
     let data = try Data(contentsOf: fileURL)
     return try JSONDecoder().decode(StoreDiagnosticsSnapshot.self, from: data)
 }
 
-private func makeTemporaryDirectory() throws -> URL {
+func makeTemporaryDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
 
-private struct TestFailure: Error {
+struct TestFailure: Error {
     let message: String
 
     init(_ message: String) {
@@ -13183,7 +11740,7 @@ private struct TestFailure: Error {
     }
 }
 
-private struct TestAuthState: Equatable {
+struct TestAuthState: Equatable {
     var phase: CodexReviewAuthModel.Phase
     var accountEmail: String?
     var accountPlanType: String?
@@ -13250,7 +11807,7 @@ private struct TestAuthState: Equatable {
 }
 
 @MainActor
-private func applyTestAuthState(
+func applyTestAuthState(
     auth: CodexReviewAuthModel,
     state: TestAuthState
 ) {
@@ -13269,7 +11826,7 @@ private func applyTestAuthState(
 }
 
 @MainActor
-private func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
+func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
     .init(
         isAuthenticated: auth.isAuthenticated,
         accountID: auth.account?.email,
@@ -13279,7 +11836,7 @@ private func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
 }
 
 @MainActor
-private func rateLimitWindow(
+func rateLimitWindow(
     duration: Int,
     in account: CodexAccount?
 ) -> CodexRateLimitWindow? {
@@ -13287,7 +11844,7 @@ private func rateLimitWindow(
 }
 
 @MainActor
-private func withAsyncCleanup<T>(
+func withAsyncCleanup<T>(
     _ operation: @escaping @MainActor @Sendable () async throws -> T,
     cleanup: @escaping @MainActor @Sendable () async -> Void
 ) async throws -> T {
@@ -13301,7 +11858,7 @@ private func withAsyncCleanup<T>(
     }
 }
 
-private final class MutableValueBox<Value>: @unchecked Sendable {
+final class MutableValueBox<Value>: @unchecked Sendable {
     var value: Value
 
     init(_ value: Value) {
