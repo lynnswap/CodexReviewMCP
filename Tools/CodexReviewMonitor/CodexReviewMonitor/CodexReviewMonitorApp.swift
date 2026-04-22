@@ -6,7 +6,6 @@
 //
 
 import AppKit
-import CodexReviewModel
 import CodexReviewMCP
 @_spi(PreviewSupport) import CodexReviewUI
 

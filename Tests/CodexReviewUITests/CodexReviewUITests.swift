@@ -2568,9 +2568,6 @@ struct CodexReviewUITests {
         #expect(backend.startCallCount() == 1)
     }
 
-        #expect(store.settings.currentReasoningDisplayText == "Medium")
-    }
-
     @Test func signInViewDescriptionTextReflectsAuthState() {
         let store = CodexReviewStore.makePreviewStore()
 

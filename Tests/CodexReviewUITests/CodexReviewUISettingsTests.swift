@@ -321,4 +321,6 @@ struct CodexReviewUISettingsTests {
         }
 
         #expect(store.settings.selectedReasoningEffort == nil)
+        #expect(store.settings.currentReasoningDisplayText == "Medium")
+    }
 }
