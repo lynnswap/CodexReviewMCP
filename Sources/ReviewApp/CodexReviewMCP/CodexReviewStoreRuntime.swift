@@ -2204,9 +2204,9 @@ package final class ReviewMonitorServerRuntime {
             {
                 return makeCodexAccount(from: matchingSavedAccount)
             }
-            if let sharedInitialAccount {
-                return sharedInitialAccount
-            }
+            // Keep selectedAccount derived from the saved-account collection only.
+            // If shared auth cannot be normalized into savedAccounts during startup,
+            // fall back to the persisted active saved account instead of seeding a detached session.
             if let activeAccountKey = seededAccounts.activeAccountKey {
                 return seededAccounts.accounts
                     .first(where: { $0.accountKey == activeAccountKey })

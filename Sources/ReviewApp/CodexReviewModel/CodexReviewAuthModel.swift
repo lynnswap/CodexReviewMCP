@@ -197,10 +197,6 @@ public final class CodexReviewAuthModel {
         selectedAccount = savedAccounts.first(where: { $0.id == selectedAccountID })
     }
 
-    package func updateDetachedSelectedAccount(_ selectedAccount: CodexAccount?) {
-        self.selectedAccount = selectedAccount
-    }
-
     package func applySavedAccountStates(
         _ incomingSavedAccounts: [CodexSavedAccountPayload]
     ) {

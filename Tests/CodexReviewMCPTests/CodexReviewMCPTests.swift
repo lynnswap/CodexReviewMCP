@@ -719,7 +719,7 @@ struct CodexReviewMCPTests {
         #expect(try Data(contentsOf: encodedAuthURL) == encodedAuthDataBeforeLoad)
     }
 
-    @Test func storeSeedsSharedAuthSelectionWhenSharedAuthNormalizationFails() async throws {
+    @Test func storeFallsBackToPersistedActiveSelectionWhenSharedAuthNormalizationFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
 
@@ -751,7 +751,7 @@ struct CodexReviewMCPTests {
             appServerManager: MockAppServerManager { _ in .success() }
         )
 
-        #expect(store.auth.account?.email == "current@example.com")
+        #expect(store.auth.account?.email == "stale@example.com")
         #expect(store.auth.savedAccounts.map(\.email) == ["stale@example.com"])
     }
 

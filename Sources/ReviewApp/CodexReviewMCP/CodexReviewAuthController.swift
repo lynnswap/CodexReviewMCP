@@ -2292,21 +2292,11 @@ private func applyReviewAuthAccount(
         return didAccountIdentityChange(from: priorAccount, to: existingAccount)
     }
 
-    let detachedAccount: CodexAccount
-    if let priorAccount,
-       priorAccount.accountKey == normalizedEmail
-    {
-        priorAccount.updateEmail(account.email)
-        priorAccount.updatePlanType(account.planType)
-        detachedAccount = priorAccount
-    } else {
-        detachedAccount = CodexAccount(
-            email: account.email,
-            planType: account.planType
-        )
-    }
-    auth.updateDetachedSelectedAccount(detachedAccount)
-    return didAccountIdentityChange(from: priorAccount, to: detachedAccount)
+    // selectedAccount must stay within savedAccounts.
+    // A shared-auth identity that cannot be normalized into the saved-account list
+    // is treated as unresolved instead of becoming a detached current session.
+    auth.updateSelectedAccount(nil)
+    return didAccountIdentityChange(from: priorAccount, to: nil)
 }
 
 @MainActor

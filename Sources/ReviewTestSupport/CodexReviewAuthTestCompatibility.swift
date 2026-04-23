@@ -16,7 +16,13 @@ extension CodexReviewAuthModel {
             updateSelectedAccount(existingAccountID)
             return
         }
-        updateDetachedSelectedAccount(account)
+
+        var updatedSavedAccounts = savedAccounts.map(savedAccountPayload(from:))
+        updatedSavedAccounts.append(savedAccountPayload(from: account))
+        applySavedAccountStates(updatedSavedAccounts)
+        updateSelectedAccount(
+            savedAccounts.first(where: { $0.accountKey == account.accountKey })?.id
+        )
     }
 
     public func updateSavedAccounts(_ accounts: [CodexAccount]) {
