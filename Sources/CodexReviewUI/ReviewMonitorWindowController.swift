@@ -29,6 +29,7 @@ public final class ReviewMonitorWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         configureReviewMonitorWindowBase(window)
         window.setFrameAutosaveName(Self.frameAutosaveName)
+        rootViewController.applyInitialWindowPresentationIfPossible()
     }
 
     @available(*, unavailable)

@@ -38,7 +38,7 @@ final class ReviewMonitorSignInViewController: NSHostingController<SignInView> {
             }
     }
 
-    private func applyWindowPresentation(to window: NSWindow) {
+    func applyWindowPresentation(to window: NSWindow) {
         window.isMovableByWindowBackground = true
         window.styleMask.insert(.fullSizeContentView)
         window.toolbar = nil

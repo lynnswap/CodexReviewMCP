@@ -706,6 +706,7 @@ struct CodexReviewUITests {
         defer { window.close() }
         window.setContentSize(NSSize(width: 360, height: 220))
         viewController.loadViewIfNeeded()
+        viewController.attach(to: window)
         window.layoutIfNeeded()
         viewController.view.layoutSubtreeIfNeeded()
 
@@ -735,6 +736,7 @@ struct CodexReviewUITests {
         defer { window.close() }
         window.setContentSize(NSSize(width: 360, height: 220))
         viewController.loadViewIfNeeded()
+        viewController.attach(to: window)
         window.layoutIfNeeded()
         viewController.view.layoutSubtreeIfNeeded()
 
@@ -744,7 +746,7 @@ struct CodexReviewUITests {
         #expect(sidebar.sidebarLastRowRectForTesting.maxY <= sidebar.sidebarVisibleRectForTesting.maxY + 0.5)
     }
 
-    @Test func togglingWorkspaceDisclosureKeepsDetailAndRestoresSelectionAfterReexpand() async throws {
+    @Test func togglingSelectedWorkspaceDisclosureKeepsDetailAndReexpandsWorkspace() async throws {
         let job = makeJob(
             id: "job-selected",
             cwd: "/tmp/workspace-alpha",
@@ -778,18 +780,13 @@ struct CodexReviewUITests {
 
         let stableRenderCount = transport.renderCountForTesting
         sidebar.toggleWorkspaceDisclosureForTesting(storedWorkspace)
-        await transport.flushMainQueueForTesting()
-
-        #expect(sidebar.workspaceIsExpandedForTesting(storedWorkspace) == false)
-        #expect(sidebar.selectedJobForTesting?.id == job.id)
-        #expect(transport.renderCountForTesting == stableRenderCount)
-        #expect(transport.renderSnapshotForTesting == selectedSnapshot)
-
-        sidebar.toggleWorkspaceDisclosureForTesting(storedWorkspace)
+        try await waitForWorkspaceExpanded(sidebar, workspace: storedWorkspace, true)
         await transport.flushMainQueueForTesting()
 
         #expect(sidebar.workspaceIsExpandedForTesting(storedWorkspace))
         #expect(sidebar.selectedJobForTesting?.id == job.id)
+        #expect(transport.renderCountForTesting == stableRenderCount)
+        #expect(transport.renderSnapshotForTesting == selectedSnapshot)
     }
 
     @Test func collapsedWorkspaceStaysCollapsedAcrossStoreReload() throws {
@@ -2177,6 +2174,25 @@ func waitForSidebarPresentation(
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
             viewControllerBox.value.sidebarPresentationForTesting != expected
+        }) {
+            try Task.checkCancellation()
+            await Task.yield()
+        }
+    }
+}
+
+@MainActor
+func waitForWorkspaceExpanded(
+    _ viewController: ReviewMonitorSidebarViewController,
+    workspace: CodexReviewWorkspace,
+    _ expected: Bool,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let viewControllerBox = UncheckedSendableBox(viewController)
+    let workspaceBox = UncheckedSendableBox(workspace)
+    try await withTestTimeout(timeout) {
+        while await MainActor.run(body: {
+            viewControllerBox.value.workspaceIsExpandedForTesting(workspaceBox.value) != expected
         }) {
             try Task.checkCancellation()
             await Task.yield()

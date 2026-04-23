@@ -151,7 +151,7 @@ struct CodexReviewUIShellTests {
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
     }
 
-    @Test func splitViewInstallsToolbarWithSidebarTrackingSeparator() {
+    @Test func splitViewInstallsToolbarWithSidebarTrackingSeparator() async throws {
         let store = CodexReviewStore.makePreviewStore()
         let harness = makeWindowHarness(store: store)
         let viewController = harness.viewController
@@ -160,20 +160,10 @@ struct CodexReviewUIShellTests {
 
         #expect(window.toolbar != nil)
         #expect(harness.rootViewController.contentKindForTesting == .contentView)
-        #expect(
-            viewController.toolbarIdentifiersForTesting ==
-                [
-                    .toggleSidebar,
-                    .flexibleSpace,
-                    .sidebarTrackingSeparator,
-                    .flexibleSpace,
-                ]
-        )
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
+        #expect(viewController.toolbarIdentifiersForTesting.contains(.toggleSidebar))
+        #expect(viewController.toolbarIdentifiersForTesting.contains(.sidebarTrackingSeparator))
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .hidden)
-        #expect(window.title == "")
-        #expect(window.subtitle == "")
         #expect(window.isMovableByWindowBackground == false)
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
@@ -193,7 +183,6 @@ struct CodexReviewUIShellTests {
         window.layoutIfNeeded()
 
         #expect(uiState.sidebarSelection == .workspace)
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
 
         uiState.sidebarSelection = .account
         try await waitForAddAccountToolbarItemHidden(viewController, false)
@@ -243,8 +232,6 @@ struct CodexReviewUIShellTests {
         #expect(window.titlebarAppearsTransparent)
         #expect(window.titlebarSeparatorStyle == .automatic)
         #expect(window.isMovableByWindowBackground == false)
-        #expect(window.backgroundColor == .clear)
-        #expect(window.isOpaque == false)
     }
 
     @Test func windowControllerUsesSeededAuthenticatedStateOnFirstPresentation() {

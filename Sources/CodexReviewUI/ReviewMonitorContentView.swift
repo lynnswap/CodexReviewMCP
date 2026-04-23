@@ -54,6 +54,19 @@ final class ReviewMonitorRootViewController: NSViewController {
         .store(in: &observationHandles)
     }
 
+    func applyInitialWindowPresentationIfPossible() {
+        guard let window = view.window else {
+            return
+        }
+
+        switch uiState.presentedContentKind ?? uiState.contentKind {
+        case .contentView:
+            splitViewController.attach(to: window)
+        case .signInView:
+            signInViewController.applyWindowPresentation(to: window)
+        }
+    }
+
     private func setContentViewController(
         _ kind: ReviewMonitorContentKind,
         animated: Bool

@@ -117,6 +117,9 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         splitView.autosaveName = Self.autosaveName
         installToolbarIfNeeded(on: window)
         bindToolbarState()
+        window.layoutIfNeeded()
+        setShowingAddAccount(isShowingAddAccountButton)
+        updateWindowTitleAndSubtitle()
     }
 
     func detachFromWindow() {
@@ -127,7 +130,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private func bindToolbarState() {
         observationHandles.removeAll()
 
-        observe(\.isShowingAddAccount) { [weak self] isShowing in
+        observe(\.isShowingAddAccountButton) { [weak self] isShowing in
             self?.setShowingAddAccount(isShowing)
         }
         .store(in: &observationHandles)
@@ -229,7 +232,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         return item
     }
 
-    private var isShowingAddAccount: Bool {
+    private var isShowingAddAccountButton: Bool {
         if store.auth.isAuthenticating {
             return true
         }
