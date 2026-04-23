@@ -2183,7 +2183,9 @@ package final class ReviewMonitorServerRuntime {
             }
             if matchingSavedAccount == nil || activeSavedAccount?.accountKey != matchingSavedAccount?.accountKey {
                 do {
-                    try accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+                    try accountRegistryStore.saveSharedAuthAsSavedAccount(
+                        makeActive: activeSavedAccount == nil
+                    )
                 } catch {
                     shouldClearInitialSelection = true
                 }

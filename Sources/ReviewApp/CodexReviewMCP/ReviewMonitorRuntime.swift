@@ -168,6 +168,13 @@ package class ReviewMonitorTestingHarness {
         return false
     }
 
+    package func isPersistedActiveAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) -> Bool {
+        auth.selectedAccount?.accountKey == accountKey
+    }
+
     package func startReview(
         sessionID _: String,
         request _: ReviewStartRequest,
@@ -516,6 +523,24 @@ package final class ReviewMonitorCoordinator {
             )
         case .harness(let harness):
             harness.requiresCurrentSessionRecovery(
+                auth: auth,
+                accountKey: accountKey
+            )
+        }
+    }
+
+    package func isPersistedActiveAccount(
+        auth: CodexReviewAuthModel,
+        accountKey: String
+    ) -> Bool {
+        switch mode {
+        case .live(let live):
+            live.authOrchestrator.isPersistedActiveAccount(
+                auth: auth,
+                accountKey: accountKey
+            )
+        case .harness(let harness):
+            harness.isPersistedActiveAccount(
                 auth: auth,
                 accountKey: accountKey
             )

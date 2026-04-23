@@ -608,7 +608,7 @@ package final class ReviewMonitorAuthOrchestrator {
         var didCompleteLogout = false
         let signedOutAccount = auth.selectedAccount
         let removesSavedSignedOutAccount = signedOutAccount.map { signedOutAccount in
-            auth.selectedAccount?.accountKey == signedOutAccount.accountKey
+            persistedActiveAccountKey() == signedOutAccount.accountKey
         } ?? false
         do {
             let authManager = makeAuthManager(
@@ -752,7 +752,7 @@ package final class ReviewMonitorAuthOrchestrator {
             do {
                 let probe: PreparedInactiveAccountProbe
                 let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
-                let persistedActiveAccountKey = auth.selectedAccount?.accountKey
+                let persistedActiveAccountKey = persistedActiveAccountKey()
                 let selectedSavedAccountKey = auth.savedAccounts.contains(where: {
                     $0.accountKey == activeAccountKey
                 }) ? activeAccountKey : nil
@@ -887,6 +887,13 @@ package final class ReviewMonitorAuthOrchestrator {
             && auth.savedAccounts.contains(where: { $0.accountKey == accountKey })
     }
 
+    package func isPersistedActiveAccount(
+        auth _: CodexReviewAuthModel,
+        accountKey: String
+    ) -> Bool {
+        persistedActiveAccountKey() == accountKey
+    }
+
     package func reconcileAuthenticatedSession(
         auth: CodexReviewAuthModel,
         serverIsRunning: Bool,
@@ -952,7 +959,7 @@ package final class ReviewMonitorAuthOrchestrator {
             }
             if state.account != nil {
                 let refreshedAccountKey = normalizedReviewAccountEmail(email: state.account?.email ?? "")
-                let persistedActiveAccountKey = auth.selectedAccount?.accountKey
+                let persistedActiveAccountKey = persistedActiveAccountKey()
                 let shouldPreservePersistedActiveSelection =
                     persistedActiveAccountKey != nil && persistedActiveAccountKey != refreshedAccountKey
                 try accountRegistryStore.saveSharedAuthAsSavedAccount(
@@ -1523,6 +1530,13 @@ package final class ReviewMonitorAuthOrchestrator {
         default:
             return false
         }
+    }
+
+    private func persistedActiveAccountKey() -> String? {
+        guard let loaded = try? accountRegistryStore.loadAccounts() else {
+            return nil
+        }
+        return loaded.activeAccountKey
     }
 }
 

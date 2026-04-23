@@ -2476,6 +2476,152 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
+    @Test func authRefreshPreservesPersistedActiveSelectionForInactiveSavedCurrentSession() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "other@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "other@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "other@example.com"
+            }
+
+            let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+            #expect(store.auth.account?.email == "other@example.com")
+            #expect(store.auth.savedAccounts.map(\.email) == ["active@example.com", "other@example.com"])
+            #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        } cleanup: {
+            await store.stop()
+        }
+    }
+
+    @Test func signingOutInactiveSavedCurrentSessionPreservesSavedAccountAndPersistedActiveSelection() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let currentSavedAccount = try saveReviewAccount(
+            email: "other@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let signedOutSession = SignedOutReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                signedOutSession
+            },
+            loginAuthSessionFactory: { _ in
+                signedOutSession
+            }
+        )
+        auth.applySavedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateAccount(currentSavedAccount)
+
+        try await auth.store.signOutActiveAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "other@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["active@example.com", "other@example.com"])
+        #expect(loadSharedReviewAccount(environment: environment) == nil)
+    }
+
+    @Test func switchActionAllowsPromotingInactiveSavedCurrentSessionToPersistedActiveAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "other@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "other@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "other@example.com"
+            }
+
+            let savedCurrentAccount = try #require(
+                store.auth.savedAccounts.first(where: { $0.email == "other@example.com" })
+            )
+            #expect(store.switchActionIsDisabled(for: savedCurrentAccount) == false)
+        } cleanup: {
+            await store.stop()
+        }
+    }
+
     @Test func rateLimitObserverRetriesAfterInitialReadDisconnect() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager(
