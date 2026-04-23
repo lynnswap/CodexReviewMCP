@@ -14,7 +14,7 @@ struct SignInView: View {
                 .fontWeight(.semibold)
                 .scenePadding(.bottom)
             
-            Button(role: authenticationActionRole) {
+            Button(role: store.auth.isAuthenticating ? .cancel : .confirm) {
                 Task { @MainActor in
                     await store.performPrimaryAuthenticationAction()
                 }
@@ -25,7 +25,7 @@ struct SignInView: View {
                             .controlSize(.small)
                     }
                 } label: {
-                    Text(authenticationActionTitle)
+                    Text(store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT")
                 }
                 .padding(.vertical, 4)
             }
@@ -41,14 +41,6 @@ struct SignInView: View {
         }
         .animation(.default, value: store.auth.isAuthenticating)
         .scenePadding()
-    }
-
-    private var authenticationActionTitle: String {
-        store.auth.isAuthenticating ? "Cancel" : "Sign in with ChatGPT"
-    }
-
-    private var authenticationActionRole: ButtonRole? {
-        store.auth.isAuthenticating ? .cancel : .confirm
     }
 
     private var descriptionText: String? {

@@ -91,7 +91,6 @@ struct CodexReviewMCPSettingsTests {
 
         #expect(store.settings.selectedModel == nil)
         #expect(store.settings.effectiveModel == "gpt-5.4-mini")
-        #expect(store.settings.currentModelDisplayText == "gpt-5.4-mini")
         #expect(store.settings.selectedReasoningEffort == .high)
         #expect(store.settings.selectedServiceTier == .flex)
     }

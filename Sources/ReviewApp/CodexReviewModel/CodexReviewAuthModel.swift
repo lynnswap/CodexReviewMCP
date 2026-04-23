@@ -5,12 +5,12 @@ import ReviewDomain
 @MainActor
 @Observable
 public final class CodexReviewAuthModel {
-    package enum PendingAccountAction {
+    package enum PendingAccountAction: Equatable, Sendable {
         case switchAccount(accountKey: String)
         case signOutActiveAccount
         case removeAccount(accountKey: String)
 
-        var confirmationTitle: String {
+        package var confirmationTitle: LocalizedStringResource {
             switch self {
             case .switchAccount:
                 "Switch Account?"
@@ -21,11 +21,11 @@ public final class CodexReviewAuthModel {
             }
         }
 
-        var confirmationMessage: String {
+        package var confirmationMessage: LocalizedStringResource {
             "Running review jobs may stop after the account change is applied."
         }
 
-        var confirmationButtonTitle: String {
+        package var confirmationButtonTitle: LocalizedStringResource {
             switch self {
             case .switchAccount:
                 "Switch"
@@ -36,7 +36,7 @@ public final class CodexReviewAuthModel {
             }
         }
 
-        var failureTitle: String {
+        package var failureTitle: LocalizedStringResource {
             switch self {
             case .switchAccount:
                 "Failed to Switch Account"
@@ -46,6 +46,11 @@ public final class CodexReviewAuthModel {
                 "Failed to Remove Account"
             }
         }
+    }
+
+    package struct AccountActionAlert: Equatable, Sendable {
+        package let title: LocalizedStringResource
+        package let message: String
     }
 
     public struct Progress: Sendable, Equatable {
@@ -75,15 +80,8 @@ public final class CodexReviewAuthModel {
     public package(set) var savedAccounts: [CodexAccount] = []
     public package(set) var authenticationFailureCount = 0
     public package(set) var warningMessage: String?
-    public package(set) var isPresentingPendingAccountActionConfirmation = false
-    public package(set) var pendingAccountActionConfirmationTitle = ""
-    public package(set) var pendingAccountActionConfirmationMessage = ""
-    public package(set) var pendingAccountActionConfirmationButtonTitle = ""
-    public package(set) var isPresentingAccountActionAlert = false
-    public package(set) var accountActionAlertTitle = ""
-    public package(set) var accountActionAlertMessage = ""
-
-    @ObservationIgnored private var pendingAccountAction: PendingAccountAction?
+    package private(set) var pendingAccountAction: PendingAccountAction?
+    package private(set) var accountActionAlert: AccountActionAlert?
 
     public var progress: Progress? {
         guard case .signingIn(let progress) = phase else {
@@ -151,29 +149,29 @@ public final class CodexReviewAuthModel {
     }
 
     package func cancelPendingAccountAction() {
-        clearPendingAccountActionConfirmation()
+        pendingAccountAction = nil
     }
 
     package func consumePendingAccountAction() -> PendingAccountAction? {
-        let action = pendingAccountAction
-        clearPendingAccountActionConfirmation()
-        return action
+        defer {
+            pendingAccountAction = nil
+        }
+        return pendingAccountAction
     }
 
     package func presentAccountActionAlert(
-        title: String,
+        title: LocalizedStringResource,
         message: String
     ) {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        accountActionAlertTitle = title
-        accountActionAlertMessage = trimmedMessage.isEmpty ? "Request failed." : trimmedMessage
-        isPresentingAccountActionAlert = true
+        accountActionAlert = .init(
+            title: title,
+            message: trimmedMessage.isEmpty ? "Request failed." : trimmedMessage
+        )
     }
 
     package func dismissAccountActionAlert() {
-        isPresentingAccountActionAlert = false
-        accountActionAlertTitle = ""
-        accountActionAlertMessage = ""
+        accountActionAlert = nil
     }
 
     package func updatePhase(_ phase: Phase) {
@@ -229,24 +227,6 @@ public final class CodexReviewAuthModel {
         _ action: PendingAccountAction,
         requiresConfirmation: Bool
     ) {
-        if requiresConfirmation {
-            pendingAccountAction = action
-            pendingAccountActionConfirmationTitle = action.confirmationTitle
-            pendingAccountActionConfirmationMessage = action.confirmationMessage
-            pendingAccountActionConfirmationButtonTitle = action.confirmationButtonTitle
-            isPresentingPendingAccountActionConfirmation = true
-            return
-        }
-        clearPendingAccountActionConfirmation()
         pendingAccountAction = action
     }
-
-    private func clearPendingAccountActionConfirmation() {
-        pendingAccountAction = nil
-        isPresentingPendingAccountActionConfirmation = false
-        pendingAccountActionConfirmationTitle = ""
-        pendingAccountActionConfirmationMessage = ""
-        pendingAccountActionConfirmationButtonTitle = ""
-    }
-
 }

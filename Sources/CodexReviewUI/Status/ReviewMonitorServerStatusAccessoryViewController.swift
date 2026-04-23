@@ -123,9 +123,12 @@ struct AccountRateLimitsSectionView: View {
 struct StatusView: View {
     var store: CodexReviewStore
 
-    var body: some View {
-        let settings = store.settings
-        let modelSelection = Binding<String?>(
+    private var settings: SettingsStore {
+        store.settings
+    }
+
+    private var modelSelection: Binding<String?> {
+        Binding(
             get: { settings.selectedModel },
             set: { model in
                 Task { @MainActor in
@@ -137,7 +140,10 @@ struct StatusView: View {
                 }
             }
         )
-        let serviceTierSelection = Binding<CodexReviewServiceTier?>(
+    }
+
+    private var serviceTierSelection: Binding<CodexReviewServiceTier?> {
+        Binding(
             get: { settings.selectedServiceTier },
             set: { serviceTier in
                 Task { @MainActor in
@@ -145,7 +151,10 @@ struct StatusView: View {
                 }
             }
         )
-        let reasoningSelection = Binding<CodexReviewReasoningEffort?>(
+    }
+
+    private var reasoningSelection: Binding<CodexReviewReasoningEffort?> {
+        Binding(
             get: { settings.selectedReasoningEffort },
             set: { reasoningEffort in
                 Task { @MainActor in
@@ -157,6 +166,9 @@ struct StatusView: View {
                 }
             }
         )
+    }
+
+    var body: some View {
         VStack{
             Menu {
                 Section(store.auth.account?.email ?? "") {
@@ -199,7 +211,7 @@ struct StatusView: View {
                     }
                     .pickerStyle(.inline)
                 }label:{
-                    Text(settings.currentModelDisplayText)
+                    Text(settings.effectiveModelItem?.displayName ?? settings.effectiveModel ?? "Model")
                 }
                 Menu{
                     // Deliberately mirror the concrete reasoning choices from the model catalog
@@ -212,7 +224,7 @@ struct StatusView: View {
                     }
                     .pickerStyle(.inline)
                 }label:{
-                    Text(settings.currentReasoningDisplayText)
+                    Text(settings.effectiveReasoningEffort?.displayText ?? "Reasoning")
                 }
                 Spacer(minLength: 0)
             }
