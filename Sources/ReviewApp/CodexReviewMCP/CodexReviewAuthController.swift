@@ -1334,7 +1334,7 @@ package final class ReviewMonitorAuthOrchestrator {
         guard priorCurrentAccount == nil else {
             return false
         }
-        return priorSnapshot.selectedAccountKey == nil
+        return priorSnapshot.selectedAccountKey == nil && persistedActiveAccountKey() == nil
     }
 
     private func addAccountRuntimeEffect(
@@ -2292,8 +2292,21 @@ private func applyReviewAuthAccount(
         return didAccountIdentityChange(from: priorAccount, to: existingAccount)
     }
 
-    auth.updateSelectedAccount(nil)
-    return didAccountIdentityChange(from: priorAccount, to: nil)
+    let detachedAccount: CodexAccount
+    if let priorAccount,
+       priorAccount.accountKey == normalizedEmail
+    {
+        priorAccount.updateEmail(account.email)
+        priorAccount.updatePlanType(account.planType)
+        detachedAccount = priorAccount
+    } else {
+        detachedAccount = CodexAccount(
+            email: account.email,
+            planType: account.planType
+        )
+    }
+    auth.updateDetachedSelectedAccount(detachedAccount)
+    return didAccountIdentityChange(from: priorAccount, to: detachedAccount)
 }
 
 @MainActor

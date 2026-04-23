@@ -37,7 +37,15 @@ public final class CodexReviewStore {
         self.auth.applySavedAccountStates(
             coordinator.seed.initialAccounts.map(savedAccountPayload(from:))
         )
-        self.auth.updateSelectedAccount(coordinator.seed.initialAccount?.id)
+        if let initialAccount = coordinator.seed.initialAccount,
+           let savedAccountID = auth.savedAccounts.first(where: {
+               $0.accountKey == initialAccount.accountKey
+           })?.id
+        {
+            auth.updateSelectedAccount(savedAccountID)
+        } else {
+            auth.updateDetachedSelectedAccount(coordinator.seed.initialAccount)
+        }
         observedActiveAccountKey = auth.selectedAccount?.accountKey
         observeSettingsRefreshCauses()
         coordinator.attachStore(self)

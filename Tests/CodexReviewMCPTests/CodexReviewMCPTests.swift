@@ -719,7 +719,7 @@ struct CodexReviewMCPTests {
         #expect(try Data(contentsOf: encodedAuthURL) == encodedAuthDataBeforeLoad)
     }
 
-    @Test func storeClearsInitialSelectionWhenSharedAuthNormalizationFails() async throws {
+    @Test func storeSeedsSharedAuthSelectionWhenSharedAuthNormalizationFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
 
@@ -751,7 +751,7 @@ struct CodexReviewMCPTests {
             appServerManager: MockAppServerManager { _ in .success() }
         )
 
-        #expect(store.auth.account == nil)
+        #expect(store.auth.account?.email == "current@example.com")
         #expect(store.auth.savedAccounts.map(\.email) == ["stale@example.com"])
     }
 
@@ -5884,6 +5884,46 @@ struct CodexReviewMCPTests {
         #expect(auth.savedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "stale@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["stale@example.com", "review@example.com"])
+    }
+
+    @Test func addAccountSignedOutWithSavedAccountsPreservesPersistedActiveSelection() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let loginSession = SuccessfulLoginReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: loginSession,
+                    environment: environment
+                )
+            }
+        )
+        auth.applySavedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updatePhase(.signedOut)
+        auth.updateSelectedAccount(nil)
+
+        await auth.store.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
     }
 
     @Test func addAccountUnresolvedFailedStateKeepsCurrentRuntimeWithoutRecycle() async throws {

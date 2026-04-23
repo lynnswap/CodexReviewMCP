@@ -2187,7 +2187,7 @@ package final class ReviewMonitorServerRuntime {
                         makeActive: activeSavedAccount == nil
                     )
                 } catch {
-                    shouldClearInitialSelection = true
+                    shouldClearInitialSelection = false
                 }
                 seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
             }
@@ -2203,6 +2203,9 @@ package final class ReviewMonitorServerRuntime {
                })
             {
                 return makeCodexAccount(from: matchingSavedAccount)
+            }
+            if let sharedInitialAccount {
+                return sharedInitialAccount
             }
             if let activeAccountKey = seededAccounts.activeAccountKey {
                 return seededAccounts.accounts
