@@ -9,10 +9,6 @@ import ReviewDomain
 @MainActor
 @Observable
 final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDelegate {
-    private struct AddAccountToolbarPresentation: Equatable {
-        var isHidden: Bool
-    }
-
     private static let autosaveName = NSSplitView.AutosaveName("CodexReviewMCP.ReviewMonitorSplitView")
     private static let addAccountToolbarItemIdentifier = NSToolbarItem.Identifier(
         "CodexReviewMCP.ReviewMonitor.Toolbar.AddAccount"
@@ -25,7 +21,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var sidebarItem: NSSplitViewItem?
     private var contentItem: NSSplitViewItem?
     private var toolbar: NSToolbar?
-    private var addAccountToolbarView: AddAccountToolbarItemView?
+    private var addAccountToolbarItem: ReviewMonitorAddAccountToolbarItem?
     private var observationHandles: Set<ObservationHandle> = []
     private var sidebarCollapseObservation: NSKeyValueObservation?
     private weak var attachedWindow: NSWindow?
@@ -81,7 +77,10 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         sidebarCollapseObservation = sidebarItem.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] observedItem, _ in
             let isCollapsed = observedItem.isCollapsed
             Task { @MainActor [weak self] in
-                self?.isSidebarCollapsed = isCollapsed
+                guard let self else {
+                    return
+                }
+                self.isSidebarCollapsed = isCollapsed
             }
         }
 
@@ -136,18 +135,12 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         }
         .store(in: &observationHandles)
 
-        observe(\.addAccountToolbarPresentation) { [weak self] presentation in
-            self?.applyAddAccountToolbarPresentation(presentation)
+        observe(\.isShowingAddAccount) { [weak self] isShowing in
+            self?.setShowingAddAccount(isShowing)
         }
         .store(in: &observationHandles)
 
-        store.auth.observe(\.phase) { [weak self] _ in
-            guard let self else {
-                return
-            }
-            self.applyAddAccountToolbarPresentation(self.addAccountToolbarPresentation)
-        }
-        .store(in: &observationHandles)
+        setShowingAddAccount(isShowingAddAccount)
     }
 
     private func installToolbarIfNeeded(on window: NSWindow) {
@@ -168,15 +161,12 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             window.titlebarSeparatorStyle = .automatic
             window.toolbar = toolbar
         }
-
-        applyAddAccountToolbarPresentation(addAccountToolbarPresentation)
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .toggleSidebar,
             .flexibleSpace,
-            Self.addAccountToolbarItemIdentifier,
             .sidebarTrackingSeparator,
             .flexibleSpace,
         ]
@@ -204,11 +194,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             return item
 
         case Self.addAccountToolbarItemIdentifier:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.view = resolvedAddAccountToolbarView()
-            item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem()
-            item.visibilityPriority = .high
-            item.isHidden = addAccountToolbarPresentation.isHidden
+            let item = resolvedAddAccountToolbarItem()
             return item
 
         case .sidebarTrackingSeparator:
@@ -223,396 +209,52 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         }
     }
 
-    private func performAddAccountToolbarItemAction() {
-        ReviewMonitorAddAccountAction.perform(store: store)
-    }
-
-    private func cancelAddAccountToolbarItemAction() {
-        Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-            await self.store.cancelAuthentication()
-        }
-    }
-
-    @objc
-    private func performAddAccountToolbarOverflowAction(_ sender: Any?) {
-        _ = sender
-        if store.auth.isAuthenticating {
-            cancelAddAccountToolbarItemAction()
-        } else {
-            performAddAccountToolbarItemAction()
-        }
-    }
-
-    private func resolvedAddAccountToolbarView() -> AddAccountToolbarItemView {
-        if let addAccountToolbarView {
-            return addAccountToolbarView
+    private func resolvedAddAccountToolbarItem() -> ReviewMonitorAddAccountToolbarItem {
+        if let addAccountToolbarItem {
+            return addAccountToolbarItem
         }
 
-        let view = AddAccountToolbarItemView(store: store)
-        addAccountToolbarView = view
-        return view
-    }
-
-    private func resolvedAddAccountToolbarMenuItem() -> NSMenuItem {
-        let item = NSMenuItem(
-            title: store.auth.isAuthenticating ? "Cancel Sign-In" : "Add Account",
-            action: #selector(performAddAccountToolbarOverflowAction(_:)),
-            keyEquivalent: ""
+        let item = ReviewMonitorAddAccountToolbarItem(
+            itemIdentifier: Self.addAccountToolbarItemIdentifier,
+            store: store
         )
-        item.target = self
+        addAccountToolbarItem = item
         return item
     }
 
-    private var addAccountToolbarPresentation: AddAccountToolbarPresentation {
-        let isAuthenticating = store.auth.isAuthenticating
-        return .init(
-            isHidden: isAuthenticating == false
-                && (uiState.sidebarSelection != .account || isSidebarCollapsed)
-        )
+    private var isShowingAddAccount: Bool {
+        if store.auth.isAuthenticating {
+            return true
+        }
+        return uiState.sidebarSelection == .account && isSidebarCollapsed == false
     }
 
-    private func applyAddAccountToolbarPresentation(
-        _ presentation: AddAccountToolbarPresentation
-    ) {
+    private func setShowingAddAccount(_ isShowing: Bool) {
         guard let toolbar else {
             return
         }
 
-        guard let item = toolbar.items.first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier }) else {
+        if let existingIndex = toolbar.items.firstIndex(where: {
+            $0.itemIdentifier == Self.addAccountToolbarItemIdentifier
+        }) {
+            guard isShowing == false else {
+                return
+            }
+            toolbar.removeItem(at: existingIndex)
             return
         }
-        item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem()
-        item.isHidden = presentation.isHidden
-    }
-}
 
-@MainActor
-private final class AddAccountToolbarItemView: NSView {
-    enum Mode: Equatable {
-        case add
-        case progress
-    }
+        guard isShowing else {
+            return
+        }
 
-#if DEBUG
-    private struct StableModeWaiterForTesting {
-        let mode: Mode
-        let continuation: CheckedContinuation<Void, Never>
-    }
-#endif
-
-    private let store: CodexReviewStore
-    private let auth: CodexReviewAuthModel
-    private var observationHandles: Set<ObservationHandle> = []
-    private var displayedMode: Mode = .add
-    private var pendingMode: Mode?
-    private var isAnimatingModeTransition = false
-
-    private let rootStackView = NSStackView()
-    private let addButton = NSButton()
-    private let progressButton = AddAccountToolbarProgressButton()
-
-#if DEBUG
-    private var stableModeWaitersForTesting: [UUID: StableModeWaiterForTesting] = [:]
-#endif
-
-    var mode: Mode {
-        auth.isAuthenticating ? .progress : .add
-    }
-
-    init(store: CodexReviewStore) {
-        self.store = store
-        auth = store.auth
-        super.init(frame: .zero)
-        configureHierarchy()
-        startObservingAuth()
-        updateForAuthState(animated: false)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override var intrinsicContentSize: NSSize {
-        rootStackView.fittingSize
-    }
-
-    private func configureHierarchy() {
-        addButton.bezelStyle = .toolbar
-        addButton.image = NSImage(
-            systemSymbolName: "person.badge.plus",
-            accessibilityDescription: "Add Account"
+        let insertionIndex = toolbar.items.firstIndex(where: {
+            $0.itemIdentifier == .sidebarTrackingSeparator
+        }) ?? toolbar.items.count
+        toolbar.insertItem(
+            withItemIdentifier: Self.addAccountToolbarItemIdentifier,
+            at: insertionIndex
         )
-        addButton.imagePosition = .imageOnly
-        addButton.setButtonType(.momentaryPushIn)
-        addButton.target = self
-        addButton.action = #selector(handleAddAccount)
-        addButton.toolTip = "Add Account"
-        addButton.setAccessibilityLabel("Add Account")
-
-        progressButton.target = self
-        progressButton.action = #selector(handleCancel)
-
-        rootStackView.orientation = .horizontal
-        rootStackView.alignment = .centerY
-        rootStackView.translatesAutoresizingMaskIntoConstraints = false
-        rootStackView.addArrangedSubview(addButton)
-        rootStackView.addArrangedSubview(progressButton)
-        addSubview(rootStackView)
-
-        NSLayoutConstraint.activate([
-            rootStackView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            rootStackView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            rootStackView.topAnchor.constraint(equalTo: topAnchor),
-            rootStackView.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-    }
-
-    private func startObservingAuth() {
-        guard observationHandles.isEmpty else {
-            updateForAuthState(animated: false)
-            return
-        }
-
-        auth.observe(\.phase) { [weak self] _ in
-            self?.updateForAuthState(animated: true)
-        }
-        .store(in: &observationHandles)
-    }
-
-    private func updateForAuthState(animated: Bool) {
-        let targetMode = mode
-        let detail = auth.progress?.detail
-        toolTip = nil
-        progressButton.toolTip = targetMode == .progress ? "Cancel sign-in" : nil
-        progressButton.setProgressDetailToolTip(detail)
-
-        guard targetMode != displayedMode else {
-            if isAnimatingModeTransition {
-                pendingMode = targetMode
-                return
-            }
-            pendingMode = nil
-            applyMode(targetMode)
-            return
-        }
-
-        pendingMode = targetMode
-        guard animated, window != nil else {
-            pendingMode = nil
-            alphaValue = 1
-            applyMode(targetMode)
-            return
-        }
-
-        guard isAnimatingModeTransition == false else {
-            return
-        }
-
-        animateModeTransition(to: targetMode)
-    }
-
-    private func applyMode(_ mode: Mode) {
-        displayedMode = mode
-        if pendingMode == mode {
-            pendingMode = nil
-        }
-        let isAuthenticating = mode == .progress
-        addButton.isHidden = isAuthenticating
-        progressButton.isHidden = isAuthenticating == false
-
-        if isAuthenticating {
-            progressButton.startProgressAnimation()
-        } else {
-            progressButton.stopProgressAnimation()
-        }
-
-        invalidateIntrinsicContentSize()
-        needsLayout = true
-        notifyStableModeWaitersForTestingIfNeeded()
-    }
-
-    private func animateModeTransition(to targetMode: Mode) {
-        isAnimatingModeTransition = true
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
-            context.allowsImplicitAnimation = true
-            MainActor.assumeIsolated {
-                animator().alphaValue = 0
-            }
-        } completionHandler: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else {
-                    return
-                }
-
-                self.applyMode(targetMode)
-                self.alphaValue = 0
-
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.16
-                    context.allowsImplicitAnimation = true
-                    MainActor.assumeIsolated {
-                        self.animator().alphaValue = 1
-                    }
-                } completionHandler: { [weak self] in
-                    Task { @MainActor [weak self] in
-                        guard let self else {
-                            return
-                        }
-
-                        self.isAnimatingModeTransition = false
-                        if let pendingMode = self.pendingMode,
-                           pendingMode != self.displayedMode
-                        {
-                            self.animateModeTransition(to: pendingMode)
-                            return
-                        }
-                        self.notifyStableModeWaitersForTestingIfNeeded()
-                    }
-                }
-            }
-        }
-    }
-
-    @objc
-    private func handleAddAccount() {
-        ReviewMonitorAddAccountAction.perform(store: store)
-    }
-
-    @objc
-    private func handleCancel() {
-        Task { @MainActor [weak self] in
-            guard let self else {
-                return
-            }
-            await self.store.cancelAuthentication()
-        }
-    }
-
-#if DEBUG
-    var displayedModeForTesting: Mode {
-        displayedMode
-    }
-
-    func waitForStableModeForTesting(_ mode: Mode) async {
-        if isStableModeForTesting(mode) {
-            return
-        }
-
-        let waiterID = UUID()
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                if isStableModeForTesting(mode) {
-                    continuation.resume()
-                    return
-                }
-                stableModeWaitersForTesting[waiterID] = .init(
-                    mode: mode,
-                    continuation: continuation
-                )
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in
-                self?.cancelStableModeWaiterForTesting(waiterID)
-            }
-        }
-    }
-
-    private func isStableModeForTesting(_ mode: Mode) -> Bool {
-        displayedMode == mode && pendingMode == nil && isAnimatingModeTransition == false
-    }
-
-    private func notifyStableModeWaitersForTestingIfNeeded() {
-        guard stableModeWaitersForTesting.isEmpty == false else {
-            return
-        }
-
-        let readyWaiterIDs = stableModeWaitersForTesting.compactMap { id, waiter in
-            isStableModeForTesting(waiter.mode) ? id : nil
-        }
-        let readyContinuations = readyWaiterIDs.compactMap { id in
-            stableModeWaitersForTesting.removeValue(forKey: id)?.continuation
-        }
-        for continuation in readyContinuations {
-            continuation.resume()
-        }
-    }
-
-    private func cancelStableModeWaiterForTesting(_ waiterID: UUID) {
-        guard let waiter = stableModeWaitersForTesting.removeValue(forKey: waiterID) else {
-            return
-        }
-        waiter.continuation.resume()
-    }
-#endif
-}
-
-@MainActor
-private final class AddAccountToolbarProgressButton: NSButton {
-    private let contentStackView = NSStackView()
-    private let progressIndicator = NSProgressIndicator()
-    private let titleLabel = NSTextField(labelWithString: "Cancel")
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        configure()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override var intrinsicContentSize: NSSize {
-        let contentSize = contentStackView.fittingSize
-        return NSSize(width: contentSize.width + 16, height: max(28, contentSize.height + 8))
-    }
-
-    private func configure() {
-        bezelStyle = .toolbar
-        title = ""
-        setButtonType(.momentaryPushIn)
-        imagePosition = .noImage
-        setAccessibilityLabel("Cancel Account Sign-In")
-
-        progressIndicator.style = .spinning
-        progressIndicator.controlSize = .small
-        progressIndicator.isDisplayedWhenStopped = false
-        progressIndicator.setAccessibilityLabel("Account Sign-In Progress")
-
-        titleLabel.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
-        titleLabel.lineBreakMode = .byClipping
-
-        contentStackView.orientation = .horizontal
-        contentStackView.alignment = .centerY
-        contentStackView.spacing = 6
-        contentStackView.translatesAutoresizingMaskIntoConstraints = false
-        contentStackView.addArrangedSubview(progressIndicator)
-        contentStackView.addArrangedSubview(titleLabel)
-
-        addSubview(contentStackView)
-        NSLayoutConstraint.activate([
-            contentStackView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            contentStackView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            contentStackView.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            contentStackView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
-        ])
-    }
-
-    func startProgressAnimation() {
-        progressIndicator.startAnimation(nil)
-    }
-
-    func stopProgressAnimation() {
-        progressIndicator.stopAnimation(nil)
-    }
-
-    func setProgressDetailToolTip(_ toolTip: String?) {
-        progressIndicator.toolTip = toolTip
     }
 }
 
@@ -699,13 +341,13 @@ extension ReviewMonitorSplitViewController {
     }
 
     var addAccountToolbarItemIsHiddenForTesting: Bool {
-        toolbar?.items
-            .first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier })?
-            .isHidden ?? true
+        toolbar?.items.contains(where: {
+            $0.itemIdentifier == Self.addAccountToolbarItemIdentifier
+        }) != true
     }
 
     var addAccountToolbarItemModeForTesting: AddAccountToolbarItemModeForTesting? {
-        switch addAccountToolbarView?.displayedModeForTesting {
+        switch addAccountToolbarItem?.displayedModeForTesting {
         case .add:
             .add
         case .progress:
@@ -716,16 +358,14 @@ extension ReviewMonitorSplitViewController {
     }
 
     var addAccountToolbarMenuTitleForTesting: String? {
-        toolbar?.items
-            .first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier })?
-            .menuFormRepresentation?.title
+        addAccountToolbarItem?.menuTitleForTesting
     }
 
     func waitForAddAccountToolbarItemModeForTesting(
         _ mode: AddAccountToolbarItemModeForTesting
     ) async {
-        guard let addAccountToolbarView else {
-            fatalError("Add Account toolbar view is not configured yet.")
+        guard let addAccountToolbarItem else {
+            fatalError("Add Account toolbar item is not configured yet.")
         }
         let targetMode: AddAccountToolbarItemView.Mode
         switch mode {
@@ -734,7 +374,7 @@ extension ReviewMonitorSplitViewController {
         case .progress:
             targetMode = .progress
         }
-        await addAccountToolbarView.waitForStableModeForTesting(targetMode)
+        await addAccountToolbarItem.waitForStableModeForTesting(targetMode)
     }
 
     var sidebarAllowsFullHeightLayoutForTesting: Bool {
