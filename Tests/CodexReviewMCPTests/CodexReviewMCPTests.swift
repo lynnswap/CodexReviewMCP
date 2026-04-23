@@ -2673,6 +2673,8 @@ struct CodexReviewMCPTests {
             let savedCurrentAccount = try #require(
                 store.auth.savedAccounts.first(where: { $0.email == "other@example.com" })
             )
+            try await registryStore.clearActiveAccount()
+            #expect(store.auth.persistedActiveAccountKey == savedCurrentAccount.accountKey)
             #expect(store.switchActionIsDisabled(for: savedCurrentAccount))
         } cleanup: {
             await store.stop()
@@ -4676,6 +4678,7 @@ struct CodexReviewMCPTests {
             savedAccounts: [activeSavedAccount, currentSavedAccount],
             workspaces: makeStoreTestWorkspaces(from: [runningJob])
         )
+        store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
         store.requestSwitchAccount(
             currentSavedAccount,
@@ -4701,6 +4704,7 @@ struct CodexReviewMCPTests {
             savedAccounts: [currentAccount],
             workspaces: []
         )
+        store.auth.persistedActiveAccountKey = currentAccount.accountKey
 
         try await store.switchAccount(currentAccount)
 
@@ -4721,6 +4725,7 @@ struct CodexReviewMCPTests {
             savedAccounts: [currentAccount],
             workspaces: makeStoreTestWorkspaces(from: [runningJob])
         )
+        store.auth.persistedActiveAccountKey = currentAccount.accountKey
 
         store.requestSwitchAccount(
             currentAccount,
@@ -4752,6 +4757,7 @@ struct CodexReviewMCPTests {
             savedAccounts: [activeSavedAccount, currentSavedAccount],
             workspaces: makeStoreTestWorkspaces(from: [runningJob])
         )
+        store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
         store.requestSwitchAccount(
             currentSavedAccount,
@@ -4792,6 +4798,7 @@ struct CodexReviewMCPTests {
             savedAccounts: [activeSavedAccount],
             workspaces: []
         )
+        store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
         #expect(store.switchActionIsDisabled(for: detachedCurrent))
     }

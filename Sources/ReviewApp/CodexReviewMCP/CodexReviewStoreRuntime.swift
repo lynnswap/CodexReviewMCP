@@ -726,7 +726,10 @@ extension CodexReviewStore {
         store.serverState = .running
         store.serverURL = URL(string: "http://127.0.0.1:9417/mcp")
         let account = CodexAccount(email: "ui-test@example.com", planType: "unknown")
-        store.auth.applySavedAccountStates([savedAccountPayload(from: account)])
+        store.auth.applySavedAccountStates(
+            [savedAccountPayload(from: account)],
+            activeAccountKey: account.accountKey
+        )
         store.auth.updateSelectedAccount(account.id)
         return store
     }
@@ -1601,6 +1604,7 @@ extension ReviewMonitorCoordinator {
             shouldAutoStartEmbeddedServer: serverRuntime.shouldAutoStartEmbeddedServer,
             initialAccount: serverRuntime.initialAccount,
             initialAccounts: serverRuntime.initialAccounts,
+            initialActiveAccountKey: serverRuntime.initialActiveAccountKey,
             initialSettingsSnapshot: serverRuntime.initialSettingsSnapshot
         )
         return .init(

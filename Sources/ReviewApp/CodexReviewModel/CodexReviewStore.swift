@@ -35,7 +35,8 @@ public final class CodexReviewStore {
             snapshot: settingsService.initialSnapshot
         )
         self.auth.applySavedAccountStates(
-            coordinator.seed.initialAccounts.map(savedAccountPayload(from:))
+            coordinator.seed.initialAccounts.map(savedAccountPayload(from:)),
+            activeAccountKey: coordinator.seed.initialActiveAccountKey
         )
         self.auth.updateSelectedAccount(coordinator.seed.initialAccount?.id)
         observedActiveAccountKey = auth.selectedAccount?.accountKey
@@ -376,10 +377,7 @@ public final class CodexReviewStore {
         _ accountKey: String
     ) -> Bool {
         auth.selectedAccount?.accountKey == accountKey
-            && coordinator.isPersistedActiveAccount(
-            auth: auth,
-            accountKey: accountKey
-        )
+            && auth.isPersistedActiveAccount(accountKey)
     }
 
     private func canSwitchAccount(_ account: CodexAccount) -> Bool {

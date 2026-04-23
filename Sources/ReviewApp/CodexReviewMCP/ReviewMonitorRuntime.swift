@@ -108,6 +108,10 @@ package class ReviewMonitorTestingHarness {
         guard auth.savedAccounts.contains(where: { $0.accountKey == accountKey }) else {
             return
         }
+        auth.applySavedAccountStates(
+            auth.savedAccounts.map(savedAccountPayload(from:)),
+            activeAccountKey: accountKey
+        )
         auth.updateSelectedAccount(
             auth.savedAccounts.first(where: { $0.accountKey == accountKey })?.id
         )
@@ -166,13 +170,6 @@ package class ReviewMonitorTestingHarness {
         accountKey _: String
     ) -> Bool {
         return false
-    }
-
-    package func isPersistedActiveAccount(
-        auth: CodexReviewAuthModel,
-        accountKey: String
-    ) -> Bool {
-        auth.selectedAccount?.accountKey == accountKey
     }
 
     package func startReview(
@@ -238,17 +235,20 @@ package final class ReviewMonitorCoordinator {
         package var shouldAutoStartEmbeddedServer: Bool
         package var initialAccount: CodexAccount?
         package var initialAccounts: [CodexAccount]
+        package var initialActiveAccountKey: String?
         package var initialSettingsSnapshot: CodexReviewSettingsSnapshot
 
         package init(
             shouldAutoStartEmbeddedServer: Bool = false,
             initialAccount: CodexAccount? = nil,
             initialAccounts: [CodexAccount] = [],
+            initialActiveAccountKey: String? = nil,
             initialSettingsSnapshot: CodexReviewSettingsSnapshot = .init()
         ) {
             self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
             self.initialAccount = initialAccount
             self.initialAccounts = initialAccounts
+            self.initialActiveAccountKey = initialActiveAccountKey
             self.initialSettingsSnapshot = initialSettingsSnapshot
         }
     }
@@ -523,24 +523,6 @@ package final class ReviewMonitorCoordinator {
             )
         case .harness(let harness):
             harness.requiresCurrentSessionRecovery(
-                auth: auth,
-                accountKey: accountKey
-            )
-        }
-    }
-
-    package func isPersistedActiveAccount(
-        auth: CodexReviewAuthModel,
-        accountKey: String
-    ) -> Bool {
-        switch mode {
-        case .live(let live):
-            live.authOrchestrator.isPersistedActiveAccount(
-                auth: auth,
-                accountKey: accountKey
-            )
-        case .harness(let harness):
-            harness.isPersistedActiveAccount(
                 auth: auth,
                 accountKey: accountKey
             )

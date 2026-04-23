@@ -77,6 +77,7 @@ public final class CodexReviewAuthModel {
 
     public package(set) var phase: Phase = .signedOut
     public package(set) var savedAccounts: [CodexAccount] = []
+    public package(set) var persistedActiveAccountKey: String?
     public private(set) var selectedAccount :CodexAccount?
 
     public package(set) var authenticationFailureCount = 0
@@ -200,7 +201,17 @@ public final class CodexReviewAuthModel {
     package func applySavedAccountStates(
         _ incomingSavedAccounts: [CodexSavedAccountPayload]
     ) {
-        self.savedAccounts = incomingSavedAccounts.map { incomingAccount in
+        applySavedAccountStates(
+            incomingSavedAccounts,
+            activeAccountKey: persistedActiveAccountKey
+        )
+    }
+
+    package func applySavedAccountStates(
+        _ incomingSavedAccounts: [CodexSavedAccountPayload],
+        activeAccountKey: String?
+    ) {
+        let resolvedSavedAccounts = incomingSavedAccounts.map { incomingAccount in
             let reconciledAccount = reusableAccount(for: incomingAccount.accountKey)
                 ?? CodexAccount(
                     accountKey: incomingAccount.accountKey,
@@ -210,6 +221,16 @@ public final class CodexReviewAuthModel {
             reconciledAccount.apply(incomingAccount)
             return reconciledAccount
         }
+        self.savedAccounts = resolvedSavedAccounts
+        self.persistedActiveAccountKey = activeAccountKey.flatMap { activeAccountKey in
+            resolvedSavedAccounts.contains(where: { $0.accountKey == activeAccountKey })
+                ? activeAccountKey
+                : nil
+        }
+    }
+
+    package func isPersistedActiveAccount(_ accountKey: String) -> Bool {
+        persistedActiveAccountKey == accountKey
     }
 
     private func reusableAccount(for accountKey: String) -> CodexAccount? {
