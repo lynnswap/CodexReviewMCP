@@ -63,22 +63,18 @@ final class ReviewMonitorRootViewController: NSViewController {
         }
         loadViewIfNeeded()
 
-        let outgoingContentViewController: NSViewController? = switch uiState.presentedContentKind {
+        let incomingContentViewController: NSViewController
+        let outgoingContentViewController: NSViewController?
+        switch kind {
         case .contentView:
-            splitViewController
+            incomingContentViewController = splitViewController
+            outgoingContentViewController = uiState.presentedContentKind == nil ? nil : signInViewController
         case .signInView:
-            signInViewController
-        case nil:
-            nil
-        }
-        let incomingContentViewController: NSViewController = switch kind {
-        case .contentView:
-            splitViewController
-        case .signInView:
-            signInViewController
+            incomingContentViewController = signInViewController
+            outgoingContentViewController = uiState.presentedContentKind == nil ? nil : splitViewController
         }
 
-        if incomingContentViewController.parent !== self {
+        if incomingContentViewController.parent == nil {
             addChild(incomingContentViewController)
         }
 
@@ -127,6 +123,10 @@ final class ReviewMonitorRootViewController: NSViewController {
             embed(incomingContentViewController)
             uiState.presentedContentKind = kind
         }
+
+        if kind == .signInView {
+            signInViewController.applyWindowPresentationIfPossible()
+        }
     }
 
     private func embed(_ contentViewController: NSViewController) {
@@ -154,6 +154,10 @@ final class ReviewMonitorRootViewController: NSViewController {
 extension ReviewMonitorRootViewController {
     var splitViewControllerForTesting: ReviewMonitorSplitViewController {
         splitViewController
+    }
+
+    var contentKindForTesting: ReviewMonitorContentKind {
+        isShowingSplitViewForTesting ? .contentView : .signInView
     }
 
     var isSplitViewEmbeddedForTesting: Bool {

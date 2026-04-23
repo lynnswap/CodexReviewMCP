@@ -2134,6 +2134,23 @@ func waitForWindowShowingSplitView(
 }
 
 @MainActor
+func waitForWindowContentKind(
+    _ rootViewController: ReviewMonitorRootViewController,
+    _ expected: ReviewMonitorContentKind,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let rootViewControllerBox = UncheckedSendableBox(rootViewController)
+    try await withTestTimeout(timeout) {
+        while await MainActor.run(body: {
+            rootViewControllerBox.value.contentKindForTesting != expected
+        }) {
+            try Task.checkCancellation()
+            await Task.yield()
+        }
+    }
+}
+
+@MainActor
 func waitForEmbeddedContentSubviewCount(
     _ rootViewController: ReviewMonitorRootViewController,
     _ expected: Int,
@@ -2160,23 +2177,6 @@ func waitForSidebarPresentation(
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
             viewControllerBox.value.sidebarPresentationForTesting != expected
-        }) {
-            try Task.checkCancellation()
-            await Task.yield()
-        }
-    }
-}
-
-@MainActor
-func waitForEmbeddedContentSubviewCount(
-    _ windowController: ReviewMonitorWindowController,
-    _ expected: Int,
-    timeout: Duration = .seconds(2)
-) async throws {
-    let windowControllerBox = UncheckedSendableBox(windowController)
-    try await withTestTimeout(timeout) {
-        while await MainActor.run(body: {
-            windowControllerBox.value.embeddedContentSubviewCountForTesting != expected
         }) {
             try Task.checkCancellation()
             await Task.yield()

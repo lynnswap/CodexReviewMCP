@@ -25,7 +25,7 @@ final class ReviewMonitorUIState {
     }
 }
 
-enum ReviewMonitorContentKind: Equatable {
+enum ReviewMonitorContentKind: Equatable ,CaseIterable{
     case contentView
     case signInView
 }

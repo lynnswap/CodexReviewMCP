@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import ReviewApp
 import Foundation
 import Observation
@@ -24,6 +25,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var addAccountToolbarItem: ReviewMonitorAddAccountToolbarItem?
     private var observationHandles: Set<ObservationHandle> = []
     private var sidebarCollapseObservation: NSKeyValueObservation?
+    private var windowCancellable: AnyCancellable?
     private weak var attachedWindow: NSWindow?
     private var isSidebarCollapsed = false
 
@@ -88,19 +90,19 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         transportViewController.loadViewIfNeeded()
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
-    }
-
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        guard let window = view.window else {
-            return
-        }
-        attach(to: window)
-    }
-
-    override func viewDidDisappear() {
-        super.viewDidDisappear()
-        detachFromWindow()
+        windowCancellable = view.publisher(for: \.window, options: [.initial, .new])
+            .sink { [weak self] window in
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    if let window {
+                        self.attach(to: window)
+                    } else {
+                        self.detachFromWindow()
+                    }
+                }
+            }
     }
 
     func attach(to window: NSWindow) {
