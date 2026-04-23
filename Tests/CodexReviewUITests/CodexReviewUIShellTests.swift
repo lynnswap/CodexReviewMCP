@@ -192,6 +192,7 @@ struct CodexReviewUIShellTests {
         sidebarItem.isCollapsed = false
         window.layoutIfNeeded()
 
+        #expect(uiState.sidebarSelection == .workspace)
         #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
 
         uiState.sidebarSelection = .account
@@ -200,6 +201,7 @@ struct CodexReviewUIShellTests {
 
         uiState.sidebarSelection = .workspace
         try await waitForAddAccountToolbarItemHidden(viewController, true)
+        #expect(uiState.sidebarSelection == .workspace)
         #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
     }
 
@@ -250,10 +252,7 @@ struct CodexReviewUIShellTests {
             initialAuthState: .signedIn(accountID: "review@example.com")
         )
         let store = makeStore(backend: backend)
-        let windowController = ReviewMonitorWindowController(
-            store: store,
-            performInitialAuthRefresh: false
-        )
+        let windowController = ReviewMonitorWindowController(store: store)
         guard let window = windowController.window else {
             Issue.record("ReviewMonitorWindowController did not create a window.")
             return
@@ -274,10 +273,7 @@ struct CodexReviewUIShellTests {
             savedAccounts: [],
             workspaces: []
         )
-        let windowController = ReviewMonitorWindowController(
-            store: store,
-            performInitialAuthRefresh: false
-        )
+        let windowController = ReviewMonitorWindowController(store: store)
         guard let window = windowController.window else {
             Issue.record("ReviewMonitorWindowController did not create a window.")
             return
@@ -300,18 +296,19 @@ struct CodexReviewUIShellTests {
         #expect(harness.windowController.windowContentKindForTesting == .signInView)
         #expect(window.toolbar == nil)
         #expect(window.titleVisibility == .hidden)
-        #expect(window.title == "")
-        #expect(window.subtitle == "")
         #expect(window.isMovableByWindowBackground)
     }
 
-    @Test func windowControllerForceSplitViewShowsSplitViewWhenSignedOut() {
+    @Test func windowControllerShowsSplitViewWhenSignedOutWithSavedAccounts() {
         let store = CodexReviewStore.makePreviewStore()
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedOut,
-            forceSplitView: true
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: nil,
+            savedAccounts: [CodexAccount(email: "saved@example.com", planType: "pro")],
+            workspaces: []
         )
+        let harness = makeWindowHarness(store: store, authState: .signedOut)
         let window = harness.window
         defer { window.close() }
 
@@ -348,8 +345,7 @@ struct CodexReviewUIShellTests {
 
         #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
         #expect(window.toolbar == nil)
-        #expect(window.title == "")
-        #expect(window.subtitle == "")
+        #expect(window.titleVisibility == .hidden)
         #expect(window.isMovableByWindowBackground)
     }
 

@@ -22,6 +22,12 @@ package enum CodexAuthRuntimeEffect {
 
 @MainActor
 package class ReviewMonitorAuthRuntimeDriver {
+    package var applyAddAccountRuntimeEffectHandler: (@MainActor @Sendable (
+        CodexAuthRuntimeEffect,
+        CodexReviewAuthModel
+    ) async -> Void)?
+    package var cancelRunningJobsHandler: (@MainActor @Sendable (String) async throws -> Void)?
+
     package init() {}
 
     package func runtimeState() -> CodexAuthRuntimeState {
@@ -35,18 +41,6 @@ package class ReviewMonitorAuthRuntimeDriver {
         runtimeGeneration: Int
     ) -> CodexAuthRuntimeEffect {
         .recycleNow(accountKey: accountKey, runtimeGeneration: runtimeGeneration)
-    }
-
-    package func applyAddAccountRuntimeEffect(
-        _ effect: CodexAuthRuntimeEffect,
-        auth: CodexReviewAuthModel
-    ) async {
-        _ = effect
-        _ = auth
-    }
-
-    package func cancelRunningJobs(reason: String) async throws {
-        _ = reason
     }
 }
 
@@ -205,7 +199,9 @@ package final class ReviewMonitorAuthOrchestrator {
         case .live(let serverRuntime):
             await serverRuntime.applyAddAccountRuntimeEffect(effect, auth: auth)
         case .testing(let runtimeDriver):
-            await runtimeDriver.applyAddAccountRuntimeEffect(effect, auth: auth)
+            if let applyAddAccountRuntimeEffectHandler = runtimeDriver.applyAddAccountRuntimeEffectHandler {
+                await applyAddAccountRuntimeEffectHandler(effect, auth)
+            }
         }
     }
 
@@ -214,7 +210,9 @@ package final class ReviewMonitorAuthOrchestrator {
         case .live(let serverRuntime):
             try await serverRuntime.cancelRunningJobs(reason: reason)
         case .testing(let runtimeDriver):
-            try await runtimeDriver.cancelRunningJobs(reason: reason)
+            if let cancelRunningJobsHandler = runtimeDriver.cancelRunningJobsHandler {
+                try await cancelRunningJobsHandler(reason)
+            }
         }
     }
 
@@ -305,7 +303,7 @@ package final class ReviewMonitorAuthOrchestrator {
             guard let completedAccount else {
                 throw ReviewAuthError.loginFailed(reviewAuthPersistenceFailureMessage)
             }
-            let priorCurrentAccount = auth.account
+            let priorCurrentAccount = auth.selectedAccount
             let commitOutcome = makeAuthenticationCommitOutcome(
                 intent: intent,
                 priorSnapshot: priorSnapshot,
@@ -322,7 +320,7 @@ package final class ReviewMonitorAuthOrchestrator {
                 }
             }
 
-            let savedAccount: CodexAccount
+            let savedAccount: CodexSavedAccountPayload
             do {
                 savedAccount = try accountRegistryStore.saveAuthSnapshot(
                     sourceAuthURL: ReviewHomePaths.reviewAuthURL(environment: commitProbe.environment),
@@ -340,7 +338,7 @@ package final class ReviewMonitorAuthOrchestrator {
                 )
                 await applyCommittedActiveAccount(
                     auth: auth,
-                    savedAccount: savedAccount,
+                    savedAccountKey: savedAccount.accountKey,
                     priorAccount: priorCurrentAccount,
                     forceRecycleServer: commitOutcome.presentationEffect.forceRecycleServer
                 )
@@ -363,14 +361,14 @@ package final class ReviewMonitorAuthOrchestrator {
             )
             if commitOutcome.sharedAuthUpdate.shouldRefreshSharedAuthSnapshot,
                runtimeState().serverIsRunning == false,
-               auth.account != nil,
-               didAccountIdentityChange(from: priorCurrentAccount, to: auth.account) == false
+               auth.selectedAccount != nil,
+               didAccountIdentityChange(from: priorCurrentAccount, to: auth.selectedAccount) == false
             {
                 accountSessionController.resetAuthenticationRequiredCapabilityForAuthRecovery()
             }
             auth.updatePhase(.signedOut)
             auth.updateWarning(message: nil)
-            hasResolvedAuthenticatedAccount = auth.account != nil
+            hasResolvedAuthenticatedAccount = auth.selectedAccount != nil
             await reconcileAfterResolvedAuthState(
                 auth: auth,
                 identityChanged: false
@@ -445,7 +443,7 @@ package final class ReviewMonitorAuthOrchestrator {
             throw ReviewAuthError.authenticationRequired("Saved account was not found.")
         }
         let targetSavedAccount = loadedAccounts.accounts.first(where: { $0.accountKey == accountKey })
-        let priorAccount = auth.account
+        let priorAccount = auth.selectedAccount
         let isCurrentSessionTarget = priorAccount?.accountKey == accountKey
         let isPersistedActiveTarget = loadedAccounts.activeAccountKey == accountKey
         let shouldRecoverCurrentSessionFromSavedSnapshot =
@@ -462,7 +460,7 @@ package final class ReviewMonitorAuthOrchestrator {
             if runtimeState().serverIsRunning {
                 await applyCommittedActiveAccount(
                     auth: auth,
-                    savedAccount: targetSavedAccount,
+                    savedAccountKey: targetSavedAccount?.accountKey,
                     priorAccount: priorAccount,
                     forceRecycleServer: true
                 )
@@ -476,19 +474,18 @@ package final class ReviewMonitorAuthOrchestrator {
         }
         if isCurrentSessionTarget {
             if isPersistedActiveTarget == false {
-                _ = try accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+                try accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
             }
-            await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
-            if let priorAccount {
-                if let resolvedSavedAccount = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
-                    syncCurrentAccountMetadata(from: resolvedSavedAccount, to: priorAccount)
-                }
-                auth.updateAccount(priorAccount)
+            await refreshSavedAccounts(auth: auth)
+            if auth.savedAccounts.contains(where: { $0.accountKey == accountKey }) {
+                auth.updateSelectedAccount(
+                    auth.savedAccounts.first(where: { $0.accountKey == accountKey })?.id
+                )
             }
             accountSessionController.resetAuthenticationRequiredCapabilityForAuthRecovery()
             auth.updatePhase(.signedOut)
             auth.updateWarning(message: nil)
-            hasResolvedAuthenticatedAccount = auth.account != nil
+            hasResolvedAuthenticatedAccount = auth.selectedAccount != nil
             await reconcileAfterResolvedAuthState(
                 auth: auth,
                 identityChanged: false,
@@ -500,7 +497,7 @@ package final class ReviewMonitorAuthOrchestrator {
         if runtimeState().serverIsRunning {
             await applyCommittedActiveAccount(
                 auth: auth,
-                savedAccount: targetSavedAccount,
+                savedAccountKey: targetSavedAccount?.accountKey,
                 priorAccount: priorAccount,
                 forceRecycleServer: true
             )
@@ -521,37 +518,31 @@ package final class ReviewMonitorAuthOrchestrator {
         if auth.isAuthenticating {
             await cancelAuthentication(auth: auth)
         }
-        let priorAccount = auth.account
+        let priorAccount = auth.selectedAccount
         let removedCurrentSession = priorAccount?.accountKey == accountKey
         let startedWithoutCurrentSession = priorAccount == nil
-        let priorUnsavedCurrentAccount = unsavedCurrentAccount(in: auth)
-        _ = try await accountRegistryStore.removeAccount(accountKey)
+        try await accountRegistryStore.removeAccount(accountKey)
         var replacementSavedAccount: CodexAccount?
         if let loaded = try? accountRegistryStore.loadAccounts() {
-            auth.updateSavedAccounts(loaded.accounts)
+            auth.applySavedAccountStates(loaded.accounts)
             if let priorAccount,
-               let resolvedCurrentSavedAccount = auth.savedAccounts.first(where: {
-                   $0.accountKey == priorAccount.accountKey
-               })
+               auth.savedAccounts.contains(where: { $0.accountKey == priorAccount.accountKey })
             {
-                auth.updateAccount(resolvedCurrentSavedAccount)
-                replacementSavedAccount = resolvedCurrentSavedAccount.isActive
-                    ? resolvedCurrentSavedAccount
-                    : auth.savedAccounts.first(where: \.isActive)
-            } else if preserveUnsavedCurrentAccount(
-                priorUnsavedCurrentAccount,
-                in: auth
-            ) {
-                replacementSavedAccount = auth.savedAccounts.first(where: \.isActive)
+                auth.updateSelectedAccount(
+                    auth.savedAccounts.first(where: { $0.accountKey == priorAccount.accountKey })?.id
+                )
+                replacementSavedAccount = auth.selectedAccount
             } else if startedWithoutCurrentSession {
-                auth.updateAccount(nil)
+                auth.updateSelectedAccount(nil)
             } else if let activeAccountKey = loaded.activeAccountKey,
-               let activeAccount = loaded.accounts.first(where: { $0.accountKey == activeAccountKey })
+                      auth.savedAccounts.contains(where: { $0.accountKey == activeAccountKey })
             {
-                auth.updateAccount(activeAccount)
-                replacementSavedAccount = activeAccount
+                auth.updateSelectedAccount(
+                    auth.savedAccounts.first(where: { $0.accountKey == activeAccountKey })?.id
+                )
+                replacementSavedAccount = auth.selectedAccount
             } else {
-                auth.updateAccount(nil)
+                auth.updateSelectedAccount(nil)
             }
         }
         if removedCurrentSession {
@@ -569,7 +560,7 @@ package final class ReviewMonitorAuthOrchestrator {
             let warningMessage = await performCommittedJobCleanupIfNeeded(shouldCancelJobs: true)
             await reconcileAfterResolvedAuthState(
                 auth: auth,
-                identityChanged: didAccountIdentityChange(from: priorAccount, to: auth.account),
+                identityChanged: didAccountIdentityChange(from: priorAccount, to: auth.selectedAccount),
                 forceRestartSession: true,
                 forceRecycleServer: runtimeState().serverIsRunning
             )
@@ -592,16 +583,11 @@ package final class ReviewMonitorAuthOrchestrator {
         accountKey: String,
         toIndex: Int
     ) async throws {
-        let priorUnsavedCurrentAccount = unsavedCurrentAccount(in: auth)
         try await accountRegistryStore.reorderAccount(
             accountKey: accountKey,
             toIndex: toIndex
         )
-        await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
-        _ = preserveUnsavedCurrentAccount(
-            priorUnsavedCurrentAccount,
-            in: auth
-        )
+        await refreshSavedAccounts(auth: auth)
         let resolvedRuntimeState = runtimeState()
         await reconcileRateLimitControllers(
             auth: auth,
@@ -611,7 +597,7 @@ package final class ReviewMonitorAuthOrchestrator {
     }
 
     package func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
-        guard auth.account != nil else {
+        guard auth.selectedAccount != nil else {
             return
         }
         cancelStartupRefresh()
@@ -620,16 +606,16 @@ package final class ReviewMonitorAuthOrchestrator {
             await cancelAuthentication(auth: auth)
         }
         var didCompleteLogout = false
-        let signedOutAccount = auth.account
+        let signedOutAccount = auth.selectedAccount
         let removesSavedSignedOutAccount = signedOutAccount.map { signedOutAccount in
-            auth.savedAccounts.first(where: \.isActive)?.accountKey == signedOutAccount.accountKey
+            auth.selectedAccount?.accountKey == signedOutAccount.accountKey
         } ?? false
         do {
             let authManager = makeAuthManager(
                 environment: configuration.environment,
                 sessionFactory: sharedAuthSessionFactory
             )
-            _ = try await authManager.logout()
+            try await authManager.logout()
             didCompleteLogout = true
             if let signedOutAccountKey = signedOutAccount?.accountKey, removesSavedSignedOutAccount {
                 try await accountRegistryStore.clearActiveAccount(accountKey: signedOutAccountKey)
@@ -640,11 +626,11 @@ package final class ReviewMonitorAuthOrchestrator {
                 }
             }
             if let loaded = try? accountRegistryStore.loadAccounts() {
-                auth.updateSavedAccounts(loaded.accounts)
+                auth.applySavedAccountStates(loaded.accounts)
             } else {
-                auth.updateSavedAccounts([])
+                auth.applySavedAccountStates([])
             }
-            auth.updateAccount(nil)
+            auth.updateSelectedAccount(nil)
             auth.updatePhase(.signedOut)
             auth.updateWarning(message: nil)
             hasResolvedAuthenticatedAccount = false
@@ -701,14 +687,9 @@ package final class ReviewMonitorAuthOrchestrator {
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async {
-        let isActiveAccount = auth.account?.accountKey == accountKey
-        let priorUnsavedCurrentAccount = auth.account.flatMap { currentAccount in
-            auth.savedAccounts.contains(where: { $0.accountKey == currentAccount.accountKey })
-                ? nil
-                : currentAccount
-        }
+        let isActiveAccount = auth.selectedAccount?.accountKey == accountKey
         if isActiveAccount,
-           auth.account != nil
+           auth.selectedAccount != nil
         {
             let activeAccountKey = accountKey
             let applyActiveRateLimitRefreshSuccess: (AppServerAccountRateLimitsResponse) async -> Void = { [self] response in
@@ -763,7 +744,7 @@ package final class ReviewMonitorAuthOrchestrator {
                 } catch {
                     await applyActiveRateLimitRefreshFailure(Date(), error.localizedDescription, false)
                 }
-                await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
+                await refreshSavedAccounts(auth: auth)
                 return
             }
 
@@ -771,7 +752,7 @@ package final class ReviewMonitorAuthOrchestrator {
             do {
                 let probe: PreparedInactiveAccountProbe
                 let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
-                let persistedActiveAccountKey = auth.savedAccounts.first(where: \.isActive)?.accountKey
+                let persistedActiveAccountKey = auth.selectedAccount?.accountKey
                 let selectedSavedAccountKey = auth.savedAccounts.contains(where: {
                     $0.accountKey == activeAccountKey
                 }) ? activeAccountKey : nil
@@ -811,7 +792,7 @@ package final class ReviewMonitorAuthOrchestrator {
             } catch {
                 await applyActiveRateLimitRefreshFailure(fetchedAt, error.localizedDescription, false)
             }
-            await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
+            await refreshSavedAccounts(auth: auth)
             return
         }
 
@@ -894,11 +875,6 @@ package final class ReviewMonitorAuthOrchestrator {
             )
         }
         await refreshSavedAccounts(auth: auth)
-        if let priorUnsavedCurrentAccount,
-           auth.savedAccounts.contains(where: { $0.accountKey == priorUnsavedCurrentAccount.accountKey }) == false
-        {
-            auth.updateAccount(priorUnsavedCurrentAccount)
-        }
     }
 
     package func requiresCurrentSessionRecovery(
@@ -907,7 +883,7 @@ package final class ReviewMonitorAuthOrchestrator {
     ) -> Bool {
         accountSessionController.requiresAuthenticationRecoveryForCurrentSession()
             && runtimeState().serverIsRunning
-            && auth.account?.accountKey == accountKey
+            && auth.selectedAccount?.accountKey == accountKey
             && auth.savedAccounts.contains(where: { $0.accountKey == accountKey })
     }
 
@@ -930,7 +906,7 @@ package final class ReviewMonitorAuthOrchestrator {
     ) async {
         await accountSessionController.reconcile(
             serverIsRunning: serverIsRunning,
-            accountKey: auth.account?.accountKey,
+            accountKey: auth.selectedAccount?.accountKey,
             runtimeGeneration: runtimeGeneration,
             accountResolver: { accountKey in
                 resolvedAccounts(for: accountKey, in: auth)
@@ -938,7 +914,7 @@ package final class ReviewMonitorAuthOrchestrator {
         )
         await inactiveAccountRateLimitController.reconcile(
             serverIsRunning: serverIsRunning,
-            activeAccountKey: auth.account?.accountKey,
+            activeAccountKey: auth.selectedAccount?.accountKey,
             runtimeGeneration: runtimeGeneration,
             savedAccountsProvider: {
                 auth.savedAccounts
@@ -962,22 +938,24 @@ package final class ReviewMonitorAuthOrchestrator {
         allowDuringAuthentication: Bool = false,
         preserveRuntimeOnIdentityChange: Bool = false
     ) async {
+        var resolvedAuthenticatedState = false
         do {
             let authManager = makeAuthManager(
                 environment: configuration.environment,
                 sessionFactory: sharedAuthSessionFactory
             )
             let state = try await authManager.loadState()
-            let priorAccount = auth.account
+            resolvedAuthenticatedState = state.isAuthenticated
+            let priorAccount = auth.selectedAccount
             if auth.isAuthenticating, allowDuringAuthentication == false {
                 return
             }
             if state.account != nil {
                 let refreshedAccountKey = normalizedReviewAccountEmail(email: state.account?.email ?? "")
-                let persistedActiveAccountKey = auth.savedAccounts.first(where: \.isActive)?.accountKey
+                let persistedActiveAccountKey = auth.selectedAccount?.accountKey
                 let shouldPreservePersistedActiveSelection =
                     persistedActiveAccountKey != nil && persistedActiveAccountKey != refreshedAccountKey
-                _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(
+                try accountRegistryStore.saveSharedAuthAsSavedAccount(
                     makeActive: shouldPreservePersistedActiveSelection == false
                 )
             } else if forceRecycleServer == false {
@@ -987,19 +965,18 @@ package final class ReviewMonitorAuthOrchestrator {
                     try? await accountRegistryStore.clearActiveAccount()
                 }
             }
-            await refreshSavedAccounts(
-                auth: auth,
-                preserveCurrentWhenEmpty: state.isAuthenticated
+            let activeAccountKey = await refreshSavedAccounts(
+                auth: auth
             )
-            _ = applyResolvedReviewAuthState(
+            applyResolvedReviewAuthState(
                 state,
-                activeAccountKey: auth.savedAccounts.first(where: \.isActive)?.accountKey,
+                activeAccountKey: activeAccountKey,
                 priorResolvedAuthenticatedAccount: hasResolvedAuthenticatedAccount,
                 preferActiveAccountSelection: forceRecycleServer,
                 to: auth
             )
             auth.updateWarning(message: nil)
-            let actualIdentityChanged = didAccountIdentityChange(from: priorAccount, to: auth.account)
+            let actualIdentityChanged = didAccountIdentityChange(from: priorAccount, to: auth.selectedAccount)
             if state.isAuthenticated,
                actualIdentityChanged == false,
                forceRecycleServer == false
@@ -1022,23 +999,23 @@ package final class ReviewMonitorAuthOrchestrator {
             if state.isAuthenticated,
                identityChanged == false,
                forceRecycleServer == false,
-               let activeAccountKey = auth.account?.accountKey,
+               let activeAccountKey = auth.selectedAccount?.accountKey,
                runtimeState().serverIsRunning
             {
                 await refreshSavedAccountRateLimits(auth: auth, accountKey: activeAccountKey)
             }
             if forceRecycleServer {
                 let postRecycleState = try await authManager.loadState()
+                resolvedAuthenticatedState = postRecycleState.isAuthenticated
                 if postRecycleState.isAuthenticated == false {
                     try? await accountRegistryStore.clearActiveAccount()
                 }
-                await refreshSavedAccounts(
-                    auth: auth,
-                    preserveCurrentWhenEmpty: postRecycleState.isAuthenticated
+                let postRecycleActiveAccountKey = await refreshSavedAccounts(
+                    auth: auth
                 )
-                _ = applyResolvedReviewAuthState(
+                applyResolvedReviewAuthState(
                     postRecycleState,
-                    activeAccountKey: auth.savedAccounts.first(where: \.isActive)?.accountKey,
+                    activeAccountKey: postRecycleActiveAccountKey,
                     priorResolvedAuthenticatedAccount: hasResolvedAuthenticatedAccount,
                     preferActiveAccountSelection: false,
                     to: auth
@@ -1056,18 +1033,16 @@ package final class ReviewMonitorAuthOrchestrator {
             guard auth.isAuthenticating == false || allowDuringAuthentication else {
                 return
             }
-            await refreshSavedAccounts(auth: auth, preserveCurrentWhenEmpty: true)
-            if auth.account == nil,
-               let preservedAccount = auth.savedAccounts.first(where: \.isActive)
-            {
-                auth.updateAccount(preservedAccount)
+            await refreshSavedAccounts(auth: auth)
+            if auth.selectedAccount == nil {
+                auth.updateSelectedAccount(nil)
             }
             auth.updateWarning(message: nil)
-            if auth.isAuthenticated {
+            if resolvedAuthenticatedState || auth.isAuthenticated {
                 auth.updatePhase(.failed(message: error.localizedDescription))
             } else {
                 auth.updatePhase(.signedOut)
-                auth.updateAccount(nil)
+                auth.updateSelectedAccount(nil)
             }
             await reconcileAfterResolvedAuthState(
                 auth: auth,
@@ -1082,16 +1057,16 @@ package final class ReviewMonitorAuthOrchestrator {
             if forceRecycleServer,
                let postRecycleState = try? await postRecycleAuthManager.loadState()
             {
+                resolvedAuthenticatedState = postRecycleState.isAuthenticated
                 if postRecycleState.isAuthenticated == false {
                     try? await accountRegistryStore.clearActiveAccount()
                 }
-                await refreshSavedAccounts(
-                    auth: auth,
-                    preserveCurrentWhenEmpty: postRecycleState.isAuthenticated
+                let postRecycleActiveAccountKey = await refreshSavedAccounts(
+                    auth: auth
                 )
-                _ = applyResolvedReviewAuthState(
+                applyResolvedReviewAuthState(
                     postRecycleState,
-                    activeAccountKey: auth.savedAccounts.first(where: \.isActive)?.accountKey,
+                    activeAccountKey: postRecycleActiveAccountKey,
                     priorResolvedAuthenticatedAccount: hasResolvedAuthenticatedAccount,
                     preferActiveAccountSelection: false,
                     to: auth
@@ -1161,7 +1136,7 @@ package final class ReviewMonitorAuthOrchestrator {
         logoutCompleted: Bool = false,
         removesSavedSignedOutAccount: Bool = false
     ) async {
-        let hadAuthenticatedAccount = auth.account != nil
+        let hadAuthenticatedAccount = auth.selectedAccount != nil
         let priorAccountKey = priorAccount?.accountKey
         let authManager = makeAuthManager(
             environment: configuration.environment,
@@ -1169,7 +1144,9 @@ package final class ReviewMonitorAuthOrchestrator {
         )
         if let resolvedState = try? await authManager.loadState() {
             if resolvedState.isAuthenticated {
-                _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+                do {
+                    try accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+                } catch {}
             } else if removesSavedSignedOutAccount, let priorAccountKey {
                 try? await accountRegistryStore.clearActiveAccount(accountKey: priorAccountKey)
             } else {
@@ -1177,18 +1154,17 @@ package final class ReviewMonitorAuthOrchestrator {
                     at: ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
                 )
             }
-            await refreshSavedAccounts(
-                auth: auth,
-                preserveCurrentWhenEmpty: resolvedState.isAuthenticated
+            let activeAccountKey = await refreshSavedAccounts(
+                auth: auth
             )
-            _ = applyResolvedReviewAuthState(
+            applyResolvedReviewAuthState(
                 resolvedState,
-                activeAccountKey: auth.savedAccounts.first(where: \.isActive)?.accountKey,
+                activeAccountKey: activeAccountKey,
                 priorResolvedAuthenticatedAccount: hasResolvedAuthenticatedAccount,
                 preferActiveAccountSelection: false,
                 to: auth
             )
-            let identityChanged = didAccountIdentityChange(from: priorAccount, to: auth.account)
+            let identityChanged = didAccountIdentityChange(from: priorAccount, to: auth.selectedAccount)
             hasResolvedAuthenticatedAccount = resolvedState.isAuthenticated
             auth.updateWarning(message: nil)
             if auth.isAuthenticated {
@@ -1211,11 +1187,11 @@ package final class ReviewMonitorAuthOrchestrator {
                 )
             }
             if let loaded = try? accountRegistryStore.loadAccounts() {
-                auth.updateSavedAccounts(loaded.accounts)
+                auth.applySavedAccountStates(loaded.accounts)
             } else {
-                auth.updateSavedAccounts([])
+                auth.applySavedAccountStates([])
             }
-            auth.updateAccount(nil)
+            auth.updateSelectedAccount(nil)
             auth.updatePhase(.signedOut)
             auth.updateWarning(message: nil)
             hasResolvedAuthenticatedAccount = false
@@ -1351,7 +1327,7 @@ package final class ReviewMonitorAuthOrchestrator {
         guard priorCurrentAccount == nil else {
             return false
         }
-        return priorSnapshot.savedAccounts.contains(where: \.isActive) == false
+        return priorSnapshot.selectedAccountKey == nil
     }
 
     private func addAccountRuntimeEffect(
@@ -1380,17 +1356,12 @@ package final class ReviewMonitorAuthOrchestrator {
         guard let priorCurrentAccount else {
             return false
         }
-        if priorSnapshot.savedAccounts.contains(where: {
-            $0.accountKey == priorCurrentAccount.accountKey
-        }) {
-            return true
-        }
-        return priorSnapshot.savedAccounts.contains(where: \.isActive) == false
+        return priorSnapshot.selectedAccountKey == priorCurrentAccount.accountKey
     }
 
     private func applyCommittedActiveAccount(
         auth: CodexReviewAuthModel,
-        savedAccount: CodexAccount?,
+        savedAccountKey: String?,
         priorAccount: CodexAccount?,
         forceRecycleServer: Bool,
         preserveRuntimeOnIdentityChange: Bool = false
@@ -1406,20 +1377,28 @@ package final class ReviewMonitorAuthOrchestrator {
             return
         }
 
-        await refreshSavedAccounts(auth: auth)
-        if let activeAccount = auth.savedAccounts.first(where: \.isActive) {
-            auth.updateAccount(activeAccount)
-        } else if let savedAccountKey = savedAccount?.accountKey,
-                  let resolvedSavedAccount = auth.savedAccounts.first(where: { $0.accountKey == savedAccountKey })
+        let activeAccountKey = await refreshSavedAccounts(auth: auth)
+        if let activeAccountKey,
+           auth.savedAccounts.contains(where: { $0.accountKey == activeAccountKey })
         {
-            auth.updateAccount(resolvedSavedAccount)
+            auth.updateSelectedAccount(
+                auth.savedAccounts.first(where: { $0.accountKey == activeAccountKey })?.id
+            )
+        } else if let savedAccountKey,
+                  auth.savedAccounts.contains(where: { $0.accountKey == savedAccountKey })
+        {
+            auth.updateSelectedAccount(
+                auth.savedAccounts.first(where: { $0.accountKey == savedAccountKey })?.id
+            )
+        } else {
+            auth.updateSelectedAccount(nil)
         }
         auth.updatePhase(.signedOut)
         auth.updateWarning(message: nil)
-        hasResolvedAuthenticatedAccount = auth.account != nil
+        hasResolvedAuthenticatedAccount = auth.selectedAccount != nil
         await reconcileAfterResolvedAuthState(
             auth: auth,
-            identityChanged: didAccountIdentityChange(from: priorAccount, to: auth.account)
+            identityChanged: didAccountIdentityChange(from: priorAccount, to: auth.selectedAccount)
         )
     }
 
@@ -1439,15 +1418,14 @@ package final class ReviewMonitorAuthOrchestrator {
         auth: CodexReviewAuthModel,
         priorCurrentAccount: CodexAccount?
     ) {
-        if let priorCurrentAccount {
-            if let resolvedSavedAccount = auth.savedAccounts.first(where: {
-                $0.accountKey == priorCurrentAccount.accountKey
-            }) {
-                syncCurrentAccountMetadata(from: resolvedSavedAccount, to: priorCurrentAccount)
-            }
-            auth.updateAccount(priorCurrentAccount)
+        if let priorCurrentAccount,
+           auth.savedAccounts.contains(where: { $0.accountKey == priorCurrentAccount.accountKey })
+        {
+            auth.updateSelectedAccount(
+                auth.savedAccounts.first(where: { $0.accountKey == priorCurrentAccount.accountKey })?.id
+            )
         } else {
-            auth.updateAccount(nil)
+            auth.updateSelectedAccount(nil)
         }
     }
 
@@ -1475,79 +1453,46 @@ package final class ReviewMonitorAuthOrchestrator {
         )
     }
 
-    private func unsavedCurrentAccount(
-        in auth: CodexReviewAuthModel
-    ) -> CodexAccount? {
-        auth.account.flatMap { currentAccount in
-            auth.savedAccounts.contains(where: { $0.accountKey == currentAccount.accountKey })
-                ? nil
-                : currentAccount
-        }
-    }
-
     @discardableResult
-    private func preserveUnsavedCurrentAccount(
-        _ priorUnsavedCurrentAccount: CodexAccount?,
-        in auth: CodexReviewAuthModel
-    ) -> Bool {
-        guard let priorUnsavedCurrentAccount,
-              auth.savedAccounts.contains(where: { $0.accountKey == priorUnsavedCurrentAccount.accountKey }) == false
-        else {
-            return false
-        }
-        auth.updateAccount(priorUnsavedCurrentAccount)
-        return true
-    }
-
     private func refreshSavedAccounts(
-        auth: CodexReviewAuthModel,
-        preserveCurrentWhenEmpty: Bool = false
-    ) async {
+        auth: CodexReviewAuthModel
+    ) async -> String? {
         if let loaded = try? accountRegistryStore.loadAccounts() {
-            let priorAccount = auth.account
+            let priorAccount = auth.selectedAccount
             let priorAccountsByKey = Dictionary(
                 uniqueKeysWithValues: auth.savedAccounts.map { ($0.accountKey, $0) }
             )
-            let loadedAccounts = loaded.accounts.map { loadedAccount in
-                let inMemoryAccount = priorAccount?.accountKey == loadedAccount.accountKey
+            let loadedAccounts = loaded.accounts.map { loadedPayload in
+                let inMemoryAccount = priorAccount?.accountKey == loadedPayload.accountKey
                     ? priorAccount
-                    : priorAccountsByKey[loadedAccount.accountKey]
+                    : priorAccountsByKey[loadedPayload.accountKey]
                 if let inMemoryAccount,
                    shouldPreferInMemoryRateLimitState(
-                    priorAccount: inMemoryAccount,
-                    loadedAccount: loadedAccount
+                       priorAccount: inMemoryAccount,
+                       loadedPayload: loadedPayload
                    )
                 {
-                    loadedAccount.updateRateLimits(
-                        inMemoryAccount.rateLimits.map {
+                    return CodexSavedAccountPayload(
+                        accountKey: loadedPayload.accountKey,
+                        email: loadedPayload.email,
+                        planType: loadedPayload.planType,
+                        rateLimits: inMemoryAccount.rateLimits.map {
                             (
                                 windowDurationMinutes: $0.windowDurationMinutes,
                                 usedPercent: $0.usedPercent,
                                 resetsAt: $0.resetsAt
                             )
-                        }
-                    )
-                    loadedAccount.updateRateLimitFetchMetadata(
-                        fetchedAt: inMemoryAccount.lastRateLimitFetchAt,
-                        error: inMemoryAccount.lastRateLimitError
+                        },
+                        lastRateLimitFetchAt: inMemoryAccount.lastRateLimitFetchAt,
+                        lastRateLimitError: inMemoryAccount.lastRateLimitError
                     )
                 }
-                return loadedAccount
+                return loadedPayload
             }
-            let priorAccountKey = priorAccount?.accountKey
-            auth.updateSavedAccounts(loadedAccounts)
-            if let priorAccountKey,
-               let resolvedSavedAccount = loadedAccounts.first(where: { $0.accountKey == priorAccountKey }),
-               let priorAccount
-            {
-                syncCurrentAccountMetadata(from: resolvedSavedAccount, to: priorAccount)
-                auth.updateAccount(priorAccount)
-            } else if preserveCurrentWhenEmpty, let priorAccount {
-                auth.updateAccount(priorAccount)
-            } else {
-                auth.updateAccount(nil)
-            }
+            auth.applySavedAccountStates(loadedAccounts)
+            return loaded.activeAccountKey
         }
+        return nil
     }
 
     private func applyAuthenticationProgressState(
@@ -1568,9 +1513,9 @@ package final class ReviewMonitorAuthOrchestrator {
 
     private func shouldPreferInMemoryRateLimitState(
         priorAccount: CodexAccount,
-        loadedAccount: CodexAccount
+        loadedPayload: CodexSavedAccountPayload
     ) -> Bool {
-        switch (priorAccount.lastRateLimitFetchAt, loadedAccount.lastRateLimitFetchAt) {
+        switch (priorAccount.lastRateLimitFetchAt, loadedPayload.lastRateLimitFetchAt) {
         case let (priorFetchedAt?, loadedFetchedAt?):
             return priorFetchedAt > loadedFetchedAt
         case (.some, nil):
@@ -2213,14 +2158,16 @@ private final class InactiveSavedAccountRateLimitScheduler {
         savedAccountsProvider = nil
         refreshRateLimitsAction = nil
         task?.cancel()
-        _ = await task?.result
+        if let task {
+            await task.value
+        }
     }
 }
 
 private struct AuthPresentationSnapshot {
     var phase: CodexReviewAuthModel.Phase
     var savedAccounts: [SavedAccountPresentationSnapshot]
-    var account: ReviewAuthAccount?
+    var selectedAccountKey: CodexAccount.ID?
     var warningMessage: String?
     var isResolvedAuthenticated: Bool
 }
@@ -2229,7 +2176,6 @@ private struct SavedAccountPresentationSnapshot {
     var accountKey: String
     var email: String
     var planType: String?
-    var isActive: Bool
     var rateLimits: [ReviewSavedRateLimitWindowRecord]
     var lastRateLimitFetchAt: Date?
     var lastRateLimitError: String?
@@ -2243,7 +2189,7 @@ private func snapshot(
     .init(
         phase: auth.phase,
         savedAccounts: auth.savedAccounts.map(makeSavedAccountPresentationSnapshot),
-        account: auth.account.map(makeReviewAuthAccount),
+        selectedAccountKey: auth.selectedAccount?.id,
         warningMessage: auth.warningMessage,
         isResolvedAuthenticated: isResolvedAuthenticated
     )
@@ -2256,18 +2202,12 @@ private func restore(
 ) {
     auth.updatePhase(snapshot.phase)
     auth.updateWarning(message: snapshot.warningMessage)
-    let savedAccounts = snapshot.savedAccounts.map(makeCodexAccount)
-    auth.updateSavedAccounts(savedAccounts)
-    if let account = snapshot.account {
-        _ = applyReviewAuthAccount(
-            account,
-            activeAccountKey: savedAccounts.first(where: \.isActive)?.accountKey,
-            preferActiveAccountSelection: false,
-            to: auth
-        )
-    } else {
-        auth.updateAccount(nil)
-    }
+    auth.applySavedAccountStates(snapshot.savedAccounts.map(makeSavedAccountPayload))
+    auth.updateSelectedAccount(
+        snapshot.selectedAccountKey.flatMap { selectedAccountKey in
+            auth.savedAccounts.first(where: { $0.id == selectedAccountKey })?.id
+        }
+    )
 }
 
 @MainActor
@@ -2282,7 +2222,7 @@ private func applyResolvedReviewAuthState(
     switch state {
     case .signedOut:
         auth.updatePhase(.signedOut)
-        auth.updateAccount(nil)
+        auth.updateSelectedAccount(nil)
         return priorResolvedAuthenticatedAccount
     case .signingIn(let progress):
         auth.updatePhase(.signingIn(makeAuthProgress(progress)))
@@ -2310,11 +2250,11 @@ private func applyReviewAuthAccount(
     preferActiveAccountSelection: Bool,
     to auth: CodexReviewAuthModel
 ) -> Bool {
-    let priorAccount = auth.account
+    let priorAccount = auth.selectedAccount
     if preferActiveAccountSelection,
        activeAccountKey == nil
     {
-        auth.updateAccount(nil)
+        auth.updateSelectedAccount(nil)
         return didAccountIdentityChange(from: priorAccount, to: nil)
     }
     let normalizedEmail = normalizedReviewAccountEmail(email: account.email)
@@ -2325,7 +2265,7 @@ private func applyReviewAuthAccount(
     {
         existingAccount.updateEmail(account.email)
         existingAccount.updatePlanType(account.planType)
-        auth.updateAccount(existingAccount)
+        auth.updateSelectedAccount(existingAccount.id)
         return didAccountIdentityChange(from: priorAccount, to: existingAccount)
     }
 
@@ -2334,16 +2274,12 @@ private func applyReviewAuthAccount(
     }) {
         existingAccount.updateEmail(account.email)
         existingAccount.updatePlanType(account.planType)
-        auth.updateAccount(existingAccount)
+        auth.updateSelectedAccount(existingAccount.id)
         return didAccountIdentityChange(from: priorAccount, to: existingAccount)
     }
 
-    let createdAccount = CodexAccount(
-        email: account.email,
-        planType: account.planType
-    )
-    auth.updateAccount(createdAccount)
-    return didAccountIdentityChange(from: priorAccount, to: createdAccount)
+    auth.updateSelectedAccount(nil)
+    return didAccountIdentityChange(from: priorAccount, to: nil)
 }
 
 @MainActor
@@ -2360,7 +2296,6 @@ private func makeSavedAccountPresentationSnapshot(_ account: CodexAccount) -> Sa
         accountKey: account.accountKey,
         email: account.email,
         planType: account.planType,
-        isActive: account.isActive,
         rateLimits: account.rateLimits.map {
             .init(
                 windowDurationMinutes: $0.windowDurationMinutes,
@@ -2373,28 +2308,21 @@ private func makeSavedAccountPresentationSnapshot(_ account: CodexAccount) -> Sa
     )
 }
 
-@MainActor
-private func makeCodexAccount(_ snapshot: SavedAccountPresentationSnapshot) -> CodexAccount {
-    let account = CodexAccount(
+private func makeSavedAccountPayload(_ snapshot: SavedAccountPresentationSnapshot) -> CodexSavedAccountPayload {
+    .init(
         accountKey: snapshot.accountKey,
         email: snapshot.email,
-        planType: snapshot.planType
-    )
-    account.updateIsActive(snapshot.isActive)
-    account.updateRateLimits(
-        snapshot.rateLimits.map {
+        planType: snapshot.planType,
+        rateLimits: snapshot.rateLimits.map {
             (
                 windowDurationMinutes: $0.windowDurationMinutes,
                 usedPercent: $0.usedPercent,
                 resetsAt: $0.resetsAt
             )
-        }
+        },
+        lastRateLimitFetchAt: snapshot.lastRateLimitFetchAt,
+        lastRateLimitError: snapshot.lastRateLimitError
     )
-    account.updateRateLimitFetchMetadata(
-        fetchedAt: snapshot.lastRateLimitFetchAt,
-        error: snapshot.lastRateLimitError
-    )
-    return account
 }
 
 @MainActor
@@ -2417,18 +2345,7 @@ private func resolvedAccounts(
     for accountKey: String,
     in auth: CodexReviewAuthModel
 ) -> [CodexAccount] {
-    var accounts: [CodexAccount] = []
-    if let currentAccount = auth.account,
-       currentAccount.accountKey == accountKey
-    {
-        accounts.append(currentAccount)
-    }
-    if let savedAccount = auth.savedAccounts.first(where: { $0.accountKey == accountKey }),
-       accounts.contains(where: { $0 === savedAccount }) == false
-    {
-        accounts.append(savedAccount)
-    }
-    return accounts
+    auth.savedAccounts.filter { $0.accountKey == accountKey }
 }
 
 @MainActor

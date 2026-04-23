@@ -7,6 +7,17 @@ import ReviewTestSupport
 import ReviewDomain
 import ReviewRuntime
 
+@MainActor
+private extension CodexReviewAuthModel {
+    func updateSavedAccounts(_ accounts: [CodexSavedAccountPayload]) {
+        applySavedAccountStates(accounts)
+    }
+
+    func updateAccount(_ account: CodexSavedAccountPayload?) {
+        updateSelectedAccount(account?.accountKey)
+    }
+}
+
 @Suite(.serialized)
 @MainActor
 struct CodexReviewUITests {
@@ -459,30 +470,31 @@ struct CodexReviewUITests {
         let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
         let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
         auth.updateSavedAccounts([firstAccount, secondAccount])
+        let storedFirstAccount = auth.savedAccounts[0]
+        let storedSecondAccount = auth.savedAccounts[1]
 
-        secondAccount.updateIsSwitching(true)
+        storedSecondAccount.updateIsSwitching(true)
 
         let reloadedFirstAccount = CodexAccount(email: "first@example.com", planType: "pro")
         let reloadedSecondAccount = CodexAccount(email: "second@example.com", planType: "plus")
         auth.updateSavedAccounts([reloadedFirstAccount, reloadedSecondAccount])
 
-        #expect(auth.savedAccounts[0] === firstAccount)
-        #expect(auth.savedAccounts[1] === secondAccount)
-        #expect(secondAccount.isSwitching)
+        #expect(auth.savedAccounts[0] === storedFirstAccount)
+        #expect(auth.savedAccounts[1] === storedSecondAccount)
+        #expect(storedSecondAccount.isSwitching)
         #expect(reloadedSecondAccount.isSwitching == false)
     }
 
-    @Test func updateAccountPreservesDetachedCurrentSessionForMatchingKey() {
+    @Test func updateAccountNormalizesSelectionToSavedAccountForMatchingKey() {
         let auth = CodexReviewAuthModel.makePreview()
-        let savedAccount = CodexAccount(email: "review@example.com", planType: "pro")
-        auth.updateSavedAccounts([savedAccount])
+        auth.updateSavedAccounts([CodexAccount(email: "review@example.com", planType: "pro")])
+        let savedAccount = auth.savedAccounts[0]
 
         let detachedAccount = CodexAccount(email: "review@example.com", planType: "plus")
         auth.updateAccount(detachedAccount)
 
-        #expect(auth.account === detachedAccount)
-        #expect(auth.account !== savedAccount)
-        #expect(savedAccount.isActive == false)
+        #expect(auth.account === savedAccount)
+        #expect(auth.account !== detachedAccount)
     }
 
     @Test func jobCellViewUpdatesHostedObservationReferenceWithoutReplacingHostingView() throws {
@@ -750,6 +762,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: [workspace]
         )
+        let storedWorkspace = try #require(store.workspaces.first)
         let viewController = ReviewMonitorSplitViewController(store: store)
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -764,18 +777,18 @@ struct CodexReviewUITests {
         let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
 
         let stableRenderCount = transport.renderCountForTesting
-        sidebar.toggleWorkspaceDisclosureForTesting(workspace)
+        sidebar.toggleWorkspaceDisclosureForTesting(storedWorkspace)
         await transport.flushMainQueueForTesting()
 
-        #expect(sidebar.workspaceIsExpandedForTesting(workspace) == false)
+        #expect(sidebar.workspaceIsExpandedForTesting(storedWorkspace) == false)
         #expect(sidebar.selectedJobForTesting?.id == job.id)
         #expect(transport.renderCountForTesting == stableRenderCount)
         #expect(transport.renderSnapshotForTesting == selectedSnapshot)
 
-        sidebar.toggleWorkspaceDisclosureForTesting(workspace)
+        sidebar.toggleWorkspaceDisclosureForTesting(storedWorkspace)
         await transport.flushMainQueueForTesting()
 
-        #expect(sidebar.workspaceIsExpandedForTesting(workspace))
+        #expect(sidebar.workspaceIsExpandedForTesting(storedWorkspace))
         #expect(sidebar.selectedJobForTesting?.id == job.id)
     }
 
@@ -2080,16 +2093,10 @@ struct ReviewMonitorWindowHarness {
 func makeWindowHarness(
     store: CodexReviewStore,
     authState: TestAuthState = .signedIn(accountID: "review@example.com"),
-    contentSize: NSSize? = nil,
-    performInitialAuthRefresh: Bool = false,
-    forceSplitView: Bool = false
+    contentSize: NSSize? = nil
 ) -> ReviewMonitorWindowHarness {
     applyTestAuthState(auth: store.auth, state: authState)
-    let windowController = ReviewMonitorWindowController(
-        store: store,
-        performInitialAuthRefresh: performInitialAuthRefresh,
-        forceSplitView: forceSplitView
-    )
+    let windowController = ReviewMonitorWindowController(store: store)
     guard let window = windowController.window else {
         fatalError("ReviewMonitorWindowController did not create a window.")
     }
@@ -2431,8 +2438,8 @@ func applyTestAuthState(
         auth.updateSavedAccounts([account])
         auth.updateAccount(account)
     } else {
-        auth.updateSavedAccounts([])
-        auth.updateAccount(nil)
+        auth.updateSavedAccounts([CodexAccount]())
+        auth.updateAccount(nil as CodexAccount?)
     }
 }
 
@@ -2542,12 +2549,14 @@ final class AuthActionBackend: ReviewMonitorTestingHarness {
     private var refreshCalls = 0
 
     init(initialAuthState: TestAuthState = .signedOut) {
+        let initialAccount = initialAuthState.accountEmail.map {
+            CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
+        }
         super.init(
             seed: .init(
                 shouldAutoStartEmbeddedServer: false,
-                initialAccount: initialAuthState.accountEmail.map {
-                    CodexAccount(email: $0, planType: initialAuthState.accountPlanType ?? "pro")
-                }
+                initialAccount: initialAccount,
+                initialAccounts: initialAccount.map { [$0] } ?? []
             )
         )
     }

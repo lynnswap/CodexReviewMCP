@@ -25,21 +25,17 @@ package class ReviewMonitorTestingHarness {
         seed.initialAccounts
     }
 
-    package func attachStore(_ store: CodexReviewStore) {
-        _ = store
-    }
+    package func attachStore(_: CodexReviewStore) {}
 
     package func start(
         store: CodexReviewStore,
-        forceRestartIfNeeded: Bool
+        forceRestartIfNeeded _: Bool
     ) async {
-        _ = forceRestartIfNeeded
         isActive = true
         store.transitionToFailed(Self.previewUnavailableMessage)
     }
 
-    package func stop(store: CodexReviewStore) async {
-        _ = store
+    package func stop(store _: CodexReviewStore) async {
         isActive = false
     }
 
@@ -78,7 +74,7 @@ package class ReviewMonitorTestingHarness {
     }
 
     package func startStartupRefresh(auth: CodexReviewAuthModel) {
-        if auth.account == nil {
+        if auth.selectedAccount == nil {
             auth.updatePhase(.signedOut)
         }
     }
@@ -86,7 +82,7 @@ package class ReviewMonitorTestingHarness {
     package func cancelStartupRefresh() {}
 
     package func refreshAuth(auth: CodexReviewAuthModel) async {
-        if auth.account == nil {
+        if auth.selectedAccount == nil {
             auth.updatePhase(.signedOut)
         }
     }
@@ -100,7 +96,7 @@ package class ReviewMonitorTestingHarness {
     }
 
     package func cancelAuthentication(auth: CodexReviewAuthModel) async {
-        if auth.account == nil {
+        if auth.selectedAccount == nil {
             auth.updatePhase(.signedOut)
         }
     }
@@ -109,13 +105,12 @@ package class ReviewMonitorTestingHarness {
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async throws {
-        guard let target = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) else {
+        guard auth.savedAccounts.contains(where: { $0.accountKey == accountKey }) else {
             return
         }
-        for account in auth.savedAccounts {
-            account.updateIsActive(account.accountKey == accountKey)
-        }
-        auth.updateAccount(target)
+        auth.updateSelectedAccount(
+            auth.savedAccounts.first(where: { $0.accountKey == accountKey })?.id
+        )
         auth.updatePhase(.signedOut)
     }
 
@@ -124,9 +119,9 @@ package class ReviewMonitorTestingHarness {
         accountKey: String
     ) async throws {
         let filteredAccounts = auth.savedAccounts.filter { $0.accountKey != accountKey }
-        auth.updateSavedAccounts(filteredAccounts)
-        if auth.account?.accountKey == accountKey {
-            auth.updateAccount(nil)
+        auth.applySavedAccountStates(filteredAccounts.map(savedAccountPayload(from:)))
+        if auth.selectedAccount?.accountKey == accountKey {
+            auth.updateSelectedAccount(nil)
             auth.updatePhase(.signedOut)
         }
     }
@@ -146,50 +141,38 @@ package class ReviewMonitorTestingHarness {
         }
         let account = reorderedAccounts.remove(at: sourceIndex)
         reorderedAccounts.insert(account, at: destinationIndex)
-        auth.updateSavedAccounts(reorderedAccounts)
+        auth.applySavedAccountStates(reorderedAccounts.map(savedAccountPayload(from:)))
     }
 
     package func signOutActiveAccount(auth: CodexReviewAuthModel) async throws {
         auth.updatePhase(.signedOut)
-        auth.updateAccount(nil)
-        auth.updateSavedAccounts([])
+        auth.updateSelectedAccount(nil)
+        auth.applySavedAccountStates([])
     }
 
     package func refreshSavedAccountRateLimits(
-        auth: CodexReviewAuthModel,
-        accountKey: String
-    ) async {
-        _ = auth
-        _ = accountKey
-    }
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) async {}
 
     package func reconcileAuthenticatedSession(
-        auth: CodexReviewAuthModel,
-        serverIsRunning: Bool,
-        runtimeGeneration: Int
-    ) async {
-        _ = auth
-        _ = serverIsRunning
-        _ = runtimeGeneration
-    }
+        auth _: CodexReviewAuthModel,
+        serverIsRunning _: Bool,
+        runtimeGeneration _: Int
+    ) async {}
 
     package func requiresCurrentSessionRecovery(
-        auth: CodexReviewAuthModel,
-        accountKey: String
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
     ) -> Bool {
-        _ = auth
-        _ = accountKey
         return false
     }
 
     package func startReview(
-        sessionID: String,
-        request: ReviewStartRequest,
-        store: CodexReviewStore
+        sessionID _: String,
+        request _: ReviewStartRequest,
+        store _: CodexReviewStore
     ) async throws -> ReviewReadResult {
-        _ = sessionID
-        _ = request
-        _ = store
         throw ReviewError.io("CodexReviewStore live runtime is unavailable.")
     }
 
@@ -233,14 +216,10 @@ package class ReviewMonitorTestingHarness {
     }
 
     package func closeSession(
-        _ sessionID: String,
-        reason: String,
-        store: CodexReviewStore
-    ) async {
-        _ = sessionID
-        _ = reason
-        _ = store
-    }
+        _: String,
+        reason _: String,
+        store _: CodexReviewStore
+    ) async {}
 
     fileprivate static let previewUnavailableMessage = "Embedded server is unavailable in preview mode."
     fileprivate static let previewAuthenticationFailureMessage = "Authentication is unavailable in preview mode."

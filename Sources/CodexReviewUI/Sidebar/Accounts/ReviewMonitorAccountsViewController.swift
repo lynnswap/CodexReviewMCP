@@ -14,16 +14,6 @@ private struct ReviewMonitorAccountsListView: View {
         auth.savedAccounts
     }
 
-    private var unsavedCurrentAccount: CodexAccount? {
-        guard let currentAccount = auth.account else {
-            return nil
-        }
-        guard accounts.contains(where: { $0.accountKey == currentAccount.accountKey }) == false else {
-            return nil
-        }
-        return currentAccount
-    }
-
     private var pendingAccountActionConfirmationIsPresented: Binding<Bool> {
         Binding(
             get: { store.auth.pendingAccountAction != nil },
@@ -48,10 +38,6 @@ private struct ReviewMonitorAccountsListView: View {
 
     var body: some View {
         List {
-            if let unsavedCurrentAccount {
-                accountRow(unsavedCurrentAccount, auth: auth)
-                    .moveDisabled(true)
-            }
             ForEach(accounts) { account in
                 accountRow(account, auth: auth)
             }
@@ -128,7 +114,7 @@ private struct ReviewMonitorAccountsListView: View {
         _ account: CodexAccount,
         auth: CodexReviewAuthModel
     ) -> some View {
-        let isSelected = auth.account == account
+        let isSelected = auth.selectedAccount == account
         Label {
             VStack {
                 HStack {
@@ -149,7 +135,7 @@ private struct ReviewMonitorAccountsListView: View {
             .accessibilityHidden(true)
             .contentShape(.circle)
             .onTapGesture {
-                requestAccountRowSwitch(account, auth: auth)
+                requestAccountRowSwitch(account)
             }
         }
         .contextMenu {
@@ -171,10 +157,7 @@ private struct ReviewMonitorAccountsListView: View {
         )
     }
 
-    private func requestAccountRowSwitch(
-        _ account: CodexAccount,
-        auth: CodexReviewAuthModel
-    ) {
+    private func requestAccountRowSwitch(_ account: CodexAccount) {
         guard store.switchActionIsDisabled(for: account) == false else {
             return
         }

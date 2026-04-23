@@ -861,7 +861,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
-        _ = notification
         updateSelectedJobFromOutlineView()
     }
 
@@ -906,7 +905,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         viewFor tableColumn: NSTableColumn?,
         item: Any
     ) -> NSView? {
-        _ = tableColumn
         if let workspace = workspace(from: item) {
             let view = (outlineView.makeView(withIdentifier: Identifier.workspaceCell, owner: self) as? ReviewMonitorWorkspaceCellView)
                 ?? ReviewMonitorWorkspaceCellView()

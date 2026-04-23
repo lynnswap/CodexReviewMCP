@@ -3,7 +3,7 @@ import Observation
 
 @MainActor
 @Observable
-public final class CodexRateLimitWindow {
+public final class CodexRateLimitWindow: Identifiable, Hashable {
     nonisolated public let id: String
     nonisolated public let accountKey: String
     nonisolated public let windowDurationMinutes: Int
@@ -33,7 +33,7 @@ public final class CodexRateLimitWindow {
     }
 }
 
-extension CodexRateLimitWindow: Identifiable, Hashable {
+extension CodexRateLimitWindow {
     public static nonisolated func == (lhs: CodexRateLimitWindow, rhs: CodexRateLimitWindow) -> Bool {
         lhs.id == rhs.id
     }
@@ -45,13 +45,12 @@ extension CodexRateLimitWindow: Identifiable, Hashable {
 
 @MainActor
 @Observable
-public final class CodexAccount {
+public final class CodexAccount: Identifiable, Hashable {
     nonisolated public let id: String
     public package(set) var email: String
     public package(set) var maskedEmail: String
     public var planType: String?
     public package(set) var rateLimits: [CodexRateLimitWindow] = []
-    public package(set) var isActive = false
     public package(set) var isSwitching = false
     public package(set) var lastRateLimitFetchAt: Date?
     public package(set) var lastRateLimitError: String?
@@ -80,6 +79,15 @@ public final class CodexAccount {
         self.maskedEmail = maskedReviewAccountEmail(trimmedEmail)
         self.planType = planType
     }
+    package func apply(_ payload: CodexSavedAccountPayload) {
+        self.updateEmail(payload.email)
+        self.updatePlanType(payload.planType)
+        self.updateRateLimits(payload.rateLimits)
+        self.updateRateLimitFetchMetadata(
+            fetchedAt: payload.lastRateLimitFetchAt,
+            error: payload.lastRateLimitError
+        )
+    }
 
     package func updateEmail(_ email: String) {
         let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,10 +102,6 @@ public final class CodexAccount {
 
     package func updatePlanType(_ planType: String?) {
         self.planType = planType
-    }
-
-    package func updateIsActive(_ isActive: Bool) {
-        self.isActive = isActive
     }
 
     package func updateIsSwitching(_ isSwitching: Bool) {
@@ -155,6 +159,60 @@ public final class CodexAccount {
     }
 }
 
+package struct CodexSavedAccountPayload: Sendable {
+    package var accountKey: String
+    package var email: String
+    package var planType: String?
+    package var rateLimits: [(windowDurationMinutes: Int, usedPercent: Int, resetsAt: Date?)]
+    package var lastRateLimitFetchAt: Date?
+    package var lastRateLimitError: String?
+
+    package init(
+        accountKey: String,
+        email: String,
+        planType: String?,
+        rateLimits: [(windowDurationMinutes: Int, usedPercent: Int, resetsAt: Date?)],
+        lastRateLimitFetchAt: Date?,
+        lastRateLimitError: String?
+    ) {
+        self.accountKey = accountKey
+        self.email = email
+        self.planType = planType
+        self.rateLimits = rateLimits
+        self.lastRateLimitFetchAt = lastRateLimitFetchAt
+        self.lastRateLimitError = lastRateLimitError
+    }
+}
+
+@MainActor
+package func makeCodexAccount(from payload: CodexSavedAccountPayload) -> CodexAccount {
+    let account = CodexAccount(
+        accountKey: payload.accountKey,
+        email: payload.email,
+        planType: payload.planType
+    )
+    account.apply(payload)
+    return account
+}
+
+@MainActor
+package func savedAccountPayload(from account: CodexAccount) -> CodexSavedAccountPayload {
+    .init(
+        accountKey: account.accountKey,
+        email: account.email,
+        planType: account.planType,
+        rateLimits: account.rateLimits.map {
+            (
+                windowDurationMinutes: $0.windowDurationMinutes,
+                usedPercent: $0.usedPercent,
+                resetsAt: $0.resetsAt
+            )
+        },
+        lastRateLimitFetchAt: account.lastRateLimitFetchAt,
+        lastRateLimitError: account.lastRateLimitError
+    )
+}
+
 private func maskedReviewAccountEmail(_ email: String) -> String {
     let parts = email.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
     guard parts.count == 2,
@@ -180,7 +238,7 @@ private func maskedReviewAccountEmailSegment(_ segment: String) -> String {
     }
 }
 
-extension CodexAccount: Identifiable, Hashable {
+extension CodexAccount {
     public static nonisolated func == (lhs: CodexAccount, rhs: CodexAccount) -> Bool {
         lhs.id == rhs.id
     }

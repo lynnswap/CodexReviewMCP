@@ -11,7 +11,7 @@ struct AccountContextMenuView: View {
     }
 
     private func requestDestructiveAccountAction() {
-        if auth.account?.accountKey == account.accountKey {
+        if auth.selectedAccount == account {
             store.requestSignOutActiveAccount(requiresConfirmation: store.hasRunningJobs)
         } else {
             store.requestRemoveAccount(account, requiresConfirmation: false)
@@ -54,10 +54,13 @@ struct AccountContextMenuView: View {
 #Preview {
     let currentAccount = CodexAccount(email: "current@example.com")
     let otherAccount = CodexAccount(email: "other@example.com")
-    let store: CodexReviewStore = {
-        let store = CodexReviewStore.makePreviewStore()
-        store.auth.updateSavedAccounts([currentAccount, otherAccount])
-        store.auth.updateAccount(currentAccount)
+        let store: CodexReviewStore = {
+            let store = CodexReviewStore.makePreviewStore()
+            store.auth.applySavedAccountStates([
+            savedAccountPayload(from: currentAccount),
+            savedAccountPayload(from: otherAccount),
+        ])
+        store.auth.updateSelectedAccount(currentAccount.id)
         return store
     }()
     AccountContextMenuView(

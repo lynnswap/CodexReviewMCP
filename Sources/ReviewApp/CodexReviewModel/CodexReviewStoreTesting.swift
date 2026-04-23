@@ -30,8 +30,10 @@ extension CodexReviewStore {
         self.serverState = serverState
         self.auth.updatePhase(authPhase)
         let resolvedSavedAccounts = savedAccounts.isEmpty ? account.map { [$0] } ?? [] : savedAccounts
-        self.auth.updateSavedAccounts(resolvedSavedAccounts)
-        self.auth.updateAccount(account)
+        self.auth.applySavedAccountStates(
+            resolvedSavedAccounts.map(savedAccountPayload(from:))
+        )
+        self.auth.updateSelectedAccount(account?.id)
         self.serverURL = serverURL
         var existingByCWD: [String: CodexReviewWorkspace] = [:]
         for workspace in self.workspaces {

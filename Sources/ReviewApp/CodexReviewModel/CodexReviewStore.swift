@@ -34,9 +34,11 @@ public final class CodexReviewStore {
         self.settings = SettingsStore(
             snapshot: settingsService.initialSnapshot
         )
-        self.auth.updateSavedAccounts(coordinator.seed.initialAccounts)
-        self.auth.updateAccount(coordinator.seed.initialAccount)
-        observedActiveAccountKey = auth.account?.accountKey
+        self.auth.applySavedAccountStates(
+            coordinator.seed.initialAccounts.map(savedAccountPayload(from:))
+        )
+        self.auth.updateSelectedAccount(coordinator.seed.initialAccount?.id)
+        observedActiveAccountKey = auth.selectedAccount?.accountKey
         observeSettingsRefreshCauses()
         coordinator.attachStore(self)
         settingsService.attach(settings: settings)
@@ -117,7 +119,7 @@ public final class CodexReviewStore {
     }
 
     public func logout() async {
-        if auth.isAuthenticating, auth.account == nil {
+        if auth.isAuthenticating, auth.selectedAccount == nil {
             await cancelAuthentication()
             return
         }
@@ -142,10 +144,7 @@ public final class CodexReviewStore {
         if auth.savedAccounts.contains(where: { $0.isSwitching }) {
             return
         }
-        if let currentAccount = auth.account,
-           currentAccount.isSwitching,
-           auth.savedAccounts.contains(where: { $0 === currentAccount }) == false
-        {
+        if auth.selectedAccount?.isSwitching == true {
             return
         }
         targetAccount?.updateIsSwitching(true)
@@ -263,7 +262,7 @@ public final class CodexReviewStore {
     package func switchActionRequiresRunningJobsConfirmation(
         for account: CodexAccount
     ) -> Bool {
-        if account.accountKey != auth.account?.accountKey {
+        if account.accountKey != auth.selectedAccount?.accountKey {
             return true
         }
         return coordinator.requiresCurrentSessionRecovery(
@@ -373,14 +372,10 @@ public final class CodexReviewStore {
         workspaces = []
     }
 
-    private var persistedActiveAccountKey: String? {
-        auth.savedAccounts.first(where: \.isActive)?.accountKey
-    }
-
     private func isAlreadyUsingPersistedActiveAccount(
         _ accountKey: String
     ) -> Bool {
-        persistedActiveAccountKey == accountKey && auth.account?.accountKey == accountKey
+        auth.selectedAccount?.accountKey == accountKey
     }
 
     private func canSwitchAccount(_ account: CodexAccount) -> Bool {
@@ -413,7 +408,7 @@ public final class CodexReviewStore {
     }
 
     private var activeAccountKeyForSettingsRefresh: String? {
-        auth.account?.accountKey
+        auth.selectedAccount?.accountKey
     }
 
     private func observeSettingsRefreshCauses() {

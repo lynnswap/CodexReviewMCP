@@ -57,13 +57,11 @@ final class ReviewMonitorAddAccountToolbarItem: NSToolbarItem {
 
     @objc
     private func handleAddAccount(_ sender: Any?) {
-        _ = sender
         ReviewMonitorAddAccountAction.perform(store: store)
     }
 
     @objc
     private func handleCancel(_ sender: Any?) {
-        _ = sender
         Task { @MainActor [store] in
             await store.cancelAuthentication()
         }
@@ -71,7 +69,6 @@ final class ReviewMonitorAddAccountToolbarItem: NSToolbarItem {
 
     @objc
     private func handleOverflowAction(_ sender: Any?) {
-        _ = sender
         if auth.isAuthenticating {
             handleCancel(nil)
         } else {

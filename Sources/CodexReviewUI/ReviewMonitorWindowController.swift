@@ -13,18 +13,29 @@ private func configureReviewMonitorWindowBase(_ window: NSWindow) {
 }
 
 @MainActor
-private func configureReviewMonitorWindowForSplitPresentation(_ window: NSWindow) {
-    window.isMovableByWindowBackground = false
-    window.title = "Untitled"
-    window.subtitle = ""
-    window.titleVisibility = .visible
-    window.titlebarSeparatorStyle = .automatic
+private func configureReviewMonitorWindow(
+    _ window: NSWindow,
+    for presentation: ReviewMonitorWindowController.WindowContentKind
+) {
+    switch presentation {
+    case .splitView:
+        window.isMovableByWindowBackground = false
+        window.title = "Untitled"
+        window.subtitle = ""
+        window.titleVisibility = .visible
+        window.titlebarSeparatorStyle = .automatic
+    case .signInView:
+        window.isMovableByWindowBackground = true
+        window.toolbar = nil
+        window.titleVisibility = .hidden
+        window.titlebarSeparatorStyle = .none
+    }
 }
 
 @MainActor
 @Observable
 public final class ReviewMonitorWindowController: NSWindowController {
-    enum WindowContentKind: Equatable, Sendable {
+    package enum WindowContentKind: Equatable, Sendable {
         case splitView
         case signInView
     }
@@ -34,27 +45,14 @@ public final class ReviewMonitorWindowController: NSWindowController {
     private let signInViewController: NSHostingController<SignInView>
     private let rootContentViewController: ReviewMonitorWindowContentViewController
     private let auth: CodexReviewAuthModel
-    private let forceSplitView: Bool
-    private var displayedWindowContentKind: WindowContentKind?
+    private let uiState: ReviewMonitorUIState
     private var observationHandles: Set<ObservationHandle> = []
 
-    public convenience init(
-        store: CodexReviewStore,
-        forceSplitView: Bool = false
+    public init(
+        store: CodexReviewStore
     ) {
-        self.init(
-            store: store,
-            performInitialAuthRefresh: true,
-            forceSplitView: forceSplitView
-        )
-    }
-
-    package init(
-        store: CodexReviewStore,
-        performInitialAuthRefresh: Bool,
-        forceSplitView: Bool = false
-    ) {
-        let splitViewController = ReviewMonitorSplitViewController(store: store)
+        let uiState = ReviewMonitorUIState()
+        let splitViewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         splitViewController.loadViewIfNeeded()
         let signInViewController = NSHostingController(rootView: SignInView(store: store))
         signInViewController.sizingOptions = []
@@ -67,16 +65,15 @@ public final class ReviewMonitorWindowController: NSWindowController {
         self.signInViewController = signInViewController
         self.rootContentViewController = contentViewController
         self.auth = store.auth
-        self.forceSplitView = forceSplitView
+        self.uiState = uiState
+        
         super.init(window: window)
 
         window.isReleasedWhenClosed = false
         configureReviewMonitorWindowBase(window)
         window.setFrameAutosaveName(Self.frameAutosaveName)
 
-        observeWindowContentKind()
-        applyWindowContentKind(windowContentKind)
-        _ = performInitialAuthRefresh
+        bindWindowState()
     }
 
     @available(*, unavailable)
@@ -84,79 +81,65 @@ public final class ReviewMonitorWindowController: NSWindowController {
         nil
     }
 
-    private func observeWindowContentKind() {
-        guard observationHandles.isEmpty else {
-            return
-        }
-
-        observe(\.windowContentKind) { [weak self] contentKind in
-            self?.applyWindowContentKind(contentKind)
-        }
-        .store(in: &observationHandles)
-    }
-
-    private var windowContentKind: WindowContentKind {
-        if forceSplitView {
-            return .splitView
-        }
-        if auth.isAuthenticating {
-            if displayedWindowContentKind == .splitView {
-                return .splitView
-            }
-            return .signInView
-        }
-        if auth.account != nil {
-            return .splitView
-        }
-        if auth.hasSavedAccounts {
-            return .splitView
-        }
-        if auth.errorMessage != nil,
-           displayedWindowContentKind == .splitView {
+    private var windowContentKind :WindowContentKind {
+        if auth.selectedAccount != nil || auth.hasSavedAccounts {
             return .splitView
         }
         return .signInView
     }
+    private var _presentedWindowContentKind: WindowContentKind?
+    private func bindWindowState() {
+        presentWindowContentKind(windowContentKind,animated:false)
+        guard observationHandles.isEmpty else {
+            return
+        }
+        observe(\.windowContentKind) { [weak self] newValue in
+            self?.presentWindowContentKind(newValue,animated:true)
+        }
+        .store(in: &observationHandles)
+       
+        uiState.observe([\.selectedJobEntry?.targetSummary, \.selectedJobEntry?.cwd]) { [weak self] in
+            self?.updateWindowTitleAndSubtitle()
+        }
+        .store(in: &observationHandles)
+    }
+    private func presentWindowContentKind(
+        _ kind: WindowContentKind,
+        animated: Bool
+    ) {
+        guard let window else { return }
+        
+        guard _presentedWindowContentKind != kind else {
+            return
+        }
 
-    private func applyWindowContentKind(_ contentKind: WindowContentKind) {
+        configureReviewMonitorWindow(window, for: kind)
+
+        switch kind {
+        case .splitView:
+            splitViewController.attach(to: window)
+            rootContentViewController.setContentViewController(splitViewController, animated: animated)
+        case .signInView:
+            splitViewController.detachFromWindow()
+            rootContentViewController.setContentViewController(signInViewController, animated: animated)
+        }
+
+        _presentedWindowContentKind = kind
+        updateWindowTitleAndSubtitle()
+    }
+
+    private func updateWindowTitleAndSubtitle() {
         guard let window else {
             return
         }
-        guard displayedWindowContentKind != contentKind else {
-            return
-        }
-
-        switch contentKind {
-        case .splitView:
-            showSplitView(in: window)
+        switch windowContentKind{
         case .signInView:
-            showSignInView(in: window)
+            window.title = ""
+            window.subtitle = ""
+        case .splitView:
+            window.title = uiState.selectedJobEntry?.targetSummary ?? ""
+            window.subtitle = uiState.selectedJobEntry?.cwd ?? ""
         }
-    }
-
-    private func showSplitView(in window: NSWindow) {
-        configureReviewMonitorWindowForSplitPresentation(window)
-        splitViewController.attach(to: window)
-        rootContentViewController.setContentViewController(
-            splitViewController,
-            animated: displayedWindowContentKind != nil
-        )
-        displayedWindowContentKind = .splitView
-    }
-
-    private func showSignInView(in window: NSWindow) {
-        splitViewController.detachFromWindow()
-        window.isMovableByWindowBackground = true
-        window.toolbar = nil
-        window.title = ""
-        window.subtitle = ""
-        window.titleVisibility = .hidden
-        window.titlebarSeparatorStyle = .none
-        rootContentViewController.setContentViewController(
-            signInViewController,
-            animated: displayedWindowContentKind != nil
-        )
-        displayedWindowContentKind = .signInView
     }
 }
 
@@ -303,6 +286,10 @@ private final class ReviewMonitorWindowContentViewController: NSViewController {
             viewController.removeFromParent()
         }
     }
+
+    fileprivate var displayedContentViewControllerForWindowController: NSViewController? {
+        displayedContentViewController
+    }
 }
 
 #if DEBUG
@@ -329,8 +316,8 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
     let previewAccounts = ReviewMonitorPreviewContent.makePreviewAccounts()
     let resolvedAccount = account ?? previewAccounts.first
     store.auth.updatePhase(authPhase)
-    store.auth.updateSavedAccounts(previewAccounts)
-    store.auth.updateAccount(resolvedAccount)
+    store.auth.applySavedAccountStates(previewAccounts.map(savedAccountPayload(from:)))
+    store.auth.updateSelectedAccount(resolvedAccount?.id)
     let splitViewController = ReviewMonitorSplitViewController(store: store)
     splitViewController.loadViewIfNeeded()
     let contentViewController = ReviewMonitorWindowContentViewController { window in
@@ -339,14 +326,14 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
             return
         }
         configureReviewMonitorWindowBase(window)
-        configureReviewMonitorWindowForSplitPresentation(window)
+        configureReviewMonitorWindow(window, for: .splitView)
         splitViewController.attach(to: window)
     }
-    contentViewController.loadViewIfNeeded()
-    contentViewController.setContentViewController(
-        splitViewController,
-        animated: false
-    )
+        contentViewController.loadViewIfNeeded()
+        contentViewController.setContentViewController(
+            splitViewController,
+            animated: false
+        )
     return contentViewController
 }
 
@@ -366,12 +353,6 @@ extension ReviewMonitorWindowController {
         signInViewController.view.superview === rootContentViewController.view
     }
 
-    var windowContentKindForTesting: WindowContentKind {
-        guard let displayedWindowContentKind else {
-            fatalError("ReviewMonitorWindowController did not select content yet.")
-        }
-        return displayedWindowContentKind
-    }
 
     var embeddedContentSubviewCountForTesting: Int {
         rootContentViewController.view.subviews.count

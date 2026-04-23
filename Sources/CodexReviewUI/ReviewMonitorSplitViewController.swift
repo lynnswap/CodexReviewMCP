@@ -101,7 +101,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         splitView.identifier = NSUserInterfaceItemIdentifier(Self.autosaveName)
         splitView.autosaveName = Self.autosaveName
         installToolbarIfNeeded(on: window)
-        bindJobEntry(to: window)
+        bindToolbarState()
     }
 
     func detachFromWindow() {
@@ -109,38 +109,13 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         attachedWindow = nil
     }
 
-    private func bindJobEntry(to window: NSWindow) {
+    private func bindToolbarState() {
         observationHandles.removeAll()
-
-        if let selectedJob = uiState.selectedJobEntry {
-            window.title = selectedJob.targetSummary
-            window.subtitle = selectedJob.cwd
-        } else {
-            window.subtitle = ""
-        }
-
-        uiState.observe(\.selectedJobEntry?.targetSummary) { [weak window] targetSummary in
-            guard let window else {
-                return
-            }
-            window.title = targetSummary ?? ""
-        }
-        .store(in: &observationHandles)
-
-        uiState.observe(\.selectedJobEntry?.cwd) { [weak window] cwd in
-            guard let window else {
-                return
-            }
-            window.subtitle = cwd ?? ""
-        }
-        .store(in: &observationHandles)
 
         observe(\.isShowingAddAccount) { [weak self] isShowing in
             self?.setShowingAddAccount(isShowing)
         }
         .store(in: &observationHandles)
-
-        setShowingAddAccount(isShowingAddAccount)
     }
 
     private func installToolbarIfNeeded(on window: NSWindow) {

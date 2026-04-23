@@ -76,8 +76,9 @@ public final class CodexReviewAuthModel {
     }
 
     public package(set) var phase: Phase = .signedOut
-    public package(set) var account: CodexAccount?
     public package(set) var savedAccounts: [CodexAccount] = []
+    public private(set) var selectedAccount :CodexAccount?
+
     public package(set) var authenticationFailureCount = 0
     public package(set) var warningMessage: String?
     package private(set) var pendingAccountAction: PendingAccountAction?
@@ -95,7 +96,7 @@ public final class CodexReviewAuthModel {
     }
 
     public var isAuthenticated: Bool {
-        account != nil
+        selectedAccount != nil
     }
 
     public var hasSavedAccounts: Bool {
@@ -129,7 +130,7 @@ public final class CodexReviewAuthModel {
     }
 
     package func requestSignOutActiveAccount(requiresConfirmation: Bool) {
-        guard account != nil else {
+        guard selectedAccount != nil else {
             return
         }
         requestAccountAction(
@@ -188,33 +189,25 @@ public final class CodexReviewAuthModel {
         warningMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
-    package func updateAccount(_ account: CodexAccount?) {
-        self.account = account
+    package func updateSelectedAccount(_ selectedAccountID: CodexAccount.ID?) {
+        guard let selectedAccountID else {
+            selectedAccount = nil
+            return
+        }
+        selectedAccount = savedAccounts.first(where: { $0.id == selectedAccountID })
     }
 
-    package func updateSavedAccounts(_ incomingSavedAccounts: [CodexAccount]) {
+    package func applySavedAccountStates(
+        _ incomingSavedAccounts: [CodexSavedAccountPayload]
+    ) {
         self.savedAccounts = incomingSavedAccounts.map { incomingAccount in
-            let reconciledAccount = reusableAccount(for: incomingAccount.accountKey) ?? incomingAccount
-            guard reconciledAccount !== incomingAccount else {
-                reconciledAccount.updateIsActive(incomingAccount.isActive)
-                return reconciledAccount
-            }
-            reconciledAccount.updateEmail(incomingAccount.email)
-            reconciledAccount.updatePlanType(incomingAccount.planType)
-            reconciledAccount.updateRateLimits(
-                incomingAccount.rateLimits.map {
-                    (
-                        windowDurationMinutes: $0.windowDurationMinutes,
-                        usedPercent: $0.usedPercent,
-                        resetsAt: $0.resetsAt
-                    )
-                }
-            )
-            reconciledAccount.updateRateLimitFetchMetadata(
-                fetchedAt: incomingAccount.lastRateLimitFetchAt,
-                error: incomingAccount.lastRateLimitError
-            )
-            reconciledAccount.updateIsActive(incomingAccount.isActive)
+            let reconciledAccount = reusableAccount(for: incomingAccount.accountKey)
+                ?? CodexAccount(
+                    accountKey: incomingAccount.accountKey,
+                    email: incomingAccount.email,
+                    planType: incomingAccount.planType
+                )
+            reconciledAccount.apply(incomingAccount)
             return reconciledAccount
         }
     }

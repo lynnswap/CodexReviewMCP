@@ -42,7 +42,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
-        .package(url: "https://github.com/lynnswap/ObservationBridge.git", from: "0.6.1"),
+        .package(url: "https://github.com/lynnswap/ObservationBridge.git", from: "0.7.0"),
         .package(url: "https://github.com/swiftlang/swift-subprocess.git", .upToNextMinor(from: "0.4.0")),
         .package(url: "https://github.com/dduan/TOMLDecoder.git", exact: "0.4.4"),
     ],
@@ -190,6 +190,7 @@ let package = Package(
         .target(
             name: "ReviewTestSupport",
             dependencies: [
+                "ReviewApp",
                 "ReviewInfra",
                 "ReviewDomain",
             ],

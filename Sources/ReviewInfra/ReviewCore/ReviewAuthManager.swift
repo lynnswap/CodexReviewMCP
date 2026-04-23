@@ -278,6 +278,7 @@ package actor ReviewAuthManager {
         }
     }
 
+    @discardableResult
     package func logout() async throws -> ReviewAuthState {
         guard activeAttemptID == nil else {
             throw ReviewAuthError.loginInProgress
