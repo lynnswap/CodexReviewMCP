@@ -1,4 +1,5 @@
 import Observation
+import ReviewApp
 import ReviewRuntime
 import SwiftUI
 import ReviewDomain
@@ -6,8 +7,27 @@ import ReviewDomain
 @MainActor
 @Observable
 final class ReviewMonitorUIState {
+    let auth: CodexReviewAuthModel
     var selectedJobEntry: CodexReviewJob?
     var sidebarSelection = SidebarPickerSelection.workspace
+
+    init(auth: CodexReviewAuthModel) {
+        self.auth = auth
+    }
+
+    var presentedContentKind: ReviewMonitorContentKind?
+
+    var contentKind: ReviewMonitorContentKind {
+        if auth.selectedAccount != nil || auth.hasSavedAccounts {
+            return .contentView
+        }
+        return .signInView
+    }
+}
+
+enum ReviewMonitorContentKind: Equatable {
+    case contentView
+    case signInView
 }
 
 enum SidebarPickerSelection: CaseIterable, Hashable {

@@ -13,7 +13,7 @@ import ReviewRuntime
 struct CodexReviewUIShellTests {
     @Test func bindingStoreAppliesInitialState() {
         let store = CodexReviewStore.makePreviewStore()
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
@@ -29,7 +29,7 @@ struct CodexReviewUIShellTests {
 
     @Test func splitViewShowsEmptyStateWithoutJobs() {
         let store = CodexReviewStore.makePreviewStore()
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.splitViewItems.count == 2)
@@ -46,7 +46,7 @@ struct CodexReviewUIShellTests {
             serverState: .failed("Embedded server is unavailable in preview mode."),
             workspaces: []
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.splitViewItems.count == 2)
@@ -62,7 +62,7 @@ struct CodexReviewUIShellTests {
             serverURL: URL(string: "http://localhost:9417/mcp"),
             workspaces: []
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarPresentationForTesting == .jobList)
@@ -72,7 +72,7 @@ struct CodexReviewUIShellTests {
 
     @Test func splitViewSwitchesSidebarPresentationWhenPickerSelectionChanges() async throws {
         let store = CodexReviewStore.makePreviewStore()
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         viewController.loadViewIfNeeded()
 
@@ -90,7 +90,7 @@ struct CodexReviewUIShellTests {
 
     @Test func statusAccessoryViewControllerObservesOnlySidebarSelection() {
         let store = CodexReviewStore.makePreviewStore()
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         let viewController = ReviewMonitorServerStatusAccessoryViewController(
             store: store,
             uiState: uiState
@@ -130,7 +130,7 @@ struct CodexReviewUIShellTests {
             serverURL: URL(string: "http://localhost:9417/mcp"),
             workspaces: []
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarPresentationForTesting == .jobList)
@@ -181,7 +181,7 @@ struct CodexReviewUIShellTests {
 
     @Test func splitViewShowsAddAccountToolbarItemOnlyForAccountSidebar() async throws {
         let store = CodexReviewStore.makePreviewStore()
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -207,7 +207,7 @@ struct CodexReviewUIShellTests {
 
     @Test func splitViewHidesAddAccountToolbarItemWhileSidebarIsCollapsed() async throws {
         let store = CodexReviewStore.makePreviewStore()
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         uiState.sidebarSelection = .account
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
@@ -796,7 +796,7 @@ struct CodexReviewUIShellTests {
     @Test func splitViewAttachIsIdempotentForSameWindow() {
         let backend = CountingStartBackend()
         let store = makeStore(backend: backend)
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
 

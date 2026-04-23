@@ -27,7 +27,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private weak var attachedWindow: NSWindow?
     private var isSidebarCollapsed = false
 
-    init(store: CodexReviewStore, uiState: ReviewMonitorUIState = ReviewMonitorUIState()) {
+    init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
         self.store = store
         self.uiState = uiState
         super.init(nibName: nil, bundle: nil)
@@ -90,6 +90,19 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         addSplitViewItem(contentItem)
     }
 
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        guard let window = view.window else {
+            return
+        }
+        attach(to: window)
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        detachFromWindow()
+    }
+
     func attach(to window: NSWindow) {
         loadViewIfNeeded()
         guard attachedWindow !== window else {
@@ -116,6 +129,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             self?.setShowingAddAccount(isShowing)
         }
         .store(in: &observationHandles)
+
+        uiState.observe([\.selectedJobEntry?.targetSummary, \.selectedJobEntry?.cwd]) { [weak self] in
+            self?.updateWindowTitleAndSubtitle()
+        }
+        .store(in: &observationHandles)
     }
 
     private func installToolbarIfNeeded(on window: NSWindow) {
@@ -129,6 +147,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         }
 
         if window.toolbar !== toolbar {
+            window.isMovableByWindowBackground = false
             window.styleMask.insert(.fullSizeContentView)
             window.toolbarStyle = .unified
             window.titleVisibility = .visible
@@ -136,6 +155,14 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             window.titlebarSeparatorStyle = .automatic
             window.toolbar = toolbar
         }
+    }
+
+    private func updateWindowTitleAndSubtitle() {
+        guard let attachedWindow else {
+            return
+        }
+        attachedWindow.title = uiState.selectedJobEntry?.targetSummary ?? ""
+        attachedWindow.subtitle = uiState.selectedJobEntry?.cwd ?? ""
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {

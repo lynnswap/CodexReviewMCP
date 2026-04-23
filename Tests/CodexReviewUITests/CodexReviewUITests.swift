@@ -40,7 +40,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarViewControllerForTesting.displayedSectionTitlesForTesting == [
@@ -72,7 +72,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -106,7 +106,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -142,7 +142,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -172,7 +172,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -198,7 +198,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -235,7 +235,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: [workspace]
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -264,7 +264,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: [workspace]
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -290,7 +290,7 @@ struct CodexReviewUITests {
             workspaces: []
         )
 
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         uiState.sidebarSelection = .account
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
@@ -317,7 +317,7 @@ struct CodexReviewUITests {
             workspaces: []
         )
 
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         uiState.sidebarSelection = .account
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
@@ -357,7 +357,7 @@ struct CodexReviewUITests {
             workspaces: []
         )
 
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         uiState.sidebarSelection = .account
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
@@ -402,7 +402,7 @@ struct CodexReviewUITests {
             workspaces: []
         )
 
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         uiState.sidebarSelection = .workspace
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
@@ -434,7 +434,7 @@ struct CodexReviewUITests {
             workspaces: []
         )
 
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         uiState.sidebarSelection = .workspace
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
@@ -557,7 +557,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: [alphaWorkspace, betaWorkspace]
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -591,7 +591,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: [alphaWorkspace, betaWorkspace]
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -615,7 +615,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: [workspace]
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -645,7 +645,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [secondaryJob] + primaryJobs)
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 360, height: 220))
@@ -673,7 +673,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: jobs)
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 360, height: 320))
@@ -701,7 +701,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: jobs)
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 360, height: 220))
@@ -730,7 +730,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: jobs)
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 360, height: 220))
@@ -763,7 +763,7 @@ struct CodexReviewUITests {
             workspaces: [workspace]
         )
         let storedWorkspace = try #require(store.workspaces.first)
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -805,7 +805,7 @@ struct CodexReviewUITests {
             workspaces: makeWorkspaces(from: [job])
         )
         let workspace = try #require(store.workspaces.first(where: { $0.cwd == job.cwd }))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -842,7 +842,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         await viewController.sidebarViewControllerForTesting.cancelJobForTesting(job)
@@ -867,7 +867,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         await viewController.sidebarViewControllerForTesting.cancelJobForTesting(job)
@@ -891,7 +891,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -928,7 +928,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
@@ -1086,7 +1086,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1123,7 +1123,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1176,7 +1176,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1218,7 +1218,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1268,7 +1268,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [firstJob, secondJob]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1309,7 +1309,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [shortJob, recentJob]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1352,7 +1352,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [activeJob, recentJob]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1389,7 +1389,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1429,7 +1429,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: [workspace]
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1455,7 +1455,7 @@ struct CodexReviewUITests {
         let activeJob = makeJob(status: .running, targetSummary: "Uncommitted changes")
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: [])
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
@@ -1491,7 +1491,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [activeJob, recentJob])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let contentPane = viewController.contentPaneViewControllerForTesting
         let transport = viewController.transportViewControllerForTesting
@@ -1577,7 +1577,7 @@ struct CodexReviewUITests {
             serverState: .running,
             workspaces: makeWorkspaces(from: [job])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
 
@@ -1615,7 +1615,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
 
@@ -1650,7 +1650,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
 
@@ -1686,7 +1686,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
 
@@ -1715,7 +1715,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
 
@@ -1747,7 +1747,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1795,7 +1795,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1831,7 +1831,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1865,7 +1865,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1906,7 +1906,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [firstJob, secondJob]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1945,7 +1945,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -1980,7 +1980,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
         window.setContentSize(NSSize(width: 900, height: 600))
@@ -2014,7 +2014,7 @@ struct CodexReviewUITests {
         )
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
 
@@ -2042,7 +2042,7 @@ struct CodexReviewUITests {
             authState: .signedOut,
             workspaces: makeWorkspaces(from: [job])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
 
@@ -2068,7 +2068,7 @@ struct CodexReviewUITests {
             authState: .signedIn(accountID: "review@example.com"),
             workspaces: makeWorkspaces(from: [job])
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
 
@@ -2085,6 +2085,7 @@ struct CodexReviewUITests {
 @MainActor
 struct ReviewMonitorWindowHarness {
     let windowController: ReviewMonitorWindowController
+    let rootViewController: ReviewMonitorRootViewController
     let viewController: ReviewMonitorSplitViewController
     let window: NSWindow
 }
@@ -2100,27 +2101,48 @@ func makeWindowHarness(
     guard let window = windowController.window else {
         fatalError("ReviewMonitorWindowController did not create a window.")
     }
+    guard let rootViewController = window.contentViewController as? ReviewMonitorRootViewController else {
+        fatalError("ReviewMonitorWindowController did not install ReviewMonitorRootViewController.")
+    }
     if let contentSize {
         window.setContentSize(contentSize)
     }
     return ReviewMonitorWindowHarness(
         windowController: windowController,
-        viewController: windowController.splitViewControllerForTesting,
+        rootViewController: rootViewController,
+        viewController: rootViewController.splitViewControllerForTesting,
         window: window
     )
 }
 
 
 @MainActor
-func waitForWindowContentKind(
-    _ windowController: ReviewMonitorWindowController,
-    _ expected: ReviewMonitorWindowController.WindowContentKind,
+func waitForWindowShowingSplitView(
+    _ rootViewController: ReviewMonitorRootViewController,
+    isShowing expected: Bool,
     timeout: Duration = .seconds(2)
 ) async throws {
-    let windowControllerBox = UncheckedSendableBox(windowController)
+    let rootViewControllerBox = UncheckedSendableBox(rootViewController)
     try await withTestTimeout(timeout) {
         while await MainActor.run(body: {
-            windowControllerBox.value.windowContentKindForTesting != expected
+            rootViewControllerBox.value.isShowingSplitViewForTesting != expected
+        }) {
+            try Task.checkCancellation()
+            await Task.yield()
+        }
+    }
+}
+
+@MainActor
+func waitForEmbeddedContentSubviewCount(
+    _ rootViewController: ReviewMonitorRootViewController,
+    _ expected: Int,
+    timeout: Duration = .seconds(2)
+) async throws {
+    let rootViewControllerBox = UncheckedSendableBox(rootViewController)
+    try await withTestTimeout(timeout) {
+        while await MainActor.run(body: {
+            rootViewControllerBox.value.embeddedContentSubviewCountForTesting != expected
         }) {
             try Task.checkCancellation()
             await Task.yield()
