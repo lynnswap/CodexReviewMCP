@@ -1110,7 +1110,7 @@ extension ReviewMonitorSidebarViewController {
     }
 
     var sidebarVisibleRectForTesting: NSRect {
-        outlineView.visibleRect
+        scrollView.documentVisibleRect
     }
 
     var sidebarFirstRowRectForTesting: NSRect {

@@ -4,7 +4,7 @@ import ReviewDomain
 @testable import ReviewDomain
 @testable import ReviewRuntime
 
-@Suite
+@Suite(.serialized)
 @MainActor
 struct CodexReviewJobRenderingTests {
     @Test func rawLogTextPreservesDiagnosticSpacing() {

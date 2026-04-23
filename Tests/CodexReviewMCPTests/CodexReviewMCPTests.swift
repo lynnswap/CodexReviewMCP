@@ -1270,7 +1270,7 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func rateLimitNotificationUpdatesDetachedCurrentAndSavedAccountInstances() async throws {
+    @Test func rateLimitNotificationUpdatesNormalizedCurrentAndSavedAccountInstances() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = ImmediateReadAccountReviewAuthSession(
@@ -1304,6 +1304,7 @@ struct CodexReviewMCPTests {
         let detachedCurrent = CodexAccount(email: "review@example.com", planType: "pro")
         store.auth.updateAccount(detachedCurrent)
         #expect(savedAccount !== detachedCurrent)
+        #expect(store.auth.account === savedAccount)
 
         let authTransport = try #require(await manager.authTransportForTesting())
         try await authTransport.sendRateLimitsUpdated(
@@ -1327,8 +1328,8 @@ struct CodexReviewMCPTests {
             $0 == 85
         }
 
-        #expect(rateLimitWindow(duration: 300, in: detachedCurrent)?.usedPercent == 85)
-        #expect(rateLimitWindow(duration: 10_080, in: detachedCurrent)?.usedPercent == 55)
+        #expect(rateLimitWindow(duration: 300, in: detachedCurrent) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: detachedCurrent) == nil)
         #expect(rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 85)
         #expect(rateLimitWindow(duration: 10_080, in: savedAccount)?.usedPercent == 55)
 
@@ -2503,14 +2504,15 @@ struct CodexReviewMCPTests {
         let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
-        await store.start()
-        defer { Task { await store.stop() } }
+        try await withAsyncCleanup {
+            await store.start()
 
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 40
+            try await waitForObservedValue(fiveHourProbe) {
+                $0 == 40
+            }
+        } cleanup: {
+            await store.stop()
         }
-
-        await store.stop()
     }
 
     @Test func logoutClearsRateLimitModel() async throws {
@@ -2536,30 +2538,35 @@ struct CodexReviewMCPTests {
         let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 40
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForObservedValue(fiveHourProbe) {
+                $0 == 40
+            }
+
+            await store.logout()
+
+            #expect(testAuthState(from: store.auth) == .signedOut)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        } cleanup: {
+            await store.stop()
         }
-
-        await store.logout()
-
-        #expect(testAuthState(from: store.auth) == .signedOut)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
-        await store.stop()
     }
 
     @Test func unsupportedRateLimitReadDoesNotBreakAuthenticatedStartup() async throws {
         let environment = try isolatedHomeEnvironment()
-        let manager = MockAppServerManager { _ in .success() }
+        let authTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
         let authSession = ImmediateReadAccountReviewAuthSession(
             response: .init(
                 account: .chatGPT(email: "review@example.com", planType: "pro"),
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2568,23 +2575,24 @@ struct CodexReviewMCPTests {
             appServerManager: manager,
             authSessionFactory: {
                 authSession
-            },
-            deferStartupAuthRefreshUntilPrepared: true
+            }
         )
         let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
         defer { authStateProbe.cancel() }
 
-        await store.start()
-        defer { Task { await store.stop() } }
+        try await withAsyncCleanup {
+            await store.start()
 
-        try await waitForObservedValue(authStateProbe) {
-            $0 == .signedIn(accountID: "review@example.com")
+            try await waitForObservedValue(authStateProbe) {
+                $0 == .signedIn(accountID: "review@example.com")
+            }
+
+            #expect(store.serverState == .running)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        } cleanup: {
+            await store.stop()
         }
-
-        #expect(store.serverState == .running)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
-        await store.stop()
     }
 
     @Test func authRequiredRateLimitReadDoesNotRetryUntilAuthChanges() async throws {
@@ -2602,7 +2610,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2614,28 +2622,25 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForTotalRateLimitsReadCount(
-            [firstTransport, secondTransport],
-            expectedCount: 1
-        )
-        try await waitForAuthTransportCheckoutCount(manager, expectedCount: 2)
+        try await withAsyncCleanup {
+            await store.start()
 
-        let initialCheckoutCount = await manager.authTransportCheckoutCount()
-        #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() == 0)
 
-        await store.reconcileAuthenticatedSession(
-            serverIsRunning: true,
-            runtimeGeneration: 1
-        )
+            await store.reconcileAuthenticatedSession(
+                serverIsRunning: true,
+                runtimeGeneration: 1
+            )
 
-        #expect(await manager.authTransportCheckoutCount() == initialCheckoutCount)
-        #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
-
-        await store.stop()
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() == 0)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        } cleanup: {
+            await store.stop()
+        }
     }
 
     @Test func authRequiredRateLimitReadRetriesAfterSameAccountRefresh() async throws {
@@ -2653,7 +2658,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2665,23 +2670,25 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        try await withAsyncCleanup {
+            await store.start()
 
-        await store.refreshAuthentication()
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
-        try await waitForMainActorCondition {
-            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            await store.refreshAuthentication()
+
+            try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
+            try await waitForMainActorCondition {
+                rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            }
+
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() >= 1)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+        } cleanup: {
+            await store.stop()
         }
-
-        #expect(await firstTransport.rateLimitsReadCount() == 1)
-        #expect(await secondTransport.rateLimitsReadCount() >= 1)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
-
-        await store.stop()
     }
 
     @Test func authRequiredRateLimitReadRetriesAfterRuntimeGenerationChanges() async throws {
@@ -2699,7 +2706,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2711,26 +2718,28 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        try await withAsyncCleanup {
+            await store.start()
 
-        await store.reconcileAuthenticatedSession(
-            serverIsRunning: true,
-            runtimeGeneration: 2
-        )
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
-        try await waitForMainActorCondition {
-            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            await store.reconcileAuthenticatedSession(
+                serverIsRunning: true,
+                runtimeGeneration: 2
+            )
+
+            try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
+            try await waitForMainActorCondition {
+                rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            }
+
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() >= 1)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+        } cleanup: {
+            await store.stop()
         }
-
-        #expect(await firstTransport.rateLimitsReadCount() == 1)
-        #expect(await secondTransport.rateLimitsReadCount() >= 1)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
-
-        await store.stop()
     }
 
     @Test func authRequiredRateLimitReadRetriesAfterSameAccountAddAccountReauthentication() async throws {
