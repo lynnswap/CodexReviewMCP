@@ -86,14 +86,19 @@ final class ReviewMonitorRootViewController: NSViewController {
            let outgoingContentViewController,
            outgoingContentViewController.view.superview === view {
             let incomingContentView = incomingContentViewController.view
-            incomingContentView.frame = view.bounds
-            incomingContentView.autoresizingMask = [.width, .height]
             incomingContentView.alphaValue = 0
             view.addSubview(
                 incomingContentView,
                 positioned: .above,
                 relativeTo: outgoingContentViewController.view
             )
+            incomingContentView.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                incomingContentView.topAnchor.constraint(equalTo: view.topAnchor),
+                incomingContentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                incomingContentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                incomingContentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
             uiState.presentedContentKind = kind
 
             NSAnimationContext.runAnimationGroup { context in
@@ -126,9 +131,14 @@ final class ReviewMonitorRootViewController: NSViewController {
 
     private func embed(_ contentViewController: NSViewController) {
         let contentView = contentViewController.view
-        contentView.frame = view.bounds
-        contentView.autoresizingMask = [.width, .height]
+        contentView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentView)
+        NSLayoutConstraint.activate([
+            contentView.topAnchor.constraint(equalTo: view.topAnchor),
+            contentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
     }
 
     private func removeEmbeddedContent(for viewController: NSViewController) {

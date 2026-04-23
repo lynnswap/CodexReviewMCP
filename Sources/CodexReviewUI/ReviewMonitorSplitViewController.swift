@@ -150,7 +150,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             window.isMovableByWindowBackground = false
             window.styleMask.insert(.fullSizeContentView)
             window.toolbarStyle = .unified
-            window.titleVisibility = .visible
+            window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.titlebarSeparatorStyle = .automatic
             window.toolbar = toolbar
@@ -161,8 +161,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         guard let attachedWindow else {
             return
         }
-        attachedWindow.title = uiState.selectedJobEntry?.targetSummary ?? ""
-        attachedWindow.subtitle = uiState.selectedJobEntry?.cwd ?? ""
+        let title = uiState.selectedJobEntry?.targetSummary ?? ""
+        let subtitle = uiState.selectedJobEntry?.cwd ?? ""
+        attachedWindow.title = title
+        attachedWindow.subtitle = subtitle
+        attachedWindow.titleVisibility = (title.isEmpty && subtitle.isEmpty) ? .hidden : .visible
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
