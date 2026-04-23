@@ -10,28 +10,8 @@ struct AccountContextMenuView: View {
         store.auth
     }
 
-    private var isCurrentAccount: Bool {
-        auth.account?.accountKey == account.accountKey
-    }
-
-    private var isSwitchActionDisabled: Bool {
-        store.switchActionIsDisabled(for: account)
-    }
-
-    var sectionTitle: String {
-        account.email
-    }
-
-    var destructiveActionTitle: String {
-        "Sign Out"
-    }
-
-    var destructiveActionSystemImage: String {
-        "rectangle.portrait.and.arrow.right"
-    }
-
     private func requestDestructiveAccountAction() {
-        if isCurrentAccount {
+        if auth.account?.accountKey == account.accountKey {
             store.requestSignOutActiveAccount(requiresConfirmation: store.hasRunningJobs)
         } else {
             store.requestRemoveAccount(account, requiresConfirmation: false)
@@ -39,7 +19,7 @@ struct AccountContextMenuView: View {
     }
 
     var body: some View {
-        Section(sectionTitle){
+        Section(account.email){
             Button("Switch", systemImage: "arrow.triangle.swap") {
                 store.requestSwitchAccount(
                     account,
@@ -47,7 +27,7 @@ struct AccountContextMenuView: View {
                         && store.switchActionRequiresRunningJobsConfirmation(for: account)
                 )
             }
-            .disabled(isSwitchActionDisabled)
+            .disabled(store.switchActionIsDisabled(for: account))
             
             Button("Refresh", systemImage: "arrow.clockwise") {
                 refreshRateLimits()
@@ -57,7 +37,7 @@ struct AccountContextMenuView: View {
             AccountRateLimitsSectionView(account:account)
         }
         Section{
-            Button(destructiveActionTitle, systemImage: destructiveActionSystemImage, role:.destructive) {
+            Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role:.destructive) {
                 requestDestructiveAccountAction()
             }
         }

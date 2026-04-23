@@ -10,7 +10,7 @@ import ReviewRuntime
 @Suite(.serialized)
 @MainActor
 struct CodexReviewUISettingsTests {
-    @Test func statusViewUsesSettingsStoreLabels() {
+    @Test func settingsSnapshotLoadsEffectiveSelections() {
         let settingsSnapshot = makeSettingsSnapshot(
             model: "gpt-5.4-mini",
             reasoningEffort: .low,
@@ -26,9 +26,9 @@ struct CodexReviewUISettingsTests {
             settingsSnapshot: settingsSnapshot
         )
 
-        #expect(store.settings.currentModelDisplayText == "GPT-5.4 Mini")
-        #expect(store.settings.currentReasoningDisplayText == "Low")
-        #expect(store.settings.currentServiceTierDisplayText == "Normal")
+        #expect(store.settings.effectiveModel == "gpt-5.4-mini")
+        #expect(store.settings.effectiveReasoningEffort == .low)
+        #expect(store.settings.selectedServiceTier == nil)
     }
 
     @Test func statusViewDisablesSettingsControlsWhenServerIsNotRunning() {
@@ -62,7 +62,7 @@ struct CodexReviewUISettingsTests {
         #expect(store.settings.selectedModel == "gpt-5.4-mini")
         #expect(store.settings.selectedReasoningEffort == nil)
         #expect(store.settings.selectedServiceTier == nil)
-        #expect(store.settings.currentReasoningDisplayText == "Medium")
+        #expect(store.settings.effectiveReasoningEffort == .medium)
     }
 
     @Test func settingsStoreKeepsCurrentHiddenModelVisible() {
@@ -126,7 +126,8 @@ struct CodexReviewUISettingsTests {
         )
 
         #expect(store.settings.displayedModels.map(\.model) == ["gpt-5.4", "gpt-missing"])
-        #expect(store.settings.currentModelDisplayText == "gpt-missing")
+        #expect(store.settings.effectiveModel == "gpt-missing")
+        #expect(store.settings.effectiveModelItem == nil)
     }
 
     @Test func settingsStorePreservesIncompatiblePersistedOverridesUntilEdited() {
@@ -142,8 +143,7 @@ struct CodexReviewUISettingsTests {
 
         #expect(store.settings.selectedReasoningEffort == .high)
         #expect(store.settings.selectedServiceTier == .fast)
-        #expect(store.settings.currentReasoningDisplayText == "High")
-        #expect(store.settings.currentServiceTierDisplayText == "Fast")
+        #expect(store.settings.effectiveReasoningEffort == .high)
     }
 
     @Test func settingsStorePreservesReasoningOverrideWhenModelCatalogOmitsOptions() {
@@ -169,7 +169,7 @@ struct CodexReviewUISettingsTests {
         )
 
         #expect(store.settings.selectedReasoningEffort == .high)
-        #expect(store.settings.currentReasoningDisplayText == "High")
+        #expect(store.settings.effectiveReasoningEffort == .high)
     }
 
     @Test func settingsStoreAppliesPendingSelectionAfterInFlightSave() async throws {
@@ -294,7 +294,7 @@ struct CodexReviewUISettingsTests {
 
         #expect(store.settings.selectedModel == nil)
         #expect(store.settings.effectiveModel == "gpt-5.4")
-        #expect(store.settings.currentModelDisplayText == "GPT-5.4")
+        #expect(store.settings.effectiveModelItem?.model == "gpt-5.4")
     }
 
     @Test func settingsStoreClearsReasoningOverrideBackToModelDefault() async throws {
@@ -314,6 +314,6 @@ struct CodexReviewUISettingsTests {
         }
 
         #expect(store.settings.selectedReasoningEffort == nil)
-        #expect(store.settings.currentReasoningDisplayText == "Medium")
+        #expect(store.settings.effectiveReasoningEffort == .medium)
     }
 }

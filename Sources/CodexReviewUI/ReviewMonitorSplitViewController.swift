@@ -11,7 +11,6 @@ import ReviewDomain
 final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDelegate {
     private struct AddAccountToolbarPresentation: Equatable {
         var isHidden: Bool
-        var menuTitle: String
     }
 
     private static let autosaveName = NSSplitView.AutosaveName("CodexReviewMCP.ReviewMonitorSplitView")
@@ -141,6 +140,14 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             self?.applyAddAccountToolbarPresentation(presentation)
         }
         .store(in: &observationHandles)
+
+        store.auth.observe(\.phase) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            self.applyAddAccountToolbarPresentation(self.addAccountToolbarPresentation)
+        }
+        .store(in: &observationHandles)
     }
 
     private func installToolbarIfNeeded(on window: NSWindow) {
@@ -199,9 +206,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         case Self.addAccountToolbarItemIdentifier:
             let item = NSToolbarItem(itemIdentifier: itemIdentifier)
             item.view = resolvedAddAccountToolbarView()
-            item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem(
-                title: addAccountToolbarPresentation.menuTitle
-            )
+            item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem()
             item.visibilityPriority = .high
             item.isHidden = addAccountToolbarPresentation.isHidden
             return item
@@ -251,9 +256,9 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         return view
     }
 
-    private func resolvedAddAccountToolbarMenuItem(title: String) -> NSMenuItem {
+    private func resolvedAddAccountToolbarMenuItem() -> NSMenuItem {
         let item = NSMenuItem(
-            title: title,
+            title: store.auth.isAuthenticating ? "Cancel Sign-In" : "Add Account",
             action: #selector(performAddAccountToolbarOverflowAction(_:)),
             keyEquivalent: ""
         )
@@ -265,8 +270,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         let isAuthenticating = store.auth.isAuthenticating
         return .init(
             isHidden: isAuthenticating == false
-                && (uiState.sidebarSelection != .account || isSidebarCollapsed),
-            menuTitle: isAuthenticating ? "Cancel Sign-In" : "Add Account"
+                && (uiState.sidebarSelection != .account || isSidebarCollapsed)
         )
     }
 
@@ -280,7 +284,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         guard let item = toolbar.items.first(where: { $0.itemIdentifier == Self.addAccountToolbarItemIdentifier }) else {
             return
         }
-        item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem(title: presentation.menuTitle)
+        item.menuFormRepresentation = resolvedAddAccountToolbarMenuItem()
         item.isHidden = presentation.isHidden
     }
 }

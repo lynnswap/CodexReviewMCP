@@ -6,12 +6,16 @@ import ReviewDomain
 private struct ReviewMonitorAccountsListView: View {
     let store: CodexReviewStore
 
+    private var auth: CodexReviewAuthModel {
+        store.auth
+    }
+
     private var accounts: [CodexAccount] {
-        store.auth.savedAccounts
+        auth.savedAccounts
     }
 
     private var unsavedCurrentAccount: CodexAccount? {
-        guard let currentAccount = store.auth.account else {
+        guard let currentAccount = auth.account else {
             return nil
         }
         guard accounts.contains(where: { $0.accountKey == currentAccount.accountKey }) == false else {
@@ -20,9 +24,29 @@ private struct ReviewMonitorAccountsListView: View {
         return currentAccount
     }
 
+    private var pendingAccountActionConfirmationIsPresented: Binding<Bool> {
+        Binding(
+            get: { store.auth.pendingAccountAction != nil },
+            set: { isPresented in
+                if isPresented == false {
+                    store.cancelPendingAccountAction()
+                }
+            }
+        )
+    }
+
+    private var accountActionAlertIsPresented: Binding<Bool> {
+        Binding(
+            get: { store.auth.accountActionAlert != nil },
+            set: { isPresented in
+                if isPresented == false {
+                    store.dismissAccountActionAlert()
+                }
+            }
+        )
+    }
+
     var body: some View {
-        @Bindable var auth = store.auth
-        
         List {
             if let unsavedCurrentAccount {
                 accountRow(unsavedCurrentAccount, auth: auth)
@@ -36,27 +60,31 @@ private struct ReviewMonitorAccountsListView: View {
         .animation(.default,value:accounts)
         .accessibilityIdentifier("review-monitor.account-list")
         .alert(
-            auth.pendingAccountActionConfirmationTitle,
-            isPresented: $auth.isPresentingPendingAccountActionConfirmation
-        ) {
-            Button(auth.pendingAccountActionConfirmationButtonTitle) {
+            auth.pendingAccountAction?.confirmationTitle ?? "",
+            isPresented: pendingAccountActionConfirmationIsPresented,
+            presenting: auth.pendingAccountAction
+        ) { action in
+            Button {
                 store.confirmPendingAccountAction()
+            } label: {
+                Text(action.confirmationButtonTitle)
             }
             Button("Cancel", role: .cancel) {
                 store.cancelPendingAccountAction()
             }
-        } message: {
-            Text(auth.pendingAccountActionConfirmationMessage)
+        } message: { action in
+            Text(action.confirmationMessage)
         }
         .alert(
-            auth.accountActionAlertTitle,
-            isPresented: $auth.isPresentingAccountActionAlert
-        ) {
+            auth.accountActionAlert?.title ?? "",
+            isPresented: accountActionAlertIsPresented,
+            presenting: auth.accountActionAlert
+        ) { _ in
             Button("OK", role: .cancel) {
                 store.dismissAccountActionAlert()
             }
-        } message: {
-            Text(auth.accountActionAlertMessage)
+        } message: { alert in
+            Text(alert.message)
         }
     }
 

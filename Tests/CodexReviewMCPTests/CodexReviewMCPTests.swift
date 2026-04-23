@@ -4428,7 +4428,7 @@ struct CodexReviewMCPTests {
         )
         await backend.waitForSwitchAccountCallCount(1)
 
-        #expect(store.auth.isPresentingPendingAccountActionConfirmation == false)
+        #expect(store.auth.pendingAccountAction == nil)
         #expect(backend.lastSwitchedAccountKey() == currentSavedAccount.accountKey)
     }
 
@@ -4472,7 +4472,7 @@ struct CodexReviewMCPTests {
                 && store.switchActionRequiresRunningJobsConfirmation(for: currentAccount)
         )
 
-        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(store.auth.pendingAccountAction == .switchAccount(accountKey: currentAccount.accountKey))
         #expect(backend.switchAccountCallCount() == 0)
 
         store.confirmPendingAccountAction()
@@ -4503,8 +4503,24 @@ struct CodexReviewMCPTests {
                 && store.switchActionRequiresRunningJobsConfirmation(for: currentSavedAccount)
         )
 
-        #expect(store.auth.isPresentingPendingAccountActionConfirmation)
+        #expect(store.auth.pendingAccountAction == .switchAccount(accountKey: currentSavedAccount.accountKey))
         #expect(backend.switchAccountCallCount() == 0)
+    }
+
+    @Test func accountActionAlertUsesOptionalPayloadState() {
+        let store = CodexReviewStore.makePreviewStore()
+
+        store.auth.presentAccountActionAlert(
+            title: "Failed to Reorder Accounts",
+            message: "  Request failed.  "
+        )
+
+        #expect(store.auth.accountActionAlert != nil)
+        #expect(store.auth.accountActionAlert?.message == "Request failed.")
+
+        store.dismissAccountActionAlert()
+
+        #expect(store.auth.accountActionAlert == nil)
     }
 
     @Test func detachedCurrentSessionCannotRequestNoOpSwitch() {
@@ -11993,7 +12009,7 @@ final class ReviewMonitorAuthTestHarness {
         store.auth.updateWarning(message: message)
     }
 
-    func presentAccountActionAlert(title: String, message: String) {
+    func presentAccountActionAlert(title: LocalizedStringResource, message: String) {
         store.auth.presentAccountActionAlert(title: title, message: message)
     }
 

@@ -81,18 +81,6 @@ package final class SettingsStore {
         effectiveModelItem?.supportedServiceTiers ?? []
     }
 
-    package var currentModelDisplayText: String {
-        effectiveModelItem?.displayName ?? effectiveModel ?? "Model"
-    }
-
-    package var currentReasoningDisplayText: String {
-        effectiveReasoningEffort?.displayText ?? "Reasoning"
-    }
-
-    package var currentServiceTierDisplayText: String {
-        selectedServiceTier?.displayText ?? "Normal"
-    }
-
     package var effectiveReasoningEffort: CodexReviewReasoningEffort? {
         selectedReasoningEffort ?? effectiveModelItem?.defaultReasoningEffort
     }
