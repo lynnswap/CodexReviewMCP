@@ -165,7 +165,6 @@ struct CodexReviewUIShellTests {
                 [
                     .toggleSidebar,
                     .flexibleSpace,
-                    viewController.addAccountToolbarItemIdentifierForTesting,
                     .sidebarTrackingSeparator,
                     .flexibleSpace,
                 ]
