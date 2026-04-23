@@ -96,18 +96,11 @@ final class ReviewMonitorRootViewController: NSViewController {
            outgoingContentViewController.view.superview === view {
             let incomingContentView = incomingContentViewController.view
             incomingContentView.alphaValue = 0
-            view.addSubview(
+            installEmbeddedContentView(
                 incomingContentView,
                 positioned: .above,
                 relativeTo: outgoingContentViewController.view
             )
-            incomingContentView.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                incomingContentView.topAnchor.constraint(equalTo: view.topAnchor),
-                incomingContentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                incomingContentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                incomingContentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
             uiState.presentedContentKind = kind
 
             NSAnimationContext.runAnimationGroup { context in
@@ -133,7 +126,7 @@ final class ReviewMonitorRootViewController: NSViewController {
             if let outgoingContentViewController {
                 removeEmbeddedContent(for: outgoingContentViewController)
             }
-            embed(incomingContentViewController)
+            installEmbeddedContentView(incomingContentViewController.view)
             uiState.presentedContentKind = kind
         }
 
@@ -142,10 +135,27 @@ final class ReviewMonitorRootViewController: NSViewController {
         }
     }
 
-    private func embed(_ contentViewController: NSViewController) {
-        let contentView = contentViewController.view
+    private func installEmbeddedContentView(
+        _ contentView: NSView,
+        positioned: NSWindow.OrderingMode? = nil,
+        relativeTo relativeView: NSView? = nil
+    ) {
+        let existingConstraints = view.constraints.filter { constraint in
+            constraint.firstItem as AnyObject? === contentView
+                || constraint.secondItem as AnyObject? === contentView
+        }
+        NSLayoutConstraint.deactivate(existingConstraints)
+        contentView.removeFromSuperview()
         contentView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(contentView)
+        if let positioned {
+            view.addSubview(
+                contentView,
+                positioned: positioned,
+                relativeTo: relativeView
+            )
+        } else {
+            view.addSubview(contentView)
+        }
         NSLayoutConstraint.activate([
             contentView.topAnchor.constraint(equalTo: view.topAnchor),
             contentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
