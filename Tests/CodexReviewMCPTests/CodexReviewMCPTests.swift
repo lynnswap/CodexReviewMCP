@@ -719,7 +719,7 @@ struct CodexReviewMCPTests {
         #expect(try Data(contentsOf: encodedAuthURL) == encodedAuthDataBeforeLoad)
     }
 
-    @Test func storeFallsBackToPersistedActiveSelectionWhenSharedAuthNormalizationFails() async throws {
+    @Test func storeSeedsSharedAuthSelectionIntoSavedAccountsWhenSharedAuthNormalizationFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
 
@@ -751,8 +751,8 @@ struct CodexReviewMCPTests {
             appServerManager: MockAppServerManager { _ in .success() }
         )
 
-        #expect(store.auth.account?.email == "stale@example.com")
-        #expect(store.auth.savedAccounts.map(\.email) == ["stale@example.com"])
+        #expect(store.auth.account?.email == "current@example.com")
+        #expect(store.auth.savedAccounts.map(\.email) == ["stale@example.com", "current@example.com"])
     }
 
     @Test func startingStoreRefreshesAuthStateInBackgroundWithoutBlockingStartup() async throws {
@@ -3361,7 +3361,6 @@ struct CodexReviewMCPTests {
         await auth.store.refreshSavedAccountRateLimits(accountKey: currentSavedAccount.accountKey)
 
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.account?.email == "saved@example.com")
     }
 
     @Test func refreshingStoppedDetachedSavedCurrentUsesSelectedSavedProbe() async throws {
@@ -5193,7 +5192,6 @@ struct CodexReviewMCPTests {
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.account?.email == "saved@example.com")
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
@@ -6486,7 +6484,6 @@ struct CodexReviewMCPTests {
         #expect(recycleCallCount == 1)
         #expect(auth.account === currentSavedAccount)
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.account?.email == "saved@example.com")
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
@@ -6896,7 +6893,6 @@ struct CodexReviewMCPTests {
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(recycleCallCount == 0)
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.account?.email == "saved@example.com")
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "saved@example.com")
     }

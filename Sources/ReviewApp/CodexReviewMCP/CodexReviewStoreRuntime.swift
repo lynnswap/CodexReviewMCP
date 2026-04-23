@@ -2193,29 +2193,31 @@ package final class ReviewMonitorServerRuntime {
             }
         }
 
+        var initialAccounts = seededAccounts.accounts.map(makeCodexAccount)
+        if let sharedInitialAccount,
+           initialAccounts.contains(where: { $0.accountKey == sharedInitialAccount.accountKey }) == false
+        {
+            initialAccounts.append(sharedInitialAccount)
+        }
+
         let resolvedInitialAccount: CodexAccount? = {
             guard shouldClearInitialSelection == false else {
                 return nil
             }
             if let sharedInitialAccount,
-               let matchingSavedAccount = seededAccounts.accounts.first(where: {
+               let matchingSavedAccount = initialAccounts.first(where: {
                    $0.accountKey == sharedInitialAccount.accountKey
                })
             {
-                return makeCodexAccount(from: matchingSavedAccount)
+                return matchingSavedAccount
             }
-            // Keep selectedAccount derived from the saved-account collection only.
-            // If shared auth cannot be normalized into savedAccounts during startup,
-            // fall back to the persisted active saved account instead of seeding a detached session.
             if let activeAccountKey = seededAccounts.activeAccountKey {
-                return seededAccounts.accounts
+                return initialAccounts
                     .first(where: { $0.accountKey == activeAccountKey })
-                    .map(makeCodexAccount)
             }
             return nil
         }()
 
-        let initialAccounts = seededAccounts.accounts.map(makeCodexAccount)
         self.initialAccounts = initialAccounts
         self.initialActiveAccountKey = seededAccounts.activeAccountKey
         self.initialAccount = resolvedInitialAccount

@@ -2292,11 +2292,16 @@ private func applyReviewAuthAccount(
         return didAccountIdentityChange(from: priorAccount, to: existingAccount)
     }
 
-    // selectedAccount must stay within savedAccounts.
-    // A shared-auth identity that cannot be normalized into the saved-account list
-    // is treated as unresolved instead of becoming a detached current session.
-    auth.updateSelectedAccount(nil)
-    return didAccountIdentityChange(from: priorAccount, to: nil)
+    let normalizedCurrentAccount = CodexAccount(
+        accountKey: normalizedEmail,
+        email: account.email,
+        planType: account.planType
+    )
+    var updatedSavedAccounts = auth.savedAccounts.map(savedAccountPayload(from:))
+    updatedSavedAccounts.append(savedAccountPayload(from: normalizedCurrentAccount))
+    auth.applySavedAccountStates(updatedSavedAccounts)
+    auth.updateSelectedAccount(normalizedCurrentAccount.id)
+    return didAccountIdentityChange(from: priorAccount, to: auth.selectedAccount)
 }
 
 @MainActor
