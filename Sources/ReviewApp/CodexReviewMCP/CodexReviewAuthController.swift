@@ -962,9 +962,11 @@ package final class ReviewMonitorAuthOrchestrator {
                 let persistedActiveAccountKey = persistedActiveAccountKey()
                 let shouldPreservePersistedActiveSelection =
                     persistedActiveAccountKey != nil && persistedActiveAccountKey != refreshedAccountKey
-                try accountRegistryStore.saveSharedAuthAsSavedAccount(
-                    makeActive: shouldPreservePersistedActiveSelection == false
-                )
+                do {
+                    try accountRegistryStore.saveSharedAuthAsSavedAccount(
+                        makeActive: shouldPreservePersistedActiveSelection == false
+                    )
+                } catch {}
             } else if forceRecycleServer == false {
                 let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
                 if FileManager.default.fileExists(atPath: sharedAuthURL.path) {
@@ -1501,7 +1503,20 @@ package final class ReviewMonitorAuthOrchestrator {
                 }
                 return loadedPayload
             }
-            auth.applySavedAccountStates(loadedAccounts)
+            var reconciledAccounts = loadedAccounts
+            if let priorAccount,
+               reconciledAccounts.contains(where: { $0.accountKey == priorAccount.accountKey }) == false
+            {
+                reconciledAccounts.append(savedAccountPayload(from: priorAccount))
+            }
+            auth.applySavedAccountStates(reconciledAccounts)
+            if let priorAccount,
+               let currentSavedAccount = auth.savedAccounts.first(where: {
+                   $0.accountKey == priorAccount.accountKey
+               })
+            {
+                auth.updateSelectedAccount(currentSavedAccount.id)
+            }
             return loaded.activeAccountKey
         }
         return nil
