@@ -1042,7 +1042,7 @@ package final class ReviewMonitorAuthOrchestrator {
             }
             await refreshSavedAccounts(auth: auth)
             if auth.selectedAccount == nil {
-                auth.updateSelectedAccount(nil)
+                auth.updateSelectedAccount(persistedActiveAccountKey())
             }
             auth.updateWarning(message: nil)
             if resolvedAuthenticatedState || auth.isAuthenticated {

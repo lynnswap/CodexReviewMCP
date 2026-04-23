@@ -2631,6 +2631,40 @@ struct CodexReviewMCPTests {
         }
     }
 
+    @Test func authRefreshFailureReselectsPersistedActiveSavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                FailingReadAccountReviewAuthSession(message: "refresh failed")
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.applySavedAccountStates(initialAccounts.accounts)
+        auth.updateSelectedAccount(nil)
+        auth.updatePhase(.signedOut)
+
+        await auth.store.refreshAuthentication()
+
+        #expect(auth.account?.email == "active@example.com")
+        #expect(testAuthState(from: auth) == .failed("refresh failed", isAuthenticated: true, accountID: "active@example.com"))
+    }
+
     @Test func rateLimitObserverRetriesAfterInitialReadDisconnect() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager(

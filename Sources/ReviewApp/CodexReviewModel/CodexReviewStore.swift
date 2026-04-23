@@ -375,7 +375,8 @@ public final class CodexReviewStore {
     private func isAlreadyUsingPersistedActiveAccount(
         _ accountKey: String
     ) -> Bool {
-        coordinator.isPersistedActiveAccount(
+        auth.selectedAccount?.accountKey == accountKey
+            && coordinator.isPersistedActiveAccount(
             auth: auth,
             accountKey: accountKey
         )
