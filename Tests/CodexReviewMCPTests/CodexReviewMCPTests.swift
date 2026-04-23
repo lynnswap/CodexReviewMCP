@@ -2485,7 +2485,7 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func authRefreshPreservesPersistedActiveSelectionForInactiveSavedCurrentSession() async throws {
+    @Test func authRefreshPromotesSharedAuthSelectionToPersistedActiveAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -2528,7 +2528,55 @@ struct CodexReviewMCPTests {
             let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
             #expect(store.auth.account?.email == "other@example.com")
             #expect(store.auth.savedAccounts.map(\.email) == ["active@example.com", "other@example.com"])
-            #expect(loadedAccounts.activeAccountKey == "active@example.com")
+            #expect(loadedAccounts.activeAccountKey == "other@example.com")
+        } cleanup: {
+            await store.stop()
+        }
+    }
+
+    @Test func authRefreshSignedOutClearsInMemoryOnlyCurrentAccountSeededAtStartup() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let accountsDirectoryURL = ReviewHomePaths.accountsDirectoryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: accountsDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: accountsDirectoryURL.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: accountsDirectoryURL.path)
+        }
+
+        let authSession = SequencedReadAccountReviewAuthSession(
+            responses: [
+                .init(
+                    account: .chatGPT(email: "review@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+                .init(account: nil, requiresOpenAIAuth: true),
+            ]
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "review@example.com"
+            }
+
+            await store.refreshAuthentication()
+
+            #expect(testAuthState(from: store.auth) == .signedOut)
+            #expect(store.auth.savedAccounts.isEmpty)
         } cleanup: {
             await store.stop()
         }
@@ -2582,7 +2630,7 @@ struct CodexReviewMCPTests {
         #expect(loadSharedReviewAccount(environment: environment) == nil)
     }
 
-    @Test func switchActionAllowsPromotingInactiveSavedCurrentSessionToPersistedActiveAccount() async throws {
+    @Test func switchActionDisablesCurrentSavedSessionAfterStartupPromotesItToPersistedActiveAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -2625,7 +2673,7 @@ struct CodexReviewMCPTests {
             let savedCurrentAccount = try #require(
                 store.auth.savedAccounts.first(where: { $0.email == "other@example.com" })
             )
-            #expect(store.switchActionIsDisabled(for: savedCurrentAccount) == false)
+            #expect(store.switchActionIsDisabled(for: savedCurrentAccount))
         } cleanup: {
             await store.stop()
         }

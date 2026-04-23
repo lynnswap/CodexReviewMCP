@@ -975,7 +975,8 @@ package final class ReviewMonitorAuthOrchestrator {
                 }
             }
             let activeAccountKey = await refreshSavedAccounts(
-                auth: auth
+                auth: auth,
+                preserveSelectedAccountIfMissing: state.account != nil
             )
             applyResolvedReviewAuthState(
                 state,
@@ -1469,7 +1470,8 @@ package final class ReviewMonitorAuthOrchestrator {
 
     @discardableResult
     private func refreshSavedAccounts(
-        auth: CodexReviewAuthModel
+        auth: CodexReviewAuthModel,
+        preserveSelectedAccountIfMissing: Bool = true
     ) async -> String? {
         if let loaded = try? accountRegistryStore.loadAccounts() {
             let priorAccount = auth.selectedAccount
@@ -1504,7 +1506,8 @@ package final class ReviewMonitorAuthOrchestrator {
                 return loadedPayload
             }
             var reconciledAccounts = loadedAccounts
-            if let priorAccount,
+            if preserveSelectedAccountIfMissing,
+               let priorAccount,
                reconciledAccounts.contains(where: { $0.accountKey == priorAccount.accountKey }) == false
             {
                 reconciledAccounts.append(savedAccountPayload(from: priorAccount))
