@@ -60,6 +60,15 @@ struct CodexReviewMCPTests {
         #expect(store.auth.savedAccounts.isEmpty)
     }
 
+    @Test func testCompatibilityUpdateAccountPreservesCurrentAccountWhenNoSavedAccountMatches() {
+        let auth = CodexReviewAuthModel()
+        let detachedAccount = CodexAccount(email: "review@example.com", planType: "pro")
+
+        auth.updateAccount(detachedAccount)
+
+        #expect(auth.account?.email == "review@example.com")
+    }
+
     @Test func storePrefersSharedAuthAccountOverStaleRegistryActiveAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)

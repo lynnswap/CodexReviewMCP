@@ -2197,6 +2197,13 @@ package final class ReviewMonitorServerRuntime {
             guard shouldClearInitialSelection == false else {
                 return nil
             }
+            if let sharedInitialAccount,
+               let matchingSavedAccount = seededAccounts.accounts.first(where: {
+                   $0.accountKey == sharedInitialAccount.accountKey
+               })
+            {
+                return makeCodexAccount(from: matchingSavedAccount)
+            }
             if let activeAccountKey = seededAccounts.activeAccountKey {
                 return seededAccounts.accounts
                     .first(where: { $0.accountKey == activeAccountKey })
@@ -2207,7 +2214,7 @@ package final class ReviewMonitorServerRuntime {
 
         let initialAccounts = seededAccounts.accounts.map(makeCodexAccount)
         self.initialAccounts = initialAccounts
-        self.initialActiveAccountKey = resolvedInitialAccount?.accountKey
+        self.initialActiveAccountKey = seededAccounts.activeAccountKey
         self.initialAccount = resolvedInitialAccount
     }
 
