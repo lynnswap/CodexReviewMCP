@@ -436,7 +436,7 @@ struct CodexReviewUIShellTests {
         #expect(abs(beforeSize.height - afterSize.height) < 0.5)
     }
 
-    @Test func windowControllerShowsSignInViewAfterAuthFailure() async throws {
+    @Test func windowControllerKeepsSplitViewAfterAuthFailureWhenSessionExists() async throws {
         let store = CodexReviewStore.makePreviewStore()
         let harness = makeWindowHarness(
             store: store,
@@ -445,14 +445,21 @@ struct CodexReviewUIShellTests {
         let window = harness.window
         defer { window.close() }
 
-        applyTestAuthState(auth: store.auth, state: .failed("Authentication failed."))
-        try await waitForWindowContentKind(harness.rootViewController, .signInView)
+        applyTestAuthState(
+            auth: store.auth,
+            state: .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
 
-        #expect(harness.rootViewController.contentKindForTesting == .signInView)
-        #expect(window.toolbar == nil)
+        #expect(harness.rootViewController.contentKindForTesting == .contentView)
+        #expect(window.toolbar != nil)
     }
 
-    @Test func windowControllerKeepsSignInViewPresentedWhileAuthenticating() async throws {
+    @Test func windowControllerKeepsSplitViewPresentedWhileAuthenticatingWithSession() async throws {
         let store = CodexReviewStore.makePreviewStore()
         let harness = makeWindowHarness(
             store: store,
@@ -472,12 +479,12 @@ struct CodexReviewUIShellTests {
                 )
             )
         )
-        try await waitForWindowContentKind(harness.rootViewController, .signInView)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
 
-        #expect(harness.rootViewController.contentKindForTesting == .signInView)
+        #expect(harness.rootViewController.contentKindForTesting == .contentView)
     }
 
-    @Test func windowControllerShowsSignInViewWhileAuthenticatedRetryAuthenticates() async throws {
+    @Test func windowControllerKeepsSplitViewWhileAuthenticatedRetryAuthenticates() async throws {
         let store = CodexReviewStore.makePreviewStore()
         let harness = makeWindowHarness(
             store: store,
@@ -494,21 +501,24 @@ struct CodexReviewUIShellTests {
         )
         await Task.yield()
 
-        applyTestAuthState(auth: store.auth, state: 
-            .signingIn(
-                .init(
+        applyTestAuthState(
+            auth: store.auth,
+            state: .init(
+                isAuthenticated: true,
+                accountID: "review@example.com",
+                progress: .init(
                     title: "Sign in with ChatGPT",
                     detail: "Open the browser to continue.",
                     browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
                 )
             )
         )
-        try await waitForWindowContentKind(harness.rootViewController, .signInView)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
         try await waitForEmbeddedContentSubviewCount(harness.rootViewController, 1)
 
-        #expect(harness.rootViewController.contentKindForTesting == .signInView)
-        #expect(harness.rootViewController.isSignInViewEmbeddedForTesting)
-        #expect(harness.rootViewController.isSplitViewEmbeddedForTesting == false)
+        #expect(harness.rootViewController.contentKindForTesting == .contentView)
+        #expect(harness.rootViewController.isSignInViewEmbeddedForTesting == false)
+        #expect(harness.rootViewController.isSplitViewEmbeddedForTesting)
     }
 
     @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {

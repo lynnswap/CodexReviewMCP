@@ -18,9 +18,6 @@ final class ReviewMonitorUIState {
     var presentedContentKind: ReviewMonitorContentKind?
 
     var contentKind: ReviewMonitorContentKind {
-        if auth.progress != nil || auth.errorMessage != nil {
-            return .signInView
-        }
         if auth.selectedAccount != nil || auth.hasSavedAccounts {
             return .contentView
         }

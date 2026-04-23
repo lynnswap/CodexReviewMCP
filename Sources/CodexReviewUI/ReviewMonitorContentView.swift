@@ -130,7 +130,12 @@ final class ReviewMonitorRootViewController: NSViewController {
             uiState.presentedContentKind = kind
         }
 
-        if kind == .signInView {
+        switch kind {
+        case .contentView:
+            if let window = view.window {
+                splitViewController.attach(to: window)
+            }
+        case .signInView:
             signInViewController.applyWindowPresentationIfPossible()
         }
     }

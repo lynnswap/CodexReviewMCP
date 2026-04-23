@@ -1425,15 +1425,20 @@ package final class ReviewMonitorAuthOrchestrator {
         auth: CodexReviewAuthModel,
         priorCurrentAccount: CodexAccount?
     ) {
-        if let priorCurrentAccount,
-           auth.savedAccounts.contains(where: { $0.accountKey == priorCurrentAccount.accountKey })
-        {
-            auth.updateSelectedAccount(
-                auth.savedAccounts.first(where: { $0.accountKey == priorCurrentAccount.accountKey })?.id
-            )
-        } else {
+        guard let priorCurrentAccount else {
             auth.updateSelectedAccount(nil)
+            return
         }
+        if let currentSavedAccount = auth.savedAccounts.first(where: {
+            $0.accountKey == priorCurrentAccount.accountKey
+        }) {
+            auth.updateSelectedAccount(currentSavedAccount.id)
+            return
+        }
+        var updatedSavedAccounts = auth.savedAccounts.map(savedAccountPayload(from:))
+        updatedSavedAccounts.append(savedAccountPayload(from: priorCurrentAccount))
+        auth.applySavedAccountStates(updatedSavedAccounts)
+        auth.updateSelectedAccount(priorCurrentAccount.id)
     }
 
     private func syncCurrentAccountMetadata(
