@@ -110,13 +110,8 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     private func bindObservation() {
         authObservationHandles.removeAll()
 
-        auth.observe([\.persistedAccounts]) { [weak self] in
+        auth.observe([\.persistedAccounts, \.selectedAccount]) { [weak self] in
             self?.reloadAccounts()
-        }
-        .store(in: &authObservationHandles)
-
-        auth.observe([\.selectedAccount]) { [weak self] in
-            self?.reconcileSelectionAfterReload()
         }
         .store(in: &authObservationHandles)
 
