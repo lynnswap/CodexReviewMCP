@@ -2500,6 +2500,8 @@ struct CodexReviewMCPTests {
 
         #expect(await manager.prepareCount() == 2)
         #expect(await manager.shutdownCount() == 1)
+        #expect(await oldTransport.requestedModelListCursors() == [nil])
+        #expect(await newTransport.requestedModelListCursors() == [nil])
 
         await store.stop()
     }

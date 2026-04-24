@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import ObservationBridge
 import ReviewDomain
 
 @MainActor
@@ -19,8 +18,6 @@ public final class CodexReviewStore {
     @ObservationIgnored package let coordinator: ReviewMonitorCoordinator
     @ObservationIgnored package let settingsService: ReviewMonitorSettingsService
     @ObservationIgnored package var previewSupportRetainer: AnyObject?
-    @ObservationIgnored private var observationHandles: Set<ObservationHandle> = []
-    @ObservationIgnored private var observedActiveAccountKey: String?
 
     package init(
         coordinator: ReviewMonitorCoordinator,
@@ -45,8 +42,6 @@ public final class CodexReviewStore {
                 self.auth.updateCurrentAccount(initialAccount)
             }
         }
-        observedActiveAccountKey = auth.selectedAccount?.accountKey
-        observeSettingsRefreshCauses()
         coordinator.attachStore(self)
         settingsService.attach(settings: settings)
     }
@@ -423,34 +418,7 @@ public final class CodexReviewStore {
         }
     }
 
-    private var activeAccountKeyForSettingsRefresh: String? {
-        auth.selectedAccount?.accountKey
-    }
-
-    private func observeSettingsRefreshCauses() {
-        guard observationHandles.isEmpty else {
-            return
-        }
-
-        observeTask(\.activeAccountKeyForSettingsRefresh) { [weak self] activeAccountKey in
-            guard let self else {
-                return
-            }
-            guard activeAccountKey != self.observedActiveAccountKey else {
-                return
-            }
-
-            self.observedActiveAccountKey = activeAccountKey
-            await self.refreshSettingsForActiveAccountKeyChange()
-        }
-        .store(in: &observationHandles)
-    }
-
     private func refreshSettingsAfterServerStart() async {
-        await settingsService.refreshIfRunning(serverState: serverState)
-    }
-
-    private func refreshSettingsForActiveAccountKeyChange() async {
         await settingsService.refreshIfRunning(serverState: serverState)
     }
 
