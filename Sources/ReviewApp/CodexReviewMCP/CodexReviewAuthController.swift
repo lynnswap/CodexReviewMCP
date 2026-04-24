@@ -1375,7 +1375,14 @@ package final class ReviewMonitorAuthOrchestrator {
         guard let priorCurrentAccount else {
             return false
         }
-        return priorSnapshot.selectedAccountKey == priorCurrentAccount.accountKey
+        if priorSnapshot.persistedAccounts.contains(where: {
+            $0.accountKey == priorCurrentAccount.accountKey
+        }) {
+            return true
+        }
+        let activeAccountKey = priorSnapshot.persistedActiveAccountKey
+            ?? persistedActiveAccountKey()
+        return activeAccountKey == nil
     }
 
     private func applyCommittedActiveAccount(

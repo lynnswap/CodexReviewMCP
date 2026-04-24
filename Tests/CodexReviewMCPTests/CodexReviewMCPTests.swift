@@ -112,8 +112,10 @@ struct CodexReviewMCPTests {
             appServerManager: MockAppServerManager { _ in .success() }
         )
 
-        #expect(store.auth.account?.email == "current@example.com")
-        #expect(store.auth.account?.email == "current@example.com")
+        let currentAccount = try #require(store.auth.account)
+        #expect(currentAccount.email == "current@example.com")
+        #expect(store.auth.persistedActiveAccountKey == "current@example.com")
+        #expect(store.switchActionIsDisabled(for: currentAccount))
         #expect(store.auth.persistedAccounts.map(\.email) == ["stale@example.com", "current@example.com"])
     }
 
@@ -736,7 +738,7 @@ struct CodexReviewMCPTests {
         #expect(try Data(contentsOf: encodedAuthURL) == encodedAuthDataBeforeLoad)
     }
 
-    @Test func storeSeedsSharedAuthSelectionIntoSavedAccountsWhenSharedAuthNormalizationFails() async throws {
+    @Test func storeKeepsSharedAuthDetachedWhenSharedAuthNormalizationFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
 
@@ -768,8 +770,14 @@ struct CodexReviewMCPTests {
             appServerManager: MockAppServerManager { _ in .success() }
         )
 
-        #expect(store.auth.account?.email == "current@example.com")
-        #expect(store.auth.persistedAccounts.map(\.email) == ["stale@example.com", "current@example.com"])
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let currentAccount = try #require(store.auth.account)
+        #expect(currentAccount.email == "current@example.com")
+        #expect(store.auth.accounts.map(\.email) == ["stale@example.com", "current@example.com"])
+        #expect(store.auth.persistedAccounts.map(\.email) == ["stale@example.com"])
+        #expect(store.auth.persistedActiveAccountKey == "stale@example.com")
+        #expect(store.switchActionIsDisabled(for: currentAccount))
+        #expect(loadedAccounts.accounts.map(\.email) == ["stale@example.com"])
     }
 
     @Test func startingStoreRefreshesAuthStateInBackgroundWithoutBlockingStartup() async throws {
@@ -6956,7 +6964,7 @@ struct CodexReviewMCPTests {
         #expect(recycleCallCount == 0)
     }
 
-    func addAccountUnsavedSameEmailWithDifferentActiveSavedAccountDoesNotRecycleRuntime() async throws {
+    @Test func addAccountUnsavedSameEmailWithDifferentActiveSavedAccountDoesNotRecycleRuntime() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(

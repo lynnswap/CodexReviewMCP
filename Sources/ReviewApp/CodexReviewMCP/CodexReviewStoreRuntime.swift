@@ -2197,23 +2197,21 @@ package final class ReviewMonitorServerRuntime {
             }
         }
 
-        var initialAccounts = seededAccounts.accounts.map(makeCodexAccount)
-        if let sharedInitialAccount,
-           initialAccounts.contains(where: { $0.accountKey == sharedInitialAccount.accountKey }) == false
-        {
-            initialAccounts.append(sharedInitialAccount)
-        }
+        let initialAccounts = seededAccounts.accounts.map(makeCodexAccount)
 
         let resolvedInitialAccount: CodexAccount? = {
             guard shouldClearInitialSelection == false else {
                 return nil
             }
             if let sharedInitialAccount,
-               let matchingSavedAccount = initialAccounts.first(where: {
+               let persistedSharedAccount = initialAccounts.first(where: {
                    $0.accountKey == sharedInitialAccount.accountKey
                })
             {
-                return matchingSavedAccount
+                return persistedSharedAccount
+            }
+            if let sharedInitialAccount {
+                return sharedInitialAccount
             }
             if let activeAccountKey = seededAccounts.activeAccountKey {
                 return initialAccounts
@@ -2222,8 +2220,20 @@ package final class ReviewMonitorServerRuntime {
             return nil
         }()
 
+        let resolvedInitialActiveAccountKey: String? = {
+            guard shouldClearInitialSelection == false else {
+                return nil
+            }
+            if let sharedInitialAccount,
+               initialAccounts.contains(where: { $0.accountKey == sharedInitialAccount.accountKey })
+            {
+                return sharedInitialAccount.accountKey
+            }
+            return seededAccounts.activeAccountKey
+        }()
+
         self.initialAccounts = initialAccounts
-        self.initialActiveAccountKey = seededAccounts.activeAccountKey
+        self.initialActiveAccountKey = resolvedInitialActiveAccountKey
         self.initialAccount = resolvedInitialAccount
     }
 
