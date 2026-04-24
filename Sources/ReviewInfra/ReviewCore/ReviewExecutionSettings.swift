@@ -1,6 +1,5 @@
 import Foundation
 import ReviewDomain
-import ReviewDomain
 import TOMLDecoder
 
 package struct AppServerCommand: Sendable {
@@ -33,7 +32,6 @@ package struct ReviewExecutionSettings: Sendable {
 package struct ResolvedReviewModelSelection: Sendable, Equatable {
     package var reportedModelBeforeThreadStart: String?
     package var threadStartModelHint: String?
-    package var clampModel: String?
 }
 
 package struct ResolvedReviewSettingsOverrides: Sendable, Equatable {
@@ -77,11 +75,9 @@ package func makeReviewThreadStartConfig(
     reviewSpecificModel: String?,
     localConfig: ReviewLocalConfig,
     resolvedConfig: AppServerConfigReadResponse.Config,
-    clampModel: String?,
     environment: [String: String],
     codexHome: URL? = nil
 ) -> [String: AppServerJSONValue]? {
-    let modelsCache = loadModelsCache(environment: environment, codexHome: codexHome)
     let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
         environment: environment,
         codexHome: codexHome
@@ -114,34 +110,6 @@ package func makeReviewThreadStartConfig(
         )
     {
         config["service_tier"] = .string(serviceTier.rawValue)
-    }
-
-    let baselineContextWindow = localConfig.modelContextWindow ?? resolvedConfig.modelContextWindow
-    let baselineAutoCompactTokenLimit = localConfig.modelAutoCompactTokenLimit
-        ?? resolvedConfig.modelAutoCompactTokenLimit
-
-    if let clampModel = clampModel?.nilIfEmpty {
-        if let clampedContextWindow = computeForcedIntegerOverride(
-            modelSlug: clampModel,
-            key: "model_context_window",
-            configuredValue: baselineContextWindow,
-            modelsCache: modelsCache
-        ) {
-            config["model_context_window"] = .int(clampedContextWindow)
-        } else if let baselineContextWindow {
-            config["model_context_window"] = .int(baselineContextWindow)
-        }
-
-        if let clampedAutoCompactLimit = computeForcedIntegerOverride(
-            modelSlug: clampModel,
-            key: "model_auto_compact_token_limit",
-            configuredValue: baselineAutoCompactTokenLimit,
-            modelsCache: modelsCache
-        ) {
-            config["model_auto_compact_token_limit"] = .int(clampedAutoCompactLimit)
-        } else if let baselineAutoCompactTokenLimit {
-            config["model_auto_compact_token_limit"] = .int(baselineAutoCompactTokenLimit)
-        }
     }
 
     return config.isEmpty ? nil : config
@@ -178,8 +146,7 @@ package func resolveReviewModelSelection(
         ?? resolvedConfig.model?.nilIfEmpty
     return .init(
         reportedModelBeforeThreadStart: reportedModel,
-        threadStartModelHint: reportedModel,
-        clampModel: reportedModel
+        threadStartModelHint: reportedModel
     )
 }
 
@@ -253,9 +220,7 @@ package func loadActiveReviewProfileConfig(
     return .init(
         reviewModel: activeProfile.reviewModel,
         modelReasoningEffort: activeProfile.modelReasoningEffort,
-        serviceTier: activeProfile.serviceTier,
-        modelContextWindow: activeProfile.modelContextWindow,
-        modelAutoCompactTokenLimit: activeProfile.modelAutoCompactTokenLimit
+        serviceTier: activeProfile.serviceTier
     )
 }
 
@@ -296,14 +261,6 @@ package func loadFallbackAppServerConfig(
         profileOverrides?.serviceTierOverride,
         inherited: document?.serviceTier
     )
-    let resolvedModelContextWindow = resolveProfileOverride(
-        profileOverrides?.modelContextWindowOverride,
-        inherited: document?.modelContextWindow
-    )
-    let resolvedModelAutoCompactTokenLimit = resolveProfileOverride(
-        profileOverrides?.modelAutoCompactTokenLimitOverride,
-        inherited: document?.modelAutoCompactTokenLimit
-    )
 
     return .init(
         model: resolvedModel,
@@ -311,9 +268,7 @@ package func loadFallbackAppServerConfig(
         modelReasoningEffort: resolvedReasoningEffort
             .flatMap(CodexReviewReasoningEffort.init(rawValue:)),
         serviceTier: resolvedServiceTier
-            .flatMap(CodexReviewServiceTier.init(rawValue:)),
-        modelContextWindow: resolvedModelContextWindow,
-        modelAutoCompactTokenLimit: resolvedModelAutoCompactTokenLimit
+            .flatMap(CodexReviewServiceTier.init(rawValue:))
     )
 }
 
@@ -330,107 +285,9 @@ package func mergeAppServerConfig(
         serviceTier: primary.hasServiceTier
             ? primary.serviceTier
             : fallback.serviceTier,
-        modelContextWindow: primary.modelContextWindow ?? fallback.modelContextWindow,
-        modelAutoCompactTokenLimit: primary.modelAutoCompactTokenLimit ?? fallback.modelAutoCompactTokenLimit,
         hasModelReasoningEffort: primary.hasModelReasoningEffort || fallback.hasModelReasoningEffort,
         hasServiceTier: primary.hasServiceTier || fallback.hasServiceTier
     )
-}
-
-private func resolveModelsCachePath(
-    environment: [String: String],
-    codexHome: URL?
-) -> URL? {
-    ReviewHomePaths.modelsCacheURL(environment: environment, codexHome: codexHome)
-}
-
-private func loadModelsCache(
-    environment: [String: String],
-    codexHome: URL?
-) -> [String: Any] {
-    loadJSONDictionary(at: resolveModelsCachePath(environment: environment, codexHome: codexHome))
-}
-
-private func loadJSONDictionary(at path: URL?) -> [String: Any] {
-    guard let path, let data = try? Data(contentsOf: path) else {
-        return [:]
-    }
-    return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-}
-
-private func lookupModelContextWindow(modelSlug: String, modelsCache: [String: Any]) -> Int? {
-    if let models = modelsCache["models"] as? [[String: Any]] {
-        for model in models where (model["slug"] as? String) == modelSlug {
-            if let contextWindow = normalizeIntegerLiteral(model["context_window"] as? String)
-                ?? model["context_window"] as? Int,
-               contextWindow > 0
-            {
-                return contextWindow
-            }
-        }
-    }
-    return ReviewDefaults.shared.models.fallbackContextWindows[modelSlug]
-}
-
-private func lookupModelContextWindowClampLimit(modelSlug: String, modelsCache: [String: Any]) -> Int? {
-    let normalized = modelSlug.split(separator: "/").last.map(String.init) ?? modelSlug
-    if normalized == "gpt-5.4-mini" || normalized.hasPrefix("gpt-5.4-mini-") {
-        return ReviewDefaults.shared.models.defaultWideContextClampLimit
-    }
-    if let match = normalized.wholeMatch(of: /^gpt-5\.(\d+)(?:$|-).*/), let minor = Int(match.1), minor >= 4 {
-        return ReviewDefaults.shared.models.gpt54AndAboveClampLimit
-    }
-    if normalized == "gpt-5.3-codex-spark" || normalized.hasPrefix("gpt-5.3-codex-spark-") {
-        return ReviewDefaults.shared.models.sparkClampLimit
-    }
-    for prefix in ReviewDefaults.shared.models.wideContextPrefixes {
-        if normalized == prefix || normalized.hasPrefix("\(prefix)-") {
-            return ReviewDefaults.shared.models.defaultWideContextClampLimit
-        }
-    }
-    return lookupModelContextWindow(modelSlug: modelSlug, modelsCache: modelsCache)
-}
-
-private func lookupAutoCompactClampLimit(modelSlug: String, modelsCache: [String: Any]) -> Int? {
-    guard let contextWindowClampLimit = lookupModelContextWindowClampLimit(modelSlug: modelSlug, modelsCache: modelsCache) else {
-        return nil
-    }
-    return Int((Double(contextWindowClampLimit) * ReviewDefaults.shared.review.autoCompactRatio).rounded(.down))
-}
-
-private func computeForcedIntegerOverride(
-    modelSlug: String,
-    key: String,
-    configuredValue: Int?,
-    modelsCache: [String: Any]
-) -> Int? {
-    let clampLimit: Int?
-    switch key {
-    case "model_context_window":
-        clampLimit = lookupModelContextWindowClampLimit(modelSlug: modelSlug, modelsCache: modelsCache)
-    case "model_auto_compact_token_limit":
-        clampLimit = lookupAutoCompactClampLimit(modelSlug: modelSlug, modelsCache: modelsCache)
-    default:
-        clampLimit = nil
-    }
-
-    guard let clampLimit, clampLimit > 0, let configuredValue, configuredValue > clampLimit else {
-        return nil
-    }
-    return clampLimit
-}
-
-private func normalizeIntegerLiteral(_ rawValue: String?) -> Int? {
-    guard let rawValue else {
-        return nil
-    }
-    let normalized = trimMatchingQuotes(rawValue)
-        .replacingOccurrences(of: "_", with: "")
-        .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-    guard normalized.isEmpty == false, normalized.allSatisfy({ $0.isNumber }) else {
-        return nil
-    }
-    return Int(normalized)
 }
 
 private func trimMatchingQuotes(_ value: String) -> String {
@@ -484,8 +341,6 @@ private struct FallbackAppServerConfigDocument: Decodable {
         let reviewModelOverride: ParsedProfileOverride<String>
         let modelReasoningEffortOverride: ParsedProfileOverride<String>
         let serviceTierOverride: ParsedProfileOverride<String>
-        let modelContextWindowOverride: ParsedProfileOverride<Int>
-        let modelAutoCompactTokenLimitOverride: ParsedProfileOverride<Int>
 
         var model: String? {
             modelOverride.value
@@ -503,21 +358,11 @@ private struct FallbackAppServerConfigDocument: Decodable {
             serviceTierOverride.value
         }
 
-        var modelContextWindow: Int? {
-            modelContextWindowOverride.value
-        }
-
-        var modelAutoCompactTokenLimit: Int? {
-            modelAutoCompactTokenLimitOverride.value
-        }
-
         var isEmpty: Bool {
             modelOverride.isPresent == false
                 && reviewModelOverride.isPresent == false
                 && modelReasoningEffortOverride.isPresent == false
                 && serviceTierOverride.isPresent == false
-                && modelContextWindowOverride.isPresent == false
-                && modelAutoCompactTokenLimitOverride.isPresent == false
         }
     }
 
@@ -531,8 +376,6 @@ private struct FallbackAppServerConfigDocument: Decodable {
     let reviewModel: String?
     let modelReasoningEffort: String?
     let serviceTier: String?
-    let modelContextWindow: Int?
-    let modelAutoCompactTokenLimit: Int?
     let resolvedActiveProfile: ResolvedActiveProfile?
 
     var activeProfileInfo: ActiveReviewProfile? {
@@ -549,8 +392,6 @@ private struct FallbackAppServerConfigDocument: Decodable {
         case reviewModel = "review_model"
         case modelReasoningEffort = "model_reasoning_effort"
         case serviceTier = "service_tier"
-        case modelContextWindow = "model_context_window"
-        case modelAutoCompactTokenLimit = "model_auto_compact_token_limit"
         case profiles
     }
 
@@ -564,14 +405,6 @@ private struct FallbackAppServerConfigDocument: Decodable {
             forKey: .modelReasoningEffort
         )
         serviceTier = try container.decodeIfPresent(String.self, forKey: .serviceTier)
-        modelContextWindow = try container.decodeIfPresent(
-            TOMLIntegerLiteral.self,
-            forKey: .modelContextWindow
-        )?.value
-        modelAutoCompactTokenLimit = try container.decodeIfPresent(
-            TOMLIntegerLiteral.self,
-            forKey: .modelAutoCompactTokenLimit
-        )?.value
         resolvedActiveProfile = nil
     }
 }
@@ -594,29 +427,6 @@ private func profileWriteKeyPathPrefix(for profile: String) -> String {
     return "profiles.\(profileKeyPathComponent(forDirectKey: profile))"
 }
 
-private enum TOMLIntegerLiteral: Decodable {
-    case int(Int)
-    case string(String)
-
-    var value: Int? {
-        switch self {
-        case .int(let value):
-            return value
-        case .string(let value):
-            return normalizeIntegerLiteral(value)
-        }
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let value = try? container.decode(Int.self) {
-            self = .int(value)
-            return
-        }
-        self = .string(try container.decode(String.self))
-    }
-}
-
 private func loadFallbackAppServerConfigDocument(at configPath: URL) -> FallbackAppServerConfigDocument? {
     guard let data = try? Data(contentsOf: configPath) else {
         return nil
@@ -635,8 +445,6 @@ private func loadFallbackAppServerConfigDocument(at configPath: URL) -> Fallback
         reviewModel: document.reviewModel,
         modelReasoningEffort: document.modelReasoningEffort,
         serviceTier: document.serviceTier,
-        modelContextWindow: document.modelContextWindow,
-        modelAutoCompactTokenLimit: document.modelAutoCompactTokenLimit,
         resolvedActiveProfile: resolveActiveProfile(
             content: originalContent,
             profile: document.profile
@@ -652,8 +460,6 @@ private extension FallbackAppServerConfigDocument {
         reviewModel: String?,
         modelReasoningEffort: String?,
         serviceTier: String?,
-        modelContextWindow: Int?,
-        modelAutoCompactTokenLimit: Int?,
         resolvedActiveProfile: ResolvedActiveProfile?
     ) {
         self.profile = profile
@@ -661,8 +467,6 @@ private extension FallbackAppServerConfigDocument {
         self.reviewModel = reviewModel
         self.modelReasoningEffort = modelReasoningEffort
         self.serviceTier = serviceTier
-        self.modelContextWindow = modelContextWindow
-        self.modelAutoCompactTokenLimit = modelAutoCompactTokenLimit
         self.resolvedActiveProfile = resolvedActiveProfile
     }
 }
@@ -748,8 +552,6 @@ private func readProfileOverrides(
     var reviewModelOverride: ParsedProfileOverride<String> = .missing
     var modelReasoningEffortOverride: ParsedProfileOverride<String> = .missing
     var serviceTierOverride: ParsedProfileOverride<String> = .missing
-    var modelContextWindowOverride: ParsedProfileOverride<Int> = .missing
-    var modelAutoCompactTokenLimitOverride: ParsedProfileOverride<Int> = .missing
 
     for rawLine in content.split(separator: "\n", omittingEmptySubsequences: false) {
         let line = stripTOMLComment(String(rawLine)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -780,10 +582,6 @@ private func readProfileOverrides(
             modelReasoningEffortOverride = parseNullableProfileStringOverride(rawValue)
         case "service_tier":
             serviceTierOverride = parseNullableProfileStringOverride(rawValue)
-        case "model_context_window":
-            modelContextWindowOverride = parseNullableProfileIntegerOverride(rawValue)
-        case "model_auto_compact_token_limit":
-            modelAutoCompactTokenLimitOverride = parseNullableProfileIntegerOverride(rawValue)
         default:
             continue
         }
@@ -793,9 +591,7 @@ private func readProfileOverrides(
         modelOverride: modelOverride,
         reviewModelOverride: reviewModelOverride,
         modelReasoningEffortOverride: modelReasoningEffortOverride,
-        serviceTierOverride: serviceTierOverride,
-        modelContextWindowOverride: modelContextWindowOverride,
-        modelAutoCompactTokenLimitOverride: modelAutoCompactTokenLimitOverride
+        serviceTierOverride: serviceTierOverride
     )
 }
 
@@ -805,17 +601,6 @@ private func parseNullableProfileStringOverride(_ rawValue: String) -> ParsedPro
         return .value(nil)
     }
     return .value(trimMatchingQuotes(trimmedValue).nilIfEmpty)
-}
-
-private func parseNullableProfileIntegerOverride(_ rawValue: String) -> ParsedProfileOverride<Int> {
-    let trimmedValue = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmedValue == "null" {
-        return .value(nil)
-    }
-    guard let value = normalizeIntegerLiteral(trimmedValue) else {
-        return .missing
-    }
-    return .value(value)
 }
 
 private func sanitizeNullAssignmentsForTOMLDecoder(_ content: String) -> String {

@@ -72,16 +72,10 @@ let package = Package(
                 .product(name: "TOMLDecoder", package: "TOMLDecoder"),
             ],
             path: "Sources/ReviewInfra",
-            exclude: [
-                "ReviewCore/Resources",
-            ],
             sources: [
                 "ReviewCore",
                 "ReviewHTTPServer",
                 "ReviewStdioAdapter",
-            ],
-            resources: [
-                .process("ReviewCore/Resources"),
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),

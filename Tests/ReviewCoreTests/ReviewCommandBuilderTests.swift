@@ -28,26 +28,18 @@ import Testing
         #expect(settings.overrides == .reviewRunner)
     }
 
-    @Test func reviewExecutionSettingsBuilderDoesNotInjectThreadStartModelOrReasoningWhenModelIsUnspecified() {
+    @Test func reviewExecutionSettingsBuilderDoesNotInjectThreadStartConfigWhenOverridesAreUnspecified() {
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: nil,
             localConfig: .init(),
             resolvedConfig: .init(
                 model: "gpt-5.4-mini",
-                reviewModel: nil,
-                modelContextWindow: 999_999,
-                modelAutoCompactTokenLimit: 999_999
+                reviewModel: nil
             ),
-            clampModel: "gpt-5.4-mini",
             environment: [:]
         )
 
-        #expect(config?["review_model"] == nil)
-        #expect(config?["hide_agent_reasoning"] == nil)
-        #expect(config?["model_reasoning_effort"] == nil)
-        #expect(config?["model_reasoning_summary"] == nil)
-        #expect(config?["model_context_window"] == .int(272_000))
-        #expect(config?["model_auto_compact_token_limit"] == .int(244_800))
+        #expect(config == nil)
     }
 
     @Test func reviewExecutionSettingsBuilderUsesReviewSpecificModelWhenProvided() {
@@ -55,52 +47,49 @@ import Testing
             reviewSpecificModel: "gpt-5.4",
             localConfig: .init(),
             resolvedConfig: .init(),
-            clampModel: "gpt-5.4",
             environment: [:]
         )
 
         #expect(config == ["review_model": .string("gpt-5.4")])
     }
 
-    @Test func reviewExecutionSettingsBuilderPreservesResolvedNumericLimitsWhenReviewModelIsSpecified() {
+    @Test func reviewExecutionSettingsBuilderDoesNotForwardCodexOwnedContextLimits() throws {
+        let data = Data(
+            """
+            {
+              "config": {
+                "model": "custom-review-model",
+                "model_context_window": 999999,
+                "model_auto_compact_token_limit": 999999
+              }
+            }
+            """.utf8
+        )
+        let response = try JSONDecoder().decode(AppServerConfigReadResponse.self, from: data)
+
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: "custom-review-model",
             localConfig: .init(),
-            resolvedConfig: .init(
-                model: nil,
-                reviewModel: nil,
-                modelContextWindow: 120_000,
-                modelAutoCompactTokenLimit: 110_000
-            ),
-            clampModel: "custom-review-model",
+            resolvedConfig: response.config,
             environment: [:]
         )
 
-        #expect(config?["review_model"] == .string("custom-review-model"))
-        #expect(config?["model_context_window"] == .int(120_000))
-        #expect(config?["model_auto_compact_token_limit"] == .int(110_000))
+        #expect(config == ["review_model": .string("custom-review-model")])
     }
 
-    @Test func reviewExecutionSettingsBuilderPrefersResolvedReasoningAndLocalLimits() {
+    @Test func reviewExecutionSettingsBuilderPrefersResolvedReasoning() {
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: "custom-review-model",
             localConfig: .init(
-                modelReasoningEffort: "high",
-                modelContextWindow: 120_000,
-                modelAutoCompactTokenLimit: 110_000
+                modelReasoningEffort: "high"
             ),
             resolvedConfig: .init(
-                modelReasoningEffort: .low,
-                modelContextWindow: 999_999,
-                modelAutoCompactTokenLimit: 888_888
+                modelReasoningEffort: .low
             ),
-            clampModel: "custom-review-model",
             environment: [:]
         )
 
         #expect(config?["model_reasoning_effort"] == .string("low"))
-        #expect(config?["model_context_window"] == .int(120_000))
-        #expect(config?["model_auto_compact_token_limit"] == .int(110_000))
     }
 
     @Test func reviewExecutionSettingsBuilderHonorsProfileReasoningClearOverRootOverride() throws {
@@ -122,7 +111,6 @@ import Testing
             reviewSpecificModel: nil,
             localConfig: .init(modelReasoningEffort: "high"),
             resolvedConfig: .init(modelReasoningEffort: nil),
-            clampModel: nil,
             environment: ["HOME": tempHome.path]
         )
 
@@ -148,31 +136,25 @@ import Testing
             reviewSpecificModel: nil,
             localConfig: .init(serviceTier: "fast"),
             resolvedConfig: .init(serviceTier: nil),
-            clampModel: nil,
             environment: ["HOME": tempHome.path]
         )
 
         #expect(config?["service_tier"] == nil)
     }
 
-    @Test func reviewExecutionSettingsBuilderKeepsReasoningOverrideButOmitsNumericLimitsWithoutModel() {
+    @Test func reviewExecutionSettingsBuilderKeepsReasoningOverride() {
         let config = makeReviewThreadStartConfig(
             reviewSpecificModel: nil,
             localConfig: .init(
                 reviewModel: nil,
-                modelReasoningEffort: "high",
-                modelContextWindow: 100_000,
-                modelAutoCompactTokenLimit: 90_000
+                modelReasoningEffort: "high"
             ),
             resolvedConfig: .init(),
-            clampModel: nil,
             environment: [:]
         )
 
         #expect(config?["review_model"] == nil)
         #expect(config?["model_reasoning_effort"] == .string("high"))
-        #expect(config?["model_context_window"] == nil)
-        #expect(config?["model_auto_compact_token_limit"] == nil)
     }
 
     @Test func reviewExecutionSettingsBuilderPrefersResolvedServiceTierOverride() {
@@ -180,29 +162,10 @@ import Testing
             reviewSpecificModel: nil,
             localConfig: .init(serviceTier: "fast"),
             resolvedConfig: .init(serviceTier: .flex),
-            clampModel: nil,
             environment: [:]
         )
 
         #expect(config?["service_tier"] == .string("flex"))
-    }
-
-    @Test func reviewExecutionSettingsBuilderOmitsNumericLimitsWhenModelIsUnknown() {
-        let config = makeReviewThreadStartConfig(
-            reviewSpecificModel: nil,
-            localConfig: .init(),
-            resolvedConfig: .init(
-                model: nil,
-                reviewModel: nil,
-                modelContextWindow: 120_000,
-                modelAutoCompactTokenLimit: 110_000
-            ),
-            clampModel: nil,
-            environment: [:]
-        )
-
-        #expect(config?["model_context_window"] == nil)
-        #expect(config?["model_auto_compact_token_limit"] == nil)
     }
 
     @Test func resolveInitialReviewModelPrefersLocalThenFallbackConfig() throws {
@@ -362,8 +325,6 @@ import Testing
         #expect(config.reviewModel == "gpt-5.4-mini")
         #expect(config.modelReasoningEffort == "high")
         #expect(config.serviceTier == "fast")
-        #expect(config.modelContextWindow == 120_000)
-        #expect(config.modelAutoCompactTokenLimit == 110_000)
     }
 
     @Test func reviewLocalConfigAcceptsRootNullClears() throws {
@@ -387,8 +348,6 @@ import Testing
         #expect(config.reviewModel == nil)
         #expect(config.modelReasoningEffort == nil)
         #expect(config.serviceTier == nil)
-        #expect(config.modelContextWindow == nil)
-        #expect(config.modelAutoCompactTokenLimit == nil)
     }
 
     @Test func reviewLocalConfigPresenceTracksRootNullClears() {
@@ -405,11 +364,9 @@ import Testing
         #expect(presence.hasReviewModel)
         #expect(presence.hasModelReasoningEffort)
         #expect(presence.hasServiceTier)
-        #expect(presence.hasModelContextWindow)
-        #expect(presence.hasModelAutoCompactTokenLimit)
     }
 
-    @Test func configReadResponseDecodesReasoningEffortAndServiceTier() throws {
+    @Test func configReadResponseDecodesReasoningEffortAndServiceTierAndIgnoresContextLimits() throws {
         let data = Data(
             """
             {
@@ -431,8 +388,6 @@ import Testing
         #expect(response.config.reviewModel == "gpt-5.4-mini")
         #expect(response.config.modelReasoningEffort == .high)
         #expect(response.config.serviceTier == .fast)
-        #expect(response.config.modelContextWindow == 120_000)
-        #expect(response.config.modelAutoCompactTokenLimit == 110_000)
     }
 
     @Test func modelListResponseDecodesCatalogMetadata() throws {
@@ -546,24 +501,10 @@ import Testing
             _ = try parseReviewLocalConfig(
                 """
                 review_model = 123
-                model_context_window = "bad"
                 """,
                 sourcePath: "/tmp/.codex_review/config.toml"
             )
         }
-    }
-
-    @Test func reviewLocalConfigAcceptsQuotedNumericLimits() throws {
-        let config = try parseReviewLocalConfig(
-            """
-            model_context_window = "120_000"
-            model_auto_compact_token_limit = "110_000"
-            """,
-            sourcePath: "/tmp/.codex_review/config.toml"
-        )
-
-        #expect(config.modelContextWindow == 120_000)
-        #expect(config.modelAutoCompactTokenLimit == 110_000)
     }
 
     @Test func fallbackAppServerConfigReadsProfileScopedValues() throws {
@@ -589,32 +530,6 @@ import Testing
 
         #expect(config.model == "gpt-5.3-codex")
         #expect(config.reviewModel == "gpt-5.4-mini")
-        #expect(config.modelContextWindow == 999_999)
-        #expect(config.modelAutoCompactTokenLimit == 888_888)
-    }
-
-    @Test func fallbackAppServerConfigTreatsInvalidProfileIntegerOverridesAsMissing() throws {
-        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
-        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
-        try """
-        profile = "reviewer"
-        model_context_window = 120_000
-        model_auto_compact_token_limit = 110_000
-
-        [profiles.reviewer]
-        model_context_window = "bad"
-        model_auto_compact_token_limit = "oops"
-        """.write(
-            to: codexDirectory.appendingPathComponent("config.toml"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let config = loadFallbackAppServerConfig(environment: ["HOME": tempHome.path])
-
-        #expect(config.modelContextWindow == 120_000)
-        #expect(config.modelAutoCompactTokenLimit == 110_000)
     }
 
     @Test func fallbackAppServerConfigReadsQuotedProfileScopedValues() throws {
@@ -704,25 +619,6 @@ import Testing
 
         #expect(config.reviewModel == "gpt-5.4-mini")
         #expect(config.serviceTier == .flex)
-    }
-
-    @Test func fallbackAppServerConfigAcceptsQuotedNumericLimits() throws {
-        let tempHome = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let codexDirectory = tempHome.appendingPathComponent(".codex_review", isDirectory: true)
-        try FileManager.default.createDirectory(at: codexDirectory, withIntermediateDirectories: true)
-        try """
-        model_context_window = "120_000"
-        model_auto_compact_token_limit = "110_000"
-        """.write(
-            to: codexDirectory.appendingPathComponent("config.toml"),
-            atomically: true,
-            encoding: .utf8
-        )
-
-        let config = loadFallbackAppServerConfig(environment: ["HOME": tempHome.path])
-
-        #expect(config.modelContextWindow == 120_000)
-        #expect(config.modelAutoCompactTokenLimit == 110_000)
     }
 
     @Test func fallbackAppServerConfigPreservesClearedProfileOverridesOverRootValues() throws {
@@ -820,22 +716,16 @@ import Testing
         let merged = mergeAppServerConfig(
             primary: .init(
                 model: nil,
-                reviewModel: "gpt-5.4-mini",
-                modelContextWindow: nil,
-                modelAutoCompactTokenLimit: 110_000
+                reviewModel: "gpt-5.4-mini"
             ),
             fallback: .init(
                 model: "gpt-5.4",
-                reviewModel: "gpt-5.3-codex",
-                modelContextWindow: 120_000,
-                modelAutoCompactTokenLimit: 100_000
+                reviewModel: "gpt-5.3-codex"
             )
         )
 
         #expect(merged.model == "gpt-5.4")
         #expect(merged.reviewModel == "gpt-5.4-mini")
-        #expect(merged.modelContextWindow == 120_000)
-        #expect(merged.modelAutoCompactTokenLimit == 110_000)
     }
 
     @Test func mergeAppServerConfigPreservesExplicitNullClearsForReasoningAndServiceTier() {
@@ -854,19 +744,6 @@ import Testing
 
         #expect(merged.modelReasoningEffort == nil)
         #expect(merged.serviceTier == nil)
-    }
-
-    @Test func modelsCachePathFollowsCodexHomeResolution() {
-        #expect(
-            ReviewHomePaths.modelsCacheURL(
-                environment: ["HOME": "/tmp/home", "CODEX_HOME": "/tmp/custom-codex-home"]
-            ).path
-            == "/tmp/home/.codex_review/models_cache.json"
-        )
-        #expect(
-            ReviewHomePaths.modelsCacheURL(environment: ["HOME": "/tmp/home"]).path
-            == "/tmp/home/.codex_review/models_cache.json"
-        )
     }
 
     @Test func reviewRequestRejectsEmptyBranchAndTimeout() {

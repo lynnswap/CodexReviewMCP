@@ -15,8 +15,8 @@ package struct ReviewServerConfiguration: Sendable {
     package init(
         host: String = "localhost",
         port: Int = codexReviewDefaultPort,
-        endpoint: String = ReviewDefaults.shared.server.endpointPath,
-        sessionTimeoutSeconds: TimeInterval = ReviewDefaults.shared.server.sessionTimeoutSeconds,
+        endpoint: String = codexReviewDefaultEndpointPath,
+        sessionTimeoutSeconds: TimeInterval = codexReviewDefaultSessionTimeoutSeconds,
         codexCommand: String = "codex",
         shouldAutoStartEmbeddedServer: Bool = true,
         environment: [String: String] = ProcessInfo.processInfo.environment

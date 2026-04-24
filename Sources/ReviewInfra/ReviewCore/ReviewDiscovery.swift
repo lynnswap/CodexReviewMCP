@@ -38,7 +38,7 @@ package enum ReviewDiscovery {
         host: String,
         port: Int,
         pid: Int,
-        endpointPath: String = ReviewDefaults.shared.server.endpointPath
+        endpointPath: String = codexReviewDefaultEndpointPath
     ) -> LiveEndpointRecord? {
         guard port > 0 else {
             return nil
