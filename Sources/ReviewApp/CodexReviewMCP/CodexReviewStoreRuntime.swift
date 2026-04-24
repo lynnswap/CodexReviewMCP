@@ -2594,6 +2594,7 @@ package final class ReviewMonitorServerRuntime {
 
             let appServerRuntimeState = try await appServerManager.prepare()
             guard startupTaskID == startupID, self.server === server else {
+                await server.stop()
                 return
             }
 
@@ -2613,10 +2614,10 @@ package final class ReviewMonitorServerRuntime {
             }
             observeServerLifecycle(server: server, store: store)
         } catch is CancellationError {
+            await server.stop()
             guard startupTaskID == startupID else {
                 return
             }
-            await server.stop()
             await appServerManager.shutdown()
             self.server = nil
             await reconcileAuthRuntime(
@@ -2625,10 +2626,10 @@ package final class ReviewMonitorServerRuntime {
                 runtimeGeneration: appServerRuntimeGeneration
             )
         } catch {
+            await server.stop()
             guard startupTaskID == startupID else {
                 return
             }
-            await server.stop()
             await appServerManager.shutdown()
             self.server = nil
             await reconcileAuthRuntime(

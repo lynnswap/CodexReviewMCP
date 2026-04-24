@@ -35,6 +35,7 @@ actor ReviewHTTPApplication {
     private var cleanupTask: Task<Void, Never>?
     private var sessions: [String: SessionContext] = [:]
     private var deferredSessionClosures: Set<String> = []
+    private var didStop = false
 
     init(
         configuration: Configuration,
@@ -49,6 +50,9 @@ actor ReviewHTTPApplication {
     }
 
     func startListening() async throws -> (host: String, port: Int) {
+        guard didStop == false else {
+            throw CancellationError()
+        }
         if let channel, let localAddress = channel.localAddress {
             return (localAddress.ipAddress ?? configuration.host, localAddress.port ?? configuration.port)
         }
@@ -72,6 +76,11 @@ actor ReviewHTTPApplication {
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
 
         let channel = try await bootstrap.bind(host: configuration.host, port: configuration.port).get()
+        if didStop {
+            try? await channel.close()
+            try? await group.shutdownGracefully()
+            throw CancellationError()
+        }
         self.channel = channel
         restartCleanupLoop()
         let localAddress = channel.localAddress
@@ -89,6 +98,10 @@ actor ReviewHTTPApplication {
     }
 
     func stop() async {
+        guard didStop == false || channel != nil || cleanupTask != nil || sessions.isEmpty == false else {
+            return
+        }
+        didStop = true
         cleanupTask?.cancel()
         _ = await cleanupTask?.value
         cleanupTask = nil

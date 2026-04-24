@@ -1447,10 +1447,7 @@ package final class ReviewMonitorAuthOrchestrator {
             auth.updateSelectedAccount(currentSavedAccount.id)
             return
         }
-        var updatedSavedAccounts = auth.savedAccounts.map(savedAccountPayload(from:))
-        updatedSavedAccounts.append(savedAccountPayload(from: priorCurrentAccount))
-        auth.applySavedAccountStates(updatedSavedAccounts)
-        auth.updateSelectedAccount(priorCurrentAccount.id)
+        auth.updateDetachedAccount(priorCurrentAccount)
     }
 
     private func syncCurrentAccountMetadata(
@@ -2424,7 +2421,14 @@ private func resolvedAccounts(
     for accountKey: String,
     in auth: CodexReviewAuthModel
 ) -> [CodexAccount] {
-    auth.savedAccounts.filter { $0.accountKey == accountKey }
+    var accounts = auth.savedAccounts.filter { $0.accountKey == accountKey }
+    if let selectedAccount = auth.selectedAccount,
+       selectedAccount.accountKey == accountKey,
+       accounts.contains(where: { $0 === selectedAccount }) == false
+    {
+        accounts.append(selectedAccount)
+    }
+    return accounts
 }
 
 @MainActor

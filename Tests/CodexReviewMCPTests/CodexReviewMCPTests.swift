@@ -67,6 +67,7 @@ struct CodexReviewMCPTests {
         auth.updateAccount(detachedAccount)
 
         #expect(auth.account?.email == "review@example.com")
+        #expect(auth.savedAccounts.isEmpty)
     }
 
     @Test func storePrefersSharedAuthAccountOverStaleRegistryActiveAccount() async throws {
@@ -813,7 +814,6 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -842,7 +842,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.refreshAuthentication()
 
         #expect(
@@ -894,7 +893,6 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -975,13 +973,13 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         #expect(store.serverState == .failed("prepare failed"))
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedOut
         }
         #expect(await manager.authTransportCheckoutCount() == 1)
+        await store.stop()
     }
 
     @Test func startingStoreLoadsCodexRateLimitsForAuthenticatedAccount() async throws {
@@ -1008,7 +1006,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -1074,7 +1071,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
@@ -1135,7 +1131,6 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -1186,7 +1181,6 @@ struct CodexReviewMCPTests {
         defer { weeklyProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(weeklyProbe) {
             $0 == 20
@@ -1238,7 +1232,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -1304,7 +1297,6 @@ struct CodexReviewMCPTests {
         defer { currentProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(currentProbe) {
             $0 == 40
@@ -1400,7 +1392,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
@@ -1436,7 +1427,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1500,7 +1490,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1574,7 +1563,9 @@ struct CodexReviewMCPTests {
         defer { codexProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
+        try await waitForMainActorCondition {
+            store.auth.account?.email == "review@example.com"
+        }
         await authTransport.waitForNotificationStream()
 
         try await authTransport.sendRateLimitsUpdated(
@@ -1645,7 +1636,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1689,7 +1679,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1750,7 +1739,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1858,7 +1846,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1926,7 +1913,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1966,7 +1952,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2034,7 +2019,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2119,7 +2103,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2200,7 +2183,6 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
         }
@@ -2287,7 +2269,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2360,7 +2341,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2466,7 +2446,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             store.auth.account?.email == "active@example.com"
                 && store.settings.selectedModel == "gpt-old"
@@ -3013,25 +2992,26 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
-        #expect(store.auth.account?.email == "review@example.com")
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            #expect(store.auth.account?.email == "review@example.com")
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        await store.addAccount()
+            await store.addAccount()
 
-        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
-        try await waitForMainActorCondition {
-            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
+            try await waitForMainActorCondition {
+                rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            }
+
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() >= 1)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+            #expect(store.auth.account?.email == "review@example.com")
+        } cleanup: {
+            await store.stop()
         }
-
-        #expect(await firstTransport.rateLimitsReadCount() == 1)
-        #expect(await secondTransport.rateLimitsReadCount() >= 1)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
-        #expect(store.auth.account?.email == "review@example.com")
-
-        await store.stop()
     }
 
     @Test func authRequiredRateLimitReadWaitsForDeferredSameAccountAddAccountRecycle() async throws {
@@ -3127,10 +3107,11 @@ struct CodexReviewMCPTests {
             rateLimitsReadBehavior: .authenticationRequired
         )
         let secondTransport = AuthCapableAppServerSessionTransport()
+        let probeManager = AuthCapableAppServerManager()
         let manager = AuthCapableAppServerManager(
             authTransports: [firstTransport, secondTransport]
         )
-        let store = CodexReviewStore(
+        let auth = makeAuthModel(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -3150,25 +3131,41 @@ struct CodexReviewMCPTests {
                     base: SuccessfulLoginReviewAuthSession(),
                     environment: environment
                 )
+            },
+            probeAppServerManagerFactory: { _ in
+                probeManager
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
             }
         )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.applySavedAccountStates(initialAccounts.accounts)
+        auth.updateSelectedAccount(initialAccounts.activeAccountKey)
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
-        let initialCheckoutCount = await manager.authTransportCheckoutCount()
-        #expect(store.auth.account?.email == "active@example.com")
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        try await withAsyncCleanup {
+            await auth.store.reconcileAuthenticatedSession(
+                serverIsRunning: true,
+                runtimeGeneration: 1
+            )
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            let initialCheckoutCount = await manager.authTransportCheckoutCount()
+            #expect(auth.account?.email == "active@example.com")
+            #expect(rateLimitWindow(duration: 300, in: auth.account) == nil)
 
-        await store.addAccount()
+            await auth.store.addAccount()
 
-        #expect(await manager.authTransportCheckoutCount() == initialCheckoutCount)
-        #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
-        #expect(await secondTransport.rateLimitsReadCount() == 0)
-        #expect(store.auth.account?.email == "active@example.com")
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-
-        await store.stop()
+            #expect(await manager.authTransportCheckoutCount() == initialCheckoutCount)
+            #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
+            #expect(await secondTransport.rateLimitsReadCount() == 0)
+            #expect(auth.account?.email == "active@example.com")
+            #expect(rateLimitWindow(duration: 300, in: auth.account) == nil)
+        } cleanup: {
+            await auth.store.reconcileAuthenticatedSession(
+                serverIsRunning: false,
+                runtimeGeneration: 1
+            )
+        }
     }
 
     @Test func unsupportedRateLimitReadDoesNotPromoteFirstNonCurrentNotificationToCurrentSnapshot() async throws {
@@ -3194,28 +3191,32 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        await store.start()
-        defer { Task { await store.stop() } }
-        await authTransport.waitForNotificationStream()
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "review@example.com"
+            }
+            await authTransport.waitForNotificationStream()
 
-        try await authTransport.sendRateLimitsUpdated(
-            [
-                "limitId": "codex_other",
-                "limitName": "codex_other",
-                "primary": [
-                    "usedPercent": 77,
-                    "windowDurationMins": 60,
-                    "resetsAt": 1_735_776_000,
-                ],
-                "secondary": NSNull(),
-            ]
-        )
+            try await authTransport.sendRateLimitsUpdated(
+                [
+                    "limitId": "codex_other",
+                    "limitName": "codex_other",
+                    "primary": [
+                        "usedPercent": 77,
+                        "windowDurationMins": 60,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": NSNull(),
+                ]
+            )
 
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
-
-        await store.stop()
+            try await Task.sleep(for: .milliseconds(50))
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        } cleanup: {
+            await store.stop()
+        }
     }
 
     @Test func unsupportedRateLimitReadKeepsNotificationSnapshotAfterStaleInterval() async throws {
@@ -3246,38 +3247,42 @@ struct CodexReviewMCPTests {
         let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        await authTransport.waitForNotificationStream()
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "review@example.com"
+            }
+            await authTransport.waitForNotificationStream()
 
-        try await authTransport.sendRateLimitsUpdated(
-            [
-                "limitId": "codex",
-                "primary": [
-                    "usedPercent": 73,
-                    "windowDurationMins": 300,
-                    "resetsAt": 1_735_776_000,
-                ],
-                "secondary": [
-                    "usedPercent": 41,
-                    "windowDurationMins": 10080,
-                    "resetsAt": 1_736_380_800,
-                ],
-            ]
-        )
+            try await authTransport.sendRateLimitsUpdated(
+                [
+                    "limitId": "codex",
+                    "primary": [
+                        "usedPercent": 73,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": [
+                        "usedPercent": 41,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1_736_380_800,
+                    ],
+                ]
+            )
 
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 73
+            try await waitForObservedValue(fiveHourProbe) {
+                $0 == 73
+            }
+
+            clock.advance(by: .seconds(60))
+            await Task.yield()
+
+            #expect(await authTransport.rateLimitsReadCount() == 1)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 73)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 41)
+        } cleanup: {
+            await store.stop()
         }
-
-        clock.advance(by: .seconds(60))
-        await Task.yield()
-
-        #expect(await authTransport.rateLimitsReadCount() == 1)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 73)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 41)
-
-        await store.stop()
     }
 
     @Test func refreshingActiveRateLimitsWhileServerIsStoppedDoesNotStartSharedRuntime() async throws {
@@ -4405,7 +4410,6 @@ struct CodexReviewMCPTests {
 
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .failed(
@@ -4440,7 +4444,6 @@ struct CodexReviewMCPTests {
 
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .failed(
@@ -4940,7 +4943,6 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
@@ -4976,7 +4978,6 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
@@ -5348,7 +5349,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             store.auth.savedAccounts.map(\.email) == ["review@example.com"]
         }
@@ -5671,7 +5671,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -5698,7 +5697,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -5725,7 +5723,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedOut)
@@ -5753,7 +5750,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -5781,7 +5777,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(store.auth.isAuthenticating == false)
@@ -6337,7 +6332,7 @@ struct CodexReviewMCPTests {
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
 
-    func addAccountWithoutActivationPreservesUnsavedCurrentSession() async throws {
+    @Test func addAccountWithoutActivationPreservesUnsavedCurrentSession() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -6394,11 +6389,12 @@ struct CodexReviewMCPTests {
         #expect(auth.account === unsavedCurrentAccount)
         #expect(rateLimitWindow(duration: 300, in: auth.account)?.usedPercent == 61)
         #expect(auth.account?.lastRateLimitError == "cached")
+        #expect(auth.savedAccounts.map(\.email) == ["saved@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }
 
-    func addAccountWithoutSavedAccountsPreservesUnsavedCurrentSession() async throws {
+    @Test func addAccountWithoutSavedAccountsPreservesUnsavedCurrentSession() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = SuccessfulLoginReviewAuthSession()
         var cancelCallCount = 0
@@ -7905,7 +7901,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
@@ -7932,7 +7927,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
@@ -7962,7 +7956,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
@@ -7996,7 +7989,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
@@ -8027,7 +8019,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.logout()
 
@@ -8055,7 +8046,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.logout()
 
@@ -8129,7 +8119,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.logout()
 
@@ -8201,7 +8190,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
