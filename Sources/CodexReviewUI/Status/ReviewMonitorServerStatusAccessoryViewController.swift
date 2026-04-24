@@ -169,10 +169,11 @@ struct StatusView: View {
     }
 
     var body: some View {
+        let currentAccount = store.auth.selectedAccount
         VStack{
             Menu {
-                Section(store.auth.account?.email ?? "") {
-                    AccountRateLimitsSectionView(account: store.auth.account)
+                Section(currentAccount?.email ?? "") {
+                    AccountRateLimitsSectionView(account: currentAccount)
                 }
                 
                 if showsServerRestartAction {
@@ -184,9 +185,9 @@ struct StatusView: View {
                     }
                 }
             } label: {
-                AccountRateLimitGaugesView(account: store.auth.account)
+                AccountRateLimitGaugesView(account: currentAccount)
                     .transition(.blurReplace)
-                    .animation(.default, value: store.auth.account)
+                    .animation(.default, value: currentAccount)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(.rect)
             }
@@ -275,8 +276,8 @@ func makeStatusPreviewStore(
     let previewAccounts = ReviewMonitorPreviewContent.makePreviewAccounts()
     let resolvedAccount = account ?? previewAccounts.first
     store.auth.updatePhase(authPhase)
-    store.auth.updateSavedAccounts(previewAccounts)
-    store.auth.updateAccount(resolvedAccount)
+    store.auth.applyPersistedAccountStates(previewAccounts.map(savedAccountPayload(from:)))
+    store.auth.selectPersistedAccount(resolvedAccount?.id)
     store.serverState = serverState
     store.serverURL = serverState == .running ? runningServerURL : nil
     return store

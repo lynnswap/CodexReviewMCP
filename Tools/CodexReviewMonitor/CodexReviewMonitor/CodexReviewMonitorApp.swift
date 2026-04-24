@@ -263,11 +263,8 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
             CodexReviewMonitorLaunchEnvironment.launchMode()
         }
         customStoreFactory = nil
-        windowControllerFactory = { store, forceSplitView in
-            ReviewMonitorWindowController(
-                store: store,
-                forceSplitView: forceSplitView
-            )
+        windowControllerFactory = { store, _ in
+            ReviewMonitorWindowController(store: store)
         }
         super.init()
     }

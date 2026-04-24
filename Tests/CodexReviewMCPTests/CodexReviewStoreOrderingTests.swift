@@ -5,7 +5,7 @@ import ReviewDomain
 @testable import ReviewDomain
 @testable import ReviewRuntime
 
-@Suite
+@Suite(.serialized)
 @MainActor
 struct CodexReviewStoreOrderingTests {
     @Test func reorderingWorkspacesAndJobsUpdatesDisplayedArrayOrder() {

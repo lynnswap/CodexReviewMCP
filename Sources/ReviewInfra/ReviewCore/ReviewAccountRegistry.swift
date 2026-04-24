@@ -11,12 +11,13 @@ package actor ReviewAccountRegistryStore {
     }
 
     @MainActor
-    package func loadAccounts() throws -> (activeAccountKey: String?, accounts: [CodexAccount]) {
+    package func loadAccounts() throws -> (activeAccountKey: String?, accounts: [CodexSavedAccountPayload]) {
         loadRegisteredReviewAccounts(environment: environment)
     }
 
     @MainActor
-    package func saveSharedAuthAsSavedAccount(makeActive: Bool) throws -> CodexAccount? {
+    @discardableResult
+    package func saveSharedAuthAsSavedAccount(makeActive: Bool) throws -> CodexSavedAccountPayload? {
         guard let snapshot = loadAuthSnapshot(at: ReviewHomePaths.reviewAuthURL(environment: environment)) else {
             return nil
         }
@@ -31,11 +32,12 @@ package actor ReviewAccountRegistryStore {
     }
 
     @MainActor
+    @discardableResult
     package func saveAuthSnapshot(
         sourceAuthURL: URL,
         makeActive: Bool,
         refreshSharedAuth: Bool = false
-    ) throws -> CodexAccount {
+    ) throws -> CodexSavedAccountPayload {
         guard let snapshot = loadAuthSnapshot(at: sourceAuthURL) else {
             throw ReviewAuthError.authenticationRequired("Authenticated account is missing email.")
         }
@@ -173,6 +175,7 @@ package actor ReviewAccountRegistryStore {
         }
     }
 
+    @discardableResult
     package func removeAccount(_ accountKey: String) throws -> String? {
         let originalRegistry = try loadRegistry()
         var registry = originalRegistry
@@ -486,7 +489,7 @@ package actor ReviewAccountRegistryStore {
         snapshot: ReviewStoredAuthSnapshot,
         makeActive: Bool,
         refreshSharedAuth: Bool
-    ) throws -> CodexAccount {
+    ) throws -> CodexSavedAccountPayload {
         let originalRegistry = registry
         let record = upsertSavedAccountRecord(
             in: &registry,
@@ -524,7 +527,7 @@ package actor ReviewAccountRegistryStore {
             )
             throw error
         }
-        return makeCodexAccount(record, isActive: registry.activeAccountKey == record.accountKey)
+        return makeSavedAccountPayload(record)
     }
 
     private func loadSharedAuthData() -> Data? {
@@ -756,33 +759,6 @@ private func persistAuthSnapshot(
     )
     let data = try Data(contentsOf: sourceURL)
     try data.write(to: destinationURL, options: .atomic)
-}
-
-@MainActor
-func makeCodexAccount(
-    _ record: ReviewSavedAccountRecord,
-    isActive: Bool = false
-) -> CodexAccount {
-    let account = CodexAccount(
-        accountKey: record.accountKey,
-        email: record.email,
-        planType: record.planType
-    )
-    account.updateRateLimits(
-        record.cachedRateLimits.map {
-            (
-                windowDurationMinutes: $0.windowDurationMinutes,
-                usedPercent: $0.usedPercent,
-                resetsAt: $0.resetsAt
-            )
-        }
-    )
-    account.updateRateLimitFetchMetadata(
-        fetchedAt: record.lastRateLimitFetchAt,
-        error: record.lastRateLimitError
-    )
-    account.updateIsActive(isActive)
-    return account
 }
 
 func canonicalizeRegistryRecord(

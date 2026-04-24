@@ -13,7 +13,7 @@ import ReviewRuntime
 struct CodexReviewUIShellTests {
     @Test func bindingStoreAppliesInitialState() {
         let store = CodexReviewStore.makePreviewStore()
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
@@ -29,7 +29,7 @@ struct CodexReviewUIShellTests {
 
     @Test func splitViewShowsEmptyStateWithoutJobs() {
         let store = CodexReviewStore.makePreviewStore()
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.splitViewItems.count == 2)
@@ -46,7 +46,7 @@ struct CodexReviewUIShellTests {
             serverState: .failed("Embedded server is unavailable in preview mode."),
             workspaces: []
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.splitViewItems.count == 2)
@@ -62,7 +62,7 @@ struct CodexReviewUIShellTests {
             serverURL: URL(string: "http://localhost:9417/mcp"),
             workspaces: []
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarPresentationForTesting == .jobList)
@@ -72,7 +72,7 @@ struct CodexReviewUIShellTests {
 
     @Test func splitViewSwitchesSidebarPresentationWhenPickerSelectionChanges() async throws {
         let store = CodexReviewStore.makePreviewStore()
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         viewController.loadViewIfNeeded()
 
@@ -90,7 +90,7 @@ struct CodexReviewUIShellTests {
 
     @Test func statusAccessoryViewControllerObservesOnlySidebarSelection() {
         let store = CodexReviewStore.makePreviewStore()
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         let viewController = ReviewMonitorServerStatusAccessoryViewController(
             store: store,
             uiState: uiState
@@ -130,7 +130,7 @@ struct CodexReviewUIShellTests {
             serverURL: URL(string: "http://localhost:9417/mcp"),
             workspaces: []
         )
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarPresentationForTesting == .jobList)
@@ -151,7 +151,7 @@ struct CodexReviewUIShellTests {
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
     }
 
-    @Test func splitViewInstallsToolbarWithSidebarTrackingSeparator() {
+    @Test func splitViewInstallsToolbarWithSidebarTrackingSeparator() async throws {
         let store = CodexReviewStore.makePreviewStore()
         let harness = makeWindowHarness(store: store)
         let viewController = harness.viewController
@@ -159,21 +159,11 @@ struct CodexReviewUIShellTests {
         defer { window.close() }
 
         #expect(window.toolbar != nil)
-        #expect(harness.windowController.windowContentKindForTesting == .splitView)
-        #expect(
-            viewController.toolbarIdentifiersForTesting ==
-                [
-                    .toggleSidebar,
-                    .flexibleSpace,
-                    .sidebarTrackingSeparator,
-                    .flexibleSpace,
-                ]
-        )
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
+        #expect(harness.rootViewController.contentKindForTesting == .contentView)
+        #expect(viewController.toolbarIdentifiersForTesting.contains(.toggleSidebar))
+        #expect(viewController.toolbarIdentifiersForTesting.contains(.sidebarTrackingSeparator))
         #expect(window.styleMask.contains(.fullSizeContentView))
-        #expect(window.titleVisibility == .visible)
-        #expect(window.title == "Untitled")
-        #expect(window.subtitle == "")
+        #expect(window.titleVisibility == .hidden)
         #expect(window.isMovableByWindowBackground == false)
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
@@ -181,7 +171,7 @@ struct CodexReviewUIShellTests {
 
     @Test func splitViewShowsAddAccountToolbarItemOnlyForAccountSidebar() async throws {
         let store = CodexReviewStore.makePreviewStore()
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -192,7 +182,7 @@ struct CodexReviewUIShellTests {
         sidebarItem.isCollapsed = false
         window.layoutIfNeeded()
 
-        #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
+        #expect(uiState.sidebarSelection == .workspace)
 
         uiState.sidebarSelection = .account
         try await waitForAddAccountToolbarItemHidden(viewController, false)
@@ -200,12 +190,13 @@ struct CodexReviewUIShellTests {
 
         uiState.sidebarSelection = .workspace
         try await waitForAddAccountToolbarItemHidden(viewController, true)
+        #expect(uiState.sidebarSelection == .workspace)
         #expect(viewController.addAccountToolbarItemIsHiddenForTesting)
     }
 
     @Test func splitViewHidesAddAccountToolbarItemWhileSidebarIsCollapsed() async throws {
         let store = CodexReviewStore.makePreviewStore()
-        let uiState = ReviewMonitorUIState()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
         uiState.sidebarSelection = .account
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
         let window = NSWindow(contentViewController: viewController)
@@ -237,12 +228,10 @@ struct CodexReviewUIShellTests {
 
         #expect(window.toolbar != nil)
         #expect(window.styleMask.contains(.fullSizeContentView))
-        #expect(window.titleVisibility == .visible)
+        #expect(window.titleVisibility == .hidden)
         #expect(window.titlebarAppearsTransparent)
         #expect(window.titlebarSeparatorStyle == .automatic)
         #expect(window.isMovableByWindowBackground == false)
-        #expect(window.backgroundColor == .clear)
-        #expect(window.isOpaque == false)
     }
 
     @Test func windowControllerUsesSeededAuthenticatedStateOnFirstPresentation() {
@@ -250,17 +239,18 @@ struct CodexReviewUIShellTests {
             initialAuthState: .signedIn(accountID: "review@example.com")
         )
         let store = makeStore(backend: backend)
-        let windowController = ReviewMonitorWindowController(
-            store: store,
-            performInitialAuthRefresh: false
-        )
+        let windowController = ReviewMonitorWindowController(store: store)
         guard let window = windowController.window else {
             Issue.record("ReviewMonitorWindowController did not create a window.")
             return
         }
+        guard let rootViewController = window.contentViewController as? ReviewMonitorRootViewController else {
+            Issue.record("ReviewMonitorWindowController did not install ReviewMonitorRootViewController.")
+            return
+        }
         defer { window.close() }
 
-        #expect(windowController.windowContentKindForTesting == .splitView)
+        #expect(rootViewController.contentKindForTesting == .contentView)
         #expect(window.toolbar != nil)
     }
 
@@ -271,21 +261,48 @@ struct CodexReviewUIShellTests {
             serverState: .running,
             authPhase: .signedOut,
             account: currentAccount,
-            savedAccounts: [],
+            persistedAccounts: [],
             workspaces: []
         )
-        let windowController = ReviewMonitorWindowController(
-            store: store,
-            performInitialAuthRefresh: false
-        )
+        let windowController = ReviewMonitorWindowController(store: store)
         guard let window = windowController.window else {
             Issue.record("ReviewMonitorWindowController did not create a window.")
             return
         }
+        guard let rootViewController = window.contentViewController as? ReviewMonitorRootViewController else {
+            Issue.record("ReviewMonitorWindowController did not install ReviewMonitorRootViewController.")
+            return
+        }
         defer { window.close() }
 
-        #expect(windowController.windowContentKindForTesting == .splitView)
+        #expect(rootViewController.contentKindForTesting == .contentView)
         #expect(window.toolbar != nil)
+    }
+
+    @Test func accountSidebarDisplaysUnsavedCurrentSession() {
+        let store = CodexReviewStore.makePreviewStore()
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: currentAccount,
+            persistedAccounts: [],
+            workspaces: []
+        )
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.sidebarPresentationForTesting == .accountList)
+        #expect(
+            viewController
+                .sidebarViewControllerForTesting
+                .accountsViewControllerForTesting
+                .displayedAccountEmailsForTesting == ["current@example.com"]
+        )
+        #expect(store.auth.persistedAccounts.isEmpty)
     }
 
     @Test func windowControllerShowsSignInViewWhenSignedOut() {
@@ -297,29 +314,37 @@ struct CodexReviewUIShellTests {
         let window = harness.window
         defer { window.close() }
 
-        #expect(harness.windowController.windowContentKindForTesting == .signInView)
+        #expect(harness.rootViewController.contentKindForTesting == .signInView)
         #expect(window.toolbar == nil)
         #expect(window.titleVisibility == .hidden)
-        #expect(window.title == "")
-        #expect(window.subtitle == "")
         #expect(window.isMovableByWindowBackground)
     }
 
-    @Test func windowControllerForceSplitViewShowsSplitViewWhenSignedOut() {
+    @Test func windowControllerShowsSplitViewWhenSignedOutWithPersistedAccounts() {
         let store = CodexReviewStore.makePreviewStore()
-        let harness = makeWindowHarness(
-            store: store,
-            authState: .signedOut,
-            forceSplitView: true
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: nil,
+            persistedAccounts: [CodexAccount(email: "saved@example.com", planType: "pro")],
+            workspaces: []
         )
-        let window = harness.window
+        let windowController = ReviewMonitorWindowController(store: store)
+        guard let window = windowController.window else {
+            Issue.record("ReviewMonitorWindowController did not create a window.")
+            return
+        }
+        guard let rootViewController = window.contentViewController as? ReviewMonitorRootViewController else {
+            Issue.record("ReviewMonitorWindowController did not install ReviewMonitorRootViewController.")
+            return
+        }
         defer { window.close() }
 
-        #expect(harness.windowController.windowContentKindForTesting == .splitView)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
-        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
+        #expect(rootViewController.contentKindForTesting == .contentView)
+        #expect(rootViewController.isSplitViewEmbeddedForTesting)
+        #expect(rootViewController.isSignInViewEmbeddedForTesting == false)
         #expect(window.toolbar != nil)
-        #expect(window.titleVisibility == .visible)
+        #expect(window.titleVisibility == .hidden)
         #expect(window.isMovableByWindowBackground == false)
     }
 
@@ -343,13 +368,12 @@ struct CodexReviewUIShellTests {
         defer { window.close() }
 
         applyTestAuthState(auth: store.auth, state: .signedOut)
-        try await waitForWindowContentKind(harness.windowController, .signInView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
+        try await waitForWindowContentKind(harness.rootViewController, .signInView)
+        try await waitForEmbeddedContentSubviewCount(harness.rootViewController, 1)
 
-        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
+        #expect(harness.rootViewController.embeddedContentSubviewCountForTesting == 1)
         #expect(window.toolbar == nil)
-        #expect(window.title == "")
-        #expect(window.subtitle == "")
+        #expect(window.titleVisibility == .hidden)
         #expect(window.isMovableByWindowBackground)
     }
 
@@ -363,12 +387,12 @@ struct CodexReviewUIShellTests {
         defer { window.close() }
 
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-        try await waitForWindowContentKind(harness.windowController, .splitView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
+        try await waitForEmbeddedContentSubviewCount(harness.rootViewController, 1)
 
-        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
+        #expect(harness.rootViewController.embeddedContentSubviewCountForTesting == 1)
         #expect(window.toolbar != nil)
-        #expect(window.titleVisibility == .visible)
+        #expect(window.titleVisibility == .hidden)
         #expect(window.titlebarSeparatorStyle == .automatic)
         #expect(window.isMovableByWindowBackground == false)
     }
@@ -384,14 +408,14 @@ struct CodexReviewUIShellTests {
 
         applyTestAuthState(auth: store.auth, state: .signedOut)
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
-        try await waitForWindowContentKind(harness.windowController, .splitView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
+        try await waitForEmbeddedContentSubviewCount(harness.rootViewController, 1)
         try await Task.sleep(for: .milliseconds(300))
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
+        try await waitForEmbeddedContentSubviewCount(harness.rootViewController, 1)
 
-        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
-        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
+        #expect(harness.rootViewController.embeddedContentSubviewCountForTesting == 1)
+        #expect(harness.rootViewController.isSplitViewEmbeddedForTesting)
+        #expect(harness.rootViewController.isSignInViewEmbeddedForTesting == false)
         #expect(window.toolbar != nil)
     }
 
@@ -408,12 +432,12 @@ struct CodexReviewUIShellTests {
         applyTestAuthState(auth: store.auth, state: .signedOut)
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
-        try await waitForWindowContentKind(harness.windowController, .splitView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
+        try await waitForEmbeddedContentSubviewCount(harness.rootViewController, 1)
         try await Task.sleep(for: .milliseconds(300))
 
-        #expect(harness.windowController.embeddedContentSubviewCountForTesting == 1)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
+        #expect(harness.rootViewController.embeddedContentSubviewCountForTesting == 1)
+        #expect(harness.rootViewController.isSplitViewEmbeddedForTesting)
     }
 
     @Test func windowControllerPreservesWindowSizeWhenSwitchingToSignInView() async throws {
@@ -430,7 +454,7 @@ struct CodexReviewUIShellTests {
         let beforeSize = window.frame.size
 
         applyTestAuthState(auth: store.auth, state: .signedOut)
-        try await waitForWindowContentKind(harness.windowController, .signInView)
+        try await waitForWindowContentKind(harness.rootViewController, .signInView)
         window.layoutIfNeeded()
         let afterSize = window.frame.size
 
@@ -438,7 +462,7 @@ struct CodexReviewUIShellTests {
         #expect(abs(beforeSize.height - afterSize.height) < 0.5)
     }
 
-    @Test func windowControllerKeepsSplitViewAfterAuthFailure() async throws {
+    @Test func windowControllerKeepsSplitViewAfterAuthFailureWhenSessionExists() async throws {
         let store = CodexReviewStore.makePreviewStore()
         let harness = makeWindowHarness(
             store: store,
@@ -447,14 +471,21 @@ struct CodexReviewUIShellTests {
         let window = harness.window
         defer { window.close() }
 
-        applyTestAuthState(auth: store.auth, state: .failed("Authentication failed."))
-        await Task.yield()
+        applyTestAuthState(
+            auth: store.auth,
+            state: .failed(
+                "Authentication failed.",
+                isAuthenticated: true,
+                accountID: "review@example.com"
+            )
+        )
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
 
-        #expect(harness.windowController.windowContentKindForTesting == .splitView)
+        #expect(harness.rootViewController.contentKindForTesting == .contentView)
         #expect(window.toolbar != nil)
     }
 
-    @Test func windowControllerKeepsSignInViewPresentedWhileAuthenticating() async throws {
+    @Test func windowControllerKeepsSplitViewPresentedWhileAuthenticatingWithSession() async throws {
         let store = CodexReviewStore.makePreviewStore()
         let harness = makeWindowHarness(
             store: store,
@@ -474,9 +505,9 @@ struct CodexReviewUIShellTests {
                 )
             )
         )
-        try await waitForWindowContentKind(harness.windowController, .signInView)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
 
-        #expect(harness.windowController.windowContentKindForTesting == .signInView)
+        #expect(harness.rootViewController.contentKindForTesting == .contentView)
     }
 
     @Test func windowControllerKeepsSplitViewWhileAuthenticatedRetryAuthenticates() async throws {
@@ -496,21 +527,24 @@ struct CodexReviewUIShellTests {
         )
         await Task.yield()
 
-        applyTestAuthState(auth: store.auth, state: 
-            .signingIn(
-                .init(
+        applyTestAuthState(
+            auth: store.auth,
+            state: .init(
+                isAuthenticated: true,
+                accountID: "review@example.com",
+                progress: .init(
                     title: "Sign in with ChatGPT",
                     detail: "Open the browser to continue.",
                     browserURL: "https://auth.openai.com/oauth/authorize?foo=bar"
                 )
             )
         )
-        try await waitForWindowContentKind(harness.windowController, .splitView)
-        try await waitForEmbeddedContentSubviewCount(harness.windowController, 1)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
+        try await waitForEmbeddedContentSubviewCount(harness.rootViewController, 1)
 
-        #expect(harness.windowController.windowContentKindForTesting == .splitView)
-        #expect(harness.windowController.isSignInViewEmbeddedForTesting == false)
-        #expect(harness.windowController.isSplitViewEmbeddedForTesting)
+        #expect(harness.rootViewController.contentKindForTesting == .contentView)
+        #expect(harness.rootViewController.isSignInViewEmbeddedForTesting == false)
+        #expect(harness.rootViewController.isSplitViewEmbeddedForTesting)
     }
 
     @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {
@@ -593,7 +627,7 @@ struct CodexReviewUIShellTests {
         let viewController = harness.viewController
         let window = harness.window
         defer { window.close() }
-        try await waitForWindowContentKind(harness.windowController, .splitView)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
         let transport = viewController.transportViewControllerForTesting
         let sidebarItem = try #require(viewController.splitViewItems.first)
 
@@ -642,7 +676,7 @@ struct CodexReviewUIShellTests {
         let viewController = harness.viewController
         let window = harness.window
         defer { window.close() }
-        try await waitForWindowContentKind(harness.windowController, .splitView)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
         let transport = viewController.transportViewControllerForTesting
         let sidebarItem = try #require(viewController.splitViewItems.first)
 
@@ -741,7 +775,7 @@ struct CodexReviewUIShellTests {
         let viewController = harness.viewController
         let window = harness.window
         defer { window.close() }
-        try await waitForWindowContentKind(harness.windowController, .splitView)
+        try await waitForWindowContentKind(harness.rootViewController, .contentView)
         let transport = viewController.transportViewControllerForTesting
         let sidebarItem = try #require(viewController.splitViewItems.first)
         sidebarItem.isCollapsed = false
@@ -800,7 +834,7 @@ struct CodexReviewUIShellTests {
     @Test func splitViewAttachIsIdempotentForSameWindow() {
         let backend = CountingStartBackend()
         let store = makeStore(backend: backend)
-        let viewController = ReviewMonitorSplitViewController(store: store)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
 

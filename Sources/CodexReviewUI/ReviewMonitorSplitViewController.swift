@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import ReviewApp
 import Foundation
 import Observation
@@ -24,10 +25,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var addAccountToolbarItem: ReviewMonitorAddAccountToolbarItem?
     private var observationHandles: Set<ObservationHandle> = []
     private var sidebarCollapseObservation: NSKeyValueObservation?
+    private var windowCancellable: AnyCancellable?
     private weak var attachedWindow: NSWindow?
     private var isSidebarCollapsed = false
 
-    init(store: CodexReviewStore, uiState: ReviewMonitorUIState = ReviewMonitorUIState()) {
+    init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
         self.store = store
         self.uiState = uiState
         super.init(nibName: nil, bundle: nil)
@@ -88,6 +90,19 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         transportViewController.loadViewIfNeeded()
         addSplitViewItem(sidebarItem)
         addSplitViewItem(contentItem)
+        windowCancellable = view.publisher(for: \.window, options: [.initial, .new])
+            .sink { [weak self] window in
+                MainActor.assumeIsolated {
+                    guard let self else {
+                        return
+                    }
+                    if let window {
+                        self.attach(to: window)
+                    } else {
+                        self.detachFromWindow()
+                    }
+                }
+            }
     }
 
     func attach(to window: NSWindow) {
@@ -101,7 +116,10 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         splitView.identifier = NSUserInterfaceItemIdentifier(Self.autosaveName)
         splitView.autosaveName = Self.autosaveName
         installToolbarIfNeeded(on: window)
-        bindJobEntry(to: window)
+        bindToolbarState()
+        window.layoutIfNeeded()
+        setShowingAddAccount(isShowingAddAccountButton)
+        updateWindowTitleAndSubtitle()
     }
 
     func detachFromWindow() {
@@ -109,38 +127,21 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         attachedWindow = nil
     }
 
-    private func bindJobEntry(to window: NSWindow) {
+    private func bindToolbarState() {
         observationHandles.removeAll()
 
-        if let selectedJob = uiState.selectedJobEntry {
-            window.title = selectedJob.targetSummary
-            window.subtitle = selectedJob.cwd
-        } else {
-            window.subtitle = ""
-        }
-
-        uiState.observe(\.selectedJobEntry?.targetSummary) { [weak window] targetSummary in
-            guard let window else {
+        observe(\.isShowingAddAccountButton) { [weak self] _ in
+            guard let self else {
                 return
             }
-            window.title = targetSummary ?? ""
+            setShowingAddAccount(isShowingAddAccountButton)
         }
         .store(in: &observationHandles)
 
-        uiState.observe(\.selectedJobEntry?.cwd) { [weak window] cwd in
-            guard let window else {
-                return
-            }
-            window.subtitle = cwd ?? ""
+        uiState.observe([\.selectedJobEntry?.targetSummary, \.selectedJobEntry?.cwd]) { [weak self] in
+            self?.updateWindowTitleAndSubtitle()
         }
         .store(in: &observationHandles)
-
-        observe(\.isShowingAddAccount) { [weak self] isShowing in
-            self?.setShowingAddAccount(isShowing)
-        }
-        .store(in: &observationHandles)
-
-        setShowingAddAccount(isShowingAddAccount)
     }
 
     private func installToolbarIfNeeded(on window: NSWindow) {
@@ -154,13 +155,25 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         }
 
         if window.toolbar !== toolbar {
+            window.isMovableByWindowBackground = false
             window.styleMask.insert(.fullSizeContentView)
             window.toolbarStyle = .unified
-            window.titleVisibility = .visible
+            window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
             window.titlebarSeparatorStyle = .automatic
             window.toolbar = toolbar
         }
+    }
+
+    private func updateWindowTitleAndSubtitle() {
+        guard let attachedWindow else {
+            return
+        }
+        let title = uiState.selectedJobEntry?.targetSummary ?? ""
+        let subtitle = uiState.selectedJobEntry?.cwd ?? ""
+        attachedWindow.title = title
+        attachedWindow.subtitle = subtitle
+        attachedWindow.titleVisibility = (title.isEmpty && subtitle.isEmpty) ? .hidden : .visible
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -222,7 +235,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         return item
     }
 
-    private var isShowingAddAccount: Bool {
+    private var isShowingAddAccountButton: Bool {
         if store.auth.isAuthenticating {
             return true
         }

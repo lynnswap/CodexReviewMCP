@@ -92,7 +92,7 @@ public enum ReviewMonitorPreviewContent {
         store.loadForTesting(
             serverState: .running,
             account: accounts.first,
-            savedAccounts: accounts,
+            persistedAccounts: accounts,
             serverURL: URL(string: "http://localhost:9417/mcp"),
             workspaces: makeWorkspaces()
         )

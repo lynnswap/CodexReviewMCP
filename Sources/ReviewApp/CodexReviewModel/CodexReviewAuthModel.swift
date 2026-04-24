@@ -76,8 +76,10 @@ public final class CodexReviewAuthModel {
     }
 
     public package(set) var phase: Phase = .signedOut
-    public package(set) var account: CodexAccount?
-    public package(set) var savedAccounts: [CodexAccount] = []
+    public package(set) var persistedAccounts: [CodexAccount] = []
+    public package(set) var persistedActiveAccountKey: String?
+    public private(set) var selectedAccount :CodexAccount?
+
     public package(set) var authenticationFailureCount = 0
     public package(set) var warningMessage: String?
     package private(set) var pendingAccountAction: PendingAccountAction?
@@ -95,11 +97,20 @@ public final class CodexReviewAuthModel {
     }
 
     public var isAuthenticated: Bool {
-        account != nil
+        selectedAccount != nil
     }
 
-    public var hasSavedAccounts: Bool {
-        savedAccounts.isEmpty == false
+    public var accounts: [CodexAccount] {
+        guard let selectedAccount,
+              persistedAccounts.contains(where: { $0.accountKey == selectedAccount.accountKey }) == false
+        else {
+            return persistedAccounts
+        }
+        return persistedAccounts + [selectedAccount]
+    }
+
+    public var hasAccounts: Bool {
+        accounts.isEmpty == false
     }
 
     public var errorMessage: String? {
@@ -119,7 +130,7 @@ public final class CodexReviewAuthModel {
         _ account: CodexAccount,
         requiresConfirmation: Bool
     ) {
-        guard savedAccounts.contains(where: { $0.accountKey == account.accountKey }) else {
+        guard persistedAccounts.contains(where: { $0.accountKey == account.accountKey }) else {
             return
         }
         requestAccountAction(
@@ -129,7 +140,7 @@ public final class CodexReviewAuthModel {
     }
 
     package func requestSignOutActiveAccount(requiresConfirmation: Bool) {
-        guard account != nil else {
+        guard selectedAccount != nil else {
             return
         }
         requestAccountAction(
@@ -188,39 +199,55 @@ public final class CodexReviewAuthModel {
         warningMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
-    package func updateAccount(_ account: CodexAccount?) {
-        self.account = account
+    package func selectPersistedAccount(_ persistedAccountID: CodexAccount.ID?) {
+        guard let persistedAccountID else {
+            selectedAccount = nil
+            return
+        }
+        selectedAccount = persistedAccounts.first(where: { $0.id == persistedAccountID })
     }
 
-    package func updateSavedAccounts(_ incomingSavedAccounts: [CodexAccount]) {
-        self.savedAccounts = incomingSavedAccounts.map { incomingAccount in
-            let reconciledAccount = reusableAccount(for: incomingAccount.accountKey) ?? incomingAccount
-            guard reconciledAccount !== incomingAccount else {
-                reconciledAccount.updateIsActive(incomingAccount.isActive)
-                return reconciledAccount
-            }
-            reconciledAccount.updateEmail(incomingAccount.email)
-            reconciledAccount.updatePlanType(incomingAccount.planType)
-            reconciledAccount.updateRateLimits(
-                incomingAccount.rateLimits.map {
-                    (
-                        windowDurationMinutes: $0.windowDurationMinutes,
-                        usedPercent: $0.usedPercent,
-                        resetsAt: $0.resetsAt
-                    )
-                }
-            )
-            reconciledAccount.updateRateLimitFetchMetadata(
-                fetchedAt: incomingAccount.lastRateLimitFetchAt,
-                error: incomingAccount.lastRateLimitError
-            )
-            reconciledAccount.updateIsActive(incomingAccount.isActive)
+    package func updateCurrentAccount(_ account: CodexAccount?) {
+        selectedAccount = account
+    }
+
+    package func applyPersistedAccountStates(
+        _ incomingPersistedAccounts: [CodexSavedAccountPayload]
+    ) {
+        applyPersistedAccountStates(
+            incomingPersistedAccounts,
+            activeAccountKey: persistedActiveAccountKey
+        )
+    }
+
+    package func applyPersistedAccountStates(
+        _ incomingPersistedAccounts: [CodexSavedAccountPayload],
+        activeAccountKey: String?
+    ) {
+        let resolvedPersistedAccounts = incomingPersistedAccounts.map { incomingAccount in
+            let reconciledAccount = reusableAccount(for: incomingAccount.accountKey)
+                ?? CodexAccount(
+                    accountKey: incomingAccount.accountKey,
+                    email: incomingAccount.email,
+                    planType: incomingAccount.planType
+                )
+            reconciledAccount.apply(incomingAccount)
             return reconciledAccount
+        }
+        self.persistedAccounts = resolvedPersistedAccounts
+        self.persistedActiveAccountKey = activeAccountKey.flatMap { activeAccountKey in
+            resolvedPersistedAccounts.contains(where: { $0.accountKey == activeAccountKey })
+                ? activeAccountKey
+                : nil
         }
     }
 
+    package func isPersistedActiveAccount(_ accountKey: String) -> Bool {
+        persistedActiveAccountKey == accountKey
+    }
+
     private func reusableAccount(for accountKey: String) -> CodexAccount? {
-        savedAccounts.first(where: { $0.accountKey == accountKey })
+        persistedAccounts.first(where: { $0.accountKey == accountKey })
     }
 
     private func requestAccountAction(

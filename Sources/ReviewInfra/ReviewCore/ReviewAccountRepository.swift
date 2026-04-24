@@ -48,22 +48,17 @@ package struct PreparedInactiveAccountProbe: Sendable {
 @MainActor
 package func loadRegisteredReviewAccounts(
     environment: [String: String] = ProcessInfo.processInfo.environment
-) -> (activeAccountKey: String?, accounts: [CodexAccount]) {
+) -> (activeAccountKey: String?, accounts: [CodexSavedAccountPayload]) {
     let persistedRegistry = (try? loadRegistryRecord(environment: environment)) ?? .init()
     let registry = runtimeRegistryRecord(
         from: persistedRegistry,
         environment: environment
     )
     let records = registry.accounts
-    let accounts = records.map { makeCodexAccount($0) }
+    let accounts = records.map(makeSavedAccountPayload)
     let activeAccountKey = records.contains(where: { $0.accountKey == registry.activeAccountKey })
         ? registry.activeAccountKey
         : nil
-    if let activeAccountKey {
-        for account in accounts {
-            account.updateIsActive(account.accountKey == activeAccountKey)
-        }
-    }
     return (activeAccountKey, accounts)
 }
 
@@ -147,5 +142,24 @@ package func loadSharedReviewAccount(
     return CodexAccount(
         email: snapshot.email,
         planType: snapshot.planType
+    )
+}
+
+package func makeSavedAccountPayload(
+    _ record: ReviewSavedAccountRecord
+) -> CodexSavedAccountPayload {
+    .init(
+        accountKey: record.accountKey,
+        email: record.email,
+        planType: record.planType,
+        rateLimits: record.cachedRateLimits.map {
+            (
+                windowDurationMinutes: $0.windowDurationMinutes,
+                usedPercent: $0.usedPercent,
+                resetsAt: $0.resetsAt
+            )
+        },
+        lastRateLimitFetchAt: record.lastRateLimitFetchAt,
+        lastRateLimitError: record.lastRateLimitError
     )
 }

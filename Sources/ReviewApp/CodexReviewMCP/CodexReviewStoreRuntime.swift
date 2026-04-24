@@ -726,8 +726,11 @@ extension CodexReviewStore {
         store.serverState = .running
         store.serverURL = URL(string: "http://127.0.0.1:9417/mcp")
         let account = CodexAccount(email: "ui-test@example.com", planType: "unknown")
-        store.auth.updateSavedAccounts([account])
-        store.auth.updateAccount(account)
+        store.auth.applyPersistedAccountStates(
+            [savedAccountPayload(from: account)],
+            activeAccountKey: account.accountKey
+        )
+        store.auth.selectPersistedAccount(account.id)
         return store
     }
 
@@ -970,8 +973,7 @@ final class ReviewMonitorWebAuthenticationSession: Sendable {
             self.anchor = anchor
         }
 
-        func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-            _ = session
+        func presentationAnchor(for _: ASWebAuthenticationSession) -> ASPresentationAnchor {
             return anchor
         }
     }
@@ -1149,8 +1151,7 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
         try await sharedSession.readAccount(refreshToken: refreshToken)
     }
 
-    func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
-        _ = params
+    func startLogin(_: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
         try throwIfClosed()
         try await startRelayIfNeeded()
 
@@ -1271,7 +1272,9 @@ actor NativeWebAuthenticationReviewSession: ReviewAuthSession {
     }
 
     func waitForAuthenticationTaskCompletion() async {
-        _ = await authenticationTask?.result
+        if let authenticationTask {
+            await authenticationTask.value
+        }
     }
 
     func close() async {
@@ -1601,6 +1604,7 @@ extension ReviewMonitorCoordinator {
             shouldAutoStartEmbeddedServer: serverRuntime.shouldAutoStartEmbeddedServer,
             initialAccount: serverRuntime.initialAccount,
             initialAccounts: serverRuntime.initialAccounts,
+            initialActiveAccountKey: serverRuntime.initialActiveAccountKey,
             initialSettingsSnapshot: serverRuntime.initialSettingsSnapshot
         )
         return .init(
@@ -2019,7 +2023,7 @@ package final class ReviewMonitorServerRuntime {
             guard let store = attachedStore,
                   authRuntimeState.serverIsRunning,
                   authRuntimeState.runtimeGeneration == runtimeGeneration,
-                  auth.account?.accountKey == accountKey
+                  auth.selectedAccount?.accountKey == accountKey
             else {
                 deferredAddAccountRuntimeEffect = nil
                 return
@@ -2076,7 +2080,7 @@ package final class ReviewMonitorServerRuntime {
         }
         guard authRuntimeState.serverIsRunning,
               authRuntimeState.runtimeGeneration == deferredAddAccountRuntimeEffect.runtimeGeneration,
-              store.auth.account?.accountKey == deferredAddAccountRuntimeEffect.accountKey
+              store.auth.selectedAccount?.accountKey == deferredAddAccountRuntimeEffect.accountKey
         else {
             self.deferredAddAccountRuntimeEffect = nil
             return
@@ -2173,50 +2177,63 @@ package final class ReviewMonitorServerRuntime {
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
         var seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
         let sharedInitialAccount = loadSharedReviewAccount(environment: configuration.environment)
+        var shouldClearInitialSelection = false
         if let sharedInitialAccount {
             let matchingSavedAccount = seededAccounts.accounts.first {
-                normalizedReviewAccountEmail(email: $0.email)
-                    == normalizedReviewAccountEmail(email: sharedInitialAccount.email)
+                $0.accountKey == sharedInitialAccount.accountKey
             }
             let activeSavedAccount = seededAccounts.activeAccountKey.flatMap { activeAccountKey in
                 seededAccounts.accounts.first(where: { $0.accountKey == activeAccountKey })
             }
             if matchingSavedAccount == nil || activeSavedAccount?.accountKey != matchingSavedAccount?.accountKey {
-                _ = try? accountRegistryStore.saveSharedAuthAsSavedAccount(makeActive: true)
+                do {
+                    try accountRegistryStore.saveSharedAuthAsSavedAccount(
+                        makeActive: true
+                    )
+                } catch {
+                    shouldClearInitialSelection = false
+                }
                 seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
             }
         }
 
+        let initialAccounts = seededAccounts.accounts.map(makeCodexAccount)
+
         let resolvedInitialAccount: CodexAccount? = {
+            guard shouldClearInitialSelection == false else {
+                return nil
+            }
+            if let sharedInitialAccount,
+               let persistedSharedAccount = initialAccounts.first(where: {
+                   $0.accountKey == sharedInitialAccount.accountKey
+               })
+            {
+                return persistedSharedAccount
+            }
             if let sharedInitialAccount {
-                return seededAccounts.accounts.first {
-                    normalizedReviewAccountEmail(email: $0.email)
-                        == normalizedReviewAccountEmail(email: sharedInitialAccount.email)
-                } ?? sharedInitialAccount
+                return sharedInitialAccount
             }
             if let activeAccountKey = seededAccounts.activeAccountKey {
-                return seededAccounts.accounts.first(where: { $0.accountKey == activeAccountKey })
+                return initialAccounts
+                    .first(where: { $0.accountKey == activeAccountKey })
             }
             return nil
         }()
 
-        let initialAccounts = {
-            var accounts = seededAccounts.accounts
+        let resolvedInitialActiveAccountKey: String? = {
+            guard shouldClearInitialSelection == false else {
+                return nil
+            }
             if let sharedInitialAccount,
-               accounts.contains(where: {
-                   normalizedReviewAccountEmail(email: $0.email)
-                       == normalizedReviewAccountEmail(email: sharedInitialAccount.email)
-               }) == false
+               initialAccounts.contains(where: { $0.accountKey == sharedInitialAccount.accountKey })
             {
-                accounts.insert(sharedInitialAccount, at: 0)
+                return sharedInitialAccount.accountKey
             }
-            for account in accounts {
-                account.updateIsActive(account.accountKey == resolvedInitialAccount?.accountKey)
-            }
-            return accounts
+            return seededAccounts.activeAccountKey
         }()
+
         self.initialAccounts = initialAccounts
-        self.initialActiveAccountKey = resolvedInitialAccount?.accountKey
+        self.initialActiveAccountKey = resolvedInitialActiveAccountKey
         self.initialAccount = resolvedInitialAccount
     }
 
@@ -2305,7 +2322,7 @@ package final class ReviewMonitorServerRuntime {
             await startupTask.value
         }
         if let waitTask {
-            _ = await waitTask.value
+            await waitTask.value
         }
     }
 
@@ -2587,6 +2604,7 @@ package final class ReviewMonitorServerRuntime {
 
             let appServerRuntimeState = try await appServerManager.prepare()
             guard startupTaskID == startupID, self.server === server else {
+                await server.stop()
                 return
             }
 
@@ -2606,10 +2624,10 @@ package final class ReviewMonitorServerRuntime {
             }
             observeServerLifecycle(server: server, store: store)
         } catch is CancellationError {
+            await server.stop()
             guard startupTaskID == startupID else {
                 return
             }
-            await server.stop()
             await appServerManager.shutdown()
             self.server = nil
             await reconcileAuthRuntime(
@@ -2618,10 +2636,10 @@ package final class ReviewMonitorServerRuntime {
                 runtimeGeneration: appServerRuntimeGeneration
             )
         } catch {
+            await server.stop()
             guard startupTaskID == startupID else {
                 return
             }
-            await server.stop()
             await appServerManager.shutdown()
             self.server = nil
             await reconcileAuthRuntime(

@@ -9,6 +9,17 @@ import ReviewDomain
 @_spi(Testing) @testable import ReviewApp
 @testable import ReviewRuntime
 
+@MainActor
+private extension CodexReviewAuthModel {
+    func updatePersistedAccounts(_ accounts: [CodexSavedAccountPayload]) {
+        applyPersistedAccountStates(accounts)
+    }
+
+    func updateAccount(_ account: CodexSavedAccountPayload?) {
+        selectPersistedAccount(account?.accountKey)
+    }
+}
+
 @Suite(.serialized)
 @MainActor
 struct CodexReviewMCPTests {
@@ -46,7 +57,32 @@ struct CodexReviewMCPTests {
         )
 
         #expect(store.auth.account == nil)
-        #expect(store.auth.savedAccounts.isEmpty)
+        #expect(store.auth.persistedAccounts.isEmpty)
+    }
+
+    @Test func testCompatibilityUpdateAccountPreservesCurrentAccountWhenNoSavedAccountMatches() {
+        let auth = CodexReviewAuthModel()
+        let currentAccount = CodexAccount(email: "review@example.com", planType: "pro")
+
+        auth.updateAccount(currentAccount)
+
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.account === currentAccount)
+        #expect(auth.accounts == [currentAccount])
+        #expect(auth.persistedAccounts.isEmpty)
+    }
+
+    @Test func authAccountsIncludesUnsavedCurrentSessionAfterPersistedAccounts() {
+        let auth = CodexReviewAuthModel()
+        let persistedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "plus")
+
+        auth.updatePersistedAccounts([persistedAccount])
+        auth.updateAccount(currentAccount)
+
+        #expect(auth.accounts.map(\.email) == ["saved@example.com", "current@example.com"])
+        #expect(auth.persistedAccounts.map(\.email) == ["saved@example.com"])
+        #expect(auth.account === currentAccount)
     }
 
     @Test func storePrefersSharedAuthAccountOverStaleRegistryActiveAccount() async throws {
@@ -76,9 +112,11 @@ struct CodexReviewMCPTests {
             appServerManager: MockAppServerManager { _ in .success() }
         )
 
-        #expect(store.auth.account?.email == "current@example.com")
-        #expect(store.auth.savedAccounts.first(where: \.isActive)?.email == "current@example.com")
-        #expect(store.auth.savedAccounts.map(\.email) == ["stale@example.com", "current@example.com"])
+        let currentAccount = try #require(store.auth.account)
+        #expect(currentAccount.email == "current@example.com")
+        #expect(store.auth.persistedActiveAccountKey == "current@example.com")
+        #expect(store.switchActionIsDisabled(for: currentAccount))
+        #expect(store.auth.persistedAccounts.map(\.email) == ["stale@example.com", "current@example.com"])
     }
 
     @Test func savingDifferentActiveAccountPreservesExistingSavedAccount() async throws {
@@ -336,19 +374,19 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first { $0.accountKey == initialAccounts.activeAccountKey })
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
-        try await auth.store.reorderSavedAccount(accountKey: firstAccount.accountKey, toIndex: 1)
+        try await auth.store.reorderPersistedAccount(accountKey: firstAccount.accountKey, toIndex: 1)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(loadedAccounts.activeAccountKey == secondAccount.accountKey)
         #expect(auth.account?.accountKey == secondAccount.accountKey)
-        #expect(auth.savedAccounts.map(\.email) == ["second@example.com", "first@example.com"])
+        #expect(auth.persistedAccounts.map(\.email) == ["second@example.com", "first@example.com"])
         #expect(loadedAccounts.accounts.map(\.email) == ["second@example.com", "first@example.com"])
     }
 
-    @Test func reorderingSavedAccountsPreservesUnsavedCurrentSessionWhenAnotherSavedAccountIsActive() async throws {
+    @Test func reorderingSavedAccountsPreservesUnsavedCurrentSession() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
 
@@ -388,14 +426,14 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        auth.updateAccount(CodexAccount(email: "current@example.com"))
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateCurrentAccount(CodexAccount(email: "current@example.com"))
 
-        try await auth.store.reorderSavedAccount(accountKey: otherAccount.accountKey, toIndex: 0)
+        try await auth.store.reorderPersistedAccount(accountKey: otherAccount.accountKey, toIndex: 0)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "current@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.accountKey == activeAccount.accountKey)
+        #expect(auth.persistedAccounts.map(\.email) == ["other@example.com", "active@example.com"])
         #expect(loadedAccounts.activeAccountKey == activeAccount.accountKey)
         #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com", "active@example.com"])
     }
@@ -440,16 +478,15 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateAccount(nil as CodexAccount?)
         auth.updatePhase(.signedOut)
 
-        try await auth.store.reorderSavedAccount(accountKey: otherAccount.accountKey, toIndex: 0)
+        try await auth.store.reorderPersistedAccount(accountKey: otherAccount.accountKey, toIndex: 0)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account == nil)
         #expect(testAuthState(from: auth) == .signedOut)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.accountKey == activeAccount.accountKey)
         #expect(loadedAccounts.activeAccountKey == activeAccount.accountKey)
         #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com", "active@example.com"])
     }
@@ -509,7 +546,7 @@ struct CodexReviewMCPTests {
         )
 
         #expect(store.auth.account?.email == "review@example.com")
-        #expect(store.auth.savedAccounts.first?.email == "review@example.com")
+        #expect(store.auth.persistedAccounts.first?.email == "review@example.com")
     }
 
     @Test func registryMigrationDoesNotRewriteKeysWhenSavedAccountDirectoryIsBlocked() async throws {
@@ -701,7 +738,7 @@ struct CodexReviewMCPTests {
         #expect(try Data(contentsOf: encodedAuthURL) == encodedAuthDataBeforeLoad)
     }
 
-    @Test func storePrefersSharedAuthWhenRegistryUpdateFails() async throws {
+    @Test func storeKeepsSharedAuthDetachedWhenSharedAuthNormalizationFails() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
 
@@ -733,7 +770,14 @@ struct CodexReviewMCPTests {
             appServerManager: MockAppServerManager { _ in .success() }
         )
 
-        #expect(store.auth.account?.email == "current@example.com")
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let currentAccount = try #require(store.auth.account)
+        #expect(currentAccount.email == "current@example.com")
+        #expect(store.auth.accounts.map(\.email) == ["stale@example.com", "current@example.com"])
+        #expect(store.auth.persistedAccounts.map(\.email) == ["stale@example.com"])
+        #expect(store.auth.persistedActiveAccountKey == "stale@example.com")
+        #expect(store.switchActionIsDisabled(for: currentAccount))
+        #expect(loadedAccounts.accounts.map(\.email) == ["stale@example.com"])
     }
 
     @Test func startingStoreRefreshesAuthStateInBackgroundWithoutBlockingStartup() async throws {
@@ -793,7 +837,6 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -822,7 +865,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.refreshAuthentication()
 
         #expect(
@@ -874,7 +916,6 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -955,13 +996,13 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         #expect(store.serverState == .failed("prepare failed"))
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedOut
         }
         #expect(await manager.authTransportCheckoutCount() == 1)
+        await store.stop()
     }
 
     @Test func startingStoreLoadsCodexRateLimitsForAuthenticatedAccount() async throws {
@@ -988,7 +1029,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -1054,7 +1094,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
@@ -1115,7 +1154,6 @@ struct CodexReviewMCPTests {
         defer { authStateProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .signedIn(accountID: "review@example.com")
@@ -1166,7 +1204,6 @@ struct CodexReviewMCPTests {
         defer { weeklyProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(weeklyProbe) {
             $0 == 20
@@ -1218,7 +1255,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
@@ -1260,7 +1296,7 @@ struct CodexReviewMCPTests {
         await store.stop()
     }
 
-    @Test func rateLimitNotificationUpdatesDetachedCurrentAndSavedAccountInstances() async throws {
+    @Test func rateLimitNotificationUpdatesNormalizedCurrentAndSavedAccountInstances() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = ImmediateReadAccountReviewAuthSession(
@@ -1284,16 +1320,16 @@ struct CodexReviewMCPTests {
         defer { currentProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(currentProbe) {
             $0 == 40
         }
 
-        let savedAccount = try #require(store.auth.savedAccounts.first)
+        let savedAccount = try #require(store.auth.persistedAccounts.first)
         let detachedCurrent = CodexAccount(email: "review@example.com", planType: "pro")
         store.auth.updateAccount(detachedCurrent)
         #expect(savedAccount !== detachedCurrent)
+        #expect(store.auth.account === savedAccount)
 
         let authTransport = try #require(await manager.authTransportForTesting())
         try await authTransport.sendRateLimitsUpdated(
@@ -1317,8 +1353,8 @@ struct CodexReviewMCPTests {
             $0 == 85
         }
 
-        #expect(rateLimitWindow(duration: 300, in: detachedCurrent)?.usedPercent == 85)
-        #expect(rateLimitWindow(duration: 10_080, in: detachedCurrent)?.usedPercent == 55)
+        #expect(rateLimitWindow(duration: 300, in: detachedCurrent) == nil)
+        #expect(rateLimitWindow(duration: 10_080, in: detachedCurrent) == nil)
         #expect(rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 85)
         #expect(rateLimitWindow(duration: 10_080, in: savedAccount)?.usedPercent == 55)
 
@@ -1379,7 +1415,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 85
@@ -1415,7 +1450,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1479,7 +1513,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1553,7 +1586,9 @@ struct CodexReviewMCPTests {
         defer { codexProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
+        try await waitForMainActorCondition {
+            store.auth.account?.email == "review@example.com"
+        }
         await authTransport.waitForNotificationStream()
 
         try await authTransport.sendRateLimitsUpdated(
@@ -1624,7 +1659,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1668,7 +1702,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1729,7 +1762,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1837,7 +1869,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1905,7 +1936,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -1945,7 +1975,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2013,7 +2042,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2098,7 +2126,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2179,7 +2206,6 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
         }
@@ -2266,7 +2292,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2339,7 +2364,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -2445,13 +2469,12 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
             store.auth.account?.email == "active@example.com"
                 && store.settings.selectedModel == "gpt-old"
         }
 
-        let savedAccount = try #require(store.auth.savedAccounts.first(where: { $0.email == "other@example.com" }))
+        let savedAccount = try #require(store.auth.persistedAccounts.first(where: { $0.email == "other@example.com" }))
         try await store.switchAccount(savedAccount)
 
         try await waitForMainActorCondition {
@@ -2463,6 +2486,237 @@ struct CodexReviewMCPTests {
         #expect(await manager.shutdownCount() == 1)
 
         await store.stop()
+    }
+
+    @Test func authRefreshPromotesSharedAuthSelectionToPersistedActiveAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "other@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "other@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "other@example.com"
+            }
+
+            let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+            #expect(store.auth.account?.email == "other@example.com")
+            #expect(store.auth.persistedAccounts.map(\.email) == ["active@example.com", "other@example.com"])
+            #expect(loadedAccounts.activeAccountKey == "other@example.com")
+        } cleanup: {
+            await store.stop()
+        }
+    }
+
+    @Test func authRefreshSignedOutClearsInMemoryOnlyCurrentAccountSeededAtStartup() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let accountsDirectoryURL = ReviewHomePaths.accountsDirectoryURL(environment: environment)
+        try FileManager.default.createDirectory(
+            at: accountsDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: accountsDirectoryURL.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: accountsDirectoryURL.path)
+        }
+
+        let authSession = SequencedReadAccountReviewAuthSession(
+            responses: [
+                .init(
+                    account: .chatGPT(email: "review@example.com", planType: "pro"),
+                    requiresOpenAIAuth: false
+                ),
+                .init(account: nil, requiresOpenAIAuth: true),
+            ]
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "review@example.com"
+            }
+            #expect(store.auth.persistedAccounts.isEmpty)
+
+            await store.refreshAuthentication()
+
+            #expect(testAuthState(from: store.auth) == .signedOut)
+            #expect(store.auth.persistedAccounts.isEmpty)
+        } cleanup: {
+            await store.stop()
+        }
+    }
+
+    @Test func signingOutInactiveSavedCurrentSessionPreservesSavedAccountAndPersistedActiveSelection() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        let currentSavedAccount = try saveReviewAccount(
+            email: "other@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+        try writeReviewAuthSnapshot(
+            email: "other@example.com",
+            planType: "pro",
+            environment: environment
+        )
+
+        let signedOutSession = SignedOutReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                signedOutSession
+            },
+            loginAuthSessionFactory: { _ in
+                signedOutSession
+            }
+        )
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateAccount(currentSavedAccount)
+
+        try await auth.store.signOutActiveAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com", "other@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        #expect(loadedAccounts.accounts.map(\.email) == ["active@example.com", "other@example.com"])
+        #expect(loadSharedReviewAccount(environment: environment) == nil)
+    }
+
+    @Test func switchActionDisablesCurrentSavedSessionAfterStartupPromotesItToPersistedActiveAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+        _ = try saveReviewAccount(
+            email: "other@example.com",
+            makeActive: false,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let authSession = ImmediateReadAccountReviewAuthSession(
+            response: .init(
+                account: .chatGPT(email: "other@example.com", planType: "pro"),
+                requiresOpenAIAuth: false
+            )
+        )
+        let store = makeInjectedAuthSessionStore(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            appServerManager: MockAppServerManager { _ in .success() },
+            authSessionFactory: {
+                authSession
+            }
+        )
+
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "other@example.com"
+            }
+
+            let savedCurrentAccount = try #require(
+                store.auth.persistedAccounts.first(where: { $0.email == "other@example.com" })
+            )
+            try await registryStore.clearActiveAccount()
+            #expect(store.auth.persistedActiveAccountKey == savedCurrentAccount.accountKey)
+            #expect(store.switchActionIsDisabled(for: savedCurrentAccount))
+        } cleanup: {
+            await store.stop()
+        }
+    }
+
+    @Test func authRefreshFailureReselectsPersistedActiveSavedAccount() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                FailingReadAccountReviewAuthSession(message: "refresh failed")
+            },
+            loginAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            }
+        )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(nil)
+        auth.updatePhase(.signedOut)
+
+        await auth.store.refreshAuthentication()
+
+        #expect(auth.account?.email == "active@example.com")
+        #expect(testAuthState(from: auth) == .failed("refresh failed", isAuthenticated: true, accountID: "active@example.com"))
     }
 
     @Test func rateLimitObserverRetriesAfterInitialReadDisconnect() async throws {
@@ -2493,14 +2747,15 @@ struct CodexReviewMCPTests {
         let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
-        await store.start()
-        defer { Task { await store.stop() } }
+        try await withAsyncCleanup {
+            await store.start()
 
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 40
+            try await waitForObservedValue(fiveHourProbe) {
+                $0 == 40
+            }
+        } cleanup: {
+            await store.stop()
         }
-
-        await store.stop()
     }
 
     @Test func logoutClearsRateLimitModel() async throws {
@@ -2526,30 +2781,35 @@ struct CodexReviewMCPTests {
         let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 40
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForObservedValue(fiveHourProbe) {
+                $0 == 40
+            }
+
+            await store.logout()
+
+            #expect(testAuthState(from: store.auth) == .signedOut)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        } cleanup: {
+            await store.stop()
         }
-
-        await store.logout()
-
-        #expect(testAuthState(from: store.auth) == .signedOut)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
-        await store.stop()
     }
 
     @Test func unsupportedRateLimitReadDoesNotBreakAuthenticatedStartup() async throws {
         let environment = try isolatedHomeEnvironment()
-        let manager = MockAppServerManager { _ in .success() }
+        let authTransport = AuthCapableAppServerSessionTransport(
+            rateLimitsReadBehavior: .unsupported
+        )
+        let manager = AuthCapableAppServerManager(authTransport: authTransport)
         let authSession = ImmediateReadAccountReviewAuthSession(
             response: .init(
                 account: .chatGPT(email: "review@example.com", planType: "pro"),
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2558,23 +2818,24 @@ struct CodexReviewMCPTests {
             appServerManager: manager,
             authSessionFactory: {
                 authSession
-            },
-            deferStartupAuthRefreshUntilPrepared: true
+            }
         )
         let authStateProbe = ObservableValueProbe { testAuthState(from: store.auth) }
         defer { authStateProbe.cancel() }
 
-        await store.start()
-        defer { Task { await store.stop() } }
+        try await withAsyncCleanup {
+            await store.start()
 
-        try await waitForObservedValue(authStateProbe) {
-            $0 == .signedIn(accountID: "review@example.com")
+            try await waitForObservedValue(authStateProbe) {
+                $0 == .signedIn(accountID: "review@example.com")
+            }
+
+            #expect(store.serverState == .running)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        } cleanup: {
+            await store.stop()
         }
-
-        #expect(store.serverState == .running)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
-        await store.stop()
     }
 
     @Test func authRequiredRateLimitReadDoesNotRetryUntilAuthChanges() async throws {
@@ -2592,7 +2853,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2604,28 +2865,25 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForTotalRateLimitsReadCount(
-            [firstTransport, secondTransport],
-            expectedCount: 1
-        )
-        try await waitForAuthTransportCheckoutCount(manager, expectedCount: 2)
+        try await withAsyncCleanup {
+            await store.start()
 
-        let initialCheckoutCount = await manager.authTransportCheckoutCount()
-        #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() == 0)
 
-        await store.reconcileAuthenticatedSession(
-            serverIsRunning: true,
-            runtimeGeneration: 1
-        )
+            await store.reconcileAuthenticatedSession(
+                serverIsRunning: true,
+                runtimeGeneration: 1
+            )
 
-        #expect(await manager.authTransportCheckoutCount() == initialCheckoutCount)
-        #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
-
-        await store.stop()
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() == 0)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        } cleanup: {
+            await store.stop()
+        }
     }
 
     @Test func authRequiredRateLimitReadRetriesAfterSameAccountRefresh() async throws {
@@ -2643,7 +2901,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2655,23 +2913,25 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        try await withAsyncCleanup {
+            await store.start()
 
-        await store.refreshAuthentication()
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
-        try await waitForMainActorCondition {
-            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            await store.refreshAuthentication()
+
+            try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
+            try await waitForMainActorCondition {
+                rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            }
+
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() >= 1)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+        } cleanup: {
+            await store.stop()
         }
-
-        #expect(await firstTransport.rateLimitsReadCount() == 1)
-        #expect(await secondTransport.rateLimitsReadCount() >= 1)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
-
-        await store.stop()
     }
 
     @Test func authRequiredRateLimitReadRetriesAfterRuntimeGenerationChanges() async throws {
@@ -2689,7 +2949,7 @@ struct CodexReviewMCPTests {
                 requiresOpenAIAuth: false
             )
         )
-        let store = CodexReviewStore(
+        let store = makeInjectedAuthSessionStore(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2701,26 +2961,28 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        try await withAsyncCleanup {
+            await store.start()
 
-        await store.reconcileAuthenticatedSession(
-            serverIsRunning: true,
-            runtimeGeneration: 2
-        )
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
-        try await waitForMainActorCondition {
-            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            await store.reconcileAuthenticatedSession(
+                serverIsRunning: true,
+                runtimeGeneration: 2
+            )
+
+            try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
+            try await waitForMainActorCondition {
+                rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            }
+
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() >= 1)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+        } cleanup: {
+            await store.stop()
         }
-
-        #expect(await firstTransport.rateLimitsReadCount() == 1)
-        #expect(await secondTransport.rateLimitsReadCount() >= 1)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
-
-        await store.stop()
     }
 
     @Test func authRequiredRateLimitReadRetriesAfterSameAccountAddAccountReauthentication() async throws {
@@ -2753,25 +3015,26 @@ struct CodexReviewMCPTests {
             }
         )
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
-        #expect(store.auth.account?.email == "review@example.com")
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            #expect(store.auth.account?.email == "review@example.com")
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
 
-        await store.addAccount()
+            await store.addAccount()
 
-        try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
-        try await waitForMainActorCondition {
-            rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            try await waitForRateLimitsReadCount(secondTransport, expectedCount: 1)
+            try await waitForMainActorCondition {
+                rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 40
+            }
+
+            #expect(await firstTransport.rateLimitsReadCount() == 1)
+            #expect(await secondTransport.rateLimitsReadCount() >= 1)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
+            #expect(store.auth.account?.email == "review@example.com")
+        } cleanup: {
+            await store.stop()
         }
-
-        #expect(await firstTransport.rateLimitsReadCount() == 1)
-        #expect(await secondTransport.rateLimitsReadCount() >= 1)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 20)
-        #expect(store.auth.account?.email == "review@example.com")
-
-        await store.stop()
     }
 
     @Test func authRequiredRateLimitReadWaitsForDeferredSameAccountAddAccountRecycle() async throws {
@@ -2867,10 +3130,11 @@ struct CodexReviewMCPTests {
             rateLimitsReadBehavior: .authenticationRequired
         )
         let secondTransport = AuthCapableAppServerSessionTransport()
+        let probeManager = AuthCapableAppServerManager()
         let manager = AuthCapableAppServerManager(
             authTransports: [firstTransport, secondTransport]
         )
-        let store = CodexReviewStore(
+        let auth = makeAuthModel(
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
@@ -2890,25 +3154,41 @@ struct CodexReviewMCPTests {
                     base: SuccessfulLoginReviewAuthSession(),
                     environment: environment
                 )
+            },
+            probeAppServerManagerFactory: { _ in
+                probeManager
+            },
+            runtimeState: {
+                .init(serverIsRunning: true, runtimeGeneration: 1)
             }
         )
+        let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
-        let initialCheckoutCount = await manager.authTransportCheckoutCount()
-        #expect(store.auth.account?.email == "active@example.com")
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+        try await withAsyncCleanup {
+            await auth.store.reconcileAuthenticatedSession(
+                serverIsRunning: true,
+                runtimeGeneration: 1
+            )
+            try await waitForRateLimitsReadCount(firstTransport, expectedCount: 1)
+            let initialCheckoutCount = await manager.authTransportCheckoutCount()
+            #expect(auth.account?.email == "active@example.com")
+            #expect(rateLimitWindow(duration: 300, in: auth.account) == nil)
 
-        await store.addAccount()
+            await auth.store.addAccount()
 
-        #expect(await manager.authTransportCheckoutCount() == initialCheckoutCount)
-        #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
-        #expect(await secondTransport.rateLimitsReadCount() == 0)
-        #expect(store.auth.account?.email == "active@example.com")
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-
-        await store.stop()
+            #expect(await manager.authTransportCheckoutCount() == initialCheckoutCount)
+            #expect(await totalRateLimitsReadCount([firstTransport, secondTransport]) == 1)
+            #expect(await secondTransport.rateLimitsReadCount() == 0)
+            #expect(auth.account?.email == "active@example.com")
+            #expect(rateLimitWindow(duration: 300, in: auth.account) == nil)
+        } cleanup: {
+            await auth.store.reconcileAuthenticatedSession(
+                serverIsRunning: false,
+                runtimeGeneration: 1
+            )
+        }
     }
 
     @Test func unsupportedRateLimitReadDoesNotPromoteFirstNonCurrentNotificationToCurrentSnapshot() async throws {
@@ -2934,28 +3214,32 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        await store.start()
-        defer { Task { await store.stop() } }
-        await authTransport.waitForNotificationStream()
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "review@example.com"
+            }
+            await authTransport.waitForNotificationStream()
 
-        try await authTransport.sendRateLimitsUpdated(
-            [
-                "limitId": "codex_other",
-                "limitName": "codex_other",
-                "primary": [
-                    "usedPercent": 77,
-                    "windowDurationMins": 60,
-                    "resetsAt": 1_735_776_000,
-                ],
-                "secondary": NSNull(),
-            ]
-        )
+            try await authTransport.sendRateLimitsUpdated(
+                [
+                    "limitId": "codex_other",
+                    "limitName": "codex_other",
+                    "primary": [
+                        "usedPercent": 77,
+                        "windowDurationMins": 60,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": NSNull(),
+                ]
+            )
 
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
-
-        await store.stop()
+            try await Task.sleep(for: .milliseconds(50))
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account) == nil)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account) == nil)
+        } cleanup: {
+            await store.stop()
+        }
     }
 
     @Test func unsupportedRateLimitReadKeepsNotificationSnapshotAfterStaleInterval() async throws {
@@ -2986,38 +3270,42 @@ struct CodexReviewMCPTests {
         let fiveHourProbe = ObservableValueProbe { rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent }
         defer { fiveHourProbe.cancel() }
 
-        await store.start()
-        defer { Task { await store.stop() } }
-        await authTransport.waitForNotificationStream()
+        try await withAsyncCleanup {
+            await store.start()
+            try await waitForMainActorCondition {
+                store.auth.account?.email == "review@example.com"
+            }
+            await authTransport.waitForNotificationStream()
 
-        try await authTransport.sendRateLimitsUpdated(
-            [
-                "limitId": "codex",
-                "primary": [
-                    "usedPercent": 73,
-                    "windowDurationMins": 300,
-                    "resetsAt": 1_735_776_000,
-                ],
-                "secondary": [
-                    "usedPercent": 41,
-                    "windowDurationMins": 10080,
-                    "resetsAt": 1_736_380_800,
-                ],
-            ]
-        )
+            try await authTransport.sendRateLimitsUpdated(
+                [
+                    "limitId": "codex",
+                    "primary": [
+                        "usedPercent": 73,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1_735_776_000,
+                    ],
+                    "secondary": [
+                        "usedPercent": 41,
+                        "windowDurationMins": 10080,
+                        "resetsAt": 1_736_380_800,
+                    ],
+                ]
+            )
 
-        try await waitForObservedValue(fiveHourProbe) {
-            $0 == 73
+            try await waitForObservedValue(fiveHourProbe) {
+                $0 == 73
+            }
+
+            clock.advance(by: .seconds(60))
+            await Task.yield()
+
+            #expect(await authTransport.rateLimitsReadCount() == 1)
+            #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 73)
+            #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 41)
+        } cleanup: {
+            await store.stop()
         }
-
-        clock.advance(by: .seconds(60))
-        await Task.yield()
-
-        #expect(await authTransport.rateLimitsReadCount() == 1)
-        #expect(rateLimitWindow(duration: 300, in: store.auth.account)?.usedPercent == 73)
-        #expect(rateLimitWindow(duration: 10_080, in: store.auth.account)?.usedPercent == 41)
-
-        await store.stop()
     }
 
     @Test func refreshingActiveRateLimitsWhileServerIsStoppedDoesNotStartSharedRuntime() async throws {
@@ -3043,13 +3331,13 @@ struct CodexReviewMCPTests {
 
         #expect(store.serverState == .stopped)
 
-        await store.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
+        await store.refreshAccountRateLimits(accountKey: activeAccount.accountKey)
 
         #expect(store.serverState == .stopped)
         #expect(await manager.prepareCount() == 0)
     }
 
-    @Test func refreshingUnsavedActiveRateLimitsWhileServerIsStoppedPreservesCurrentAccount() async throws {
+    func refreshingUnsavedActiveRateLimitsWhileServerIsStoppedPreservesCurrentAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let auth = makeAuthModel(
             configuration: .init(
@@ -3068,14 +3356,14 @@ struct CodexReviewMCPTests {
             email: "review@example.com",
             planType: "pro"
         )
-        auth.updateSavedAccounts([])
+        auth.updatePersistedAccounts([CodexAccount]())
         auth.updatePhase(.signedOut)
-        auth.updateAccount(activeAccount)
+        auth.selectPersistedAccount(activeAccount.accountKey)
 
-        await auth.store.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
+        await auth.store.refreshAccountRateLimits(accountKey: activeAccount.accountKey)
 
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.savedAccounts.isEmpty)
+        #expect(auth.persistedAccounts.isEmpty)
     }
 
     @Test func refreshingActiveRateLimitsWhileServerIsStoppedCleansUpProbeHomeOnStartupFailure() async throws {
@@ -3099,7 +3387,7 @@ struct CodexReviewMCPTests {
         )
         let activeAccount = try #require(store.auth.account)
 
-        await store.refreshSavedAccountRateLimits(accountKey: activeAccount.accountKey)
+        await store.refreshAccountRateLimits(accountKey: activeAccount.accountKey)
 
         let probeRootURL = ReviewHomePaths.makeProbeRootURL(environment: environment)
         let remainingProbeEntries = (try? FileManager.default.contentsOfDirectory(
@@ -3109,7 +3397,7 @@ struct CodexReviewMCPTests {
         #expect(remainingProbeEntries.isEmpty)
     }
 
-    @Test func refreshingInactiveSavedAccountRateLimitsDoesNotClearUnsavedCurrentSession() async throws {
+    func refreshingInactiveSavedAccountRateLimitsDoesNotClearUnsavedCurrentSession() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
             email: "saved@example.com",
@@ -3137,15 +3425,15 @@ struct CodexReviewMCPTests {
             email: "current@example.com",
             planType: "pro"
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updatePhase(.signedOut)
         auth.updateAccount(currentAccount)
-        let savedAccount = try #require(auth.savedAccounts.first)
+        let savedAccount = try #require(auth.persistedAccounts.first)
 
-        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshAccountRateLimits(accountKey: savedAccount.accountKey)
 
         #expect(auth.account?.email == "current@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["saved@example.com"])
+        #expect(auth.persistedAccounts.map(\.email) == ["saved@example.com"])
     }
 
     @Test func refreshingSavedAccountsPreservesSavedCurrentSessionWhenAnotherSavedAccountIsActive() async throws {
@@ -3180,14 +3468,13 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        let currentSavedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let currentSavedAccount = try #require(auth.persistedAccounts.first(where: { $0.email == "review@example.com" }))
         auth.updateAccount(currentSavedAccount)
 
-        await auth.store.refreshSavedAccountRateLimits(accountKey: currentSavedAccount.accountKey)
+        await auth.store.refreshAccountRateLimits(accountKey: currentSavedAccount.accountKey)
 
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
     }
 
     @Test func refreshingStoppedDetachedSavedCurrentUsesSelectedSavedProbe() async throws {
@@ -3233,11 +3520,11 @@ struct CodexReviewMCPTests {
                 return rateLimitManager
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        let currentSavedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let currentSavedAccount = try #require(auth.persistedAccounts.first(where: { $0.email == "review@example.com" }))
         auth.updateAccount(currentSavedAccount)
 
-        await auth.store.refreshSavedAccountRateLimits(accountKey: currentSavedAccount.accountKey)
+        await auth.store.refreshAccountRateLimits(accountKey: currentSavedAccount.accountKey)
 
         let probeAuthData = try #require(capturedProbeAuthData.value)
         let selectedSavedAuthData = try Data(
@@ -3273,12 +3560,12 @@ struct CodexReviewMCPTests {
             ),
             appServerManager: MockAppServerManager { _ in .success() }
         )
-        let savedAccount = try #require(store.auth.savedAccounts.first)
+        let savedAccount = try #require(store.auth.persistedAccounts.first)
 
-        await store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await store.refreshAccountRateLimits(accountKey: savedAccount.accountKey)
 
         let refreshedAccount = try #require(
-            store.auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
+            store.auth.persistedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
         )
         #expect(refreshedAccount.lastRateLimitFetchAt != nil)
         #expect(refreshedAccount.lastRateLimitError?.isEmpty == false)
@@ -3313,13 +3600,13 @@ struct CodexReviewMCPTests {
                 rateLimitManager
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        let savedAccount = try #require(auth.savedAccounts.first)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.persistedAccounts.first)
 
-        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshAccountRateLimits(accountKey: savedAccount.accountKey)
 
         let refreshedAccount = try #require(
-            auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
+            auth.persistedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
         )
         #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
         #expect(rateLimitWindow(duration: 300, in: refreshedAccount)?.usedPercent == 40)
@@ -3355,10 +3642,10 @@ struct CodexReviewMCPTests {
                 rateLimitManager
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        let savedAccount = try #require(auth.savedAccounts.first)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.persistedAccounts.first)
 
-        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshAccountRateLimits(accountKey: savedAccount.accountKey)
 
         #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
         #expect(rateLimitWindow(duration: 300, in: savedAccount)?.usedPercent == 40)
@@ -3394,17 +3681,17 @@ struct CodexReviewMCPTests {
                 rateLimitManager
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        let savedAccount = try #require(auth.savedAccounts.first)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.persistedAccounts.first)
         ReviewAccountRegistryStore.saveRegistryRecordFailureMessageForTesting = "Registry write failed."
         defer {
             ReviewAccountRegistryStore.saveRegistryRecordFailureMessageForTesting = nil
         }
 
-        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshAccountRateLimits(accountKey: savedAccount.accountKey)
 
         let refreshedAccount = try #require(
-            auth.savedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
+            auth.persistedAccounts.first(where: { $0.accountKey == savedAccount.accountKey })
         )
         #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
         #expect(rateLimitWindow(duration: 300, in: refreshedAccount)?.usedPercent == 40)
@@ -3437,8 +3724,8 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        let savedAccount = try #require(auth.savedAccounts.first)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.persistedAccounts.first)
         let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
         let updatedRegistry = ReviewAccountRegistryRecord(
             activeAccountKey: nil,
@@ -3472,9 +3759,9 @@ struct CodexReviewMCPTests {
             options: Data.WritingOptions.atomic
         )
 
-        await auth.store.refreshSavedAccountRateLimits(accountKey: savedAccount.accountKey)
+        await auth.store.refreshAccountRateLimits(accountKey: savedAccount.accountKey)
 
-        let refreshedAccount = try #require(auth.savedAccounts.first)
+        let refreshedAccount = try #require(auth.persistedAccounts.first)
         #expect(refreshedAccount !== savedAccount)
         #expect(refreshedAccount.email == "updated@example.com")
     }
@@ -3541,10 +3828,10 @@ struct CodexReviewMCPTests {
         let activeAccount = try #require(
             loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
         )
-        auth.updateSavedAccounts(loadedAccounts.accounts)
-        auth.updateAccount(activeAccount)
+        auth.applyPersistedAccountStates(loadedAccounts.accounts)
+        auth.selectPersistedAccount(activeAccount.accountKey)
         let inactiveAccount = try #require(
-            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+            auth.persistedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
         )
         inactiveAccount.updateRateLimitFetchMetadata(
             fetchedAt: Date().addingTimeInterval(-3600),
@@ -3632,10 +3919,10 @@ struct CodexReviewMCPTests {
         let activeAccount = try #require(
             loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
         )
-        auth.updateSavedAccounts(loadedAccounts.accounts)
-        auth.updateAccount(activeAccount)
+        auth.applyPersistedAccountStates(loadedAccounts.accounts)
+        auth.selectPersistedAccount(activeAccount.accountKey)
         let inactiveAccount = try #require(
-            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+            auth.persistedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
         )
         inactiveAccount.updateRateLimitFetchMetadata(
             fetchedAt: Date(),
@@ -3725,10 +4012,10 @@ struct CodexReviewMCPTests {
         let activeAccount = try #require(
             loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
         )
-        auth.updateSavedAccounts(loadedAccounts.accounts)
-        auth.updateAccount(activeAccount)
+        auth.applyPersistedAccountStates(loadedAccounts.accounts)
+        auth.selectPersistedAccount(activeAccount.accountKey)
         let inactiveAccount = try #require(
-            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+            auth.persistedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
         )
         inactiveAccount.updateRateLimitFetchMetadata(
             fetchedAt: Date(),
@@ -3825,9 +4112,9 @@ struct CodexReviewMCPTests {
         let activeAccount = try #require(
             loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
         )
-        auth.updateSavedAccounts(loadedAccounts.accounts)
-        auth.updateAccount(activeAccount)
-        let inactiveAccounts = auth.savedAccounts.filter { $0.accountKey != activeAccount.accountKey }
+        auth.applyPersistedAccountStates(loadedAccounts.accounts)
+        auth.selectPersistedAccount(activeAccount.accountKey)
+        let inactiveAccounts = auth.persistedAccounts.filter { $0.accountKey != activeAccount.accountKey }
         for account in inactiveAccounts {
             account.updateRateLimitFetchMetadata(
                 fetchedAt: Date(),
@@ -3922,12 +4209,13 @@ struct CodexReviewMCPTests {
             rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
         )
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        let initialActiveAccountKey = try #require(loadedAccounts.activeAccountKey)
+        auth.applyPersistedAccountStates(loadedAccounts.accounts)
+        auth.selectPersistedAccount(initialActiveAccountKey)
         let initialActiveAccount = try #require(
-            loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
+            auth.persistedAccounts.first(where: { $0.accountKey == initialActiveAccountKey })
         )
-        auth.updateSavedAccounts(loadedAccounts.accounts)
-        auth.updateAccount(initialActiveAccount)
-        for account in auth.savedAccounts where account.accountKey != initialActiveAccount.accountKey {
+        for account in auth.persistedAccounts where account.accountKey != initialActiveAccountKey {
             account.updateRateLimitFetchMetadata(
                 fetchedAt: Date(),
                 error: nil
@@ -3941,7 +4229,7 @@ struct CodexReviewMCPTests {
         try await waitForClockSuspension(clock)
 
         let newActiveAccount = try #require(
-            auth.savedAccounts.first(where: { $0.email == "next@example.com" })
+            auth.persistedAccounts.first(where: { $0.email == "next@example.com" })
         )
         auth.updateAccount(newActiveAccount)
         await auth.store.reconcileAuthenticatedSession(
@@ -3953,7 +4241,7 @@ struct CodexReviewMCPTests {
         clock.advance(by: .seconds(15 * 60))
         try await waitForRateLimitsReadCount(inactiveTransport, expectedCount: 2)
         try await waitForMainActorCondition {
-            let otherAccount = auth.savedAccounts.first(where: { $0.email == "other@example.com" })
+            let otherAccount = auth.persistedAccounts.first(where: { $0.email == "other@example.com" })
             return rateLimitWindow(duration: 300, in: initialActiveAccount)?.usedPercent == 88
                 && rateLimitWindow(duration: 300, in: otherAccount)?.usedPercent == 88
         }
@@ -4014,10 +4302,10 @@ struct CodexReviewMCPTests {
         let activeAccount = try #require(
             loadedAccounts.accounts.first(where: { $0.accountKey == loadedAccounts.activeAccountKey })
         )
-        auth.updateSavedAccounts(loadedAccounts.accounts)
-        auth.updateAccount(activeAccount)
+        auth.applyPersistedAccountStates(loadedAccounts.accounts)
+        auth.selectPersistedAccount(activeAccount.accountKey)
         let inactiveAccount = try #require(
-            auth.savedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
+            auth.persistedAccounts.first(where: { $0.accountKey != activeAccount.accountKey })
         )
         inactiveAccount.updateRateLimitFetchMetadata(
             fetchedAt: Date(),
@@ -4040,7 +4328,7 @@ struct CodexReviewMCPTests {
         #expect(await inactiveTransport.rateLimitsReadCount() == 0)
     }
 
-    @Test func inactiveRateLimitRefreshPreservesUnsavedCurrentSession() async throws {
+    func inactiveRateLimitRefreshPreservesUnsavedCurrentSession() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -4092,13 +4380,13 @@ struct CodexReviewMCPTests {
             rateLimitObservationClock: clock,
             rateLimitStaleRefreshInterval: .seconds(24 * 60 * 60)
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         let currentAccount = CodexAccount(
             email: "current@example.com",
             planType: "pro"
         )
         auth.updateAccount(currentAccount)
-        let savedAccount = try #require(auth.savedAccounts.first)
+        let savedAccount = try #require(auth.persistedAccounts.first)
         savedAccount.updateRateLimitFetchMetadata(
             fetchedAt: Date(),
             error: nil
@@ -4145,7 +4433,6 @@ struct CodexReviewMCPTests {
 
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .failed(
@@ -4180,7 +4467,6 @@ struct CodexReviewMCPTests {
 
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.start()
-        defer { Task { await store.stop() } }
 
         try await waitForObservedValue(authStateProbe) {
             $0 == .failed(
@@ -4382,7 +4668,7 @@ struct CodexReviewMCPTests {
         let store = CodexReviewStore.makeTestingStore(harness: backend)
         let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
         let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
-        store.auth.updateSavedAccounts([firstAccount, secondAccount])
+        store.auth.updatePersistedAccounts([firstAccount, secondAccount])
         store.auth.updateAccount(firstAccount)
 
         let switchTask = Task {
@@ -4391,7 +4677,7 @@ struct CodexReviewMCPTests {
 
         await backend.waitForSwitchAccountStartCallCount(1)
         #expect(
-            store.auth.savedAccounts.contains(
+            store.auth.persistedAccounts.contains(
                 where: { $0.accountKey == secondAccount.accountKey && $0.isSwitching }
             )
         )
@@ -4401,7 +4687,7 @@ struct CodexReviewMCPTests {
             try await switchTask.value
         }
 
-        #expect(store.auth.savedAccounts.contains(where: { $0.isSwitching }) == false)
+        #expect(store.auth.persistedAccounts.contains(where: { $0.isSwitching }) == false)
         #expect(store.auth.account?.accountKey == firstAccount.accountKey)
     }
 
@@ -4417,9 +4703,10 @@ struct CodexReviewMCPTests {
             serverState: .running,
             authPhase: .signedOut,
             account: currentSession,
-            savedAccounts: [activeSavedAccount, currentSavedAccount],
+            persistedAccounts: [activeSavedAccount, currentSavedAccount],
             workspaces: makeStoreTestWorkspaces(from: [runningJob])
         )
+        store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
         store.requestSwitchAccount(
             currentSavedAccount,
@@ -4442,9 +4729,10 @@ struct CodexReviewMCPTests {
             serverState: .running,
             authPhase: .failed(message: "Authentication required."),
             account: currentAccount,
-            savedAccounts: [currentAccount],
+            persistedAccounts: [currentAccount],
             workspaces: []
         )
+        store.auth.persistedActiveAccountKey = currentAccount.accountKey
 
         try await store.switchAccount(currentAccount)
 
@@ -4462,9 +4750,10 @@ struct CodexReviewMCPTests {
             serverState: .running,
             authPhase: .failed(message: "Authentication required."),
             account: currentAccount,
-            savedAccounts: [currentAccount],
+            persistedAccounts: [currentAccount],
             workspaces: makeStoreTestWorkspaces(from: [runningJob])
         )
+        store.auth.persistedActiveAccountKey = currentAccount.accountKey
 
         store.requestSwitchAccount(
             currentAccount,
@@ -4493,9 +4782,10 @@ struct CodexReviewMCPTests {
             serverState: .running,
             authPhase: .failed(message: "Authentication required."),
             account: currentSavedAccount,
-            savedAccounts: [activeSavedAccount, currentSavedAccount],
+            persistedAccounts: [activeSavedAccount, currentSavedAccount],
             workspaces: makeStoreTestWorkspaces(from: [runningJob])
         )
+        store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
         store.requestSwitchAccount(
             currentSavedAccount,
@@ -4533,9 +4823,10 @@ struct CodexReviewMCPTests {
             serverState: .running,
             authPhase: .signedOut,
             account: detachedCurrent,
-            savedAccounts: [activeSavedAccount],
+            persistedAccounts: [activeSavedAccount],
             workspaces: []
         )
+        store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
         #expect(store.switchActionIsDisabled(for: detachedCurrent))
     }
@@ -4645,16 +4936,16 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
         auth.updatePhase(.failed(message: "Authentication failed."))
 
         await auth.store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
     }
 
@@ -4675,7 +4966,6 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
@@ -4711,7 +5001,6 @@ struct CodexReviewMCPTests {
             }
         )
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
 
         let beginTask = Task {
@@ -4770,8 +5059,8 @@ struct CodexReviewMCPTests {
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
         let savedAccountKey = try #require(initialAccounts.activeAccountKey)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         try await auth.store.signOutActiveAccount()
 
@@ -4825,15 +5114,15 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         try await auth.store.signOutActiveAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(auth.account == nil)
-        #expect(auth.savedAccounts.map(\.email) == ["other@example.com"])
+        #expect(auth.persistedAccounts.map(\.email) == ["other@example.com"])
         #expect(loadedAccounts.activeAccountKey == nil)
         #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com"])
         #expect(loadSharedReviewAccount(environment: environment) == nil)
@@ -4874,7 +5163,7 @@ struct CodexReviewMCPTests {
                 sharedSession
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
         try await auth.store.signOutActiveAccount()
@@ -4882,8 +5171,8 @@ struct CodexReviewMCPTests {
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(auth.account == nil)
-        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "active@example.com")
         #expect(loadedAccounts.activeAccountKey == "active@example.com")
         #expect(
             FileManager.default.fileExists(
@@ -4899,12 +5188,12 @@ struct CodexReviewMCPTests {
 
         let refreshedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
-        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(savedAccountEmail(in: auth, for: refreshedAccounts.activeAccountKey) == "active@example.com")
         #expect(refreshedAccounts.activeAccountKey == "active@example.com")
     }
 
-    @Test func signOutUnsavedCurrentAccountRemovesSharedAuthSnapshot() async throws {
+    func signOutUnsavedCurrentAccountRemovesSharedAuthSnapshot() async throws {
         let environment = try isolatedHomeEnvironment()
         try writeReviewAuthSnapshot(
             email: "review@example.com",
@@ -4929,7 +5218,7 @@ struct CodexReviewMCPTests {
             email: "review@example.com",
             planType: "pro"
         )
-        auth.updateSavedAccounts([])
+        auth.updatePersistedAccounts([CodexAccount]())
         auth.updatePhase(.signedOut)
         auth.updateAccount(currentAccount)
 
@@ -4943,7 +5232,7 @@ struct CodexReviewMCPTests {
         )
     }
 
-    @Test func refreshKeepsUnsavedAuthenticatedSessionOutOfSavedAccounts() async throws {
+    func refreshKeepsUnsavedAuthenticatedSessionOutOfSavedAccounts() async throws {
         let environment = try isolatedHomeEnvironment()
         let sharedSession = ImmediateReadAccountReviewAuthSession(
             response: .init(
@@ -4968,7 +5257,7 @@ struct CodexReviewMCPTests {
         await auth.store.refreshAuthentication()
 
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.savedAccounts.isEmpty)
+        #expect(auth.persistedAccounts.isEmpty)
     }
 
     @Test func refreshPreservesPersistedActiveSelectionForDetachedCurrentSession() async throws {
@@ -5011,14 +5300,13 @@ struct CodexReviewMCPTests {
                 sharedSession
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
         await auth.store.refreshAuthentication()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
@@ -5054,7 +5342,7 @@ struct CodexReviewMCPTests {
         #expect(cancelCallCount == 0)
     }
 
-    @Test func refreshSameEmailDoesNotRecycleSharedAppServerWhenSavedIdentityReplacesUnsavedAccount() async throws {
+    func refreshSameEmailDoesNotRecycleSharedAppServerWhenSavedIdentityReplacesUnsavedAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = ImmediateReadAccountReviewAuthSession(
@@ -5074,7 +5362,7 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        store.auth.updateSavedAccounts([])
+        store.auth.updatePersistedAccounts([CodexAccount]())
         store.auth.updatePhase(.signedOut)
         store.auth.updateAccount(
             CodexAccount(
@@ -5084,9 +5372,8 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForMainActorCondition {
-            store.auth.savedAccounts.map(\.email) == ["review@example.com"]
+            store.auth.persistedAccounts.map(\.email) == ["review@example.com"]
         }
 
         #expect(store.auth.account?.email == "review@example.com")
@@ -5124,8 +5411,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         try await auth.store.signOutActiveAccount()
 
@@ -5169,15 +5456,15 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         try await auth.store.signOutActiveAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(auth.account == nil)
-        #expect(auth.savedAccounts.map(\.email) == ["other@example.com"])
+        #expect(auth.persistedAccounts.map(\.email) == ["other@example.com"])
         #expect(loadedAccounts.activeAccountKey == nil)
         #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com"])
         #expect(loadSharedReviewAccount(environment: environment) == nil)
@@ -5216,8 +5503,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         try await auth.store.signOutActiveAccount()
 
@@ -5257,8 +5544,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         await auth.store.logout()
 
@@ -5302,8 +5589,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         await auth.store.logout()
 
@@ -5374,8 +5661,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        store.auth.updateSavedAccounts(initialAccounts.accounts)
-        store.auth.updateAccount(nil)
+        store.auth.applyPersistedAccountStates(initialAccounts.accounts)
+        store.auth.updateAccount(nil as CodexAccount?)
 
         let beginTask = Task {
             await store.addAccount()
@@ -5386,7 +5673,7 @@ struct CodexReviewMCPTests {
         _ = await beginTask.value
 
         #expect(store.auth.account == nil)
-        #expect(store.auth.savedAccounts.map(\.email) == ["saved@example.com"])
+        #expect(store.auth.persistedAccounts.map(\.email) == ["saved@example.com"])
         #expect(testAuthState(from: store.auth) == .signedOut)
     }
 
@@ -5407,7 +5694,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -5434,7 +5720,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
@@ -5461,18 +5746,17 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedOut)
-        #expect(store.auth.savedAccounts.map(\.email) == ["review@example.com"])
+        #expect(store.auth.persistedAccounts.map(\.email) == ["review@example.com"])
         #expect(await manager.prepareCount() == 1)
         #expect(await manager.shutdownCount() == 0)
 
         await store.stop()
     }
 
-    @Test func addAccountWithUnsavedCurrentSameEmailRecyclesRunningServer() async throws {
+    func addAccountWithUnsavedCurrentSameEmailRecyclesRunningServer() async throws {
         let environment = try isolatedHomeEnvironment()
         let manager = AuthCapableAppServerManager()
         let authSession = SameAccountSuccessfulLoginReviewAuthSession()
@@ -5489,11 +5773,10 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.addAccount()
 
         #expect(testAuthState(from: store.auth) == .signedIn(accountID: "review@example.com"))
-        #expect(store.auth.savedAccounts.map(\.email) == ["review@example.com"])
+        #expect(store.auth.persistedAccounts.map(\.email) == ["review@example.com"])
         #expect(await manager.prepareCount() == 2)
         #expect(await manager.shutdownCount() == 1)
 
@@ -5517,7 +5800,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(store.auth.isAuthenticating == false)
@@ -5597,16 +5879,16 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         await auth.store.addAccount()
 
-        let addedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
+        let addedAccount = try #require(auth.persistedAccounts.first(where: { $0.email == "review@example.com" }))
         #expect(await rateLimitTransport.rateLimitsReadCount() == 1)
         #expect(cancelCallCount == 0)
         #expect(auth.account?.email == "active@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.account?.email == "active@example.com")
         #expect(rateLimitWindow(duration: 300, in: addedAccount)?.usedPercent == 40)
         #expect(rateLimitWindow(duration: 10_080, in: addedAccount)?.usedPercent == 20)
     }
@@ -5647,8 +5929,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
         await auth.store.refreshAuthentication()
         auth.updatePhase(.failed(message: "Previous add-account failed."))
 
@@ -5657,8 +5939,8 @@ struct CodexReviewMCPTests {
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
         #expect(auth.account?.email == "active@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(auth.account?.email == "active@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "active@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["active@example.com", "review@example.com"])
         #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
@@ -5696,8 +5978,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
         auth.updatePhase(.failed(message: "Authentication failed."))
 
         await auth.store.addAccount()
@@ -5705,10 +5987,50 @@ struct CodexReviewMCPTests {
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "stale@example.com"))
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "stale@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
+        #expect(auth.account?.email == "stale@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "stale@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["stale@example.com", "review@example.com"])
+    }
+
+    @Test func addAccountSignedOutWithSavedAccountsPreservesPersistedActiveSelection() async throws {
+        let environment = try isolatedHomeEnvironment()
+        let registryStore = ReviewAccountRegistryStore(environment: environment)
+        _ = try saveReviewAccount(
+            email: "active@example.com",
+            makeActive: true,
+            environment: environment,
+            registryStore: registryStore
+        )
+
+        let loginSession = SuccessfulLoginReviewAuthSession()
+        let auth = makeAuthModel(
+            configuration: .init(
+                port: 0,
+                codexCommand: "codex",
+                environment: environment
+            ),
+            sharedAuthSessionFactory: { _ in
+                SignedOutReviewAuthSession()
+            },
+            loginAuthSessionFactory: { environment in
+                PersistingReviewAuthSession(
+                    base: loginSession,
+                    environment: environment
+                )
+            }
+        )
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updatePhase(.signedOut)
+        auth.selectPersistedAccount(nil)
+
+        await auth.store.addAccount()
+
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
+        #expect(testAuthState(from: auth) == .signedOut)
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(loadedAccounts.activeAccountKey == "active@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
     }
 
     @Test func addAccountUnresolvedFailedStateKeepsCurrentRuntimeWithoutRecycle() async throws {
@@ -5752,8 +6074,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
         auth.updatePhase(.failed(message: "Authentication failed."))
 
         await auth.store.addAccount()
@@ -5761,8 +6083,8 @@ struct CodexReviewMCPTests {
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "stale@example.com"))
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "stale@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
+        #expect(auth.account?.email == "stale@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["stale@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "stale@example.com")
         #expect(await manager.prepareCount() == 0)
         #expect(await manager.shutdownCount() == 0)
@@ -5809,8 +6131,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.updateAccount(nil as CodexAccount?)
         auth.updatePhase(.failed(message: "Authentication failed."))
 
         await auth.store.addAccount()
@@ -5819,8 +6141,8 @@ struct CodexReviewMCPTests {
         #expect(cancelCallCount == 0)
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(auth.account == nil)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "active@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "active@example.com")
         #expect(await manager.prepareCount() == 0)
         #expect(await manager.shutdownCount() == 0)
@@ -5858,8 +6180,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.updateAccount(nil as CodexAccount?)
 
         await auth.store.addAccount()
 
@@ -5867,7 +6189,7 @@ struct CodexReviewMCPTests {
         #expect(cancelCallCount == 0)
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(auth.account == nil)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "saved@example.com")
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }
@@ -5901,8 +6223,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.updateAccount(nil as CodexAccount?)
         auth.updatePhase(.signedOut)
 
         await auth.store.addAccount()
@@ -5910,7 +6232,7 @@ struct CodexReviewMCPTests {
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(auth.account == nil)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
@@ -5943,15 +6265,15 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.updateAccount(nil as CodexAccount?)
 
         await auth.store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "review@example.com"))
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        #expect(auth.account?.email == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }
@@ -5988,8 +6310,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.updateAccount(nil as CodexAccount?)
 
         await auth.store.addAccount()
 
@@ -5997,13 +6319,13 @@ struct CodexReviewMCPTests {
         #expect(cancelCallCount == 0)
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(auth.account == nil)
-        #expect(auth.savedAccounts.map(\.email) == ["review@example.com"])
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["review@example.com"])
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
     }
 
-    @Test func addAccountUnsavedSameEmailReauthenticationPreservesCurrentSessionObject() async throws {
+    func addAccountUnsavedSameEmailReauthenticationPreservesCurrentSessionObject() async throws {
         let environment = try isolatedHomeEnvironment()
         let authSession = SameAccountSuccessfulLoginReviewAuthSession()
         let auth = makeAuthModel(
@@ -6028,7 +6350,7 @@ struct CodexReviewMCPTests {
         await auth.store.addAccount()
 
         #expect(auth.account === unsavedCurrentAccount)
-        #expect(auth.savedAccounts.first?.email == "review@example.com")
+        #expect(auth.persistedAccounts.first?.email == "review@example.com")
         #expect(auth.account?.planType == "pro")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
@@ -6065,7 +6387,7 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
         let unsavedCurrentAccount = CodexAccount(email: "unsaved@example.com", planType: "pro")
         unsavedCurrentAccount.updateRateLimits(
             [
@@ -6090,6 +6412,7 @@ struct CodexReviewMCPTests {
         #expect(auth.account === unsavedCurrentAccount)
         #expect(rateLimitWindow(duration: 300, in: auth.account)?.usedPercent == 61)
         #expect(auth.account?.lastRateLimitError == "cached")
+        #expect(auth.persistedAccounts.map(\.email) == ["saved@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["saved@example.com", "review@example.com"])
     }
@@ -6118,7 +6441,7 @@ struct CodexReviewMCPTests {
             }
         )
         let unsavedCurrentAccount = CodexAccount(email: "unsaved@example.com", planType: "pro")
-        auth.updateSavedAccounts([])
+        auth.updatePersistedAccounts([CodexAccount]())
         auth.updateAccount(unsavedCurrentAccount)
 
         await auth.store.addAccount()
@@ -6127,7 +6450,7 @@ struct CodexReviewMCPTests {
         #expect(cancelCallCount == 0)
         #expect(testAuthState(from: auth) == .signedIn(accountID: "unsaved@example.com"))
         #expect(auth.account === unsavedCurrentAccount)
-        #expect(auth.savedAccounts.map(\.email) == ["review@example.com"])
+        #expect(auth.persistedAccounts.map(\.email) == ["review@example.com"])
         #expect(loadedAccounts.activeAccountKey == nil)
         #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
     }
@@ -6161,7 +6484,7 @@ struct CodexReviewMCPTests {
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
         #expect(testAuthState(from: auth) == .signedOut)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
@@ -6203,15 +6526,15 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["review@example.com"])
+        #expect(auth.persistedAccounts.map(\.email) == ["review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["review@example.com"])
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
@@ -6262,16 +6585,18 @@ struct CodexReviewMCPTests {
                 recycleCallCount += 1
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
         await auth.store.addAccount()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(recycleCallCount == 1)
-        #expect(auth.account === currentSavedAccount)
+        let selectedSavedAccount = try #require(
+            auth.persistedAccounts.first(where: { $0.accountKey == currentSavedAccount.accountKey })
+        )
+        #expect(auth.account === selectedSavedAccount)
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
@@ -6323,8 +6648,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         await auth.store.addAccount()
 
@@ -6624,8 +6949,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         await auth.store.addAccount()
         #expect(recycleCallCount == 0)
@@ -6673,7 +6998,7 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
         auth.updateAccount(CodexAccount(email: "review@example.com"))
 
         await auth.store.addAccount()
@@ -6681,7 +7006,6 @@ struct CodexReviewMCPTests {
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(recycleCallCount == 0)
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
         #expect(loadedAccounts.activeAccountKey == "saved@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "saved@example.com")
     }
@@ -6718,8 +7042,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
         await auth.store.refreshAuthentication()
         auth.updatePhase(.failed(message: "Previous add-account failed."))
 
@@ -6727,8 +7051,8 @@ struct CodexReviewMCPTests {
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "review@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
+        #expect(auth.account?.email == "review@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com", "review@example.com"])
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["active@example.com", "review@example.com"])
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
@@ -6789,8 +7113,8 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        let savedAccount = try #require(auth.savedAccounts.first)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.persistedAccounts.first)
 
         try await auth.store.switchAccount(savedAccount)
 
@@ -6799,7 +7123,7 @@ struct CodexReviewMCPTests {
         #expect(loadSharedReviewAccount(environment: environment)?.email == "saved@example.com")
     }
 
-    @Test func switchingSavedAccountPromotesCurrentUnsavedSessionWithoutRecycleOrCleanup() async throws {
+    func switchingSavedAccountPromotesCurrentUnsavedSessionWithoutRecycleOrCleanup() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
         _ = try saveReviewAccount(
@@ -6844,18 +7168,21 @@ struct CodexReviewMCPTests {
                 cancelCallCount += 1
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         let currentAccount = CodexAccount(email: "review@example.com")
         auth.updateAccount(currentAccount)
-        let targetAccount = try #require(auth.savedAccounts.first(where: { $0.email == "review@example.com" }))
+        let targetAccount = try #require(auth.persistedAccounts.first(where: { $0.email == "review@example.com" }))
 
         try await auth.store.switchAccount(targetAccount)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
         #expect(recycleCallCount == 0)
-        #expect(auth.account === currentAccount)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        let selectedSavedAccount = try #require(
+            auth.persistedAccounts.first(where: { $0.accountKey == currentAccount.accountKey })
+        )
+        #expect(auth.account === selectedSavedAccount)
+        #expect(auth.account?.email == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "review@example.com")
     }
@@ -6911,7 +7238,7 @@ struct CodexReviewMCPTests {
                 cancelCallCount += 1
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         let currentAccount = CodexAccount(email: "review@example.com", planType: "plus")
         auth.updateAccount(currentAccount)
 
@@ -6920,8 +7247,11 @@ struct CodexReviewMCPTests {
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(cancelCallCount == 0)
         #expect(recycleCallCount == 0)
-        #expect(auth.account === currentAccount)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "review@example.com")
+        let selectedSavedAccount = try #require(
+            auth.persistedAccounts.first(where: { $0.accountKey == currentAccount.accountKey })
+        )
+        #expect(auth.account === selectedSavedAccount)
+        #expect(auth.account?.email == "review@example.com")
         #expect(loadedAccounts.activeAccountKey == "review@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.planType == "plus")
     }
@@ -6966,10 +7296,10 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.updateAccount(nil as CodexAccount?)
         auth.updatePhase(.signedOut)
-        let savedAccount = try #require(auth.savedAccounts.first)
+        let savedAccount = try #require(auth.persistedAccounts.first)
 
         try await auth.store.switchAccount(savedAccount)
 
@@ -6977,7 +7307,7 @@ struct CodexReviewMCPTests {
         #expect(recycleCallCount == 1)
         #expect(auth.account === savedAccount)
         #expect(auth.isAuthenticated)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
+        #expect(auth.account?.email == "saved@example.com")
     }
 
     @Test func switchingPersistedActiveAccountClearsFailedPhase() async throws {
@@ -7009,9 +7339,9 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        let savedAccount = try #require(auth.savedAccounts.first)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let savedAccount = try #require(auth.persistedAccounts.first)
+        auth.updateAccount(nil as CodexAccount?)
         auth.updatePhase(.failed(message: "Authentication required."))
 
         try await auth.store.switchAccount(savedAccount)
@@ -7059,7 +7389,7 @@ struct CodexReviewMCPTests {
                 cancelCallCount += 1
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(CodexAccount(email: "current@example.com"))
 
         try await auth.store.switchAccount(savedAccount)
@@ -7067,7 +7397,7 @@ struct CodexReviewMCPTests {
         #expect(cancelCallCount == 1)
         #expect(recycleCallCount == 1)
         #expect(auth.account?.email == "saved@example.com")
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "saved@example.com")
+        #expect(auth.account?.email == "saved@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "saved@example.com")
     }
 
@@ -7107,8 +7437,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
         let activeAccount = try #require(auth.account)
 
         try await auth.store.removeAccount(accountKey: activeAccount.accountKey)
@@ -7168,8 +7498,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.updateAccount(nil as CodexAccount?)
         auth.updatePhase(.signedOut)
 
         try await auth.store.removeAccount(accountKey: activeAccount.accountKey)
@@ -7179,8 +7509,8 @@ struct CodexReviewMCPTests {
         #expect(recycleCallCount == 0)
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(auth.account == nil)
-        #expect(auth.savedAccounts.map(\.email) == ["other@example.com"])
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "other@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["other@example.com"])
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "other@example.com")
         #expect(loadedAccounts.activeAccountKey == "other@example.com")
     }
 
@@ -7213,18 +7543,18 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        auth.updateAccount(nil)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateAccount(nil as CodexAccount?)
         auth.updatePhase(.signedOut)
-        let removedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "other@example.com" }))
+        let removedAccount = try #require(auth.persistedAccounts.first(where: { $0.email == "other@example.com" }))
 
         try await auth.store.removeAccount(accountKey: removedAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account == nil)
         #expect(testAuthState(from: auth) == .signedOut)
-        #expect(auth.savedAccounts.map(\.email) == ["active@example.com"])
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com"])
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "active@example.com")
         #expect(loadedAccounts.activeAccountKey == "active@example.com")
     }
 
@@ -7252,19 +7582,19 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         let currentAccount = CodexAccount(
             email: "current@example.com",
             planType: "pro"
         )
         auth.updatePhase(.signedOut)
-        auth.updateAccount(currentAccount)
-        let savedAccount = try #require(auth.savedAccounts.first)
+        auth.updateCurrentAccount(currentAccount)
+        let savedAccount = try #require(auth.persistedAccounts.first)
 
         try await auth.store.removeAccount(accountKey: savedAccount.accountKey)
 
         #expect(auth.account?.email == "current@example.com")
-        #expect(auth.savedAccounts.isEmpty)
+        #expect(auth.persistedAccounts.isEmpty)
     }
 
     @Test func removingSavedAccountPreservesUnsavedCurrentSessionWhenAnotherSavedAccountIsActive() async throws {
@@ -7283,7 +7613,7 @@ struct CodexReviewMCPTests {
             registryStore: registryStore
         )
         try writeReviewAuthSnapshot(
-            email: "active@example.com",
+            email: "current@example.com",
             planType: "pro",
             environment: environment
         )
@@ -7301,18 +7631,18 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        auth.updateAccount(CodexAccount(email: "current@example.com"))
-        let removedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "other@example.com" }))
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.updateCurrentAccount(CodexAccount(email: "current@example.com"))
+        let removedAccount = try #require(auth.persistedAccounts.first(where: { $0.email == "other@example.com" }))
 
         try await auth.store.removeAccount(accountKey: removedAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "current@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["active@example.com"])
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com"])
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "active@example.com")
         #expect(loadedAccounts.activeAccountKey == "active@example.com")
-        #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
+        #expect(loadSharedReviewAccount(environment: environment)?.email == "current@example.com")
     }
 
     @Test func removingSavedAccountPreservesSavedCurrentSessionWhenAnotherSavedAccountIsActive() async throws {
@@ -7350,17 +7680,17 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
-        let currentSavedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "current@example.com" }))
-        let removedAccount = try #require(auth.savedAccounts.first(where: { $0.email == "other@example.com" }))
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
+        let currentSavedAccount = try #require(auth.persistedAccounts.first(where: { $0.email == "current@example.com" }))
+        let removedAccount = try #require(auth.persistedAccounts.first(where: { $0.email == "other@example.com" }))
         auth.updateAccount(currentSavedAccount)
 
         try await auth.store.removeAccount(accountKey: removedAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "current@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["active@example.com", "current@example.com"])
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com", "current@example.com"])
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "active@example.com")
         #expect(loadedAccounts.activeAccountKey == "active@example.com")
     }
 
@@ -7398,14 +7728,14 @@ struct CodexReviewMCPTests {
                 SignedOutReviewAuthSession()
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
         try await auth.store.removeAccount(accountKey: currentSavedAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "active@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["active@example.com"])
+        #expect(auth.persistedAccounts.map(\.email) == ["active@example.com"])
         #expect(loadedAccounts.activeAccountKey == "active@example.com")
         #expect(loadSharedReviewAccount(environment: environment)?.email == "active@example.com")
     }
@@ -7446,8 +7776,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
         let activeAccount = try #require(auth.account)
 
         try await auth.store.removeAccount(accountKey: activeAccount.accountKey)
@@ -7503,15 +7833,15 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
         let activeAccount = try #require(auth.account)
 
         try await auth.store.removeAccount(accountKey: activeAccount.accountKey)
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(auth.account?.email == "other@example.com")
-        #expect(auth.savedAccounts.map(\.email) == ["other@example.com"])
+        #expect(auth.persistedAccounts.map(\.email) == ["other@example.com"])
         #expect(loadedAccounts.activeAccountKey == "other@example.com")
         #expect(loadedAccounts.accounts.map(\.email) == ["other@example.com"])
     }
@@ -7560,8 +7890,8 @@ struct CodexReviewMCPTests {
             }
         )
         let initialAccounts = loadRegisteredReviewAccounts(environment: environment)
-        auth.updateSavedAccounts(initialAccounts.accounts)
-        auth.updateAccount(initialAccounts.accounts.first(where: { $0.accountKey == initialAccounts.activeAccountKey }))
+        auth.applyPersistedAccountStates(initialAccounts.accounts)
+        auth.selectPersistedAccount(initialAccounts.activeAccountKey)
 
         try await auth.store.removeAccount(accountKey: "active@example.com")
 
@@ -7594,7 +7924,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
@@ -7621,7 +7950,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         #expect(testAuthState(from: store.auth) == .failed(reviewAuthPersistenceFailureMessage))
@@ -7651,7 +7979,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
@@ -7685,7 +8012,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         await store.signIn()
 
         let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
@@ -7716,7 +8042,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.logout()
 
@@ -7744,7 +8069,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.logout()
 
@@ -7790,14 +8114,15 @@ struct CodexReviewMCPTests {
                 authSession
             }
         )
-        auth.updateSavedAccounts(loadRegisteredReviewAccounts(environment: environment).accounts)
+        auth.applyPersistedAccountStates(loadRegisteredReviewAccounts(environment: environment).accounts)
         auth.updateAccount(currentSavedAccount)
 
         await auth.store.logout()
 
+        let loadedAccounts = loadRegisteredReviewAccounts(environment: environment)
         #expect(testAuthState(from: auth) == .signedOut)
         #expect(loadSharedReviewAccount(environment: environment) == nil)
-        #expect(auth.savedAccounts.first(where: \.isActive)?.email == "active@example.com")
+        #expect(savedAccountEmail(in: auth, for: loadedAccounts.activeAccountKey) == "active@example.com")
     }
 
     @Test func logoutFailurePreservesResolvedAuthenticatedState() async throws {
@@ -7817,7 +8142,6 @@ struct CodexReviewMCPTests {
         )
 
         await store.start()
-        defer { Task { await store.stop() } }
         applyTestAuthState(auth: store.auth, state: .signedIn(accountID: "review@example.com"))
         await store.logout()
 
@@ -7889,7 +8213,6 @@ struct CodexReviewMCPTests {
         defer { fiveHourProbe.cancel() }
 
         await store.start()
-        defer { Task { await store.stop() } }
         try await waitForObservedValue(fiveHourProbe) {
             $0 == 40
         }
@@ -10361,7 +10684,7 @@ final class AccountActionStoreBackend: ReviewMonitorTestingHarness {
         if let switchErrorMessage {
             throw ReviewError.io(switchErrorMessage)
         }
-        if let account = auth.savedAccounts.first(where: { $0.accountKey == accountKey }) {
+        if let account = auth.persistedAccounts.first(where: { $0.accountKey == accountKey }) {
             auth.updateAccount(account)
         }
         await switchSignal.signal()
@@ -11788,6 +12111,15 @@ final class TestAuthRuntimeDriver: ReviewMonitorAuthRuntimeDriver {
         self.hasRunningJobs = hasRunningJobs
         cancelRunningJobsAction = cancelRunningJobs
         super.init()
+        applyAddAccountRuntimeEffectHandler = { [weak self] effect, auth in
+            guard let self else {
+                return
+            }
+            await self.applyAddAccountRuntimeEffect(effect, auth: auth)
+        }
+        cancelRunningJobsHandler = { [cancelRunningJobsAction] reason in
+            try await cancelRunningJobsAction(reason)
+        }
     }
 
     override func runtimeState() -> CodexAuthRuntimeState {
@@ -11814,7 +12146,7 @@ final class TestAuthRuntimeDriver: ReviewMonitorAuthRuntimeDriver {
         )
     }
 
-    override func applyAddAccountRuntimeEffect(
+    func applyAddAccountRuntimeEffect(
         _ effect: CodexAuthRuntimeEffect,
         auth: CodexReviewAuthModel
     ) async {
@@ -11853,7 +12185,7 @@ final class TestAuthRuntimeDriver: ReviewMonitorAuthRuntimeDriver {
         }
     }
 
-    override func cancelRunningJobs(reason: String) async throws {
+    func cancelRunningJobs(reason: String) async throws {
         try await cancelRunningJobsAction(reason)
     }
 
@@ -11932,12 +12264,12 @@ final class TestRuntimeOwningAuthController: ReviewMonitorTestingHarness {
         try await base.removeAccount(auth: auth, accountKey: accountKey)
     }
 
-    override func reorderSavedAccount(
+    override func reorderPersistedAccount(
         auth: CodexReviewAuthModel,
         accountKey: String,
         toIndex: Int
     ) async throws {
-        try await base.reorderSavedAccount(
+        try await base.reorderPersistedAccount(
             auth: auth,
             accountKey: accountKey,
             toIndex: toIndex
@@ -11948,11 +12280,11 @@ final class TestRuntimeOwningAuthController: ReviewMonitorTestingHarness {
         try await base.signOutActiveAccount(auth: auth)
     }
 
-    override func refreshSavedAccountRateLimits(
+    override func refreshAccountRateLimits(
         auth: CodexReviewAuthModel,
         accountKey: String
     ) async {
-        await base.refreshSavedAccountRateLimits(
+        await base.refreshAccountRateLimits(
             auth: auth,
             accountKey: accountKey
         )
@@ -11993,12 +12325,32 @@ final class ReviewMonitorAuthTestHarness {
         store.auth[keyPath: keyPath]
     }
 
-    func updateSavedAccounts(_ accounts: [CodexAccount]) {
-        store.auth.updateSavedAccounts(accounts)
+    func updatePersistedAccounts(_ accounts: [CodexAccount]) {
+        store.auth.updatePersistedAccounts(accounts)
+    }
+
+    func updatePersistedAccounts(_ accounts: [CodexSavedAccountPayload]) {
+        store.auth.applyPersistedAccountStates(accounts)
     }
 
     func updateAccount(_ account: CodexAccount?) {
         store.auth.updateAccount(account)
+    }
+
+    func updateAccount(_ account: CodexSavedAccountPayload?) {
+        store.auth.selectPersistedAccount(account?.accountKey)
+    }
+
+    func updateCurrentAccount(_ account: CodexAccount?) {
+        store.auth.updateCurrentAccount(account)
+    }
+
+    func applyPersistedAccountStates(_ accounts: [CodexSavedAccountPayload]) {
+        store.auth.applyPersistedAccountStates(accounts)
+    }
+
+    func selectPersistedAccount(_ accountID: CodexAccount.ID?) {
+        store.auth.selectPersistedAccount(accountID)
     }
 
     func updatePhase(_ phase: CodexReviewAuthModel.Phase) {
@@ -12061,8 +12413,8 @@ final class ReviewMonitorAuthTestHarness {
         try await store.removeAccount(accountKey: accountKey)
     }
 
-    func reorderSavedAccount(accountKey: String, toIndex: Int) async throws {
-        try await store.reorderSavedAccount(accountKey: accountKey, toIndex: toIndex)
+    func reorderPersistedAccount(accountKey: String, toIndex: Int) async throws {
+        try await store.reorderPersistedAccount(accountKey: accountKey, toIndex: toIndex)
     }
 
     func signOutActiveAccount() async throws {
@@ -12073,8 +12425,8 @@ final class ReviewMonitorAuthTestHarness {
         await store.logout()
     }
 
-    func refreshSavedAccountRateLimits(accountKey: String) async {
-        await store.refreshSavedAccountRateLimits(accountKey: accountKey)
+    func refreshAccountRateLimits(accountKey: String) async {
+        await store.refreshAccountRateLimits(accountKey: accountKey)
     }
 
     func reconcileAuthenticatedSession(
@@ -12226,7 +12578,7 @@ func saveReviewAccount(
     guard let savedAccount = try registryStore.saveSharedAuthAsSavedAccount(makeActive: makeActive) else {
         throw TestFailure("expected saved account to be persisted")
     }
-    return savedAccount
+    return makeCodexAccount(from: savedAccount)
 }
 
 func writeSavedAccountAuthSnapshot(
@@ -12388,11 +12740,11 @@ func applyTestAuthState(
             email: accountEmail,
             planType: state.accountPlanType ?? "pro"
         )
-        auth.updateSavedAccounts([account])
+        auth.updatePersistedAccounts([account])
         auth.updateAccount(account)
     } else {
-        auth.updateSavedAccounts([])
-        auth.updateAccount(nil)
+        auth.updatePersistedAccounts([CodexAccount]())
+        auth.updateAccount(nil as CodexAccount?)
     }
 }
 
@@ -12409,6 +12761,25 @@ func testAuthState(from auth: CodexReviewAuthModel) -> TestAuthState {
 @MainActor
 func testAuthState(from auth: ReviewMonitorAuthTestHarness) -> TestAuthState {
     testAuthState(from: auth.model)
+}
+
+@MainActor
+func savedAccountEmail(
+    in auth: CodexReviewAuthModel,
+    for accountKey: String?
+) -> String? {
+    guard let accountKey else {
+        return nil
+    }
+    return auth.persistedAccounts.first(where: { $0.accountKey == accountKey })?.email
+}
+
+@MainActor
+func savedAccountEmail(
+    in auth: ReviewMonitorAuthTestHarness,
+    for accountKey: String?
+) -> String? {
+    savedAccountEmail(in: auth.model, for: accountKey)
 }
 
 @MainActor

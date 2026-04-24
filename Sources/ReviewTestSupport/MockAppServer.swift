@@ -880,11 +880,10 @@ package actor MockAppServerSessionTransport: AppServerSessionTransport {
         }
     }
 
-    package func notify<Params: Encodable & Sendable>(method: String, params _: Params) async throws {
+    package func notify<Params: Encodable & Sendable>(method _: String, params _: Params) async throws {
         guard closed == false else {
             throw ReviewError.io("mock app-server session is closed.")
         }
-        _ = method
     }
 
     package func notificationStream() async -> AsyncThrowingStream<AppServerServerNotification, Error> {
@@ -1241,8 +1240,7 @@ package actor StubReviewAuthSession: ReviewAuthSession {
         accountResponse
     }
 
-    package func startLogin(_ params: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
-        _ = params
+    package func startLogin(_: AppServerLoginAccountParams) async throws -> AppServerLoginAccountResponse {
         return loginResponse
     }
 
