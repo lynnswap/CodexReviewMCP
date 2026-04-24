@@ -85,6 +85,22 @@ struct CodexReviewMCPTests {
         #expect(auth.account === currentAccount)
     }
 
+    @Test func authAccountsRemoveDetachedCurrentSessionWhenSelectingSavedAccount() {
+        let auth = CodexReviewAuthModel()
+        let savedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        let detachedAccount = CodexAccount(email: "detached@example.com", planType: "plus")
+
+        auth.updatePersistedAccounts([savedAccount])
+        auth.updateAccount(detachedAccount)
+
+        #expect(auth.accounts.map(\.email) == ["saved@example.com", "detached@example.com"])
+
+        auth.selectPersistedAccount(savedAccount.accountKey)
+
+        #expect(auth.accounts.map(\.email) == ["saved@example.com"])
+        #expect(auth.account === auth.persistedAccounts[0])
+    }
+
     @Test func storePrefersSharedAuthAccountOverStaleRegistryActiveAccount() async throws {
         let environment = try isolatedHomeEnvironment()
         let registryStore = ReviewAccountRegistryStore(environment: environment)
@@ -4708,11 +4724,7 @@ struct CodexReviewMCPTests {
         )
         store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
-        store.requestSwitchAccount(
-            currentSavedAccount,
-            requiresConfirmation: store.hasRunningJobs
-                && store.auth.account?.accountKey != currentSavedAccount.accountKey
-        )
+        store.requestSwitchAccountFromUserAction(currentSavedAccount)
         await backend.waitForSwitchAccountCallCount(1)
 
         #expect(store.auth.pendingAccountAction == nil)
@@ -4755,11 +4767,7 @@ struct CodexReviewMCPTests {
         )
         store.auth.persistedActiveAccountKey = currentAccount.accountKey
 
-        store.requestSwitchAccount(
-            currentAccount,
-            requiresConfirmation: store.hasRunningJobs
-                && store.switchActionRequiresRunningJobsConfirmation(for: currentAccount)
-        )
+        store.requestSwitchAccountFromUserAction(currentAccount)
 
         #expect(store.auth.pendingAccountAction == .switchAccount(accountKey: currentAccount.accountKey))
         #expect(backend.switchAccountCallCount() == 0)
@@ -4787,11 +4795,7 @@ struct CodexReviewMCPTests {
         )
         store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
-        store.requestSwitchAccount(
-            currentSavedAccount,
-            requiresConfirmation: store.hasRunningJobs
-                && store.switchActionRequiresRunningJobsConfirmation(for: currentSavedAccount)
-        )
+        store.requestSwitchAccountFromUserAction(currentSavedAccount)
 
         #expect(store.auth.pendingAccountAction == .switchAccount(accountKey: currentSavedAccount.accountKey))
         #expect(backend.switchAccountCallCount() == 0)

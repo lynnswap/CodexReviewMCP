@@ -31,11 +31,18 @@ struct ReviewMonitorAccountRowView: View {
                 }
             } icon: {
                 let isSelected :Bool = store.auth.selectedAccount == account
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.selection))
-                    .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp.byLayer), options: .nonRepeating))
-                    .animation(.easeInOut(duration: 0.22), value: isSelected)
-                    .imageScale(.large)
+                Button {
+                    store.requestSwitchAccountFromUserAction(account)
+                } label: {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.selection))
+                        .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp.byLayer), options: .nonRepeating))
+                        .animation(.easeInOut(duration: 0.22), value: isSelected)
+                        .imageScale(.large)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.switchActionIsDisabled(for: account))
+                .accessibilityIdentifier("review-monitor.account-row-switch-button")
             }
             .labelIconToTitleSpacing(0)
             .overlay {

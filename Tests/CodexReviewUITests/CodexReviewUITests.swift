@@ -1116,6 +1116,51 @@ struct CodexReviewUITests {
         #expect(accountsViewController.displayedAccountEmailsForTesting == displayedEmails)
     }
 
+    @Test func accountListTracksDetachedCurrentSessionMembership() async throws {
+        let savedAccount = CodexAccount(email: "saved@example.com", planType: "pro")
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            account: savedAccount,
+            persistedAccounts: [savedAccount],
+            workspaces: []
+        )
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        #expect(accountsViewController.displayedAccountEmailsForTesting == ["saved@example.com"])
+
+        store.auth.updateCurrentAccount(CodexAccount(email: "detached@example.com", planType: "pro"))
+        for _ in 0..<10 where accountsViewController.displayedAccountEmailsForTesting != [
+            "saved@example.com",
+            "detached@example.com",
+        ] {
+            await Task.yield()
+        }
+
+        #expect(accountsViewController.displayedAccountEmailsForTesting == [
+            "saved@example.com",
+            "detached@example.com",
+        ])
+        #expect(accountsViewController.selectedAccountEmailForTesting == "detached@example.com")
+
+        store.auth.selectPersistedAccount(savedAccount.accountKey)
+        for _ in 0..<10 where accountsViewController.displayedAccountEmailsForTesting != ["saved@example.com"] {
+            await Task.yield()
+        }
+
+        #expect(accountsViewController.displayedAccountEmailsForTesting == ["saved@example.com"])
+        #expect(accountsViewController.selectedAccountEmailForTesting == "saved@example.com")
+    }
+
     @Test func accountActionAlertRestoresSelectionToAuthenticatedAccount() async throws {
         let activeAccount = CodexAccount(email: "active@example.com", planType: "pro")
         let otherAccount = CodexAccount(email: "other@example.com", planType: "plus")

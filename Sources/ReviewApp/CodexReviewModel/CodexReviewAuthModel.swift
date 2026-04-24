@@ -78,6 +78,7 @@ public final class CodexReviewAuthModel {
     public package(set) var phase: Phase = .signedOut
     public package(set) var persistedAccounts: [CodexAccount] = []
     public package(set) var persistedActiveAccountKey: String?
+    package private(set) var detachedAccount: CodexAccount?
     public private(set) var selectedAccount :CodexAccount?
 
     public package(set) var authenticationFailureCount = 0
@@ -101,12 +102,10 @@ public final class CodexReviewAuthModel {
     }
 
     public var accounts: [CodexAccount] {
-        guard let selectedAccount,
-              persistedAccounts.contains(where: { $0.accountKey == selectedAccount.accountKey }) == false
-        else {
+        guard let detachedAccount else {
             return persistedAccounts
         }
-        return persistedAccounts + [selectedAccount]
+        return persistedAccounts + [detachedAccount]
     }
 
     public var hasAccounts: Bool {
@@ -202,13 +201,28 @@ public final class CodexReviewAuthModel {
     package func selectPersistedAccount(_ persistedAccountID: CodexAccount.ID?) {
         guard let persistedAccountID else {
             selectedAccount = nil
+            detachedAccount = nil
             return
         }
         selectedAccount = persistedAccounts.first(where: { $0.id == persistedAccountID })
+        detachedAccount = nil
     }
 
     package func updateCurrentAccount(_ account: CodexAccount?) {
+        guard let account else {
+            selectedAccount = nil
+            detachedAccount = nil
+            return
+        }
+
+        if let persistedAccount = persistedAccounts.first(where: { $0.accountKey == account.accountKey }) {
+            selectedAccount = persistedAccount
+            detachedAccount = nil
+            return
+        }
+
         selectedAccount = account
+        detachedAccount = account
     }
 
     package func applyPersistedAccountStates(
@@ -240,6 +254,7 @@ public final class CodexReviewAuthModel {
                 ? activeAccountKey
                 : nil
         }
+        reconcileDetachedAccount()
     }
 
     package func isPersistedActiveAccount(_ accountKey: String) -> Bool {
@@ -248,6 +263,19 @@ public final class CodexReviewAuthModel {
 
     private func reusableAccount(for accountKey: String) -> CodexAccount? {
         persistedAccounts.first(where: { $0.accountKey == accountKey })
+    }
+
+    private func reconcileDetachedAccount() {
+        guard let selectedAccount else {
+            detachedAccount = nil
+            return
+        }
+        guard let persistedAccount = persistedAccounts.first(where: { $0.accountKey == selectedAccount.accountKey }) else {
+            detachedAccount = selectedAccount
+            return
+        }
+        self.selectedAccount = persistedAccount
+        detachedAccount = nil
     }
 
     private func requestAccountAction(

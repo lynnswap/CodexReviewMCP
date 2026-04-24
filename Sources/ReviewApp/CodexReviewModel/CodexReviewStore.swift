@@ -172,6 +172,14 @@ public final class CodexReviewStore {
         confirmPendingAccountAction()
     }
 
+    package func requestSwitchAccountFromUserAction(_ account: CodexAccount) {
+        requestSwitchAccount(
+            account,
+            requiresConfirmation: hasRunningJobs
+                && switchActionRequiresRunningJobsConfirmation(for: account)
+        )
+    }
+
     package func requestSignOutActiveAccount(requiresConfirmation: Bool) {
         auth.requestSignOutActiveAccount(requiresConfirmation: requiresConfirmation)
         guard requiresConfirmation == false else {
