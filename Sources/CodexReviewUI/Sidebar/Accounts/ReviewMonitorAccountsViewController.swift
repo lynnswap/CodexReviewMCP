@@ -39,7 +39,7 @@ private struct ReviewMonitorAccountsListView: View {
     var body: some View {
         List {
             ForEach(accounts) { account in
-                accountRow(account, auth: auth)
+                RowView(store:store, account: account)
             }
             .onMove(perform: handleMove)
         }
@@ -110,65 +110,6 @@ private struct ReviewMonitorAccountsListView: View {
             }
         }
     }
-
-    @ViewBuilder
-    private func accountRow(
-        _ account: CodexAccount,
-        auth: CodexReviewAuthModel
-    ) -> some View {
-        let isSelected = auth.selectedAccount == account
-        Label {
-            VStack {
-                HStack {
-                    Text(account.maskedEmail)
-                        .textScale(.secondary)
-                        .foregroundStyle(.primary)
-                    Spacer(minLength: 0)
-                }
-                RowView(
-                    store: store,
-                    account: account
-                )
-            }
-        } icon: {
-            FocusRingSelectionIndicator(
-                isSelected: isSelected
-            )
-            .accessibilityHidden(true)
-            .contentShape(.circle)
-            .onTapGesture {
-                requestAccountRowSwitch(account)
-            }
-        }
-        .contextMenu {
-            AccountContextMenuView(
-                store: store,
-                account: account
-            )
-        }
-        .listRowBackground(
-            RoundedRectangle(
-                cornerRadius: 8,
-                style: .continuous
-            )
-            .fill(isSelected
-                ? AnyShapeStyle(.background)
-                : AnyShapeStyle(.clear)
-            )
-            .padding(.horizontal, 10)
-        )
-    }
-
-    private func requestAccountRowSwitch(_ account: CodexAccount) {
-        guard store.switchActionIsDisabled(for: account) == false else {
-            return
-        }
-        store.requestSwitchAccount(
-            account,
-            requiresConfirmation: store.hasRunningJobs
-                && store.switchActionRequiresRunningJobsConfirmation(for: account)
-        )
-    }
 }
 
 private struct FocusRingSelectionIndicator: NSViewRepresentable {
@@ -200,31 +141,79 @@ private struct FocusRingSelectionIndicator: NSViewRepresentable {
 private struct RowView: View{
     var store: CodexReviewStore
     var account: CodexAccount
+    
     var body: some View{
-        Menu {
+        let isSelected = store.auth.selectedAccount == account
+        Label {
+            VStack {
+                HStack {
+                    Text(account.maskedEmail)
+                        .textScale(.secondary)
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 0)
+                }
+                Menu {
+                    AccountContextMenuView(
+                        store: store,
+                        account: account
+                    )
+                } label: {
+                    AccountRateLimitGaugesView(
+                        account: account
+                    )
+                    .textScale(.secondary)
+                    .foregroundStyle(.secondary)
+                    .controlSize(.mini)
+                    .contentShape(.rect)
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .overlay {
+                    if account.isSwitching {
+                        ProgressView()
+                            .accessibilityIdentifier("review-monitor.account-row-switching")
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.22), value: account.isSwitching)
+            }
+        } icon: {
+            FocusRingSelectionIndicator(
+                isSelected: isSelected
+            )
+            .accessibilityHidden(true)
+            .contentShape(.circle)
+            .onTapGesture {
+                requestAccountRowSwitch(account)
+            }
+        }
+        .contextMenu {
             AccountContextMenuView(
                 store: store,
                 account: account
             )
-        } label: {
-            AccountRateLimitGaugesView(
-                account: account
+        }
+        .listRowBackground(
+            RoundedRectangle(
+                cornerRadius: 8,
+                style: .continuous
             )
-            .textScale(.secondary)
-            .foregroundStyle(.secondary)
-            .controlSize(.mini)
-            .contentShape(.rect)
+            .fill(isSelected
+                ? AnyShapeStyle(.background)
+                : AnyShapeStyle(.clear)
+            )
+            .padding(.horizontal, 10)
+        )
+    }
+    private func requestAccountRowSwitch(_ account: CodexAccount) {
+        guard store.switchActionIsDisabled(for: account) == false else {
+            return
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .overlay {
-            if account.isSwitching {
-                ProgressView()
-                    .accessibilityIdentifier("review-monitor.account-row-switching")
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.22), value: account.isSwitching)
+        store.requestSwitchAccount(
+            account,
+            requiresConfirmation: store.hasRunningJobs
+                && store.switchActionRequiresRunningJobsConfirmation(for: account)
+        )
     }
 }
 
