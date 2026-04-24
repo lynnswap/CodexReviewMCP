@@ -103,6 +103,14 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
         outlineView.contextMenuProvider = { [weak self] point in
             self?.makeContextMenu(at: point)
         }
+        outlineView.dragPasteboardWriterProvider = { [weak self] row in
+            guard let self,
+                  let account = account(atRow: row)
+            else {
+                return nil
+            }
+            return pasteboardWriter(for: account)
+        }
 
         scrollView.documentView = outlineView
     }
@@ -339,6 +347,18 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
         return max(0, min(adjustedDropIndex, persistedCount - 1))
     }
 
+    private func pasteboardWriter(for account: CodexAccount) -> (any NSPasteboardWriting)? {
+        guard auth.persistedAccounts.count > 1,
+              persistedAccountIndex(accountKey: account.accountKey) != nil
+        else {
+            return nil
+        }
+
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(account.accountKey, forType: DragType.account)
+        return pasteboardItem
+    }
+
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         item == nil ? accounts.count : 0
     }
@@ -386,16 +406,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
         _ outlineView: NSOutlineView,
         pasteboardWriterForItem item: Any
     ) -> (any NSPasteboardWriting)? {
-        guard let account = account(from: item),
-              auth.persistedAccounts.count > 1,
-              persistedAccountIndex(accountKey: account.accountKey) != nil
-        else {
-            return nil
-        }
-
-        let pasteboardItem = NSPasteboardItem()
-        pasteboardItem.setString(account.accountKey, forType: DragType.account)
-        return pasteboardItem
+        account(from: item).flatMap(pasteboardWriter(for:))
     }
 
     func outlineView(
@@ -520,6 +531,16 @@ extension ReviewMonitorAccountsViewController {
         return cellView.isHostingReviewMonitorAccountRowViewForTesting
     }
 
+    func dragPasteboardAccountKeyForTesting(_ account: CodexAccount) -> String? {
+        guard let row = row(for: account) else {
+            preconditionFailure("Account row is not visible.")
+        }
+        return outlineView.dragPasteboardStringForTesting(
+            row: row,
+            type: DragType.account
+        )
+    }
+
     func allowsUserSelectionForTesting(_ account: CodexAccount) -> Bool {
         guard let row = row(for: account) else {
             preconditionFailure("Account row is not visible.")
@@ -557,12 +578,35 @@ extension ReviewMonitorAccountsViewController {
 @MainActor
 private final class ReviewMonitorAccountsOutlineView: NSOutlineView {
     var contextMenuProvider: ((NSPoint) -> NSMenu?)?
+    var dragPasteboardWriterProvider: ((Int) -> (any NSPasteboardWriting)?)?
+    private var pendingExplicitDragRow: Int?
     private var isPresentingContextMenu = false
     private weak var contextMenuFirstResponder: NSResponder?
     private var previousContextMenu: NSMenu?
 
     override var acceptsFirstResponder: Bool {
         isPresentingContextMenu ? false : super.acceptsFirstResponder
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        pendingExplicitDragRow = row(at: point)
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let row = pendingExplicitDragRow,
+              beginExplicitDrag(forRow: row, event: event)
+        else {
+            super.mouseDragged(with: event)
+            return
+        }
+        pendingExplicitDragRow = nil
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        pendingExplicitDragRow = nil
+        super.mouseUp(with: event)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -586,6 +630,33 @@ private final class ReviewMonitorAccountsOutlineView: NSOutlineView {
             return
         }
         endContextMenuPresentation()
+    }
+
+    private func beginExplicitDrag(forRow row: Int, event: NSEvent) -> Bool {
+        guard row != -1,
+              let pasteboardWriter = dragPasteboardWriterProvider?(row)
+        else {
+            return false
+        }
+
+        let rowRect = rect(ofRow: row)
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardWriter)
+        draggingItem.setDraggingFrame(
+            rowRect,
+            contents: draggingImage(for: rowRect)
+        )
+        beginDraggingSession(with: [draggingItem], event: event, source: self)
+        return true
+    }
+
+    private func draggingImage(for rect: NSRect) -> NSImage {
+        let image = NSImage(size: rect.size)
+        guard let bitmap = bitmapImageRepForCachingDisplay(in: rect) else {
+            return image
+        }
+        cacheDisplay(in: rect, to: bitmap)
+        image.addRepresentation(bitmap)
+        return image
     }
 
     private func isAccountListFirstResponder(_ responder: NSResponder) -> Bool {
@@ -668,6 +739,13 @@ private final class ReviewMonitorAccountsOutlineView: NSOutlineView {
 
     var acceptsFirstResponderForTesting: Bool {
         acceptsFirstResponder
+    }
+
+    func dragPasteboardStringForTesting(
+        row: Int,
+        type: NSPasteboard.PasteboardType
+    ) -> String? {
+        (dragPasteboardWriterProvider?(row) as? NSPasteboardItem)?.string(forType: type)
     }
 #endif
 }

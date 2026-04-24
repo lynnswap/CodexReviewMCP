@@ -1078,6 +1078,36 @@ struct CodexReviewUITests {
         #expect(backend.switchAccountCallCount() == 0)
     }
 
+    @Test func accountDragUsesClickedRowWithoutChangingAuthSelection() async throws {
+        let activeAccount = CodexAccount(email: "active@example.com", planType: "pro")
+        let otherAccount = CodexAccount(email: "other@example.com", planType: "plus")
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            account: activeAccount,
+            persistedAccounts: [activeAccount, otherAccount],
+            workspaces: []
+        )
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        let displayedOtherAccount = try #require(
+            store.auth.persistedAccounts.first { $0.email == "other@example.com" }
+        )
+        for _ in 0..<10 where accountsViewController.selectedAccountEmailForTesting != "active@example.com" {
+            await Task.yield()
+        }
+
+        #expect(accountsViewController.dragPasteboardAccountKeyForTesting(displayedOtherAccount) == displayedOtherAccount.accountKey)
+        #expect(accountsViewController.selectedAccountEmailForTesting == "active@example.com")
+        #expect(store.auth.selectedAccount?.email == "active@example.com")
+    }
+
     @Test func accountSelectionChangeKeepsDisplayedAccounts() async throws {
         let activeAccount = CodexAccount(email: "active@example.com", planType: "pro")
         let otherAccount = CodexAccount(email: "other@example.com", planType: "plus")
