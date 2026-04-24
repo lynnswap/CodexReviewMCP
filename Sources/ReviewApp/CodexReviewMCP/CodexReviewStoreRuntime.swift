@@ -726,11 +726,11 @@ extension CodexReviewStore {
         store.serverState = .running
         store.serverURL = URL(string: "http://127.0.0.1:9417/mcp")
         let account = CodexAccount(email: "ui-test@example.com", planType: "unknown")
-        store.auth.applySavedAccountStates(
+        store.auth.applyPersistedAccountStates(
             [savedAccountPayload(from: account)],
             activeAccountKey: account.accountKey
         )
-        store.auth.updateSelectedAccount(account.id)
+        store.auth.selectPersistedAccount(account.id)
         return store
     }
 

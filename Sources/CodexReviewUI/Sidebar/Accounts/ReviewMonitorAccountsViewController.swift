@@ -11,7 +11,7 @@ private struct ReviewMonitorAccountsListView: View {
     }
 
     private var accounts: [CodexAccount] {
-        auth.savedAccounts
+        auth.accounts
     }
 
     private var pendingAccountActionConfirmationIsPresented: Binding<Bool> {
@@ -78,9 +78,11 @@ private struct ReviewMonitorAccountsListView: View {
         fromOffsets sourceOffsets: IndexSet,
         toOffset destination: Int
     ) {
-        guard sourceOffsets.count == 1,
+        let persistedAccounts = auth.persistedAccounts
+        guard persistedAccounts.count > 1,
+              sourceOffsets.count == 1,
               let sourceIndex = sourceOffsets.first,
-              accounts.indices.contains(sourceIndex)
+              persistedAccounts.indices.contains(sourceIndex)
         else {
             return
         }
@@ -89,17 +91,17 @@ private struct ReviewMonitorAccountsListView: View {
             0,
             min(
                 destination > sourceIndex ? destination - 1 : destination,
-                accounts.count - 1
+                persistedAccounts.count - 1
             )
         )
         guard destinationIndex != sourceIndex else {
             return
         }
 
-        let accountKey = accounts[sourceIndex].accountKey
+        let accountKey = persistedAccounts[sourceIndex].accountKey
         Task { @MainActor in
             do {
-                try await store.reorderSavedAccount(accountKey: accountKey, toIndex: destinationIndex)
+                try await store.reorderPersistedAccount(accountKey: accountKey, toIndex: destinationIndex)
             } catch {
                 store.auth.presentAccountActionAlert(
                     title: "Failed to Reorder Accounts",
@@ -264,6 +266,15 @@ final class ReviewMonitorAccountsViewController: NSViewController {
         ])
     }
 }
+
+#if DEBUG
+@MainActor
+extension ReviewMonitorAccountsViewController {
+    var displayedAccountEmailsForTesting: [String] {
+        store.auth.accounts.map(\.email)
+    }
+}
+#endif
 
 #if DEBUG
 #Preview {

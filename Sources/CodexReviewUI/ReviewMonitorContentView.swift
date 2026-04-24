@@ -232,8 +232,8 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
     let previewAccounts = ReviewMonitorPreviewContent.makePreviewAccounts()
     let resolvedAccount = account ?? previewAccounts.first
     store.auth.updatePhase(authPhase)
-    store.auth.applySavedAccountStates(previewAccounts.map(savedAccountPayload(from:)))
-    store.auth.updateSelectedAccount(resolvedAccount?.id)
+    store.auth.applyPersistedAccountStates(previewAccounts.map(savedAccountPayload(from:)))
+    store.auth.selectPersistedAccount(resolvedAccount?.id)
     let uiState = ReviewMonitorUIState(auth: store.auth)
     return ReviewMonitorRootViewController(store: store, uiState: uiState)
 }

@@ -18,7 +18,7 @@ final class ReviewMonitorUIState {
     var presentedContentKind: ReviewMonitorContentKind?
 
     var contentKind: ReviewMonitorContentKind {
-        if auth.selectedAccount != nil || auth.hasSavedAccounts {
+        if auth.selectedAccount != nil || auth.hasAccounts {
             return .contentView
         }
         return .signInView

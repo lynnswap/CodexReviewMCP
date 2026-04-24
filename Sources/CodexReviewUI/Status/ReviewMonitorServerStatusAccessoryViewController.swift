@@ -276,8 +276,8 @@ func makeStatusPreviewStore(
     let previewAccounts = ReviewMonitorPreviewContent.makePreviewAccounts()
     let resolvedAccount = account ?? previewAccounts.first
     store.auth.updatePhase(authPhase)
-    store.auth.applySavedAccountStates(previewAccounts.map(savedAccountPayload(from:)))
-    store.auth.updateSelectedAccount(resolvedAccount?.id)
+    store.auth.applyPersistedAccountStates(previewAccounts.map(savedAccountPayload(from:)))
+    store.auth.selectPersistedAccount(resolvedAccount?.id)
     store.serverState = serverState
     store.serverURL = serverState == .running ? runningServerURL : nil
     return store

@@ -45,7 +45,7 @@ struct AccountContextMenuView: View {
 
     private func refreshRateLimits() {
         Task {
-            await store.refreshSavedAccountRateLimits(accountKey: account.accountKey)
+            await store.refreshAccountRateLimits(accountKey: account.accountKey)
         }
     }
 }
@@ -56,11 +56,11 @@ struct AccountContextMenuView: View {
     let otherAccount = CodexAccount(email: "other@example.com")
         let store: CodexReviewStore = {
             let store = CodexReviewStore.makePreviewStore()
-            store.auth.applySavedAccountStates([
+            store.auth.applyPersistedAccountStates([
             savedAccountPayload(from: currentAccount),
             savedAccountPayload(from: otherAccount),
         ])
-        store.auth.updateSelectedAccount(currentAccount.id)
+        store.auth.selectPersistedAccount(currentAccount.id)
         return store
     }()
     AccountContextMenuView(

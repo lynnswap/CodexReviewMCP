@@ -76,7 +76,7 @@ public final class CodexReviewAuthModel {
     }
 
     public package(set) var phase: Phase = .signedOut
-    public package(set) var savedAccounts: [CodexAccount] = []
+    public package(set) var persistedAccounts: [CodexAccount] = []
     public package(set) var persistedActiveAccountKey: String?
     public private(set) var selectedAccount :CodexAccount?
 
@@ -100,8 +100,17 @@ public final class CodexReviewAuthModel {
         selectedAccount != nil
     }
 
-    public var hasSavedAccounts: Bool {
-        savedAccounts.isEmpty == false
+    public var accounts: [CodexAccount] {
+        guard let selectedAccount,
+              persistedAccounts.contains(where: { $0.accountKey == selectedAccount.accountKey }) == false
+        else {
+            return persistedAccounts
+        }
+        return persistedAccounts + [selectedAccount]
+    }
+
+    public var hasAccounts: Bool {
+        accounts.isEmpty == false
     }
 
     public var errorMessage: String? {
@@ -121,7 +130,7 @@ public final class CodexReviewAuthModel {
         _ account: CodexAccount,
         requiresConfirmation: Bool
     ) {
-        guard savedAccounts.contains(where: { $0.accountKey == account.accountKey }) else {
+        guard persistedAccounts.contains(where: { $0.accountKey == account.accountKey }) else {
             return
         }
         requestAccountAction(
@@ -190,32 +199,32 @@ public final class CodexReviewAuthModel {
         warningMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
     }
 
-    package func updateSelectedAccount(_ selectedAccountID: CodexAccount.ID?) {
-        guard let selectedAccountID else {
+    package func selectPersistedAccount(_ persistedAccountID: CodexAccount.ID?) {
+        guard let persistedAccountID else {
             selectedAccount = nil
             return
         }
-        selectedAccount = savedAccounts.first(where: { $0.id == selectedAccountID })
+        selectedAccount = persistedAccounts.first(where: { $0.id == persistedAccountID })
     }
 
-    package func updateDetachedAccount(_ account: CodexAccount?) {
+    package func updateCurrentAccount(_ account: CodexAccount?) {
         selectedAccount = account
     }
 
-    package func applySavedAccountStates(
-        _ incomingSavedAccounts: [CodexSavedAccountPayload]
+    package func applyPersistedAccountStates(
+        _ incomingPersistedAccounts: [CodexSavedAccountPayload]
     ) {
-        applySavedAccountStates(
-            incomingSavedAccounts,
+        applyPersistedAccountStates(
+            incomingPersistedAccounts,
             activeAccountKey: persistedActiveAccountKey
         )
     }
 
-    package func applySavedAccountStates(
-        _ incomingSavedAccounts: [CodexSavedAccountPayload],
+    package func applyPersistedAccountStates(
+        _ incomingPersistedAccounts: [CodexSavedAccountPayload],
         activeAccountKey: String?
     ) {
-        let resolvedSavedAccounts = incomingSavedAccounts.map { incomingAccount in
+        let resolvedPersistedAccounts = incomingPersistedAccounts.map { incomingAccount in
             let reconciledAccount = reusableAccount(for: incomingAccount.accountKey)
                 ?? CodexAccount(
                     accountKey: incomingAccount.accountKey,
@@ -225,9 +234,9 @@ public final class CodexReviewAuthModel {
             reconciledAccount.apply(incomingAccount)
             return reconciledAccount
         }
-        self.savedAccounts = resolvedSavedAccounts
+        self.persistedAccounts = resolvedPersistedAccounts
         self.persistedActiveAccountKey = activeAccountKey.flatMap { activeAccountKey in
-            resolvedSavedAccounts.contains(where: { $0.accountKey == activeAccountKey })
+            resolvedPersistedAccounts.contains(where: { $0.accountKey == activeAccountKey })
                 ? activeAccountKey
                 : nil
         }
@@ -238,7 +247,7 @@ public final class CodexReviewAuthModel {
     }
 
     private func reusableAccount(for accountKey: String) -> CodexAccount? {
-        savedAccounts.first(where: { $0.accountKey == accountKey })
+        persistedAccounts.first(where: { $0.accountKey == accountKey })
     }
 
     private func requestAccountAction(

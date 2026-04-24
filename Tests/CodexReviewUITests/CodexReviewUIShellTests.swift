@@ -261,7 +261,7 @@ struct CodexReviewUIShellTests {
             serverState: .running,
             authPhase: .signedOut,
             account: currentAccount,
-            savedAccounts: [],
+            persistedAccounts: [],
             workspaces: []
         )
         let windowController = ReviewMonitorWindowController(store: store)
@@ -279,6 +279,32 @@ struct CodexReviewUIShellTests {
         #expect(window.toolbar != nil)
     }
 
+    @Test func accountSidebarDisplaysUnsavedCurrentSession() {
+        let store = CodexReviewStore.makePreviewStore()
+        let currentAccount = CodexAccount(email: "current@example.com", planType: "pro")
+        store.loadForTesting(
+            serverState: .running,
+            authPhase: .signedOut,
+            account: currentAccount,
+            persistedAccounts: [],
+            workspaces: []
+        )
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.sidebarPresentationForTesting == .accountList)
+        #expect(
+            viewController
+                .sidebarViewControllerForTesting
+                .accountsViewControllerForTesting
+                .displayedAccountEmailsForTesting == ["current@example.com"]
+        )
+        #expect(store.auth.persistedAccounts.isEmpty)
+    }
+
     @Test func windowControllerShowsSignInViewWhenSignedOut() {
         let store = CodexReviewStore.makePreviewStore()
         let harness = makeWindowHarness(
@@ -294,13 +320,13 @@ struct CodexReviewUIShellTests {
         #expect(window.isMovableByWindowBackground)
     }
 
-    @Test func windowControllerShowsSplitViewWhenSignedOutWithSavedAccounts() {
+    @Test func windowControllerShowsSplitViewWhenSignedOutWithPersistedAccounts() {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
             authPhase: .signedOut,
             account: nil,
-            savedAccounts: [CodexAccount(email: "saved@example.com", planType: "pro")],
+            persistedAccounts: [CodexAccount(email: "saved@example.com", planType: "pro")],
             workspaces: []
         )
         let windowController = ReviewMonitorWindowController(store: store)

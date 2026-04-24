@@ -9,18 +9,18 @@ extension CodexReviewAuthModel {
 
     public func updateAccount(_ account: CodexAccount?) {
         guard let account else {
-            updateSelectedAccount(nil)
+            selectPersistedAccount(nil)
             return
         }
-        if let existingAccountID = savedAccounts.first(where: { $0.accountKey == account.accountKey })?.id {
-            updateSelectedAccount(existingAccountID)
+        if let existingAccountID = persistedAccounts.first(where: { $0.accountKey == account.accountKey })?.id {
+            selectPersistedAccount(existingAccountID)
             return
         }
-        updateDetachedAccount(account)
+        updateCurrentAccount(account)
     }
 
-    public func updateSavedAccounts(_ accounts: [CodexAccount]) {
-        applySavedAccountStates(accounts.map(savedAccountPayload(from:)))
+    public func updatePersistedAccounts(_ accounts: [CodexAccount]) {
+        applyPersistedAccountStates(accounts.map(savedAccountPayload(from:)))
     }
 }
 

@@ -9,12 +9,12 @@ import ReviewRuntime
 
 @MainActor
 private extension CodexReviewAuthModel {
-    func updateSavedAccounts(_ accounts: [CodexSavedAccountPayload]) {
-        applySavedAccountStates(accounts)
+    func updatePersistedAccounts(_ accounts: [CodexSavedAccountPayload]) {
+        applyPersistedAccountStates(accounts)
     }
 
     func updateAccount(_ account: CodexSavedAccountPayload?) {
-        updateSelectedAccount(account?.accountKey)
+        selectPersistedAccount(account?.accountKey)
     }
 }
 
@@ -286,7 +286,7 @@ struct CodexReviewUITests {
                 )
             ),
             account: activeAccount,
-            savedAccounts: [activeAccount],
+            persistedAccounts: [activeAccount],
             workspaces: []
         )
 
@@ -313,7 +313,7 @@ struct CodexReviewUITests {
             serverState: .running,
             authPhase: .signedOut,
             account: activeAccount,
-            savedAccounts: [activeAccount],
+            persistedAccounts: [activeAccount],
             workspaces: []
         )
 
@@ -353,7 +353,7 @@ struct CodexReviewUITests {
             serverState: .running,
             authPhase: .signedOut,
             account: activeAccount,
-            savedAccounts: [activeAccount],
+            persistedAccounts: [activeAccount],
             workspaces: []
         )
 
@@ -398,7 +398,7 @@ struct CodexReviewUITests {
                 )
             ),
             account: activeAccount,
-            savedAccounts: [activeAccount],
+            persistedAccounts: [activeAccount],
             workspaces: []
         )
 
@@ -430,7 +430,7 @@ struct CodexReviewUITests {
                 )
             ),
             account: activeAccount,
-            savedAccounts: [activeAccount],
+            persistedAccounts: [activeAccount],
             workspaces: []
         )
 
@@ -469,26 +469,26 @@ struct CodexReviewUITests {
         let auth = CodexReviewAuthModel.makePreview()
         let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
         let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
-        auth.updateSavedAccounts([firstAccount, secondAccount])
-        let storedFirstAccount = auth.savedAccounts[0]
-        let storedSecondAccount = auth.savedAccounts[1]
+        auth.updatePersistedAccounts([firstAccount, secondAccount])
+        let storedFirstAccount = auth.persistedAccounts[0]
+        let storedSecondAccount = auth.persistedAccounts[1]
 
         storedSecondAccount.updateIsSwitching(true)
 
         let reloadedFirstAccount = CodexAccount(email: "first@example.com", planType: "pro")
         let reloadedSecondAccount = CodexAccount(email: "second@example.com", planType: "plus")
-        auth.updateSavedAccounts([reloadedFirstAccount, reloadedSecondAccount])
+        auth.updatePersistedAccounts([reloadedFirstAccount, reloadedSecondAccount])
 
-        #expect(auth.savedAccounts[0] === storedFirstAccount)
-        #expect(auth.savedAccounts[1] === storedSecondAccount)
+        #expect(auth.persistedAccounts[0] === storedFirstAccount)
+        #expect(auth.persistedAccounts[1] === storedSecondAccount)
         #expect(storedSecondAccount.isSwitching)
         #expect(reloadedSecondAccount.isSwitching == false)
     }
 
     @Test func updateAccountNormalizesSelectionToSavedAccountForMatchingKey() {
         let auth = CodexReviewAuthModel.makePreview()
-        auth.updateSavedAccounts([CodexAccount(email: "review@example.com", planType: "pro")])
-        let savedAccount = auth.savedAccounts[0]
+        auth.updatePersistedAccounts([CodexAccount(email: "review@example.com", planType: "pro")])
+        let savedAccount = auth.persistedAccounts[0]
 
         let detachedAccount = CodexAccount(email: "review@example.com", planType: "plus")
         auth.updateAccount(detachedAccount)
@@ -2473,10 +2473,10 @@ func applyTestAuthState(
             email: accountEmail,
             planType: state.accountPlanType ?? "pro"
         )
-        auth.updateSavedAccounts([account])
+        auth.updatePersistedAccounts([account])
         auth.updateAccount(account)
     } else {
-        auth.updateSavedAccounts([CodexAccount]())
+        auth.updatePersistedAccounts([CodexAccount]())
         auth.updateAccount(nil as CodexAccount?)
     }
 }
@@ -2509,7 +2509,7 @@ extension CodexReviewStore {
                     planType: authState.accountPlanType ?? "pro"
                 )
             },
-            savedAccounts: authState.accountEmail.map {
+            persistedAccounts: authState.accountEmail.map {
                 [
                     CodexAccount(
                         email: $0,
