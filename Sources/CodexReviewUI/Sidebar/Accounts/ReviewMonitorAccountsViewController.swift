@@ -110,8 +110,13 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     private func bindObservation() {
         authObservationHandles.removeAll()
 
-        auth.observe([\.persistedAccounts, \.selectedAccount]) { [weak self] in
+        auth.observe([\.persistedAccounts]) { [weak self] in
             self?.reloadAccounts()
+        }
+        .store(in: &authObservationHandles)
+
+        auth.observe([\.selectedAccount]) { [weak self] in
+            self?.reconcileSelection()
         }
         .store(in: &authObservationHandles)
 
@@ -123,10 +128,10 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
 
     private func reloadAccounts() {
         outlineView.reloadData()
-        reconcileSelectionAfterReload()
+        reconcileSelection()
     }
 
-    private func reconcileSelectionAfterReload() {
+    private func reconcileSelection() {
         guard let selectedAccount = auth.selectedAccount,
               let row = row(forAccountKey: selectedAccount.accountKey)
         else {
@@ -197,7 +202,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
                 }
                 self.presentedPendingAccountAction = nil
                 guard self.auth.pendingAccountAction == action else {
-                    self.reconcileSelectionAfterReload()
+                    self.reconcileSelection()
                     self.presentAccountPromptsIfNeeded()
                     return
                 }
@@ -205,7 +210,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
                     self.store.confirmPendingAccountAction()
                 } else {
                     self.store.cancelPendingAccountAction()
-                    self.reconcileSelectionAfterReload()
+                    self.reconcileSelection()
                 }
                 self.presentAccountPromptsIfNeeded()
             }
@@ -215,7 +220,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     private func presentAccountActionAlertIfNeeded() {
         guard let accountActionAlert = auth.accountActionAlert else {
             presentedAccountActionAlert = nil
-            reconcileSelectionAfterReload()
+            reconcileSelection()
             return
         }
         guard presentedAccountActionAlert != accountActionAlert,
@@ -225,7 +230,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
         }
 
         presentedAccountActionAlert = accountActionAlert
-        reconcileSelectionAfterReload()
+        reconcileSelection()
 
         let alert = NSAlert()
         alert.messageText = String(localized: accountActionAlert.title)
@@ -240,7 +245,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
                 if self.auth.accountActionAlert == accountActionAlert {
                     self.store.dismissAccountActionAlert()
                 }
-                self.reconcileSelectionAfterReload()
+                self.reconcileSelection()
                 self.presentAccountPromptsIfNeeded()
             }
         }
@@ -719,24 +724,11 @@ private final class ReviewMonitorAccountCellView: NSTableCellView {
 private struct ReviewMonitorAccountRowView: View {
     let store: CodexReviewStore
     var account: CodexAccount?
-
-    private var isSelected: Bool {
-        guard let account else {
-            return false
-        }
-        return store.auth.selectedAccount == account
-    }
-
+    
     var body: some View {
         if let account {
             Label {
-                VStack {
-                    HStack {
-                        Text(account.maskedEmail)
-                            .textScale(.secondary)
-                            .foregroundStyle(.primary)
-                        Spacer(minLength: 0)
-                    }
+                GroupBox{
                     Menu {
                         AccountContextMenuView(
                             store: store,
@@ -747,71 +739,35 @@ private struct ReviewMonitorAccountRowView: View {
                             account: account
                         )
                         .textScale(.secondary)
-                        .foregroundStyle(.secondary)
-                        .controlSize(.mini)
+                        .padding(2)
                         .contentShape(.rect)
                     }
                     .menuStyle(.button)
                     .buttonStyle(.plain)
-                    .overlay {
-                        if account.isSwitching {
-                            ProgressView()
-                                .accessibilityIdentifier("review-monitor.account-row-switching")
-                                .transition(.opacity)
-                        }
-                    }
-                    .animation(.easeInOut(duration: 0.22), value: account.isSwitching)
+                }label:{
+                    Text(account.maskedEmail)
+                    
                 }
             } icon: {
-                FocusRingSelectionIndicator(
-                    isSelected: isSelected
-                )
-                .accessibilityHidden(true)
-                .contentShape(.circle)
-                .onTapGesture {
-                    requestAccountRowSwitch(account)
+                let isSelected :Bool = store.auth.selectedAccount == account
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.selection))
+                    .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp.byLayer), options: .nonRepeating))
+                    .animation(.easeInOut(duration: 0.22), value: isSelected)
+                    .imageScale(.large)
+            }
+            .labelIconToTitleSpacing(0)
+            .overlay {
+                if account.isSwitching {
+                    ProgressView()
+                        .accessibilityIdentifier("review-monitor.account-row-switching")
+                        .transition(.opacity)
                 }
             }
+            .animation(.easeInOut(duration: 0.22), value: account.isSwitching)
             .transaction(value: account.id) { transaction in
                 transaction.disablesAnimations = true
             }
         }
-    }
-
-    private func requestAccountRowSwitch(_ account: CodexAccount) {
-        guard store.switchActionIsDisabled(for: account) == false else {
-            return
-        }
-        store.requestSwitchAccount(
-            account,
-            requiresConfirmation: store.hasRunningJobs
-                && store.switchActionRequiresRunningJobsConfirmation(for: account)
-        )
-    }
-}
-
-private struct FocusRingSelectionIndicator: NSViewRepresentable {
-    let isSelected: Bool
-
-    func makeNSView(context: Context) -> NSButton {
-        let button = (NSClassFromString("SwiftUI.FocusRingNSButton") as? NSButton.Type)?
-            .init(frame: .zero) ?? NSButton(frame: .zero)
-        configure(button)
-        return button
-    }
-
-    func updateNSView(_ button: NSButton, context: Context) {
-        configure(button)
-    }
-
-    private func configure(_ button: NSButton) {
-        button.setButtonType(.radio)
-        button.title = ""
-        button.state = isSelected ? .on : .off
-        button.isEnabled = true
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.setContentHuggingPriority(.required, for: .horizontal)
-        button.setContentHuggingPriority(.required, for: .vertical)
-        button.frame.size = CGSize(width: 16, height: 16)
     }
 }
