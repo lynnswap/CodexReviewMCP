@@ -21,11 +21,7 @@ struct AccountContextMenuView: View {
     var body: some View {
         Section(account.email){
             Button("Switch", systemImage: "arrow.triangle.swap") {
-                store.requestSwitchAccount(
-                    account,
-                    requiresConfirmation: store.hasRunningJobs
-                        && store.switchActionRequiresRunningJobsConfirmation(for: account)
-                )
+                store.requestSwitchAccountFromUserAction(account)
             }
             .disabled(store.switchActionIsDisabled(for: account))
             
