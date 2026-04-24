@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @_spi(Testing) @testable import ReviewApp
 @_spi(PreviewSupport) @testable import CodexReviewUI
@@ -497,6 +498,71 @@ struct CodexReviewUITests {
         #expect(auth.account !== detachedAccount)
     }
 
+    @Test func accountSidebarUsesOutlineViewRows() throws {
+        let activeAccount = CodexAccount(email: "active@example.com", planType: "pro")
+        let otherAccount = CodexAccount(email: "other@example.com", planType: "plus")
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            account: activeAccount,
+            persistedAccounts: [activeAccount, otherAccount],
+            workspaces: []
+        )
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        let displayedActiveAccount = try #require(
+            store.auth.persistedAccounts.first { $0.email == "active@example.com" }
+        )
+
+        #expect(accountsViewController.accountListUsesOutlineViewForTesting)
+        #expect(accountsViewController.displayedAccountEmailsForTesting == [
+            "active@example.com",
+            "other@example.com",
+        ])
+        #expect(accountsViewController.accountRowUsesReviewMonitorAccountCellViewForTesting(displayedActiveAccount))
+        #expect(accountsViewController.accountRowUsesSwiftUIRowViewForTesting(displayedActiveAccount))
+    }
+
+    @Test func accountDropReordersToDisplayedGapForDownwardMove() async throws {
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        let thirdAccount = CodexAccount(email: "third@example.com", planType: "team")
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            account: firstAccount,
+            persistedAccounts: [firstAccount, secondAccount, thirdAccount],
+            workspaces: []
+        )
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        let displayedFirstAccount = try #require(
+            store.auth.persistedAccounts.first { $0.email == "first@example.com" }
+        )
+
+        #expect(await accountsViewController.performAccountDropForTesting(
+            displayedFirstAccount,
+            proposedChildIndex: 2
+        ))
+        #expect(store.auth.persistedAccounts.map(\.email) == [
+            "second@example.com",
+            "first@example.com",
+            "third@example.com",
+        ])
+    }
+
     @Test func jobCellViewUpdatesHostedObservationReferenceWithoutReplacingHostingView() throws {
         let placeholderJob = makeJob(
             id: "job-placeholder",
@@ -915,6 +981,60 @@ struct CodexReviewUITests {
         #expect(sidebar.acceptsFirstResponderForTesting)
         #expect(sidebar.sidebarHasFirstResponderForTesting)
         #expect(sidebar.hasTemporaryContextMenuForTesting == false)
+    }
+
+    @Test func accountContextMenuPresentationRestoresResponderStateAfterClosing() throws {
+        let activeAccount = CodexAccount(email: "active@example.com", planType: "pro")
+        let otherAccount = CodexAccount(email: "other@example.com", planType: "plus")
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            account: activeAccount,
+            persistedAccounts: [activeAccount, otherAccount],
+            workspaces: []
+        )
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        let displayedOtherAccount = try #require(
+            store.auth.persistedAccounts.first { $0.email == "other@example.com" }
+        )
+        accountsViewController.focusAccountListForTesting()
+
+        #expect(accountsViewController.accountListHasFirstResponderForTesting)
+        #expect(accountsViewController.acceptsFirstResponderForTesting)
+        #expect(accountsViewController.hasTemporaryContextMenuForTesting == false)
+
+        var presentedTitles: [String] = []
+        var presentedHostingMenu = false
+        accountsViewController.presentContextMenuForTesting(for: displayedOtherAccount) { menu in
+            presentedTitles = menu.items.map(\.title).filter { $0.isEmpty == false }
+            presentedHostingMenu = menu is NSHostingMenu<AccountContextMenuView>
+            #expect(accountsViewController.isPresentingContextMenuForTesting)
+            #expect(accountsViewController.acceptsFirstResponderForTesting == false)
+            #expect(accountsViewController.accountListHasFirstResponderForTesting == false)
+            #expect(accountsViewController.hasTemporaryContextMenuForTesting)
+        }
+
+        #expect(presentedTitles == [
+            "other@example.com",
+            "Switch",
+            "Refresh",
+            "Sign Out",
+        ])
+        #expect(presentedHostingMenu)
+        #expect(accountsViewController.isPresentingContextMenuForTesting == false)
+        #expect(accountsViewController.acceptsFirstResponderForTesting)
+        #expect(accountsViewController.accountListHasFirstResponderForTesting)
+        #expect(accountsViewController.hasTemporaryContextMenuForTesting == false)
     }
 
     @Test func jobsPresentOnInitialLoadStayUnselected() {
