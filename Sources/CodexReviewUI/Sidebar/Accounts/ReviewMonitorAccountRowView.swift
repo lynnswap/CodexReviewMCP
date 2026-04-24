@@ -27,11 +27,13 @@ struct ReviewMonitorAccountRowView: View {
                     .buttonStyle(.plain)
                 }label:{
                     Text(account.maskedEmail)
-                    
                 }
             } icon: {
                 let isSelected :Bool = store.auth.selectedAccount == account
                 Button {
+                    guard store.switchActionIsDisabled(for: account) == false else {
+                        return
+                    }
                     store.requestSwitchAccountFromUserAction(account)
                 } label: {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -41,7 +43,6 @@ struct ReviewMonitorAccountRowView: View {
                         .imageScale(.large)
                 }
                 .buttonStyle(.plain)
-                .disabled(store.switchActionIsDisabled(for: account))
                 .accessibilityIdentifier("review-monitor.account-row-switch-button")
             }
             .labelIconToTitleSpacing(0)

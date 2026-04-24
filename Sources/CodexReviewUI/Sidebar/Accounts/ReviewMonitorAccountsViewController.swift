@@ -541,6 +541,16 @@ extension ReviewMonitorAccountsViewController {
         )
     }
 
+    func clickBlankAreaForTesting() {
+        view.layoutSubtreeIfNeeded()
+        let point = blankPointForTesting()
+        precondition(
+            outlineView.suppressesSelectionClearingForTesting(at: point),
+            "Expected a blank click target outside any account item."
+        )
+        outlineView.mouseDown(with: mouseEventForTesting(at: point))
+    }
+
     func allowsUserSelectionForTesting(_ account: CodexAccount) -> Bool {
         guard let row = row(for: account) else {
             preconditionFailure("Account row is not visible.")
@@ -549,6 +559,39 @@ extension ReviewMonitorAccountsViewController {
             outlineView,
             shouldSelectItem: outlineView.item(atRow: row) as Any
         )
+    }
+
+    private func blankPointForTesting() -> NSPoint {
+        let blankY: CGFloat
+        if outlineView.numberOfRows > 0 {
+            blankY = outlineView.rect(ofRow: outlineView.numberOfRows - 1).maxY + 10
+        } else {
+            blankY = outlineView.bounds.midY
+        }
+        let x = min(outlineView.bounds.maxX - 1, max(1, outlineView.bounds.midX))
+        let y = min(outlineView.bounds.maxY - 1, max(1, blankY))
+        return NSPoint(x: x, y: y)
+    }
+
+    private func mouseEventForTesting(at point: NSPoint) -> NSEvent {
+        guard let window = view.window else {
+            fatalError("Accounts view controller must be attached to a window for click testing.")
+        }
+        let locationInWindow = outlineView.convert(point, to: nil)
+        guard let event = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: locationInWindow,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        ) else {
+            fatalError("Failed to create a synthetic mouse event.")
+        }
+        return event
     }
 
     @discardableResult
@@ -590,7 +633,12 @@ private final class ReviewMonitorAccountsOutlineView: NSOutlineView {
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        pendingExplicitDragRow = row(at: point)
+        let clickedRow = row(at: point)
+        pendingExplicitDragRow = clickedRow
+        guard shouldSuppressSelectionClearing(clickedRow: clickedRow) == false else {
+            pendingExplicitDragRow = nil
+            return
+        }
         super.mouseDown(with: event)
     }
 
@@ -630,6 +678,14 @@ private final class ReviewMonitorAccountsOutlineView: NSOutlineView {
             return
         }
         endContextMenuPresentation()
+    }
+
+    private func shouldSuppressSelectionClearing(clickedRow: Int) -> Bool {
+        selectedRow != -1 && clickedRow == -1
+    }
+
+    private func shouldSuppressSelectionClearing(at point: NSPoint) -> Bool {
+        shouldSuppressSelectionClearing(clickedRow: row(at: point))
     }
 
     private func beginExplicitDrag(forRow row: Int, event: NSEvent) -> Bool {
@@ -746,6 +802,10 @@ private final class ReviewMonitorAccountsOutlineView: NSOutlineView {
         type: NSPasteboard.PasteboardType
     ) -> String? {
         (dragPasteboardWriterProvider?(row) as? NSPasteboardItem)?.string(forType: type)
+    }
+
+    func suppressesSelectionClearingForTesting(at point: NSPoint) -> Bool {
+        shouldSuppressSelectionClearing(at: point)
     }
 #endif
 }
