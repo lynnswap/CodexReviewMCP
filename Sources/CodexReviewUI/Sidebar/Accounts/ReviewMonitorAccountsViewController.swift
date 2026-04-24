@@ -20,6 +20,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     private let outlineView = ReviewMonitorAccountsOutlineView()
 
     private var authObservationHandles: Set<ObservationHandle> = []
+    private var isApplyingAuthSelection = false
     private var presentedPendingAccountAction: CodexReviewAuthModel.PendingAccountAction?
     private var presentedAccountActionAlert: CodexReviewAuthModel.AccountActionAlert?
 
@@ -137,6 +138,15 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
 
         guard outlineView.selectedRow != row else {
             return
+        }
+        selectAccountRow(row)
+    }
+
+    private func selectAccountRow(_ row: Int) {
+        let wasApplyingAuthSelection = isApplyingAuthSelection
+        isApplyingAuthSelection = true
+        defer {
+            isApplyingAuthSelection = wasApplyingAuthSelection
         }
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
     }
@@ -341,7 +351,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
-        account(from: item) != nil
+        isApplyingAuthSelection && account(from: item) != nil
     }
 
     func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
@@ -451,7 +461,7 @@ extension ReviewMonitorAccountsViewController {
         guard let row = row(for: account) else {
             preconditionFailure("Account row is not visible.")
         }
-        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        selectAccountRow(row)
     }
 
     var isPresentingContextMenuForTesting: Bool {
@@ -503,6 +513,16 @@ extension ReviewMonitorAccountsViewController {
             return false
         }
         return cellView.isHostingReviewMonitorAccountRowViewForTesting
+    }
+
+    func allowsUserSelectionForTesting(_ account: CodexAccount) -> Bool {
+        guard let row = row(for: account) else {
+            preconditionFailure("Account row is not visible.")
+        }
+        return outlineView(
+            outlineView,
+            shouldSelectItem: outlineView.item(atRow: row) as Any
+        )
     }
 
     @discardableResult

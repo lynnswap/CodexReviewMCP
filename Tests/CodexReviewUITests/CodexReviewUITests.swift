@@ -1037,7 +1037,7 @@ struct CodexReviewUITests {
         #expect(accountsViewController.hasTemporaryContextMenuForTesting == false)
     }
 
-    @Test func selectingAccountOutlineRowDoesNotSwitchAccount() async throws {
+    @Test func accountOutlineRowsRejectUserSelection() async throws {
         let activeAccount = CodexAccount(email: "active@example.com", planType: "pro")
         let otherAccount = CodexAccount(email: "other@example.com", planType: "plus")
         let backend = AuthActionBackend()
@@ -1063,12 +1063,17 @@ struct CodexReviewUITests {
             store.auth.persistedAccounts.first { $0.email == "other@example.com" }
         )
 
-        accountsViewController.selectAccountRowForTesting(displayedOtherAccount)
-        #expect(accountsViewController.selectedAccountEmailForTesting == "other@example.com")
+        for _ in 0..<10 where accountsViewController.selectedAccountEmailForTesting != "active@example.com" {
+            await Task.yield()
+        }
+
+        #expect(accountsViewController.selectedAccountEmailForTesting == "active@example.com")
+        #expect(accountsViewController.allowsUserSelectionForTesting(displayedOtherAccount) == false)
         for _ in 0..<10 {
             await Task.yield()
         }
 
+        #expect(accountsViewController.selectedAccountEmailForTesting == "active@example.com")
         #expect(store.auth.selectedAccount?.email == "active@example.com")
         #expect(backend.switchAccountCallCount() == 0)
     }
