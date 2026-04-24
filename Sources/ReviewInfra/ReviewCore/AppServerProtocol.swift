@@ -1,6 +1,5 @@
 import Foundation
 import ReviewDomain
-import ReviewDomain
 
 package enum AppServerJSONValue: Codable, Sendable, Equatable {
     case string(String)
@@ -223,8 +222,6 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
         package var reviewModel: String?
         package var modelReasoningEffort: CodexReviewReasoningEffort?
         package var serviceTier: CodexReviewServiceTier?
-        package var modelContextWindow: Int?
-        package var modelAutoCompactTokenLimit: Int?
         package var hasModelReasoningEffort: Bool
         package var hasServiceTier: Bool
 
@@ -233,8 +230,6 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
             case reviewModel = "review_model"
             case modelReasoningEffort = "model_reasoning_effort"
             case serviceTier = "service_tier"
-            case modelContextWindow = "model_context_window"
-            case modelAutoCompactTokenLimit = "model_auto_compact_token_limit"
         }
 
         package init(
@@ -242,8 +237,6 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
             reviewModel: String? = nil,
             modelReasoningEffort: CodexReviewReasoningEffort? = nil,
             serviceTier: CodexReviewServiceTier? = nil,
-            modelContextWindow: Int? = nil,
-            modelAutoCompactTokenLimit: Int? = nil,
             hasModelReasoningEffort: Bool? = nil,
             hasServiceTier: Bool? = nil
         ) {
@@ -251,8 +244,6 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
             self.reviewModel = reviewModel
             self.modelReasoningEffort = modelReasoningEffort
             self.serviceTier = serviceTier
-            self.modelContextWindow = modelContextWindow
-            self.modelAutoCompactTokenLimit = modelAutoCompactTokenLimit
             self.hasModelReasoningEffort = hasModelReasoningEffort ?? (modelReasoningEffort != nil)
             self.hasServiceTier = hasServiceTier ?? (serviceTier != nil)
         }
@@ -273,8 +264,6 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
                 forKey: .serviceTier,
                 transform: CodexReviewServiceTier.init(rawValue:)
             )
-            modelContextWindow = try Self.decodeFlexibleIntIfPresent(from: container, forKey: .modelContextWindow)
-            modelAutoCompactTokenLimit = try Self.decodeFlexibleIntIfPresent(from: container, forKey: .modelAutoCompactTokenLimit)
         }
 
         private static func decodeStringEnumIfPresent<T>(
@@ -286,25 +275,6 @@ package struct AppServerConfigReadResponse: Decodable, Sendable {
                 return nil
             }
             return transform(rawValue)
-        }
-
-        private static func decodeFlexibleIntIfPresent(
-            from container: KeyedDecodingContainer<CodingKeys>,
-            forKey key: CodingKeys
-        ) throws -> Int? {
-            guard container.contains(key) else {
-                return nil
-            }
-            if let value = try? container.decode(Int.self, forKey: key) {
-                return value
-            }
-            if let rawValue = try? container.decode(String.self, forKey: key) {
-                let normalized = rawValue
-                    .replacingOccurrences(of: "_", with: "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return Int(normalized)
-            }
-            return nil
         }
     }
 

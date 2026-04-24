@@ -130,14 +130,6 @@ package enum ReviewHomePaths {
             .appendingPathComponent("config.toml")
     }
 
-    package static func modelsCacheURL(
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        codexHome: URL? = nil
-    ) -> URL {
-        (codexHome ?? codexHomeURL(environment: environment))
-            .appendingPathComponent("models_cache.json")
-    }
-
     package static func ensureReviewHomeScaffold(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws {

@@ -8,7 +8,7 @@ import ReviewInfra
 struct ServerOptions {
     var host = "localhost"
     var port = codexReviewDefaultPort
-    var sessionTimeoutSeconds: TimeInterval = ReviewDefaults.shared.server.sessionTimeoutSeconds
+    var sessionTimeoutSeconds: TimeInterval = codexReviewDefaultSessionTimeoutSeconds
     var codexCommand = "codex"
     var forceRestart = false
 }

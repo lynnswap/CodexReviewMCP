@@ -147,7 +147,6 @@ package struct AppServerReviewRunner: Sendable {
                 reviewSpecificModel: reviewSpecificModel,
                 localConfig: localConfig,
                 resolvedConfig: resolvedConfig,
-                clampModel: resolvedModels.clampModel,
                 environment: settings.command.environment,
                 codexHome: resolvedCodexHome
             ),

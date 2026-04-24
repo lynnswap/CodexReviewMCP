@@ -5,21 +5,15 @@ package struct ReviewLocalConfig: Sendable, Equatable {
     package var reviewModel: String?
     package var modelReasoningEffort: String?
     package var serviceTier: String?
-    package var modelContextWindow: Int?
-    package var modelAutoCompactTokenLimit: Int?
 
     package init(
         reviewModel: String? = nil,
         modelReasoningEffort: String? = nil,
-        serviceTier: String? = nil,
-        modelContextWindow: Int? = nil,
-        modelAutoCompactTokenLimit: Int? = nil
+        serviceTier: String? = nil
     ) {
         self.reviewModel = reviewModel
         self.modelReasoningEffort = modelReasoningEffort
         self.serviceTier = serviceTier
-        self.modelContextWindow = modelContextWindow
-        self.modelAutoCompactTokenLimit = modelAutoCompactTokenLimit
     }
 }
 
@@ -27,8 +21,6 @@ package struct ReviewLocalConfigPresence: Sendable, Equatable {
     package var hasReviewModel = false
     package var hasModelReasoningEffort = false
     package var hasServiceTier = false
-    package var hasModelContextWindow = false
-    package var hasModelAutoCompactTokenLimit = false
 }
 
 package enum ReviewLocalConfigError: LocalizedError {
@@ -120,18 +112,6 @@ package func parseReviewLocalConfig(
                 key: key,
                 sourcePath: sourcePath
             )
-        case "model_context_window":
-            config.modelContextWindow = try parseReviewConfigInteger(
-                rawValue,
-                key: key,
-                sourcePath: sourcePath
-            )
-        case "model_auto_compact_token_limit":
-            config.modelAutoCompactTokenLimit = try parseReviewConfigInteger(
-                rawValue,
-                key: key,
-                sourcePath: sourcePath
-            )
         default:
             continue
         }
@@ -167,10 +147,6 @@ package func parseReviewLocalConfigPresence(
             presence.hasModelReasoningEffort = true
         case "service_tier":
             presence.hasServiceTier = true
-        case "model_context_window":
-            presence.hasModelContextWindow = true
-        case "model_auto_compact_token_limit":
-            presence.hasModelAutoCompactTokenLimit = true
         default:
             continue
         }
@@ -198,30 +174,6 @@ private func parseReviewConfigString(
         )
     }
     return trimReviewConfigMatchingQuotes(rawValue).nilIfEmpty
-}
-
-private func parseReviewConfigInteger(
-    _ rawValue: String,
-    key: String,
-    sourcePath: String
-) throws -> Int? {
-    let normalized = trimReviewConfigMatchingQuotes(rawValue)
-        .replacingOccurrences(of: "_", with: "")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    if normalized == "null" {
-        return nil
-    }
-    guard normalized.isEmpty == false,
-          normalized.allSatisfy({ $0.isNumber }),
-          let value = Int(normalized)
-    else {
-        throw ReviewLocalConfigError.invalidValue(
-            path: sourcePath,
-            key: key,
-            expected: "an integer"
-        )
-    }
-    return value
 }
 
 private func stripReviewConfigComment(_ line: String) -> String {

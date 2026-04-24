@@ -33,10 +33,11 @@ struct AppServerProtocolTests {
         #expect(AppServerRequestID(jsonObject: NSNumber(value: 3.5)) == .double(3.5))
     }
 
-    @Test func appServerConfigReadResponseDecodesStringNumericLimits() throws {
+    @Test func appServerConfigReadResponseIgnoresCodexOwnedContextLimitFields() throws {
         let data = Data("""
         {
           "config": {
+            "model": "gpt-5.4",
             "model_context_window": "120_000",
             "model_auto_compact_token_limit": "110_000"
           }
@@ -45,8 +46,7 @@ struct AppServerProtocolTests {
 
         let response = try JSONDecoder().decode(AppServerConfigReadResponse.self, from: data)
 
-        #expect(response.config.modelContextWindow == 120_000)
-        #expect(response.config.modelAutoCompactTokenLimit == 110_000)
+        #expect(response.config.model == "gpt-5.4")
     }
 
     @Test func appServerThreadItemDecodesPlanReasoningAndToolItems() throws {

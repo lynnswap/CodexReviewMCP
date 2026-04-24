@@ -181,7 +181,6 @@ This server also exposes MCP resource templates for tool-specific and target-spe
 ## Development Notes
 
 - The package depends on `swift-sdk` via a pinned release version in [Package.swift](Package.swift).
-- Server defaults plus clamp fallback metadata are loaded from [Sources/ReviewCore/Resources/defaults.json](Sources/ReviewCore/Resources/defaults.json).
-- ReviewMCP-only overrides live in `~/.codex_review/config.toml` and currently support root-level `review_model`, `model_reasoning_effort`, `model_context_window`, and `model_auto_compact_token_limit`.
-- ReviewMCP's dedicated Codex home is `~/.codex_review`. `config.toml`, `AGENTS.md`, `models_cache.json`, and other home-scoped review files are resolved from there.
+- ReviewMCP-only overrides live in `~/.codex_review/config.toml` and currently support root-level `review_model`, `model_reasoning_effort`, and `service_tier`.
+- ReviewMCP's dedicated Codex home is `~/.codex_review`. The shared `codex app-server` also uses this as its Codex home, so Codex-owned config keys such as `model_context_window` remain owned and interpreted by Codex core rather than ReviewMCP.
 - Review jobs are isolated per MCP session.
