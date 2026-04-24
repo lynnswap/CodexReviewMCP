@@ -129,6 +129,12 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     }
 
     private func reconcileSelectionAfterReload() {
+        let wasReconcilingSelection = isReconcilingSelection
+        isReconcilingSelection = true
+        defer {
+            isReconcilingSelection = wasReconcilingSelection
+        }
+
         guard let selectedAccount = auth.selectedAccount,
               let row = row(forAccountKey: selectedAccount.accountKey)
         else {
@@ -233,6 +239,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     private func presentAccountActionAlertIfNeeded() {
         guard let accountActionAlert = auth.accountActionAlert else {
             presentedAccountActionAlert = nil
+            reconcileSelectionAfterReload()
             return
         }
         guard presentedAccountActionAlert != accountActionAlert,
@@ -242,6 +249,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
         }
 
         presentedAccountActionAlert = accountActionAlert
+        reconcileSelectionAfterReload()
 
         let alert = NSAlert()
         alert.messageText = String(localized: accountActionAlert.title)
@@ -256,6 +264,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
                 if self.auth.accountActionAlert == accountActionAlert {
                     self.store.dismissAccountActionAlert()
                 }
+                self.reconcileSelectionAfterReload()
                 self.presentAccountPromptsIfNeeded()
             }
         }
@@ -467,6 +476,23 @@ extension ReviewMonitorAccountsViewController {
 
     var accountListHasFirstResponderForTesting: Bool {
         view.window?.firstResponder === outlineView
+    }
+
+    var selectedAccountEmailForTesting: String? {
+        guard outlineView.selectedRow != -1 else {
+            return nil
+        }
+        return account(atRow: outlineView.selectedRow)?.email
+    }
+
+    func forceSelectedAccountRowForTesting(_ account: CodexAccount) {
+        guard let row = row(for: account) else {
+            preconditionFailure("Account row is not visible.")
+        }
+        let wasReconcilingSelection = isReconcilingSelection
+        isReconcilingSelection = true
+        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        isReconcilingSelection = wasReconcilingSelection
     }
 
     var isPresentingContextMenuForTesting: Bool {
