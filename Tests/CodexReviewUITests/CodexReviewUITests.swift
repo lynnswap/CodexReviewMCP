@@ -1037,6 +1037,42 @@ struct CodexReviewUITests {
         #expect(accountsViewController.hasTemporaryContextMenuForTesting == false)
     }
 
+    @Test func selectingAccountOutlineRowDoesNotSwitchAccount() async throws {
+        let activeAccount = CodexAccount(email: "active@example.com", planType: "pro")
+        let otherAccount = CodexAccount(email: "other@example.com", planType: "plus")
+        let backend = AuthActionBackend()
+        let store = makeStore(backend: backend)
+        store.loadForTesting(
+            serverState: .running,
+            account: activeAccount,
+            persistedAccounts: [activeAccount, otherAccount],
+            workspaces: []
+        )
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        let displayedOtherAccount = try #require(
+            store.auth.persistedAccounts.first { $0.email == "other@example.com" }
+        )
+
+        accountsViewController.selectAccountRowForTesting(displayedOtherAccount)
+        #expect(accountsViewController.selectedAccountEmailForTesting == "other@example.com")
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+
+        #expect(store.auth.selectedAccount?.email == "active@example.com")
+        #expect(backend.switchAccountCallCount() == 0)
+    }
+
     @Test func accountActionAlertRestoresSelectionToAuthenticatedAccount() async throws {
         let activeAccount = CodexAccount(email: "active@example.com", planType: "pro")
         let otherAccount = CodexAccount(email: "other@example.com", planType: "plus")
@@ -1062,7 +1098,7 @@ struct CodexReviewUITests {
             store.auth.persistedAccounts.first { $0.email == "other@example.com" }
         )
 
-        accountsViewController.forceSelectedAccountRowForTesting(displayedOtherAccount)
+        accountsViewController.selectAccountRowForTesting(displayedOtherAccount)
         #expect(accountsViewController.selectedAccountEmailForTesting == "other@example.com")
 
         store.auth.presentAccountActionAlert(
@@ -2744,6 +2780,7 @@ final class CountingStartBackend: ReviewMonitorTestingHarness {
 @MainActor
 final class AuthActionBackend: ReviewMonitorTestingHarness {
     private var refreshCalls = 0
+    private var switchCalls = 0
 
     init(initialAuthState: TestAuthState = .signedOut) {
         let initialAccount = initialAuthState.accountEmail.map {
@@ -2775,6 +2812,13 @@ final class AuthActionBackend: ReviewMonitorTestingHarness {
         refreshCalls += 1
     }
 
+    override func switchAccount(
+        auth _: CodexReviewAuthModel,
+        accountKey _: String
+    ) async throws {
+        switchCalls += 1
+    }
+
     override func cancelReviewByID(
         jobID _: String,
         sessionID _: String,
@@ -2786,6 +2830,10 @@ final class AuthActionBackend: ReviewMonitorTestingHarness {
 
     func refreshAuthStateCallCount() -> Int {
         refreshCalls
+    }
+
+    func switchAccountCallCount() -> Int {
+        switchCalls
     }
 }
 

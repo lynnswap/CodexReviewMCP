@@ -20,7 +20,6 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     private let outlineView = ReviewMonitorAccountsOutlineView()
 
     private var authObservationHandles: Set<ObservationHandle> = []
-    private var isReconcilingSelection = false
     private var presentedPendingAccountAction: CodexReviewAuthModel.PendingAccountAction?
     private var presentedAccountActionAlert: CodexReviewAuthModel.AccountActionAlert?
 
@@ -122,19 +121,11 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     }
 
     private func reloadAccounts() {
-        isReconcilingSelection = true
         outlineView.reloadData()
         reconcileSelectionAfterReload()
-        isReconcilingSelection = false
     }
 
     private func reconcileSelectionAfterReload() {
-        let wasReconcilingSelection = isReconcilingSelection
-        isReconcilingSelection = true
-        defer {
-            isReconcilingSelection = wasReconcilingSelection
-        }
-
         guard let selectedAccount = auth.selectedAccount,
               let row = row(forAccountKey: selectedAccount.accountKey)
         else {
@@ -148,31 +139,6 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
             return
         }
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-    }
-
-    private func updateSelectedAccountFromOutlineView() {
-        guard isReconcilingSelection == false else {
-            return
-        }
-        guard outlineView.selectedRow != -1,
-              let account = account(atRow: outlineView.selectedRow)
-        else {
-            reconcileSelectionAfterReload()
-            return
-        }
-        requestAccountRowSwitch(account)
-    }
-
-    private func requestAccountRowSwitch(_ account: CodexAccount) {
-        guard store.switchActionIsDisabled(for: account) == false else {
-            reconcileSelectionAfterReload()
-            return
-        }
-        store.requestSwitchAccount(
-            account,
-            requiresConfirmation: store.hasRunningJobs
-                && store.switchActionRequiresRunningJobsConfirmation(for: account)
-        )
     }
 
     private func performReorder(accountKey: String, toIndex destinationIndex: Int) {
@@ -378,10 +344,6 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
         account(from: item) != nil
     }
 
-    func outlineViewSelectionDidChange(_ notification: Notification) {
-        updateSelectedAccountFromOutlineView()
-    }
-
     func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
         guard account(from: item) != nil else {
             return nil
@@ -485,14 +447,11 @@ extension ReviewMonitorAccountsViewController {
         return account(atRow: outlineView.selectedRow)?.email
     }
 
-    func forceSelectedAccountRowForTesting(_ account: CodexAccount) {
+    func selectAccountRowForTesting(_ account: CodexAccount) {
         guard let row = row(for: account) else {
             preconditionFailure("Account row is not visible.")
         }
-        let wasReconcilingSelection = isReconcilingSelection
-        isReconcilingSelection = true
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        isReconcilingSelection = wasReconcilingSelection
     }
 
     var isPresentingContextMenuForTesting: Bool {
