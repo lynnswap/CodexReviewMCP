@@ -537,13 +537,19 @@ package final class ReviewMonitorAuthOrchestrator {
                 replacementSavedAccount = auth.selectedAccount
             } else if startedWithoutCurrentSession {
                 auth.updateSelectedAccount(nil)
-            } else if let activeAccountKey = loaded.activeAccountKey,
-                      auth.savedAccounts.contains(where: { $0.accountKey == activeAccountKey })
-            {
-                auth.updateSelectedAccount(
-                    auth.savedAccounts.first(where: { $0.accountKey == activeAccountKey })?.id
-                )
-                replacementSavedAccount = auth.selectedAccount
+            } else if removedCurrentSession {
+                if let activeAccountKey = loaded.activeAccountKey,
+                   auth.savedAccounts.contains(where: { $0.accountKey == activeAccountKey })
+                {
+                    auth.updateSelectedAccount(
+                        auth.savedAccounts.first(where: { $0.accountKey == activeAccountKey })?.id
+                    )
+                    replacementSavedAccount = auth.selectedAccount
+                } else {
+                    auth.updateSelectedAccount(nil)
+                }
+            } else if let priorAccount {
+                auth.updateDetachedAccount(priorAccount)
             } else {
                 auth.updateSelectedAccount(nil)
             }
@@ -590,10 +596,7 @@ package final class ReviewMonitorAuthOrchestrator {
             accountKey: accountKey,
             toIndex: toIndex
         )
-        await refreshSavedAccounts(
-            auth: auth,
-            preserveSelectedAccountIfMissing: false
-        )
+        await refreshSavedAccounts(auth: auth)
         let resolvedRuntimeState = runtimeState()
         await reconcileRateLimitControllers(
             auth: auth,
@@ -1167,7 +1170,8 @@ package final class ReviewMonitorAuthOrchestrator {
                 )
             }
             let activeAccountKey = await refreshSavedAccounts(
-                auth: auth
+                auth: auth,
+                preserveSelectedAccountIfMissing: removesSavedSignedOutAccount == false
             )
             applyResolvedReviewAuthState(
                 resolvedState,
@@ -1510,13 +1514,10 @@ package final class ReviewMonitorAuthOrchestrator {
                 }
                 return loadedPayload
             }
-            var reconciledAccounts = loadedAccounts
-            if preserveSelectedAccountIfMissing,
-               let priorAccount,
-               reconciledAccounts.contains(where: { $0.accountKey == priorAccount.accountKey }) == false
-            {
-                reconciledAccounts.append(savedAccountPayload(from: priorAccount))
-            }
+            let reconciledAccounts = loadedAccounts
+            let shouldPreserveMissingPriorAccount = preserveSelectedAccountIfMissing
+                && priorAccount != nil
+                && reconciledAccounts.contains(where: { $0.accountKey == priorAccount?.accountKey }) == false
             auth.applySavedAccountStates(
                 reconciledAccounts,
                 activeAccountKey: loaded.activeAccountKey
@@ -1527,6 +1528,8 @@ package final class ReviewMonitorAuthOrchestrator {
                })
             {
                 auth.updateSelectedAccount(currentSavedAccount.id)
+            } else if shouldPreserveMissingPriorAccount {
+                auth.updateDetachedAccount(priorAccount)
             } else if preserveSelectedAccountIfMissing == false {
                 auth.updateSelectedAccount(nil)
             }
@@ -2215,6 +2218,7 @@ private struct AuthPresentationSnapshot {
     var phase: CodexReviewAuthModel.Phase
     var savedAccounts: [SavedAccountPresentationSnapshot]
     var selectedAccountKey: CodexAccount.ID?
+    var selectedAccount: SavedAccountPresentationSnapshot?
     var persistedActiveAccountKey: String?
     var warningMessage: String?
     var isResolvedAuthenticated: Bool
@@ -2238,6 +2242,7 @@ private func snapshot(
         phase: auth.phase,
         savedAccounts: auth.savedAccounts.map(makeSavedAccountPresentationSnapshot),
         selectedAccountKey: auth.selectedAccount?.id,
+        selectedAccount: auth.selectedAccount.map(makeSavedAccountPresentationSnapshot),
         persistedActiveAccountKey: auth.persistedActiveAccountKey,
         warningMessage: auth.warningMessage,
         isResolvedAuthenticated: isResolvedAuthenticated
@@ -2255,10 +2260,70 @@ private func restore(
         snapshot.savedAccounts.map(makeSavedAccountPayload),
         activeAccountKey: snapshot.persistedActiveAccountKey
     )
-    auth.updateSelectedAccount(
-        snapshot.selectedAccountKey.flatMap { selectedAccountKey in
-            auth.savedAccounts.first(where: { $0.id == selectedAccountKey })?.id
-        }
+    if let selectedAccountKey = snapshot.selectedAccountKey,
+       let savedAccount = auth.savedAccounts.first(where: { $0.id == selectedAccountKey })
+    {
+        auth.updateSelectedAccount(savedAccount.id)
+    } else {
+        auth.updateDetachedAccount(
+            snapshot.selectedAccount.map(makeDetachedAccount)
+        )
+    }
+}
+
+@MainActor
+private func makeDetachedAccount(from snapshot: SavedAccountPresentationSnapshot) -> CodexAccount {
+    let payload = makeSavedAccountPayload(snapshot)
+    let account = CodexAccount(
+        accountKey: payload.accountKey,
+        email: payload.email,
+        planType: payload.planType
+    )
+    account.apply(payload)
+    return account
+}
+
+@MainActor
+private func makeReviewAuthAccount(_ account: CodexAccount) -> ReviewAuthAccount {
+    .init(
+        email: account.email,
+        planType: account.planType
+    )
+}
+
+@MainActor
+private func makeSavedAccountPresentationSnapshot(_ account: CodexAccount) -> SavedAccountPresentationSnapshot {
+    .init(
+        accountKey: account.accountKey,
+        email: account.email,
+        planType: account.planType,
+        rateLimits: account.rateLimits.map {
+            .init(
+                windowDurationMinutes: $0.windowDurationMinutes,
+                usedPercent: $0.usedPercent,
+                resetsAt: $0.resetsAt
+            )
+        },
+        lastRateLimitFetchAt: account.lastRateLimitFetchAt,
+        lastRateLimitError: account.lastRateLimitError
+    )
+}
+
+@MainActor
+private func makeSavedAccountPayload(_ snapshot: SavedAccountPresentationSnapshot) -> CodexSavedAccountPayload {
+    .init(
+        accountKey: snapshot.accountKey,
+        email: snapshot.email,
+        planType: snapshot.planType,
+        rateLimits: snapshot.rateLimits.map {
+            (
+                windowDurationMinutes: $0.windowDurationMinutes,
+                usedPercent: $0.usedPercent,
+                resetsAt: $0.resetsAt
+            )
+        },
+        lastRateLimitFetchAt: snapshot.lastRateLimitFetchAt,
+        lastRateLimitError: snapshot.lastRateLimitError
     )
 }
 
@@ -2335,54 +2400,8 @@ private func applyReviewAuthAccount(
         email: account.email,
         planType: account.planType
     )
-    var updatedSavedAccounts = auth.savedAccounts.map(savedAccountPayload(from:))
-    updatedSavedAccounts.append(savedAccountPayload(from: normalizedCurrentAccount))
-    auth.applySavedAccountStates(updatedSavedAccounts)
-    auth.updateSelectedAccount(normalizedCurrentAccount.id)
-    return didAccountIdentityChange(from: priorAccount, to: auth.selectedAccount)
-}
-
-@MainActor
-private func makeReviewAuthAccount(_ account: CodexAccount) -> ReviewAuthAccount {
-    .init(
-        email: account.email,
-        planType: account.planType
-    )
-}
-
-@MainActor
-private func makeSavedAccountPresentationSnapshot(_ account: CodexAccount) -> SavedAccountPresentationSnapshot {
-    .init(
-        accountKey: account.accountKey,
-        email: account.email,
-        planType: account.planType,
-        rateLimits: account.rateLimits.map {
-            .init(
-                windowDurationMinutes: $0.windowDurationMinutes,
-                usedPercent: $0.usedPercent,
-                resetsAt: $0.resetsAt
-            )
-        },
-        lastRateLimitFetchAt: account.lastRateLimitFetchAt,
-        lastRateLimitError: account.lastRateLimitError
-    )
-}
-
-private func makeSavedAccountPayload(_ snapshot: SavedAccountPresentationSnapshot) -> CodexSavedAccountPayload {
-    .init(
-        accountKey: snapshot.accountKey,
-        email: snapshot.email,
-        planType: snapshot.planType,
-        rateLimits: snapshot.rateLimits.map {
-            (
-                windowDurationMinutes: $0.windowDurationMinutes,
-                usedPercent: $0.usedPercent,
-                resetsAt: $0.resetsAt
-            )
-        },
-        lastRateLimitFetchAt: snapshot.lastRateLimitFetchAt,
-        lastRateLimitError: snapshot.lastRateLimitError
-    )
+    auth.updateDetachedAccount(normalizedCurrentAccount)
+    return didAccountIdentityChange(from: priorAccount, to: normalizedCurrentAccount)
 }
 
 @MainActor
