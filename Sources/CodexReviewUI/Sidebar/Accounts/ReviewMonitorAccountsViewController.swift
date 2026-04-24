@@ -318,10 +318,15 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
         }
 
         if let account = account(from: item) {
-            guard let accountIndex = persistedAccountIndex(accountKey: account.accountKey) else {
+            if let accountIndex = persistedAccountIndex(accountKey: account.accountKey) {
+                return accountIndex
+            }
+            guard accounts.indices.contains(persistedCount),
+                  accounts[persistedCount].accountKey == account.accountKey
+            else {
                 return nil
             }
-            return accountIndex
+            return persistedCount
         }
 
         guard item == nil else {
@@ -599,7 +604,20 @@ extension ReviewMonitorAccountsViewController {
         _ account: CodexAccount,
         proposedChildIndex index: Int
     ) async -> Bool {
-        guard let dropIndex = resolvedDropIndex(proposedItem: nil, proposedChildIndex: index),
+        await performAccountDropForTesting(
+            account,
+            proposedItem: nil,
+            proposedChildIndex: index
+        )
+    }
+
+    @discardableResult
+    func performAccountDropForTesting(
+        _ account: CodexAccount,
+        proposedItem item: Any?,
+        proposedChildIndex index: Int
+    ) async -> Bool {
+        guard let dropIndex = resolvedDropIndex(proposedItem: item, proposedChildIndex: index),
               let destinationIndex = reorderDestinationIndex(accountKey: account.accountKey, dropIndex: dropIndex)
         else {
             return false

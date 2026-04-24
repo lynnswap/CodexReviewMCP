@@ -563,6 +563,57 @@ struct CodexReviewUITests {
         ])
     }
 
+    @Test func accountDropBeforeDetachedCurrentSessionMovesToLastSavedPosition() async throws {
+        let firstAccount = CodexAccount(email: "first@example.com", planType: "pro")
+        let secondAccount = CodexAccount(email: "second@example.com", planType: "plus")
+        let detachedAccount = CodexAccount(email: "detached@example.com", planType: "team")
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            account: detachedAccount,
+            persistedAccounts: [firstAccount, secondAccount],
+            workspaces: []
+        )
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        uiState.sidebarSelection = .account
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        viewController.loadViewIfNeeded()
+
+        let accountsViewController = viewController
+            .sidebarViewControllerForTesting
+            .accountsViewControllerForTesting
+        let displayedFirstAccount = try #require(
+            store.auth.persistedAccounts.first { $0.email == "first@example.com" }
+        )
+
+        #expect(accountsViewController.displayedAccountEmailsForTesting == [
+            "first@example.com",
+            "second@example.com",
+            "detached@example.com",
+        ])
+        #expect(await accountsViewController.performAccountDropForTesting(
+            displayedFirstAccount,
+            proposedItem: detachedAccount,
+            proposedChildIndex: NSOutlineViewDropOnItemIndex
+        ))
+        #expect(store.auth.persistedAccounts.map(\.email) == [
+            "second@example.com",
+            "first@example.com",
+        ])
+        for _ in 0..<10 where accountsViewController.displayedAccountEmailsForTesting != [
+            "second@example.com",
+            "first@example.com",
+            "detached@example.com",
+        ] {
+            await Task.yield()
+        }
+        #expect(accountsViewController.displayedAccountEmailsForTesting == [
+            "second@example.com",
+            "first@example.com",
+            "detached@example.com",
+        ])
+    }
+
     @Test func jobCellViewUpdatesHostedObservationReferenceWithoutReplacingHostingView() throws {
         let placeholderJob = makeJob(
             id: "job-placeholder",
