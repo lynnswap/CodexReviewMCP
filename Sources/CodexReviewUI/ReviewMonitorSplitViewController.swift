@@ -130,8 +130,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private func bindToolbarState() {
         observationHandles.removeAll()
 
-        observe(\.isShowingAddAccountButton) { [weak self] isShowing in
-            self?.setShowingAddAccount(isShowing)
+        observe(\.isShowingAddAccountButton) { [weak self] _ in
+            guard let self else {
+                return
+            }
+            setShowingAddAccount(isShowingAddAccountButton)
         }
         .store(in: &observationHandles)
 
