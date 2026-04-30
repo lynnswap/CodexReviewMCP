@@ -93,6 +93,55 @@ struct AppServerSupervisorTests {
         try? FileManager.default.removeItem(at: commandURL)
     }
 
+    @Test func prepareUsesInjectedReviewHomeForCodexHome() async throws {
+        let environment = try makeSupervisorEnvironment()
+        let environmentHomeURL = URL(fileURLWithPath: try #require(environment["HOME"]))
+        let injectedHomeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AppServerSupervisorInjected-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: injectedHomeURL, withIntermediateDirectories: true)
+        let injectedReviewHomeURL = injectedHomeURL.appendingPathComponent(".codex_review", isDirectory: true)
+        let capturedCodexHomeURL = environmentHomeURL.appendingPathComponent("captured-injected-codex-home.txt")
+        let coreDependencies = ReviewCoreDependencies(
+            environment: environment,
+            paths: ReviewPathResolver(
+                environment: ["HOME": injectedHomeURL.path],
+                homeDirectoryForCurrentUser: environmentHomeURL
+            )
+        )
+        let commandURL = try makeFakeSupervisorCommand(
+            respondsToInitialize: true,
+            codexHomeCaptureURL: capturedCodexHomeURL
+        )
+        let supervisor = AppServerSupervisor(
+            configuration: .init(
+                codexCommand: commandURL.path,
+                environment: environment,
+                startupTimeout: .seconds(1),
+                coreDependencies: coreDependencies
+            )
+        )
+        do {
+            _ = try await supervisor.prepare()
+
+            let capturedCodexHome = try String(contentsOf: capturedCodexHomeURL, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(capturedCodexHome == injectedReviewHomeURL.path)
+            #expect(FileManager.default.fileExists(
+                atPath: injectedReviewHomeURL.appendingPathComponent("config.toml").path
+            ))
+            #expect(FileManager.default.fileExists(
+                atPath: injectedReviewHomeURL.appendingPathComponent("AGENTS.md").path
+            ))
+        } catch {
+            await supervisor.shutdown()
+            try? FileManager.default.removeItem(at: commandURL)
+            throw error
+        }
+
+        await supervisor.shutdown()
+        try? FileManager.default.removeItem(at: commandURL)
+    }
+
     @Test func prepareResolvesCodexCommandFromPATH() async throws {
         var environment = try makeSupervisorEnvironment()
         let commandURL = try makeFakeSupervisorCommand(

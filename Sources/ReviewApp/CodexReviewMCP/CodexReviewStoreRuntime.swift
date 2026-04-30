@@ -2168,7 +2168,8 @@ package final class ReviewMonitorServerRuntime {
             configuration: .init(
                 codexCommand: configuration.codexCommand,
                 environment: configuration.environment,
-                clock: configuration.coreDependencies.clock
+                clock: configuration.coreDependencies.clock,
+                coreDependencies: configuration.coreDependencies
             )
         )
         self.accountRegistryStore = ReviewAccountRegistryStore(coreDependencies: configuration.coreDependencies)
