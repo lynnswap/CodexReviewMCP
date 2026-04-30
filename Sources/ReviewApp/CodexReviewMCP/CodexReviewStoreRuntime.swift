@@ -1949,7 +1949,8 @@ package final class ReviewMonitorServerRuntime {
     private var server: ReviewMCPHTTPServer?
     private var waitTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
-    private var startupTaskID: UUID?
+    private var startupTaskID: UInt64?
+    private var nextStartupTaskID: UInt64 = 0
     private var appServerRuntimeGeneration = 0
     private var deferredAddAccountRuntimeEffect: DeferredAddAccountRuntimeEffect?
     private var deferredAddAccountRuntimeReconcileTask: Task<Void, Never>?
@@ -2262,7 +2263,7 @@ package final class ReviewMonitorServerRuntime {
         if deferStartupAuthRefreshUntilPrepared == false {
             authOrchestrator?.startStartupRefresh(auth: store.auth)
         }
-        let startupID = configuration.coreDependencies.uuid()
+        let startupID = makeStartupTaskID()
         let task = Task { @MainActor [weak self, weak store] in
             guard let self, let store else {
                 return
@@ -2578,7 +2579,7 @@ package final class ReviewMonitorServerRuntime {
     }
 
     private func performStartup(
-        startupID: UUID,
+        startupID: UInt64,
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
@@ -2646,6 +2647,11 @@ package final class ReviewMonitorServerRuntime {
                 authOrchestrator?.startStartupRefresh(auth: store.auth)
             }
         }
+    }
+
+    private func makeStartupTaskID() -> UInt64 {
+        nextStartupTaskID += 1
+        return nextStartupTaskID
     }
 
     private func startServer(
