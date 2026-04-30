@@ -381,7 +381,7 @@ package actor AppServerSupervisor: AppServerManaging {
     }
 
     private func makeStartContext(launchID: UUID) async throws -> StartContext {
-        _ = try ReviewLocalConfigClient(dependencies: configuration.coreDependencies).loadPresence()
+        try configuration.coreDependencies.ensureReviewHomeScaffold()
         // Intentionally use ~/.codex_review directly for app-server.
         // We no longer create a per-launch isolated CODEX_HOME or strip codex_review from config.
         let codexHomeURL = configuration.coreDependencies.paths.codexHomeURL()

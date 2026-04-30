@@ -308,4 +308,30 @@ package struct ReviewCoreDependencies: Sendable {
     ) -> Self {
         Self(environment: environment, arguments: arguments)
     }
+
+    package func replacingEnvironment(_ environment: [String: String]) -> Self {
+        Self(
+            environment: environment,
+            arguments: arguments,
+            paths: environment == self.environment ? paths : nil,
+            fileSystem: fileSystem,
+            process: process,
+            dateNow: dateNow,
+            uuid: uuid,
+            clock: clock
+        )
+    }
+
+    package func ensureReviewHomeScaffold() throws {
+        try fileSystem.createDirectory(paths.reviewHomeURL(), true)
+        try createEmptyFileIfMissing(at: paths.reviewConfigURL())
+        try createEmptyFileIfMissing(at: paths.reviewAgentsURL())
+    }
+
+    private func createEmptyFileIfMissing(at url: URL) throws {
+        guard fileSystem.fileExists(url.path) == false else {
+            return
+        }
+        try fileSystem.writeData(Data(), url, [])
+    }
 }

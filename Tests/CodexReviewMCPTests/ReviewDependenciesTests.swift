@@ -53,6 +53,33 @@ struct ReviewDependenciesTests {
         #expect(dependencies.core.paths.reviewHomeURL().path != realReviewHome.path)
     }
 
+    @Test func coreDependenciesReplacingEnvironmentPreservesExplicitPathsForSameEnvironment() throws {
+        let environmentRootURL = try makeTemporaryDirectory()
+        let injectedRootURL = try makeTemporaryDirectory()
+        let probeRootURL = try makeTemporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: environmentRootURL)
+            try? FileManager.default.removeItem(at: injectedRootURL)
+            try? FileManager.default.removeItem(at: probeRootURL)
+        }
+        let environment = ["HOME": environmentRootURL.path]
+        let core = ReviewCoreDependencies(
+            environment: environment,
+            paths: .init(
+                environment: ["HOME": injectedRootURL.path],
+                homeDirectoryForCurrentUser: environmentRootURL
+            )
+        )
+
+        let sameEnvironment = core.replacingEnvironment(environment)
+        let probeEnvironment = core.replacingEnvironment(["HOME": probeRootURL.path])
+
+        #expect(sameEnvironment.paths.reviewHomeURL().path == core.paths.reviewHomeURL().path)
+        #expect(probeEnvironment.paths.reviewHomeURL().path == probeRootURL
+            .appendingPathComponent(".codex_review", isDirectory: true)
+            .path)
+    }
+
     @Test func accountRegistryUsesInjectedPaths() throws {
         let environmentRootURL = try makeTemporaryDirectory()
         let injectedRootURL = try makeTemporaryDirectory()

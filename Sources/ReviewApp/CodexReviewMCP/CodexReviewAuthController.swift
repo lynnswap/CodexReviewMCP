@@ -134,11 +134,13 @@ package final class ReviewMonitorAuthOrchestrator {
         self.sharedAuthSessionFactory = sharedAuthSessionFactory
         self.loginAuthSessionFactory = loginAuthSessionFactory
         let codexCommand = configuration.codexCommand
+        let coreDependencies = configuration.coreDependencies
         self.probeAppServerManagerFactory = probeAppServerManagerFactory ?? { environment in
             AppServerSupervisor(
                 configuration: .init(
                     codexCommand: codexCommand,
-                    environment: environment
+                    environment: environment,
+                    coreDependencies: coreDependencies.replacingEnvironment(environment)
                 )
             )
         }
@@ -323,7 +325,7 @@ package final class ReviewMonitorAuthOrchestrator {
             let savedAccount: CodexSavedAccountPayload
             do {
                 savedAccount = try accountRegistryStore.saveAuthSnapshot(
-                    sourceAuthURL: ReviewHomePaths.reviewAuthURL(environment: commitProbe.environment),
+                    sourceAuthURL: reviewAuthURL(environment: commitProbe.environment),
                     makeActive: commitOutcome.presentationEffect.activatesCommittedAccount
                         || commitOutcome.shouldMarkCommittedSavedAccountActive,
                     refreshSharedAuth: commitOutcome.sharedAuthUpdate.shouldRefreshSharedAuthSnapshot
@@ -560,8 +562,8 @@ package final class ReviewMonitorAuthOrchestrator {
                     replacementSavedAccount.accountKey
                 )
             } else {
-                try? FileManager.default.removeItem(
-                    at: ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
+                try? configuration.coreDependencies.fileSystem.removeItem(
+                    configuration.coreDependencies.paths.reviewAuthURL()
                 )
             }
             auth.updatePhase(.signedOut)
@@ -629,9 +631,9 @@ package final class ReviewMonitorAuthOrchestrator {
             if let signedOutAccountKey = signedOutAccount?.accountKey, removesSavedSignedOutAccount {
                 try await accountRegistryStore.clearActiveAccount(accountKey: signedOutAccountKey)
             } else {
-                let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
-                if FileManager.default.fileExists(atPath: sharedAuthURL.path) {
-                    try FileManager.default.removeItem(at: sharedAuthURL)
+                let sharedAuthURL = configuration.coreDependencies.paths.reviewAuthURL()
+                if configuration.coreDependencies.fileSystem.fileExists(sharedAuthURL.path) {
+                    try configuration.coreDependencies.fileSystem.removeItem(sharedAuthURL)
                 }
             }
             if let loaded = try? accountRegistryStore.loadAccounts() {
@@ -763,7 +765,7 @@ package final class ReviewMonitorAuthOrchestrator {
             let fetchedAt = Date()
             do {
                 let probe: PreparedInactiveAccountProbe
-                let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
+                let sharedAuthURL = configuration.coreDependencies.paths.reviewAuthURL()
                 let persistedActiveAccountKey = persistedActiveAccountKey()
                 let selectedSavedAccountKey = auth.persistedAccounts.contains(where: {
                     $0.accountKey == activeAccountKey
@@ -774,7 +776,7 @@ package final class ReviewMonitorAuthOrchestrator {
                     probe = try await accountRegistryStore.prepareInactiveAccountProbe(
                         accountKey: selectedSavedAccountKey
                     )
-                } else if FileManager.default.fileExists(atPath: sharedAuthURL.path) {
+                } else if configuration.coreDependencies.fileSystem.fileExists(sharedAuthURL.path) {
                     probe = try await accountRegistryStore.prepareSharedAuthProbe()
                 } else if let selectedSavedAccountKey {
                     probe = try await accountRegistryStore.prepareInactiveAccountProbe(
@@ -973,9 +975,9 @@ package final class ReviewMonitorAuthOrchestrator {
                     )
                 } catch {}
             } else if forceRecycleServer == false {
-                let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
-                if FileManager.default.fileExists(atPath: sharedAuthURL.path) {
-                    try? FileManager.default.removeItem(at: sharedAuthURL)
+                let sharedAuthURL = configuration.coreDependencies.paths.reviewAuthURL()
+                if configuration.coreDependencies.fileSystem.fileExists(sharedAuthURL.path) {
+                    try? configuration.coreDependencies.fileSystem.removeItem(sharedAuthURL)
                     try? await accountRegistryStore.clearActiveAccount()
                 }
             }
@@ -1165,8 +1167,8 @@ package final class ReviewMonitorAuthOrchestrator {
             } else if removesSavedSignedOutAccount, let priorAccountKey {
                 try? await accountRegistryStore.clearActiveAccount(accountKey: priorAccountKey)
             } else {
-                try? FileManager.default.removeItem(
-                    at: ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
+                try? configuration.coreDependencies.fileSystem.removeItem(
+                    configuration.coreDependencies.paths.reviewAuthURL()
                 )
             }
             let activeAccountKey = await refreshSavedAccounts(
@@ -1198,8 +1200,8 @@ package final class ReviewMonitorAuthOrchestrator {
             if removesSavedSignedOutAccount, let priorAccountKey {
                 try? await accountRegistryStore.clearActiveAccount(accountKey: priorAccountKey)
             } else {
-                try? FileManager.default.removeItem(
-                    at: ReviewHomePaths.reviewAuthURL(environment: configuration.environment)
+                try? configuration.coreDependencies.fileSystem.removeItem(
+                    configuration.coreDependencies.paths.reviewAuthURL()
                 )
             }
             if let loaded = try? accountRegistryStore.loadAccounts() {
@@ -1234,15 +1236,24 @@ package final class ReviewMonitorAuthOrchestrator {
         environment: [String: String],
         sessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession
     ) -> ReviewAuthManager {
-        ReviewAuthManager(
+        let coreDependencies = configuration.coreDependencies.replacingEnvironment(environment)
+        return ReviewAuthManager(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
-                environment: environment
+                environment: environment,
+                coreDependencies: coreDependencies
             ),
             sessionFactory: {
                 try await sessionFactory(environment)
             }
         )
+    }
+
+    private func reviewAuthURL(environment: [String: String]) -> URL {
+        configuration.coreDependencies
+            .replacingEnvironment(environment)
+            .paths
+            .reviewAuthURL()
     }
 
     private func ensureAuthenticationAttemptIsCurrent(_ attemptID: UUID) throws {

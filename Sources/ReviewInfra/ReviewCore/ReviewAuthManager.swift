@@ -129,6 +129,7 @@ package actor ReviewAuthManager {
 
         package var codexCommand: String
         package var environment: [String: String]
+        package var coreDependencies: ReviewCoreDependencies
         package var startupTimeout: Duration
         package var durableAuthMaxAttempts: Int?
         package var durableAuthRetryDelay: Duration
@@ -142,15 +143,18 @@ package actor ReviewAuthManager {
             durableAuthMaxAttempts: Int? = nil,
             durableAuthRetryDelay: Duration = .milliseconds(250),
             commandProcessFactory: @escaping @Sendable () -> Process = { Process() },
-            clock: any ReviewClock = ContinuousClock()
+            clock: (any ReviewClock)? = nil,
+            coreDependencies: ReviewCoreDependencies? = nil
         ) {
+            let resolvedCoreDependencies = coreDependencies ?? .live(environment: environment)
             self.codexCommand = codexCommand
-            self.environment = environment
+            self.environment = resolvedCoreDependencies.environment
+            self.coreDependencies = resolvedCoreDependencies
             self.startupTimeout = startupTimeout
             self.durableAuthMaxAttempts = durableAuthMaxAttempts
             self.durableAuthRetryDelay = durableAuthRetryDelay
             self.commandProcessFactory = commandProcessFactory
-            self.clock = clock
+            self.clock = clock ?? resolvedCoreDependencies.clock
         }
 
         package init(
@@ -160,6 +164,7 @@ package actor ReviewAuthManager {
             durableAuthMaxAttempts: Int? = nil,
             durableAuthRetryDelay: Duration = .milliseconds(250),
             commandProcessFactory: @escaping @Sendable () -> Process = { Process() },
+            coreDependencies: ReviewCoreDependencies? = nil,
             sleep: @escaping @Sendable (Duration) async throws -> Void
         ) {
             self.init(
@@ -169,7 +174,8 @@ package actor ReviewAuthManager {
                 durableAuthMaxAttempts: durableAuthMaxAttempts,
                 durableAuthRetryDelay: durableAuthRetryDelay,
                 commandProcessFactory: commandProcessFactory,
-                clock: ClosureBackedReviewClock(sleepImpl: sleep)
+                clock: ClosureBackedReviewClock(sleepImpl: sleep),
+                coreDependencies: coreDependencies
             )
         }
     }
@@ -192,7 +198,7 @@ package actor ReviewAuthManager {
     }
 
     package func loadState() async throws -> ReviewAuthState {
-        try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
+        try configuration.coreDependencies.ensureReviewHomeScaffold()
         let state = try await withTimeout(accountReadTimeout, clock: configuration.clock) {
             try await self.withSession { session in
                 let account = try await session.readAccount(refreshToken: false)
@@ -208,7 +214,7 @@ package actor ReviewAuthManager {
         guard activeAttemptID == nil else {
             throw ReviewAuthError.loginInProgress
         }
-        try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
+        try configuration.coreDependencies.ensureReviewHomeScaffold()
 
         let attemptID = UUID()
         activeAttemptID = attemptID
@@ -701,7 +707,7 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
     package func readAccount(refreshToken _: Bool) async throws -> AppServerAccountReadResponse {
         let result = try await runCodexCommand(arguments: ["login", "status"])
         let combinedOutput = sanitizeCLIAuthOutput(result.stderr + "\n" + result.stdout)
-        let storedAccount = loadStoredCLIAuthAccount(environment: configuration.environment)
+        let storedAccount = loadStoredCLIAuthAccount(dependencies: configuration.coreDependencies)
         return try makeCLIAccountReadResponse(
             exitCode: result.exitCode,
             combinedOutput: combinedOutput,
@@ -738,7 +744,10 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
-        process.environment = makeCLIReviewAuthEnvironment(from: configuration.environment)
+        process.environment = makeCLIReviewAuthEnvironment(
+            from: configuration.environment,
+            dependencies: configuration.coreDependencies
+        )
         process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory)
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
@@ -850,7 +859,10 @@ package actor CLIReviewAuthSession: ReviewAuthSession {
         let process = configuration.commandProcessFactory()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = reviewMCPCodexCommandArguments(arguments)
-        process.environment = makeCLIReviewAuthEnvironment(from: configuration.environment)
+        process.environment = makeCLIReviewAuthEnvironment(
+            from: configuration.environment,
+            dependencies: configuration.coreDependencies
+        )
         process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory)
         process.standardInput = Pipe()
         process.standardOutput = stdoutPipe
@@ -1128,9 +1140,12 @@ private func withTimeout<T: Sendable>(
     }
 }
 
-private func makeCLIReviewAuthEnvironment(from environment: [String: String]) -> [String: String] {
+private func makeCLIReviewAuthEnvironment(
+    from environment: [String: String],
+    dependencies: ReviewCoreDependencies
+) -> [String: String] {
     var environment = environment
-    environment["CODEX_HOME"] = ReviewHomePaths.codexHomeURL(environment: environment).path
+    environment["CODEX_HOME"] = dependencies.paths.codexHomeURL().path
     environment.removeValue(forKey: "XPC_SERVICE_NAME")
     environment.removeValue(forKey: "XPC_FLAGS")
     environment.removeValue(forKey: "__CFBundleIdentifier")
@@ -1180,8 +1195,14 @@ package func splitCLIAuthOutputChunk(
 private func loadStoredCLIAuthAccount(
     environment: [String: String]
 ) -> StoredCLIAuthAccount? {
-    let authURL = ReviewHomePaths.reviewAuthURL(environment: environment)
-    guard let data = try? Data(contentsOf: authURL),
+    loadStoredCLIAuthAccount(dependencies: .live(environment: environment))
+}
+
+private func loadStoredCLIAuthAccount(
+    dependencies: ReviewCoreDependencies
+) -> StoredCLIAuthAccount? {
+    let authURL = dependencies.paths.reviewAuthURL()
+    guard let data = try? dependencies.fileSystem.readData(authURL),
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let authMode = object["auth_mode"] as? String,
           authMode == "chatgpt",
@@ -1208,7 +1229,13 @@ private func loadStoredCLIAuthAccount(
 package func loadStoredReviewAuthAccount(
     environment: [String: String]
 ) -> ReviewAuthAccount? {
-    guard let account = loadStoredCLIAuthAccount(environment: environment),
+    loadStoredReviewAuthAccount(dependencies: .live(environment: environment))
+}
+
+package func loadStoredReviewAuthAccount(
+    dependencies: ReviewCoreDependencies
+) -> ReviewAuthAccount? {
+    guard let account = loadStoredCLIAuthAccount(dependencies: dependencies),
           let email = account.email?.nilIfEmpty
     else {
         return nil

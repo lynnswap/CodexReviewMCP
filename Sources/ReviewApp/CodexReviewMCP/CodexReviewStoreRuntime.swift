@@ -44,8 +44,8 @@ extension CodexReviewStore {
                 let baseSession = try await authSessionFactory()
                 return try await LegacyProbeScopedReviewAuthSession(
                     base: baseSession,
-                    sharedEnvironment: configuration.environment,
-                    probeEnvironment: environment
+                    sharedDependencies: configuration.coreDependencies,
+                    probeDependencies: configuration.coreDependencies.replacingEnvironment(environment)
                 )
             }
         } else {
@@ -778,7 +778,8 @@ extension CodexReviewStore {
             let runtimeManager = runtimeManagerFactory?(environment) ?? AppServerSupervisor(
                 configuration: .init(
                     codexCommand: configuration.codexCommand,
-                    environment: environment
+                    environment: environment,
+                    coreDependencies: configuration.coreDependencies.replacingEnvironment(environment)
                 )
             )
             do {
@@ -803,6 +804,7 @@ extension CodexReviewStore {
 
 private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
     private let base: any ReviewAuthSession
+    private let fileSystem: ReviewFileSystemClient
     private let sharedAuthURL: URL
     private let probeAuthURL: URL
     private let originalSharedAuthData: Data?
@@ -811,13 +813,14 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
 
     init(
         base: any ReviewAuthSession,
-        sharedEnvironment: [String: String],
-        probeEnvironment: [String: String]
+        sharedDependencies: ReviewCoreDependencies,
+        probeDependencies: ReviewCoreDependencies
     ) async throws {
         self.base = base
-        sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: sharedEnvironment)
-        probeAuthURL = ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
-        originalSharedAuthData = try? Data(contentsOf: sharedAuthURL)
+        fileSystem = sharedDependencies.fileSystem
+        sharedAuthURL = sharedDependencies.paths.reviewAuthURL()
+        probeAuthURL = probeDependencies.paths.reviewAuthURL()
+        originalSharedAuthData = try? sharedDependencies.fileSystem.readData(sharedAuthURL)
         originalSharedAuthEmail = extractedAuthSnapshotEmail(from: originalSharedAuthData)
     }
 
@@ -826,7 +829,7 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
         if case .chatGPT(let email, _)? = response.account,
            let email = email.nilIfEmpty
         {
-            let currentSharedAuthData = try? Data(contentsOf: sharedAuthURL)
+            let currentSharedAuthData = try? fileSystem.readData(sharedAuthURL)
             if currentSharedAuthData != nil,
                (
                    currentSharedAuthData != originalSharedAuthData
@@ -865,18 +868,15 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
     }
 
     private func copySharedAuthToProbe() {
-        guard let data = try? Data(contentsOf: sharedAuthURL) else {
+        guard let data = try? fileSystem.readData(sharedAuthURL) else {
             return
         }
-        try? FileManager.default.createDirectory(
-            at: probeAuthURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: probeAuthURL, options: .atomic)
+        try? fileSystem.createDirectory(probeAuthURL.deletingLastPathComponent(), true)
+        try? fileSystem.writeData(data, probeAuthURL, [.atomic])
     }
 
     private func removeProbeAuth() {
-        try? FileManager.default.removeItem(at: probeAuthURL)
+        try? fileSystem.removeItem(probeAuthURL)
     }
 
     private func restoreSharedAuthIfNeeded() {
@@ -885,13 +885,10 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
         }
         restoredSharedAuth = true
         if let originalSharedAuthData {
-            try? FileManager.default.createDirectory(
-                at: sharedAuthURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try? originalSharedAuthData.write(to: sharedAuthURL, options: .atomic)
+            try? fileSystem.createDirectory(sharedAuthURL.deletingLastPathComponent(), true)
+            try? fileSystem.writeData(originalSharedAuthData, sharedAuthURL, [.atomic])
         } else {
-            try? FileManager.default.removeItem(at: sharedAuthURL)
+            try? fileSystem.removeItem(sharedAuthURL)
         }
     }
 }
@@ -1916,7 +1913,8 @@ package final class ReviewMonitorServerRuntime {
             CLIReviewAuthSession(
                 configuration: .init(
                     codexCommand: configuration.codexCommand,
-                    environment: environment
+                    environment: environment,
+                    coreDependencies: configuration.coreDependencies.replacingEnvironment(environment)
                 )
             )
         }
@@ -1941,7 +1939,8 @@ package final class ReviewMonitorServerRuntime {
         CLIReviewAuthSession(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
-                environment: environment
+                environment: environment,
+                coreDependencies: configuration.coreDependencies.replacingEnvironment(environment)
             )
         )
     }
