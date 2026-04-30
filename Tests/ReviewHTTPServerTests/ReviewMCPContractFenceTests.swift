@@ -26,6 +26,37 @@ struct ReviewMCPContractFenceTests {
         #expect(tools[2].description?.contains(ReviewHelpCatalog.toolURI("review_read")) == true)
     }
 
+    @Test func reviewStartAdvertisesTargetAsCanonicalObject() throws {
+        let tool = try #require(ReviewToolCatalog.tools.first { $0.name == "review_start" })
+        let inputSchema = try #require(tool.inputSchema.objectValue)
+        let properties = try #require(inputSchema["properties"]?.objectValue)
+        let targetSchema = try #require(properties["target"]?.objectValue)
+        let targetProperties = try #require(targetSchema["properties"]?.objectValue)
+        let targetTypeSchema = try #require(targetProperties["type"]?.objectValue)
+        let targetConstraints = try #require(targetSchema["allOf"]?.arrayValue)
+        let baseBranchConstraint = try targetConstraint(targetConstraints, for: "baseBranch")
+        let commitConstraint = try targetConstraint(targetConstraints, for: "commit")
+        let customConstraint = try targetConstraint(targetConstraints, for: "custom")
+        let uncommittedChangesConstraint = try targetConstraint(targetConstraints, for: "uncommittedChanges")
+
+        #expect(targetSchema["type"] == .string("object"))
+        #expect(targetSchema["oneOf"] == nil)
+        #expect(targetSchema["required"]?.arrayValue == [.string("type")])
+        #expect(targetTypeSchema["enum"]?.arrayValue == ReviewHelpCatalog.targetTypes.map(Value.string))
+        #expect(targetConstraints.count == 4)
+        #expect(try requiredProperties(in: baseBranchConstraint) == ["branch"])
+        #expect(try requiredProperties(in: commitConstraint) == ["sha"])
+        #expect(try requiredProperties(in: customConstraint) == ["instructions"])
+        #expect(try forbiddenProperties(in: uncommittedChangesConstraint) == [
+            "branch",
+            "sha",
+            "title",
+            "instructions",
+        ])
+        #expect(try forbiddenProperties(in: commitConstraint) == ["branch", "instructions"])
+        #expect(tool.description?.contains("Compatibility shorthand") == false)
+    }
+
     @Test func reviewHelpCatalogExposesStableResourcesAndTemplates() throws {
         #expect(ReviewHelpCatalog.staticResources.map(\.uri) == [
             ReviewHelpCatalog.overviewURI,
@@ -48,6 +79,22 @@ struct ReviewMCPContractFenceTests {
         #expect(overview.contents.first?.text?.contains("# Review MCP Overview") == true)
         #expect(toolHelp.contents.first?.text?.contains("# `review_start`") == true)
         #expect(targetHelp.contents.first?.text?.contains(#"# `target.type = "commit"`"#) == true)
+    }
+
+    @Test func reviewStartHelpUsesCanonicalTargetObjectOnly() throws {
+        let toolHelp = try ReviewHelpCatalog.readResource(
+            uri: ReviewHelpCatalog.toolURI("review_start")
+        )
+        let troubleshooting = try ReviewHelpCatalog.readResource(
+            uri: ReviewHelpCatalog.troubleshootingURI
+        )
+        let toolHelpText = try #require(toolHelp.contents.first?.text)
+        let troubleshootingText = try #require(troubleshooting.contents.first?.text)
+
+        #expect(toolHelpText.contains(#""target": {"#))
+        #expect(toolHelpText.contains(#"target: "uncommitted""#) == false)
+        #expect(toolHelpText.contains(#"target: "uncommittedChanges""#) == false)
+        #expect(troubleshootingText.contains(#"target: "uncommitted""#) == false)
     }
 
     @Test func reviewStartValidationErrorsReturnStableGuidanceEnvelope() async throws {
@@ -125,6 +172,43 @@ struct ReviewMCPContractFenceTests {
             "threadId",
             "turnId",
         ])
+    }
+
+    @Test func reviewStartStillAcceptsLegacyStringTargets() async throws {
+        let recorder = ReviewStartRequestRecorder()
+        let handler = makeHandler(
+            startReview: { request in
+                await recorder.record(request)
+                return ReviewReadResult(
+                    jobID: "job_legacy",
+                    threadID: "thr_legacy",
+                    turnID: "turn_legacy",
+                    model: "gpt-5.4",
+                    status: ReviewJobState.succeeded,
+                    review: "Looks good",
+                    lastAgentMessage: "",
+                    logs: [],
+                    rawLogText: ""
+                )
+            }
+        )
+
+        for target in ["uncommitted", "uncommittedChanges"] {
+            let result = await handler.handle(
+                params: CallTool.Parameters(
+                    name: "review_start",
+                    arguments: [
+                        "cwd": "/tmp/repo",
+                        "target": .string(target),
+                    ]
+                )
+            )
+            #expect(result.isError == false)
+        }
+
+        let requests = await recorder.snapshot()
+        #expect(requests.map(\.cwd) == ["/tmp/repo", "/tmp/repo"])
+        #expect(requests.map(\.target) == [.uncommittedChanges, .uncommittedChanges])
     }
 
     @Test func reviewReadStructuredContentKeysRemainStable() async throws {
@@ -291,4 +375,64 @@ private func makeHandler(
         cancelReviewByID: cancelReviewByID,
         cancelReviewBySelector: cancelReviewBySelector
     )
+}
+
+private actor ReviewStartRequestRecorder {
+    private var requests: [ReviewStartRequest] = []
+
+    func record(_ request: ReviewStartRequest) {
+        requests.append(request)
+    }
+
+    func snapshot() -> [ReviewStartRequest] {
+        requests
+    }
+}
+
+private func targetConstraint(_ constraints: [Value], for type: String) throws -> [String: Value] {
+    try #require(constraints.compactMap(\.objectValue).first { constraint in
+        constraintTargetType(constraint) == type
+    })
+}
+
+private func constraintTargetType(_ constraint: [String: Value]) -> String? {
+    guard case .object(let condition)? = constraint["if"],
+          case .object(let properties)? = condition["properties"],
+          case .object(let typeSchema)? = properties["type"],
+          case .string(let type)? = typeSchema["const"]
+    else {
+        return nil
+    }
+    return type
+}
+
+private func requiredProperties(in constraint: [String: Value]) throws -> [String] {
+    guard case .object(let thenSchema)? = constraint["then"] else {
+        return []
+    }
+    return propertyNames(in: thenSchema["required"])
+}
+
+private func forbiddenProperties(in constraint: [String: Value]) throws -> [String] {
+    guard case .object(let thenSchema)? = constraint["then"],
+          case .object(let notSchema)? = thenSchema["not"],
+          case .array(let alternatives)? = notSchema["anyOf"]
+    else {
+        return []
+    }
+    return alternatives.compactMap { alternative in
+        propertyNames(in: alternative.objectValue?["required"]).first
+    }
+}
+
+private func propertyNames(in value: Value?) -> [String] {
+    guard case .array(let values)? = value else {
+        return []
+    }
+    return values.compactMap { value in
+        guard case .string(let name) = value else {
+            return nil
+        }
+        return name
+    }
 }

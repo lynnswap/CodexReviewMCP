@@ -195,7 +195,7 @@ package enum ReviewHelpCatalog {
     }
 
     package static var reviewStartDescription: String {
-        "Run a repository review through `codex app-server` and wait for the terminal result. Compatibility shorthand also accepts `target: \"uncommitted\"` or `{ \"type\": \"uncommitted\" }`, but prefer the canonical object form. The returned `model` is the effective resolved review model. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`."
+        "Run a repository review through `codex app-server` and wait for the terminal result. Pass `target` as an object with a supported `type`. The returned `model` is the effective resolved review model. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`."
     }
 
     package static var reviewReadDescription: String {
@@ -255,8 +255,8 @@ package enum ReviewHelpCatalog {
 
         Check these first:
 
+        - `target` must be an object containing `type`.
         - `target.type` must be one of `\(targetTypes.joined(separator: "`, `"))`.
-        - Compatibility shorthand also accepts `target: "uncommitted"` and `{ "type": "uncommitted" }`.
         - `baseBranch` requires `branch`.
         - `commit` requires `sha`.
         - `custom` requires `instructions`.
@@ -293,12 +293,6 @@ package enum ReviewHelpCatalog {
             - `commit`
             - `custom`
 
-            Compatibility shorthand also accepts:
-
-            - `target: "uncommitted"`
-            - `target: "uncommittedChanges"`
-            - `target: { "type": "uncommitted" }`
-
             ## Returns
 
             - `jobId`
@@ -320,7 +314,7 @@ package enum ReviewHelpCatalog {
 
             ## Common Mistakes
 
-            - `uncommitted` is accepted as compatibility shorthand, but `branch` is not
+            - Passing `target` as a string instead of an object
             - Omitting `branch`, `sha`, or `instructions` for the selected target
             """
         case "review_read":

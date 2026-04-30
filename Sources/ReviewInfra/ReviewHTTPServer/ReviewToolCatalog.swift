@@ -33,57 +33,41 @@ enum ReviewToolCatalog {
         "properties": [
             "cwd": ["type": "string", "description": "Absolute repository path to review."],
             "target": [
-                "description": "Review target. Use exactly one variant. Compatibility shorthand also accepts `\"uncommitted\"` or `{ \"type\": \"uncommitted\" }`, but prefer the canonical object form. If you are unsure, read `\(ReviewHelpCatalog.toolURI("review_start"))` and then one of `\(ReviewHelpCatalog.targetURI("uncommittedChanges"))`, `\(ReviewHelpCatalog.targetURI("baseBranch"))`, `\(ReviewHelpCatalog.targetURI("commit"))`, or `\(ReviewHelpCatalog.targetURI("custom"))`.",
-                "oneOf": [
-                    [
+                "type": "object",
+                "description": "Review target object. Set `type` to one of the supported target types. If you are unsure, read `\(ReviewHelpCatalog.toolURI("review_start"))` and then one of `\(ReviewHelpCatalog.targetURI("uncommittedChanges"))`, `\(ReviewHelpCatalog.targetURI("baseBranch"))`, `\(ReviewHelpCatalog.targetURI("commit"))`, or `\(ReviewHelpCatalog.targetURI("custom"))`.",
+                "properties": [
+                    "type": [
                         "type": "string",
-                        "enum": ["uncommitted", "uncommittedChanges"],
-                        "description": "Compatibility shorthand for uncommitted changes. Prefer `{ \"type\": \"uncommittedChanges\" }`.",
+                        "enum": .array(ReviewHelpCatalog.targetTypes.map(Value.string)),
+                        "description": "Review target type.",
                     ],
-                    [
-                        "type": "object",
-                        "properties": [
-                            "type": ["const": "uncommittedChanges", "description": "Review staged, unstaged, and untracked local changes."],
-                        ],
-                        "required": ["type"],
-                        "additionalProperties": false,
-                    ],
-                    [
-                        "type": "object",
-                        "properties": [
-                            "type": ["const": "uncommitted", "description": "Compatibility alias for `uncommittedChanges`. Prefer the canonical object form."],
-                        ],
-                        "required": ["type"],
-                        "additionalProperties": false,
-                    ],
-                    [
-                        "type": "object",
-                        "properties": [
-                            "type": ["const": "baseBranch", "description": "Review changes relative to a base branch."],
-                            "branch": ["type": "string", "description": "Base branch name to compare against, such as `main`."],
-                        ],
-                        "required": ["type", "branch"],
-                        "additionalProperties": false,
-                    ],
-                    [
-                        "type": "object",
-                        "properties": [
-                            "type": ["const": "commit", "description": "Review the changes introduced by a single commit."],
-                            "sha": ["type": "string", "description": "Commit SHA to review."],
-                            "title": ["type": "string", "description": "Optional human-readable title shown in summaries."],
-                        ],
-                        "required": ["type", "sha"],
-                        "additionalProperties": false,
-                    ],
-                    [
-                        "type": "object",
-                        "properties": [
-                            "type": ["const": "custom", "description": "Run a free-form review prompt."],
-                            "instructions": ["type": "string", "description": "Free-form review instructions passed as the prompt."],
-                        ],
-                        "required": ["type", "instructions"],
-                        "additionalProperties": false,
-                    ],
+                    "branch": ["type": "string", "description": "Required when `type` is `baseBranch`. Base branch name to compare against, such as `main`."],
+                    "sha": ["type": "string", "description": "Required when `type` is `commit`. Commit SHA to review."],
+                    "title": ["type": "string", "description": "Optional when `type` is `commit`. Human-readable title shown in summaries."],
+                    "instructions": ["type": "string", "description": "Required when `type` is `custom`. Free-form review instructions passed as the prompt."],
+                ],
+                "required": ["type"],
+                "additionalProperties": false,
+                "allOf": [
+                    targetTypeConstraint(
+                        "uncommittedChanges",
+                        forbiddenProperties: ["branch", "sha", "title", "instructions"]
+                    ),
+                    targetTypeConstraint(
+                        "baseBranch",
+                        requiredProperties: ["branch"],
+                        forbiddenProperties: ["sha", "title", "instructions"]
+                    ),
+                    targetTypeConstraint(
+                        "commit",
+                        requiredProperties: ["sha"],
+                        forbiddenProperties: ["branch", "instructions"]
+                    ),
+                    targetTypeConstraint(
+                        "custom",
+                        requiredProperties: ["instructions"],
+                        forbiddenProperties: ["branch", "sha", "title"]
+                    ),
                 ],
             ],
         ],
@@ -133,4 +117,37 @@ enum ReviewToolCatalog {
         ],
         "additionalProperties": false,
     ]
+
+    private static func targetTypeConstraint(
+        _ type: String,
+        requiredProperties: [String] = [],
+        forbiddenProperties: [String] = []
+    ) -> Value {
+        var thenSchema: [String: Value] = [:]
+        if requiredProperties.isEmpty == false {
+            thenSchema["required"] = .array(requiredProperties.map(Value.string))
+        }
+        if forbiddenProperties.isEmpty == false {
+            thenSchema["not"] = [
+                "anyOf": .array(
+                    forbiddenProperties.map { property in
+                        [
+                            "required": .array([.string(property)]),
+                        ]
+                    }
+                ),
+            ]
+        }
+        return [
+            "if": [
+                "properties": [
+                    "type": [
+                        "const": .string(type),
+                    ],
+                ],
+                "required": ["type"],
+            ],
+            "then": .object(thenSchema),
+        ]
+    }
 }
