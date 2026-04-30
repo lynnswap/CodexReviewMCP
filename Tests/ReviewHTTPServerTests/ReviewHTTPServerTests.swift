@@ -116,6 +116,55 @@ struct ReviewHTTPServerTests {
         #expect(await recorder.snapshot() == [sessionID])
         #expect(await app.hasSession(sessionID) == false)
     }
+
+    @Test func injectedUUIDControlsHTTPMcpSessionID() async throws {
+        let fixedSessionID = try #require(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))
+        let app = ReviewHTTPApplication(
+            configuration: .init(
+                host: "localhost",
+                port: 0,
+                endpoint: "/mcp",
+                sessionTimeoutSeconds: 3600,
+                uuid: { fixedSessionID }
+            ),
+            serverFactory: { _, _ in
+                Server(
+                    name: "test",
+                    version: "0",
+                    capabilities: .init(resources: .init(), tools: .init())
+                )
+            },
+            onSessionClosed: { _ in },
+            isSessionBusy: { _ in false }
+        )
+
+        let response = await app.handleHTTPRequest(
+            HTTPRequest(
+                method: "POST",
+                headers: [
+                    HTTPHeaderName.accept: "application/json, text/event-stream",
+                    HTTPHeaderName.contentType: "application/json",
+                    HTTPHeaderName.protocolVersion: "2025-11-25",
+                ],
+                body: try JSONSerialization.data(withJSONObject: [
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": [
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": [:],
+                        "clientInfo": [
+                            "name": "test-client",
+                            "version": "0.0.1",
+                        ],
+                    ],
+                ]),
+                path: "/mcp"
+            )
+        )
+
+        #expect(response.headers[HTTPHeaderName.sessionID] == fixedSessionID.uuidString)
+    }
 }
 
 private actor AsyncGate {

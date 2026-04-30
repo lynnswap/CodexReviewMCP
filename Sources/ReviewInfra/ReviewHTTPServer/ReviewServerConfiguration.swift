@@ -11,6 +11,7 @@ package struct ReviewServerConfiguration: Sendable {
     package var codexCommand: String
     package var shouldAutoStartEmbeddedServer: Bool
     package var environment: [String: String]
+    package var coreDependencies: ReviewCoreDependencies
 
     package init(
         host: String = "localhost",
@@ -19,15 +20,18 @@ package struct ReviewServerConfiguration: Sendable {
         sessionTimeoutSeconds: TimeInterval = codexReviewDefaultSessionTimeoutSeconds,
         codexCommand: String = "codex",
         shouldAutoStartEmbeddedServer: Bool = true,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        coreDependencies: ReviewCoreDependencies? = nil
     ) {
+        let resolvedCoreDependencies = coreDependencies ?? .live(environment: environment)
         self.host = host
         self.port = port
         self.endpoint = normalizeEndpointPath(endpoint)
         self.sessionTimeoutSeconds = sessionTimeoutSeconds
         self.codexCommand = codexCommand
         self.shouldAutoStartEmbeddedServer = shouldAutoStartEmbeddedServer
-        self.environment = environment
+        self.environment = resolvedCoreDependencies.environment
+        self.coreDependencies = resolvedCoreDependencies
     }
 }
 
@@ -45,8 +49,8 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
     private let app: ReviewHTTPApplication
     private var endpointRecord: LiveEndpointRecord?
     private var startedURL: URL?
-    private var discoveryFileURL: URL {
-        ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
+    private var discoveryClient: ReviewDiscoveryClient {
+        ReviewDiscoveryClient(dependencies: configuration.coreDependencies)
     }
 
     package init(
@@ -65,7 +69,9 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
                 host: configuration.host,
                 port: configuration.port,
                 endpoint: configuration.endpoint,
-                sessionTimeoutSeconds: configuration.sessionTimeoutSeconds
+                sessionTimeoutSeconds: configuration.sessionTimeoutSeconds,
+                dateNow: configuration.coreDependencies.dateNow,
+                uuid: configuration.coreDependencies.uuid
             ),
             serverFactory: { sessionID, transport in
                 await Self.makeServer(
@@ -103,18 +109,17 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
             configuredHost: configuration.host,
             boundHost: address.host
         )
-        if let record = ReviewDiscovery.makeRecord(
+        if let record = discoveryClient.makeRecord(
             host: discoveryHost,
             port: address.port,
-            pid: Int(ProcessInfo.processInfo.processIdentifier),
             endpointPath: configuration.endpoint
         ) {
-            try? ReviewDiscovery.write(record, to: discoveryFileURL)
+            try? discoveryClient.write(record)
             endpointRecord = record
         } else {
             endpointRecord = nil
         }
-        guard let url = ReviewDiscovery.makeURL(
+        guard let url = discoveryClient.makeURL(
             host: discoveryHost,
             port: address.port,
             endpointPath: configuration.endpoint
@@ -140,18 +145,17 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
         let url = startedURL
         await app.stop()
         if let record {
-            ReviewDiscovery.removeIfOwned(
+            discoveryClient.removeIfOwned(
                 pid: record.pid,
                 url: url,
-                serverStartTime: record.serverStartTime,
-                at: discoveryFileURL
+                serverStartTime: record.serverStartTime
             )
         } else if let url,
-                  let persistedRecord = ReviewDiscovery.read(from: discoveryFileURL),
+                  let persistedRecord = discoveryClient.read(),
                   persistedRecord.url == url.absoluteString
-                    || persistedRecord.pid == Int(ProcessInfo.processInfo.processIdentifier)
+                    || persistedRecord.pid == configuration.coreDependencies.process.currentProcessIdentifier()
         {
-            ReviewDiscovery.remove(at: discoveryFileURL)
+            discoveryClient.remove()
         }
         endpointRecord = nil
         startedURL = nil

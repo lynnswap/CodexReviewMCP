@@ -12,6 +12,24 @@ actor ReviewHTTPApplication {
         var port: Int
         var endpoint: String
         var sessionTimeoutSeconds: TimeInterval
+        var dateNow: @Sendable () -> Date
+        var uuid: @Sendable () -> UUID
+
+        init(
+            host: String,
+            port: Int,
+            endpoint: String,
+            sessionTimeoutSeconds: TimeInterval,
+            dateNow: @escaping @Sendable () -> Date = { Date() },
+            uuid: @escaping @Sendable () -> UUID = { UUID() }
+        ) {
+            self.host = host
+            self.port = port
+            self.endpoint = endpoint
+            self.sessionTimeoutSeconds = sessionTimeoutSeconds
+            self.dateNow = dateNow
+            self.uuid = uuid
+        }
     }
 
     typealias ServerFactory = @Sendable (String, StatefulHTTPServerTransport) async -> Server
@@ -117,13 +135,13 @@ actor ReviewHTTPApplication {
     func handleHTTPRequest(_ request: HTTPRequest) async -> HTTPResponse {
         let sessionID = request.header(HTTPHeaderName.sessionID)
         if let sessionID, var session = sessions[sessionID] {
-            session.lastAccessedAt = Date()
+            session.lastAccessedAt = configuration.dateNow()
             session.activeRequestCount += 1
             sessions[sessionID] = session
             let response = await session.transport.handleRequest(request)
             if var updatedSession = sessions[sessionID] {
                 updatedSession.activeRequestCount = max(0, updatedSession.activeRequestCount - 1)
-                updatedSession.lastAccessedAt = Date()
+                updatedSession.lastAccessedAt = configuration.dateNow()
                 sessions[sessionID] = updatedSession
                 if updatedSession.activeRequestCount == 0 {
                     await flushDeferredSessionClosures()
@@ -162,7 +180,7 @@ actor ReviewHTTPApplication {
     }
 
     private func createSessionAndHandle(_ request: HTTPRequest) async -> HTTPResponse {
-        let sessionID = UUID().uuidString
+        let sessionID = configuration.uuid().uuidString
         let transport = StatefulHTTPServerTransport(
             sessionIDGenerator: FixedSessionIDGenerator(sessionID: sessionID),
             retryInterval: 1000
@@ -173,13 +191,13 @@ actor ReviewHTTPApplication {
             sessions[sessionID] = SessionContext(
                 server: server,
                 transport: transport,
-                lastAccessedAt: Date(),
+                lastAccessedAt: configuration.dateNow(),
                 activeRequestCount: 1
             )
             let response = await transport.handleRequest(request)
             if var session = sessions[sessionID] {
                 session.activeRequestCount = max(0, session.activeRequestCount - 1)
-                session.lastAccessedAt = Date()
+                session.lastAccessedAt = configuration.dateNow()
                 sessions[sessionID] = session
             }
             if case .error = response {
@@ -200,7 +218,7 @@ actor ReviewHTTPApplication {
         if force == false, await isSessionBusy(sessionID) {
             deferredSessionClosures.insert(sessionID)
             if var session = sessions[sessionID] {
-                session.lastAccessedAt = Date()
+                session.lastAccessedAt = configuration.dateNow()
                 sessions[sessionID] = session
             }
             logger.info("Deferring MCP session closure while review is running", metadata: ["sessionID": "\(sessionID)"])
@@ -210,7 +228,7 @@ actor ReviewHTTPApplication {
         if force == false, let currentSession = sessions[sessionID], currentSession.activeRequestCount > 0 {
             deferredSessionClosures.insert(sessionID)
             var session = currentSession
-            session.lastAccessedAt = Date()
+            session.lastAccessedAt = configuration.dateNow()
             sessions[sessionID] = session
             logger.info("Deferring MCP session closure while requests are still in flight", metadata: ["sessionID": "\(sessionID)"])
             restartCleanupLoop()
@@ -257,7 +275,7 @@ actor ReviewHTTPApplication {
             if Task.isCancelled {
                 break
             }
-            let cutoff = Date().addingTimeInterval(-configuration.sessionTimeoutSeconds)
+            let cutoff = configuration.dateNow().addingTimeInterval(-configuration.sessionTimeoutSeconds)
             var expiredIDs: [String] = []
             let sessionRecords = Array(sessions)
             for (sessionID, context) in sessionRecords {
@@ -269,7 +287,7 @@ actor ReviewHTTPApplication {
                 }
                 if await isSessionBusy(sessionID) {
                     if var record = sessions[sessionID] {
-                        record.lastAccessedAt = Date()
+                        record.lastAccessedAt = configuration.dateNow()
                         sessions[sessionID] = record
                     }
                     continue

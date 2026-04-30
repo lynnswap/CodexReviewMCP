@@ -49,10 +49,17 @@ package struct PreparedInactiveAccountProbe: Sendable {
 package func loadRegisteredReviewAccounts(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> (activeAccountKey: String?, accounts: [CodexSavedAccountPayload]) {
-    let persistedRegistry = (try? loadRegistryRecord(environment: environment)) ?? .init()
+    loadRegisteredReviewAccounts(dependencies: .live(environment: environment))
+}
+
+@MainActor
+package func loadRegisteredReviewAccounts(
+    dependencies: ReviewCoreDependencies
+) -> (activeAccountKey: String?, accounts: [CodexSavedAccountPayload]) {
+    let persistedRegistry = (try? loadRegistryRecord(dependencies: dependencies)) ?? .init()
     let registry = runtimeRegistryRecord(
         from: persistedRegistry,
-        environment: environment
+        dependencies: dependencies
     )
     let records = registry.accounts
     let accounts = records.map(makeSavedAccountPayload)
@@ -66,14 +73,24 @@ func runtimeRegistryRecord(
     from persistedRegistry: ReviewAccountRegistryRecord,
     environment: [String: String]
 ) -> ReviewAccountRegistryRecord {
+    runtimeRegistryRecord(
+        from: persistedRegistry,
+        dependencies: .live(environment: environment)
+    )
+}
+
+func runtimeRegistryRecord(
+    from persistedRegistry: ReviewAccountRegistryRecord,
+    dependencies: ReviewCoreDependencies
+) -> ReviewAccountRegistryRecord {
     let canonicalPersistedRegistry = canonicalizeRegistryRecord(
         persistedRegistry,
-        environment: environment
+        dependencies: dependencies
     )
     let persistedAccounts = canonicalPersistedRegistry.accounts.filter {
         savedAccountAuthSnapshotExists(
             accountKey: $0.accountKey,
-            environment: environment
+            dependencies: dependencies
         )
     }
     let filteredPersistedRegistry = canonicalizeRegistryRecord(
@@ -81,7 +98,7 @@ func runtimeRegistryRecord(
             activeAccountKey: canonicalPersistedRegistry.activeAccountKey,
             accounts: persistedAccounts
         ),
-        environment: environment
+        dependencies: dependencies
     )
     let runtimeAccounts = filteredPersistedRegistry.accounts.map { account in
         var runtimeAccount = account
@@ -105,10 +122,22 @@ func storedAccount(
     matchingRuntimeAccountKey accountKey: String,
     environment: [String: String]
 ) -> ReviewSavedAccountRecord? {
+    storedAccount(
+        in: registry,
+        matchingRuntimeAccountKey: accountKey,
+        dependencies: .live(environment: environment)
+    )
+}
+
+func storedAccount(
+    in registry: ReviewAccountRegistryRecord,
+    matchingRuntimeAccountKey accountKey: String,
+    dependencies: ReviewCoreDependencies
+) -> ReviewSavedAccountRecord? {
     storedAccountIndex(
         in: registry,
         matchingRuntimeAccountKey: accountKey,
-        environment: environment
+        dependencies: dependencies
     )
     .map { registry.accounts[$0] }
 }
@@ -118,12 +147,24 @@ func storedAccountIndex(
     matchingRuntimeAccountKey accountKey: String,
     environment: [String: String]
 ) -> Int? {
+    storedAccountIndex(
+        in: registry,
+        matchingRuntimeAccountKey: accountKey,
+        dependencies: .live(environment: environment)
+    )
+}
+
+func storedAccountIndex(
+    in registry: ReviewAccountRegistryRecord,
+    matchingRuntimeAccountKey accountKey: String,
+    dependencies: ReviewCoreDependencies
+) -> Int? {
     if let exactIndex = registry.accounts.firstIndex(where: { $0.accountKey == accountKey }) {
         return exactIndex
     }
     let canonicalAccountsByEmail = canonicalAccountsByNormalizedEmail(
         in: registry,
-        environment: environment
+        dependencies: dependencies
     )
     let normalizedAccountKey = normalizedReviewAccountEmail(email: accountKey)
     guard let canonicalAccount = canonicalAccountsByEmail[normalizedAccountKey] else {
@@ -136,7 +177,17 @@ func storedAccountIndex(
 package func loadSharedReviewAccount(
     environment: [String: String] = ProcessInfo.processInfo.environment
 ) -> CodexAccount? {
-    guard let snapshot = loadAuthSnapshot(at: ReviewHomePaths.reviewAuthURL(environment: environment)) else {
+    loadSharedReviewAccount(dependencies: .live(environment: environment))
+}
+
+@MainActor
+package func loadSharedReviewAccount(
+    dependencies: ReviewCoreDependencies
+) -> CodexAccount? {
+    guard let snapshot = loadAuthSnapshot(
+        at: dependencies.paths.reviewAuthURL(),
+        dependencies: dependencies
+    ) else {
         return nil
     }
     return CodexAccount(
