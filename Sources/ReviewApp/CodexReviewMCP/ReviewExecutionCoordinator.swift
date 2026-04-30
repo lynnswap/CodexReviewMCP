@@ -60,7 +60,7 @@ package actor ReviewExecutionCoordinator {
     ) async throws -> ReviewReadResult {
         let request = try request.validated()
         let requestOptions = try request.reviewRequestOptions().validated()
-        let initialResolvedModel = resolveInitialReviewModel(environment: configuration.environment)
+        let initialResolvedModel = resolveInitialReviewModel()
         let jobID = try await store.enqueueReview(
             sessionID: sessionID,
             request: requestOptions,
@@ -201,7 +201,8 @@ package actor ReviewExecutionCoordinator {
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: configuration.codexCommand,
                 environment: configuration.environment
-            )
+            ),
+            coreDependencies: configuration.coreDependencies
         )
         runner.clock = configuration.coreDependencies.clock
         let requestedTerminationReason: @Sendable () async -> ReviewTerminationReason? = { [weak self] in
@@ -428,6 +429,24 @@ package actor ReviewExecutionCoordinator {
             cancelled: cancelled,
             status: status
         )
+    }
+
+    private func resolveInitialReviewModel() -> String? {
+        let localConfig = (try? ReviewLocalConfigClient(dependencies: configuration.coreDependencies).load()) ?? .init()
+        let codexHome = configuration.coreDependencies.paths.codexHomeURL()
+        let fallbackConfig = loadFallbackAppServerConfig(
+            environment: configuration.environment,
+            codexHome: codexHome
+        )
+        let profileClearsReviewModel = activeProfileClearsReviewModel(
+            environment: configuration.environment,
+            codexHome: codexHome
+        )
+        return resolveReviewModelSelection(
+            localConfig: localConfig,
+            resolvedConfig: fallbackConfig,
+            profileClearsReviewModel: profileClearsReviewModel
+        ).reportedModelBeforeThreadStart
     }
 }
 

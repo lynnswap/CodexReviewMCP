@@ -1972,6 +1972,9 @@ package final class ReviewMonitorServerRuntime {
     private var localConfigClient: ReviewLocalConfigClient {
         ReviewLocalConfigClient(dependencies: configuration.coreDependencies)
     }
+    private var codexHomeURL: URL {
+        configuration.coreDependencies.paths.codexHomeURL()
+    }
     var currentServer: ReviewMCPHTTPServer? {
         server
     }
@@ -2111,15 +2114,21 @@ package final class ReviewMonitorServerRuntime {
 
     var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
         let localConfig = (try? localConfigClient.load()) ?? .init()
-        let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
+        let fallbackConfig = loadFallbackAppServerConfig(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
         let profileClearsReviewModel = activeProfileClearsReviewModel(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let profileClearsServiceTier = activeProfileClearsServiceTier(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let displayedOverrides = resolveDisplayedSettingsOverrides(
             localConfig: localConfig,
@@ -2324,7 +2333,10 @@ package final class ReviewMonitorServerRuntime {
     func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
         let transport = try await appServerManager.checkoutAuthTransport()
         let localConfig = (try? localConfigClient.load()) ?? .init()
-        let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
+        let fallbackConfig = loadFallbackAppServerConfig(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
         let configResponse: AppServerConfigReadResponse = try await transport.request(
             method: "config/read",
             params: AppServerConfigReadParams(
@@ -2353,13 +2365,16 @@ package final class ReviewMonitorServerRuntime {
             fallback: fallbackConfig
         )
         let profileClearsReviewModel = activeProfileClearsReviewModel(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let profileClearsServiceTier = activeProfileClearsServiceTier(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let displayedOverrides = resolveDisplayedSettingsOverrides(
             localConfig: localConfig,
@@ -2389,23 +2404,29 @@ package final class ReviewMonitorServerRuntime {
         serviceTier: CodexReviewServiceTier?,
         persistServiceTier: Bool
     ) async throws {
-        let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let profile = loadActiveReviewProfile(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
         let localConfigPresence = try localConfigClient.loadPresence()
         let hasRootReviewModel = localConfigPresence.hasReviewModel
         let hasProfileReviewModelOverride = activeProfileHasReviewModelOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let writeModelAtRoot = profile == nil
             || (hasRootReviewModel && hasProfileReviewModelOverride == false)
         let hasRootReasoningEffort = localConfigPresence.hasModelReasoningEffort
         let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let writeReasoningAtRoot = profile == nil
             || (hasRootReasoningEffort && hasProfileReasoningEffortOverride == false)
         let hasRootServiceTier = localConfigPresence.hasServiceTier
         let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let writeServiceTierAtRoot = profile == nil
             || (hasRootServiceTier && hasProfileServiceTierOverride == false)
@@ -2452,11 +2473,15 @@ package final class ReviewMonitorServerRuntime {
     func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
-        let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let profile = loadActiveReviewProfile(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
         let localConfigPresence = try localConfigClient.loadPresence()
         let hasRootReasoningEffort = localConfigPresence.hasModelReasoningEffort
         let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let forceRoot = profile == nil
             || (hasRootReasoningEffort && hasProfileReasoningEffortOverride == false)
@@ -2478,11 +2503,15 @@ package final class ReviewMonitorServerRuntime {
     func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
-        let profile = loadActiveReviewProfile(environment: configuration.environment)
+        let profile = loadActiveReviewProfile(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
         let localConfigPresence = try localConfigClient.loadPresence()
         let hasRootServiceTier = localConfigPresence.hasServiceTier
         let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let forceRoot = profile == nil
             || (hasRootServiceTier && hasProfileServiceTierOverride == false)
