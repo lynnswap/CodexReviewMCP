@@ -142,6 +142,29 @@ struct AppServerSupervisorTests {
         try? FileManager.default.removeItem(at: commandURL)
     }
 
+    @Test func configurationUsesInjectedClockWhenClockIsOmitted() async throws {
+        let environment = try makeSupervisorEnvironment()
+        let clock = ManualTestClock()
+        let coreDependencies = ReviewCoreDependencies(
+            environment: environment,
+            clock: clock
+        )
+        let configuration = AppServerSupervisor.Configuration(
+            environment: environment,
+            coreDependencies: coreDependencies
+        )
+
+        let sleepTask = Task {
+            try await configuration.clock.sleep(for: .seconds(5))
+        }
+        await clock.sleepUntilSuspendedBy()
+        clock.advance(by: .seconds(5))
+
+        try await withTestTimeout {
+            try await sleepTask.value
+        }
+    }
+
     @Test func prepareResolvesCodexCommandFromPATH() async throws {
         var environment = try makeSupervisorEnvironment()
         let commandURL = try makeFakeSupervisorCommand(

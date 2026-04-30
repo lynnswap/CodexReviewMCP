@@ -53,6 +53,13 @@ struct ReviewDependenciesTests {
         #expect(dependencies.core.paths.reviewHomeURL().path != realReviewHome.path)
     }
 
+    @Test func previewDependenciesUseUniqueReviewHomes() {
+        let first = ReviewDependencies.preview()
+        let second = ReviewDependencies.preview()
+
+        #expect(first.core.paths.reviewHomeURL().path != second.core.paths.reviewHomeURL().path)
+    }
+
     @Test func coreDependenciesReplacingEnvironmentPreservesExplicitPathsForSameEnvironment() throws {
         let environmentRootURL = try makeTemporaryDirectory()
         let injectedRootURL = try makeTemporaryDirectory()

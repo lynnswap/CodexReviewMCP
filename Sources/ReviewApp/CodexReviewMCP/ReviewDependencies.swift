@@ -123,7 +123,7 @@ package struct ReviewDependencies {
     ) -> Self {
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = FileManager.default.temporaryDirectory
-            .appendingPathComponent("codex-review-preview", isDirectory: true)
+            .appendingPathComponent("codex-review-preview-\(UUID().uuidString)", isDirectory: true)
             .path
         let core = ReviewCoreDependencies(environment: environment)
         let harness = ReviewMonitorTestingHarness(seed: seed)

@@ -24,7 +24,7 @@ package actor AppServerSupervisor: AppServerManaging {
             codexCommand: String = "codex",
             environment: [String: String] = ProcessInfo.processInfo.environment,
             startupTimeout: Duration = .seconds(30),
-            clock: any ReviewClock = ContinuousClock(),
+            clock: (any ReviewClock)? = nil,
             coreDependencies: ReviewCoreDependencies? = nil
         ) {
             let resolvedCoreDependencies = coreDependencies ?? .live(environment: environment)
@@ -32,7 +32,7 @@ package actor AppServerSupervisor: AppServerManaging {
             self.environment = resolvedCoreDependencies.environment
             self.coreDependencies = resolvedCoreDependencies
             self.startupTimeout = startupTimeout
-            self.clock = clock
+            self.clock = clock ?? resolvedCoreDependencies.clock
         }
 
         package init(
@@ -45,7 +45,7 @@ package actor AppServerSupervisor: AppServerManaging {
                 codexCommand: codexCommand,
                 environment: environment,
                 startupTimeout: startupTimeout,
-                clock: ContinuousClock(),
+                clock: nil,
                 coreDependencies: coreDependencies
             )
         }
