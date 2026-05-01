@@ -8,7 +8,7 @@ import ReviewDomain
 final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAccessoryViewController {
     private let store: CodexReviewStore
     private let uiState: ReviewMonitorUIState
-    private var observationHandles: Set<ObservationHandle> = []
+    private let observationScope = ObservationScope()
     private var shouldHideStatusAccessory = false
 
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
@@ -28,13 +28,15 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
     }
 
     private func bindObservation() {
-        uiState.observe(\.sidebarSelection) { [weak self] _ in
-            guard let self else {
-                return
+        observationScope.update {
+            uiState.observe(\.sidebarSelection) { [weak self] _ in
+                guard let self else {
+                    return
+                }
+                self.updateVisibility(animated: true)
             }
-            self.updateVisibility(animated: true)
+            .store(in: observationScope)
         }
-        .store(in: &observationHandles)
     }
 
     private func updateVisibility(animated: Bool) {
@@ -69,14 +71,6 @@ final class ReviewMonitorServerStatusAccessoryViewController: NSSplitViewItemAcc
         }
     }
 }
-
-#if DEBUG
-extension ReviewMonitorServerStatusAccessoryViewController {
-    var observationHandleCountForTesting: Int {
-        observationHandles.count
-    }
-}
-#endif
 
 struct AccountRateLimitsSectionView: View {
     let account: CodexAccount?

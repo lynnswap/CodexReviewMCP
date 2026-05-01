@@ -88,7 +88,7 @@ struct CodexReviewUIShellTests {
         #expect(viewController.sidebarPresentationForTesting == .jobList)
     }
 
-    @Test func statusAccessoryViewControllerObservesOnlySidebarSelection() {
+    @Test func statusAccessoryViewControllerVisibilityTracksOnlySidebarSelection() async throws {
         let store = CodexReviewStore.makePreviewStore()
         let uiState = ReviewMonitorUIState(auth: store.auth)
         let viewController = ReviewMonitorServerStatusAccessoryViewController(
@@ -97,7 +97,18 @@ struct CodexReviewUIShellTests {
         )
         viewController.loadViewIfNeeded()
 
-        #expect(viewController.observationHandleCountForTesting == 1)
+        #expect(viewController.isHidden == false)
+
+        store.loadForTesting(
+            serverState: .failed("Embedded server is unavailable in preview mode."),
+            workspaces: []
+        )
+        #expect(viewController.isHidden == false)
+
+        uiState.sidebarSelection = .account
+        try await waitForCondition {
+            viewController.isHidden
+        }
     }
 
     @Test func contentPanePinsDisplayedContentToSafeArea() {

@@ -1955,7 +1955,7 @@ package final class ReviewMonitorServerRuntime {
     private var deferredAddAccountRuntimeReconcileTask: Task<Void, Never>?
     private weak var attachedStore: CodexReviewStore?
     private var observedHasRunningJobs: Bool?
-    private var observationHandles: Set<ObservationHandle> = []
+    private let observationScope = ObservationScope()
     private var discoveryFileURL: URL {
         configuration.coreDependencies.paths.discoveryFileURL()
     }
@@ -2244,7 +2244,7 @@ package final class ReviewMonitorServerRuntime {
     func attachStore(_ store: CodexReviewStore) {
         attachedStore = store
         observedHasRunningJobs = store.hasRunningJobs
-        observationHandles.removeAll()
+        observationScope.cancelAll()
         observeRunningJobs()
     }
 
@@ -2262,7 +2262,7 @@ package final class ReviewMonitorServerRuntime {
             self.observedHasRunningJobs = hasRunningJobs
             self.scheduleDeferredAddAccountRuntimeReconciliationIfNeeded()
         }
-        .store(in: &observationHandles)
+        .store(in: observationScope)
     }
 
     func start(

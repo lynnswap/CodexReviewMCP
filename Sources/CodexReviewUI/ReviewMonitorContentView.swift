@@ -8,7 +8,7 @@ import SwiftUI
 final class ReviewMonitorRootViewController: NSViewController {
     private let uiState: ReviewMonitorUIState
     private let store: CodexReviewStore
-    private var observationHandles: Set<ObservationHandle> = []
+    private let observationScope = ObservationScope()
 
     private lazy var splitViewController = ReviewMonitorSplitViewController(
         store: store,
@@ -44,14 +44,12 @@ final class ReviewMonitorRootViewController: NSViewController {
     }
 
     private func bindWindowState() {
-        guard observationHandles.isEmpty else {
-            return
+        observationScope.update {
+            uiState.observe(\.contentKind) { [weak self] kind in
+                self?.setContentViewController(kind, animated: true)
+            }
+            .store(in: observationScope)
         }
-
-        uiState.observe(\.contentKind) { [weak self] kind in
-            self?.setContentViewController(kind, animated: true)
-        }
-        .store(in: &observationHandles)
     }
 
     func applyInitialWindowPresentationIfPossible() {
