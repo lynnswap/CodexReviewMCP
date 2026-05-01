@@ -23,7 +23,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var contentItem: NSSplitViewItem?
     private var toolbar: NSToolbar?
     private var addAccountToolbarItem: ReviewMonitorAddAccountToolbarItem?
-    private var observationHandles: Set<ObservationHandle> = []
+    @ObservationIgnored private let toolbarObservationScope = ObservationScope()
     private var sidebarCollapseObservation: NSKeyValueObservation?
     private var windowCancellable: AnyCancellable?
     private weak var attachedWindow: NSWindow?
@@ -123,25 +123,26 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     }
 
     func detachFromWindow() {
-        observationHandles.removeAll()
+        toolbarObservationScope.cancelAll()
         attachedWindow = nil
     }
 
     private func bindToolbarState() {
-        observationHandles.removeAll()
-
-        observe(\.isShowingAddAccountButton) { [weak self] _ in
-            guard let self else {
-                return
+        toolbarObservationScope.cancelAll()
+        toolbarObservationScope.update {
+            observe(\.isShowingAddAccountButton) { [weak self] _ in
+                guard let self else {
+                    return
+                }
+                setShowingAddAccount(isShowingAddAccountButton)
             }
-            setShowingAddAccount(isShowingAddAccountButton)
-        }
-        .store(in: &observationHandles)
+            .store(in: toolbarObservationScope)
 
-        uiState.observe([\.selectedJobEntry?.targetSummary, \.selectedJobEntry?.cwd]) { [weak self] in
-            self?.updateWindowTitleAndSubtitle()
+            uiState.observe([\.selectedJobEntry?.targetSummary, \.selectedJobEntry?.cwd]) { [weak self] in
+                self?.updateWindowTitleAndSubtitle()
+            }
+            .store(in: toolbarObservationScope)
         }
-        .store(in: &observationHandles)
     }
 
     private func installToolbarIfNeeded(on window: NSWindow) {

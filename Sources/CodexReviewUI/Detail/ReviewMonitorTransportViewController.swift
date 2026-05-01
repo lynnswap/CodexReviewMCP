@@ -15,8 +15,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
         descriptionAccessibilityIdentifier: "review-monitor.detail-empty.description"
     )
     private var displayedContentConstraints: [NSLayoutConstraint] = []
-    private var uiStateObservationHandles: Set<ObservationHandle> = []
-    private var selectedJobObservationHandles: Set<ObservationHandle> = []
+    private let uiStateObservationScope = ObservationScope()
+    private let selectedJobObservationScope = ObservationScope()
     private var boundJob: CodexReviewJob?
     private var logScrollTargetsByJobID: [String: ReviewMonitorLogScrollView.ScrollRestorationTarget] = [:]
 #if DEBUG
@@ -71,14 +71,14 @@ final class ReviewMonitorTransportViewController: NSViewController {
     }
 
     private func bindObservation() {
-        uiStateObservationHandles.removeAll()
+        uiStateObservationScope.cancelAll()
         uiState.observe(\.selectedJobEntry) { [weak self] selectedJob in
             guard let self else {
                 return
             }
             self.updatePresentation(selectedJob: selectedJob)
         }
-        .store(in: &uiStateObservationHandles)
+        .store(in: uiStateObservationScope)
     }
 
     private func updatePresentation(selectedJob: CodexReviewJob?) {
@@ -103,7 +103,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
 
     private func displayJob(_ selectedJob: CodexReviewJob) {
         cacheBoundJobScrollTarget()
-        selectedJobObservationHandles.removeAll()
+        selectedJobObservationScope.cancelAll()
         boundJob = selectedJob
 
         renderSelectedJob(
@@ -121,12 +121,12 @@ final class ReviewMonitorTransportViewController: NSViewController {
                 self.noteRenderForTesting()
             }
         }
-        .store(in: &selectedJobObservationHandles)
+        .store(in: selectedJobObservationScope)
     }
 
     private func clearDisplayedJob() {
         cacheBoundJobScrollTarget()
-        selectedJobObservationHandles.removeAll()
+        selectedJobObservationScope.cancelAll()
         boundJob = nil
         if logScrollView.clear() {
             noteRenderForTesting()

@@ -56,8 +56,8 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     )
     private let unavailableView: NSHostingView<MCPServerUnavailableView>
 
-    private var storeObservationHandles: Set<ObservationHandle> = []
-    private var workspaceObservationHandles: Set<ObservationHandle> = []
+    @ObservationIgnored private let storeObservationScope = ObservationScope()
+    @ObservationIgnored private let workspaceObservationScope = ObservationScope()
     private var isReconcilingSelection = false
 
     init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
@@ -171,37 +171,39 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     private func bindObservation() {
-        storeObservationHandles.removeAll()
         rebindWorkspaceObservations(workspaces: store.workspaces)
-        observe(\.sidebarPresentation) { [weak self] presentation in
-            self?.applySidebarPresentation(presentation)
-        }
-        .store(in: &storeObservationHandles)
-        store.observe([\.workspaces]) { [weak self] in
-            guard let self else {
-                return
+        storeObservationScope.update {
+            observe(\.sidebarPresentation) { [weak self] presentation in
+                self?.applySidebarPresentation(presentation)
             }
-            self.rebindWorkspaceObservations(workspaces: store.workspaces)
-            self.reloadOutline(workspaces: store.workspaces)
-        }
-        .store(in: &storeObservationHandles)
-    }
+            .store(in: storeObservationScope)
 
-    private func rebindWorkspaceObservations(workspaces: [CodexReviewWorkspace]) {
-        workspaceObservationHandles.removeAll()
-
-        for workspace in workspaces {
-            workspace.observe([\.jobs, \.isExpanded]) { [weak self, weak workspace] in
+            store.observe([\.workspaces]) { [weak self] in
                 guard let self else {
                     return
                 }
-                guard let workspace else {
-                    self.reloadOutline(workspaces: store.workspaces)
-                    return
-                }
-                self.reloadWorkspace(workspace, allWorkspaces: store.workspaces)
+                self.rebindWorkspaceObservations(workspaces: store.workspaces)
+                self.reloadOutline(workspaces: store.workspaces)
             }
-            .store(in: &workspaceObservationHandles)
+            .store(in: storeObservationScope)
+        }
+    }
+
+    private func rebindWorkspaceObservations(workspaces: [CodexReviewWorkspace]) {
+        workspaceObservationScope.update {
+            for workspace in workspaces {
+                workspace.observe([\.jobs, \.isExpanded]) { [weak self, weak workspace] in
+                    guard let self else {
+                        return
+                    }
+                    guard let workspace else {
+                        self.reloadOutline(workspaces: store.workspaces)
+                        return
+                    }
+                    self.reloadWorkspace(workspace, allWorkspaces: store.workspaces)
+                }
+                .store(in: workspaceObservationScope)
+            }
         }
     }
 

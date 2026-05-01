@@ -19,7 +19,7 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     private let scrollView = NSScrollView()
     private let outlineView = ReviewMonitorAccountsOutlineView()
 
-    private var authObservationHandles: Set<ObservationHandle> = []
+    private let authObservationScope = ObservationScope()
     private var isApplyingAuthSelection = false
     private var presentedPendingAccountAction: CodexReviewAuthModel.PendingAccountAction?
     private var presentedAccountActionAlert: CodexReviewAuthModel.AccountActionAlert?
@@ -116,22 +116,22 @@ final class ReviewMonitorAccountsViewController: NSViewController, NSOutlineView
     }
 
     private func bindObservation() {
-        authObservationHandles.removeAll()
+        authObservationScope.update {
+            auth.observe(\.accounts) { [weak self] _ in
+                self?.reloadAccounts()
+            }
+            .store(in: authObservationScope)
 
-        auth.observe(\.accounts) { [weak self] _ in
-            self?.reloadAccounts()
-        }
-        .store(in: &authObservationHandles)
+            auth.observe([\.selectedAccount]) { [weak self] in
+                self?.reconcileSelection()
+            }
+            .store(in: authObservationScope)
 
-        auth.observe([\.selectedAccount]) { [weak self] in
-            self?.reconcileSelection()
+            auth.observe([\.pendingAccountAction, \.accountActionAlert]) { [weak self] in
+                self?.presentAccountPromptsIfNeeded()
+            }
+            .store(in: authObservationScope)
         }
-        .store(in: &authObservationHandles)
-
-        auth.observe([\.pendingAccountAction, \.accountActionAlert]) { [weak self] in
-            self?.presentAccountPromptsIfNeeded()
-        }
-        .store(in: &authObservationHandles)
     }
 
     private func reloadAccounts() {
