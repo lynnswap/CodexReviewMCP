@@ -217,6 +217,10 @@ struct CodexReviewMCPLifecycleTests {
 
     @Test func restartRecoversFromPartialStartup() async throws {
         let environment = try isolatedHomeEnvironment()
+        let coreDependencies = ReviewCoreDependencies(
+            environment: environment,
+            uuid: { UUID(uuidString: "00000000-0000-0000-0000-000000000022")! }
+        )
         let runtimeStateFileURL = ReviewHomePaths.runtimeStateFileURL(environment: environment)
         ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
         defer { ReviewRuntimeStateStore.remove(at: runtimeStateFileURL) }
@@ -231,7 +235,8 @@ struct CodexReviewMCPLifecycleTests {
             configuration: .init(
                 port: 0,
                 codexCommand: "codex",
-                environment: environment
+                environment: environment,
+                coreDependencies: coreDependencies
             ),
             appServerManager: manager
         )

@@ -430,6 +430,48 @@ struct ReviewAuthManagerTests {
         #expect(response.requiresOpenAIAuth)
     }
 
+    @Test func cliReviewAuthSessionUsesInjectedReviewHomeForAccountAndCodexHome() async throws {
+        let environmentHome = makeTemporaryRoot()
+        let injectedHome = makeTemporaryRoot()
+        let injectedReviewHome = injectedHome.appendingPathComponent(".codex_review", isDirectory: true)
+        let coreDependencies = ReviewCoreDependencies(
+            environment: ["HOME": environmentHome.path],
+            paths: ReviewPathResolver(
+                environment: ["HOME": injectedHome.path],
+                homeDirectoryForCurrentUser: environmentHome
+            )
+        )
+        try writeReviewAuthSnapshot(
+            email: "injected@example.com",
+            planType: "pro",
+            authURL: coreDependencies.paths.reviewAuthURL()
+        )
+        let process = ImmediateExitProcess(stdout: "Logged in\n")
+        let session = CLIReviewAuthSession(
+            configuration: .init(
+                codexCommand: "/tmp/fake-codex",
+                environment: ["HOME": environmentHome.path],
+                commandProcessFactory: {
+                    process
+                },
+                coreDependencies: coreDependencies
+            )
+        )
+
+        let response = try await withTestTimeout {
+            try await session.readAccount(refreshToken: false)
+        }
+
+        guard case .chatGPT(let email, let planType)? = response.account else {
+            Issue.record("Expected ChatGPT account from injected auth snapshot.")
+            return
+        }
+        #expect(email == "injected@example.com")
+        #expect(planType == "pro")
+        #expect(response.requiresOpenAIAuth == false)
+        #expect(process.environment?["CODEX_HOME"] == injectedReviewHome.path)
+    }
+
     @Test func cliReviewAuthSessionLogoutCompletesWhenCommandExitsDuringRun() async throws {
         let session = CLIReviewAuthSession(
             configuration: .init(
@@ -1141,6 +1183,49 @@ private func makeTemporaryRoot() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+private func writeReviewAuthSnapshot(
+    email: String,
+    planType: String?,
+    authURL: URL
+) throws {
+    try FileManager.default.createDirectory(
+        at: authURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    var authPayload: [String: Any] = [:]
+    if let planType {
+        authPayload["chatgpt_plan_type"] = planType
+    }
+    let payload: [String: Any] = [
+        "email": email,
+        "https://api.openai.com/auth": authPayload,
+    ]
+    let object: [String: Any] = [
+        "auth_mode": "chatgpt",
+        "tokens": [
+            "id_token": makeReviewAuthTestJWT(payload: payload)
+        ],
+    ]
+    let data = try JSONSerialization.data(withJSONObject: object)
+    try data.write(to: authURL, options: .atomic)
+}
+
+private func makeReviewAuthTestJWT(payload: [String: Any]) -> String {
+    let header = ["alg": "none", "typ": "JWT"]
+    let headerData = try? JSONSerialization.data(withJSONObject: header)
+    let payloadData = try? JSONSerialization.data(withJSONObject: payload)
+    let headerComponent = makeReviewAuthJWTComponent(headerData ?? Data())
+    let payloadComponent = makeReviewAuthJWTComponent(payloadData ?? Data())
+    return "\(headerComponent).\(payloadComponent)."
+}
+
+private func makeReviewAuthJWTComponent(_ data: Data) -> String {
+    data.base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
 }
 
 private func makeExecutableScript(

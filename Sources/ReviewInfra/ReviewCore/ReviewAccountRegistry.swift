@@ -4,27 +4,34 @@ import ReviewDomain
 package actor ReviewAccountRegistryStore {
     nonisolated(unsafe) static var saveRegistryRecordFailureMessageForTesting: String?
     nonisolated(unsafe) static var savedAccountDirectoryDeleteFailurePathComponentForTesting: String?
+    private let coreDependencies: ReviewCoreDependencies
     private let environment: [String: String]
 
     package init(environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.coreDependencies = .live(environment: environment)
         self.environment = environment
+    }
+
+    package init(coreDependencies: ReviewCoreDependencies) {
+        self.coreDependencies = coreDependencies
+        self.environment = coreDependencies.environment
     }
 
     @MainActor
     package func loadAccounts() throws -> (activeAccountKey: String?, accounts: [CodexSavedAccountPayload]) {
-        loadRegisteredReviewAccounts(environment: environment)
+        loadRegisteredReviewAccounts(dependencies: coreDependencies)
     }
 
     @MainActor
     @discardableResult
     package func saveSharedAuthAsSavedAccount(makeActive: Bool) throws -> CodexSavedAccountPayload? {
-        guard let snapshot = loadAuthSnapshot(at: ReviewHomePaths.reviewAuthURL(environment: environment)) else {
+        guard let snapshot = loadAuthSnapshot(at: coreDependencies.paths.reviewAuthURL(), dependencies: coreDependencies) else {
             return nil
         }
-        var registry = try loadRegistryRecord(environment: environment)
+        var registry = try loadRegistry()
         return try saveAuthSnapshot(
             in: &registry,
-            sourceAuthURL: ReviewHomePaths.reviewAuthURL(environment: environment),
+            sourceAuthURL: coreDependencies.paths.reviewAuthURL(),
             snapshot: snapshot,
             makeActive: makeActive,
             refreshSharedAuth: false
@@ -38,10 +45,10 @@ package actor ReviewAccountRegistryStore {
         makeActive: Bool,
         refreshSharedAuth: Bool = false
     ) throws -> CodexSavedAccountPayload {
-        guard let snapshot = loadAuthSnapshot(at: sourceAuthURL) else {
+        guard let snapshot = loadAuthSnapshot(at: sourceAuthURL, dependencies: coreDependencies) else {
             throw ReviewAuthError.authenticationRequired("Authenticated account is missing email.")
         }
-        var registry = try loadRegistryRecord(environment: environment)
+        var registry = try loadRegistry()
         return try saveAuthSnapshot(
             in: &registry,
             sourceAuthURL: sourceAuthURL,
@@ -57,7 +64,7 @@ package actor ReviewAccountRegistryStore {
         guard let record = storedAccount(
             in: registry,
             matchingRuntimeAccountKey: accountKey,
-            environment: environment
+            dependencies: coreDependencies
         ) else {
             throw ReviewAuthError.authenticationRequired("Saved account was not found.")
         }
@@ -65,7 +72,7 @@ package actor ReviewAccountRegistryStore {
         registry.accounts = registry.accounts.map { account in
             var updated = account
             if account.accountKey == record.accountKey {
-                updated.lastActivatedAt = Date()
+                updated.lastActivatedAt = coreDependencies.dateNow()
             }
             return updated
         }
@@ -75,15 +82,16 @@ package actor ReviewAccountRegistryStore {
             try persistAuthSnapshot(
                 from: persistedSavedAccountAuthURL(
                     accountKey: record.accountKey,
-                    environment: environment
+                    dependencies: coreDependencies
                 ),
-                to: ReviewHomePaths.reviewAuthURL(environment: environment)
+                to: coreDependencies.paths.reviewAuthURL(),
+                dependencies: coreDependencies
             )
         } catch {
             rollbackRegistryMutation(
                 originalRegistry: originalRegistry,
                 sharedAuthBackup: sharedAuthBackup,
-                environment: environment
+                dependencies: coreDependencies
             )
             throw error
         }
@@ -94,16 +102,17 @@ package actor ReviewAccountRegistryStore {
         guard let record = storedAccount(
             in: registry,
             matchingRuntimeAccountKey: accountKey,
-            environment: environment
+            dependencies: coreDependencies
         ) else {
             throw ReviewAuthError.authenticationRequired("Saved account was not found.")
         }
         try persistAuthSnapshot(
             from: persistedSavedAccountAuthURL(
                 accountKey: record.accountKey,
-                environment: environment
+                dependencies: coreDependencies
             ),
-            to: ReviewHomePaths.reviewAuthURL(environment: environment)
+            to: coreDependencies.paths.reviewAuthURL(),
+            dependencies: coreDependencies
         )
     }
 
@@ -115,7 +124,7 @@ package actor ReviewAccountRegistryStore {
             resolvedStoredAccount = storedAccount(
                 in: registry,
                 matchingRuntimeAccountKey: accountKey,
-                environment: environment
+                dependencies: coreDependencies
             )
         } else {
             resolvedStoredAccount = nil
@@ -131,26 +140,27 @@ package actor ReviewAccountRegistryStore {
                 savedAccountDirectories(
                     matchingNormalizedEmail: normalizedReviewAccountEmail(email: $0.email),
                     fallbackAccountKey: $0.accountKey,
-                    environment: environment
+                    dependencies: coreDependencies
                 )
-            } ?? []
+            } ?? [],
+            dependencies: coreDependencies
         )
         do {
-            try removeItemIfExists(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+            try removeItemIfExists(at: coreDependencies.paths.reviewAuthURL())
             if let resolvedStoredAccount {
                 for directoryURL in savedAccountDirectories(
                     matchingNormalizedEmail: normalizedReviewAccountEmail(email: resolvedStoredAccount.email),
                     fallbackAccountKey: resolvedStoredAccount.accountKey,
-                    environment: environment
+                    dependencies: coreDependencies
                 ) {
-                    try removeSavedAccountDirectory(directoryURL)
+                    try removeSavedAccountDirectory(directoryURL, dependencies: coreDependencies)
                 }
             }
         } catch {
             rollbackRegistryMutation(
                 originalRegistry: originalRegistry,
                 sharedAuthBackup: sharedAuthBackup,
-                environment: environment,
+                dependencies: coreDependencies,
                 savedAccountDirectoryBackups: savedAccountDirectoryBackups
             )
             throw error
@@ -162,16 +172,16 @@ package actor ReviewAccountRegistryStore {
         guard let storedAccount = storedAccount(
             in: registry,
             matchingRuntimeAccountKey: accountKey,
-            environment: environment
+            dependencies: coreDependencies
         ) else {
             return
         }
         for directoryURL in savedAccountDirectories(
             matchingNormalizedEmail: normalizedReviewAccountEmail(email: storedAccount.email),
             fallbackAccountKey: storedAccount.accountKey,
-            environment: environment
+            dependencies: coreDependencies
         ) {
-            try removeSavedAccountDirectory(directoryURL)
+            try removeSavedAccountDirectory(directoryURL, dependencies: coreDependencies)
         }
     }
 
@@ -182,7 +192,7 @@ package actor ReviewAccountRegistryStore {
         let resolvedStoredAccount = storedAccount(
             in: originalRegistry,
             matchingRuntimeAccountKey: accountKey,
-            environment: environment
+            dependencies: coreDependencies
         )
         let removedAccountKey = resolvedStoredAccount?.accountKey
         let removedActive = removedAccountKey != nil
@@ -191,15 +201,15 @@ package actor ReviewAccountRegistryStore {
             account.accountKey == removedAccountKey
         }
         if removedActive,
-           let replacementIndex = registry.accounts.firstIndex(where: { account in
+               let replacementIndex = registry.accounts.firstIndex(where: { account in
                savedAccountAuthSnapshotExists(
                    accountKey: account.accountKey,
-                   environment: environment
+                   dependencies: coreDependencies
                )
            })
         {
             var replacementAccount = registry.accounts[replacementIndex]
-            replacementAccount.lastActivatedAt = Date()
+            replacementAccount.lastActivatedAt = coreDependencies.dateNow()
             registry.accounts[replacementIndex] = replacementAccount
             registry.activeAccountKey = replacementAccount.accountKey
         } else if removedActive {
@@ -213,9 +223,10 @@ package actor ReviewAccountRegistryStore {
                 savedAccountDirectories(
                     matchingNormalizedEmail: normalizedReviewAccountEmail(email: $0.email),
                     fallbackAccountKey: $0.accountKey,
-                    environment: environment
+                    dependencies: coreDependencies
                 )
-            } ?? []
+            } ?? [],
+            dependencies: coreDependencies
         )
         do {
             if removedActive {
@@ -223,28 +234,29 @@ package actor ReviewAccountRegistryStore {
                     try persistAuthSnapshot(
                         from: persistedSavedAccountAuthURL(
                             accountKey: replacementAccountKey,
-                            environment: environment
+                            dependencies: coreDependencies
                         ),
-                        to: ReviewHomePaths.reviewAuthURL(environment: environment)
+                        to: coreDependencies.paths.reviewAuthURL(),
+                        dependencies: coreDependencies
                     )
                 } else {
-                    try removeItemIfExists(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+                    try removeItemIfExists(at: coreDependencies.paths.reviewAuthURL())
                 }
             }
             if let resolvedStoredAccount {
                 for directoryURL in savedAccountDirectories(
                     matchingNormalizedEmail: normalizedReviewAccountEmail(email: resolvedStoredAccount.email),
                     fallbackAccountKey: resolvedStoredAccount.accountKey,
-                    environment: environment
+                    dependencies: coreDependencies
                 ) {
-                    try removeSavedAccountDirectory(directoryURL)
+                    try removeSavedAccountDirectory(directoryURL, dependencies: coreDependencies)
                 }
             }
         } catch {
             rollbackRegistryMutation(
                 originalRegistry: originalRegistry,
                 sharedAuthBackup: sharedAuthBackup,
-                environment: environment,
+                dependencies: coreDependencies,
                 savedAccountDirectoryBackups: savedAccountDirectoryBackups
             )
             throw error
@@ -260,7 +272,7 @@ package actor ReviewAccountRegistryStore {
         let visibleAccountKeys = registry.accounts.compactMap { account -> String? in
             savedAccountAuthSnapshotExists(
                 accountKey: account.accountKey,
-                environment: environment
+                dependencies: coreDependencies
             ) ? normalizedReviewAccountEmail(email: account.email) : nil
         }
         guard let sourceVisibleIndex = visibleAccountKeys.firstIndex(of: accountKey) else {
@@ -272,7 +284,7 @@ package actor ReviewAccountRegistryStore {
               let sourceIndex = storedAccountIndex(
                 in: registry,
                 matchingRuntimeAccountKey: accountKey,
-                environment: environment
+                dependencies: coreDependencies
               )
         else {
             return
@@ -282,7 +294,7 @@ package actor ReviewAccountRegistryStore {
         let visibleAccountsAfterRemoval = registry.accounts.filter { account in
             savedAccountAuthSnapshotExists(
                 accountKey: account.accountKey,
-                environment: environment
+                dependencies: coreDependencies
             )
         }
         let insertionIndex: Int
@@ -317,7 +329,7 @@ package actor ReviewAccountRegistryStore {
         guard let index = storedAccountIndex(
             in: registry,
             matchingRuntimeAccountKey: accountKey,
-            environment: environment
+            dependencies: coreDependencies
         ) else {
             return
         }
@@ -336,7 +348,7 @@ package actor ReviewAccountRegistryStore {
         guard let index = storedAccountIndex(
             in: registry,
             matchingRuntimeAccountKey: accountKey,
-            environment: environment
+            dependencies: coreDependencies
         ) else {
             return
         }
@@ -347,11 +359,11 @@ package actor ReviewAccountRegistryStore {
 
     @MainActor
     package func updateCachedRateLimits(from account: CodexAccount) throws {
-        var registry = try loadRegistryRecord(environment: environment)
+        var registry = try loadRegistry()
         guard let index = storedAccountIndex(
             in: registry,
             matchingRuntimeAccountKey: account.accountKey,
-            environment: environment
+            dependencies: coreDependencies
         ) else {
             return
         }
@@ -362,22 +374,22 @@ package actor ReviewAccountRegistryStore {
                 resetsAt: $0.resetsAt
             )
         }
-        registry.accounts[index].lastRateLimitFetchAt = Date()
+        registry.accounts[index].lastRateLimitFetchAt = coreDependencies.dateNow()
         registry.accounts[index].lastRateLimitError = account.lastRateLimitError?.nilIfEmpty
-        try saveRegistryRecord(registry, environment: environment)
+        try saveRegistry(registry)
     }
 
     @MainActor
     package func updateSavedAccountMetadata(from account: CodexAccount) throws {
-        var registry = try loadRegistryRecord(environment: environment)
+        var registry = try loadRegistry()
         if let index = storedAccountIndex(
             in: registry,
             matchingRuntimeAccountKey: account.accountKey,
-            environment: environment
+            dependencies: coreDependencies
         ) {
             registry.accounts[index].email = account.email
             registry.accounts[index].planType = account.planType
-            try saveRegistryRecord(registry, environment: environment)
+            try saveRegistry(registry)
         }
     }
 
@@ -409,55 +421,65 @@ package actor ReviewAccountRegistryStore {
     }
 
     package func cleanupProbeHome(_ probe: PreparedInactiveAccountProbe) {
-        try? FileManager.default.removeItem(at: probe.homeRootURL)
+        try? coreDependencies.fileSystem.removeItem(probe.homeRootURL)
     }
 
     private func makePreparedProbeRoot(
         copySharedAuthFromAccountKey accountKey: String?,
         copySharedAuthFromSharedHome: Bool = false
     ) throws -> URL {
-        let probeRoot = ReviewHomePaths.makeProbeRootURL(environment: environment)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let probeRoot = coreDependencies.paths.makeProbeRootURL()
+            .appendingPathComponent(coreDependencies.uuid().uuidString, isDirectory: true)
         do {
             let probeEnvironment = makeProbeEnvironment(homeRootURL: probeRoot)
-            let probeReviewHome = ReviewHomePaths.reviewHomeURL(environment: probeEnvironment)
-            try ReviewHomePaths.ensureReviewHomeScaffold(at: probeReviewHome)
+            let probeDependencies = ReviewCoreDependencies(
+                environment: probeEnvironment,
+                fileSystem: coreDependencies.fileSystem,
+                process: coreDependencies.process,
+                dateNow: coreDependencies.dateNow,
+                uuid: coreDependencies.uuid,
+                clock: coreDependencies.clock
+            )
+            let probeReviewHome = probeDependencies.paths.reviewHomeURL()
+            try ensureReviewHomeScaffold(at: probeReviewHome, dependencies: probeDependencies)
             try copySharedConfigurationIfPresent(into: probeReviewHome)
             if let accountKey {
                 let registry = try loadRegistry()
                 guard let storedAccount = storedAccount(
                     in: registry,
                     matchingRuntimeAccountKey: accountKey,
-                    environment: environment
+                    dependencies: coreDependencies
                 ) else {
                     throw ReviewAuthError.authenticationRequired("Saved account was not found.")
                 }
                 try persistAuthSnapshot(
                     from: persistedSavedAccountAuthURL(
                         accountKey: storedAccount.accountKey,
-                        environment: environment
+                        dependencies: coreDependencies
                     ),
-                    to: ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
+                    to: probeDependencies.paths.reviewAuthURL(),
+                    dependencies: coreDependencies
                 )
             } else if copySharedAuthFromSharedHome {
                 try persistAuthSnapshot(
-                    from: ReviewHomePaths.reviewAuthURL(environment: environment),
-                    to: ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
+                    from: coreDependencies.paths.reviewAuthURL(),
+                    to: probeDependencies.paths.reviewAuthURL(),
+                    dependencies: coreDependencies
                 )
             }
             return probeRoot
         } catch {
-            try? FileManager.default.removeItem(at: probeRoot)
+            try? coreDependencies.fileSystem.removeItem(probeRoot)
             throw error
         }
     }
 
-    private func loadRegistry() throws -> ReviewAccountRegistryRecord {
-        try loadRegistryRecord(environment: environment)
+    nonisolated private func loadRegistry() throws -> ReviewAccountRegistryRecord {
+        try loadRegistryRecord(dependencies: coreDependencies)
     }
 
-    private func saveRegistry(_ registry: ReviewAccountRegistryRecord) throws {
-        try saveRegistryRecord(registry, environment: environment)
+    nonisolated private func saveRegistry(_ registry: ReviewAccountRegistryRecord) throws {
+        try saveRegistryRecord(registry, dependencies: coreDependencies)
     }
 
     private func makeProbeEnvironment(homeRootURL: URL) -> [String: String] {
@@ -468,17 +490,17 @@ package actor ReviewAccountRegistryStore {
     }
 
     private func copySharedConfigurationIfPresent(into probeReviewHome: URL) throws {
-        let sharedConfigURL = ReviewHomePaths.reviewConfigURL(environment: environment)
-        let sharedAgentsURL = ReviewHomePaths.reviewAgentsURL(environment: environment)
+        let sharedConfigURL = coreDependencies.paths.reviewConfigURL()
+        let sharedAgentsURL = coreDependencies.paths.reviewAgentsURL()
         let targetConfigURL = probeReviewHome.appendingPathComponent("config.toml")
         let targetAgentsURL = probeReviewHome.appendingPathComponent("AGENTS.md")
-        if FileManager.default.fileExists(atPath: sharedConfigURL.path) {
-            try? FileManager.default.removeItem(at: targetConfigURL)
-            try FileManager.default.copyItem(at: sharedConfigURL, to: targetConfigURL)
+        if coreDependencies.fileSystem.fileExists(sharedConfigURL.path) {
+            try? coreDependencies.fileSystem.removeItem(targetConfigURL)
+            try coreDependencies.fileSystem.copyItem(sharedConfigURL, targetConfigURL)
         }
-        if FileManager.default.fileExists(atPath: sharedAgentsURL.path) {
-            try? FileManager.default.removeItem(at: targetAgentsURL)
-            try FileManager.default.copyItem(at: sharedAgentsURL, to: targetAgentsURL)
+        if coreDependencies.fileSystem.fileExists(sharedAgentsURL.path) {
+            try? coreDependencies.fileSystem.removeItem(targetAgentsURL)
+            try coreDependencies.fileSystem.copyItem(sharedAgentsURL, targetAgentsURL)
         }
     }
 
@@ -497,31 +519,30 @@ package actor ReviewAccountRegistryStore {
             planType: snapshot.planType,
             makeActive: makeActive
         )
-        let sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: environment)
-        let savedAuthURL = ReviewHomePaths.savedAccountAuthURL(
-            accountKey: record.accountKey,
-            environment: environment
-        )
-        let sharedAuthBackup = loadAuthData(at: sharedAuthURL)
-        let savedAuthBackup = loadAuthData(at: savedAuthURL)
+        let sharedAuthURL = coreDependencies.paths.reviewAuthURL()
+        let savedAuthURL = coreDependencies.paths.savedAccountAuthURL(accountKey: record.accountKey)
+        let sharedAuthBackup = loadAuthData(at: sharedAuthURL, dependencies: coreDependencies)
+        let savedAuthBackup = loadAuthData(at: savedAuthURL, dependencies: coreDependencies)
 
         do {
             try persistAuthSnapshot(
                 from: sourceAuthURL,
-                to: savedAuthURL
+                to: savedAuthURL,
+                dependencies: coreDependencies
             )
             if makeActive || refreshSharedAuth {
                 try persistAuthSnapshot(
                     from: sourceAuthURL,
-                    to: sharedAuthURL
+                    to: sharedAuthURL,
+                    dependencies: coreDependencies
                 )
             }
-            try saveRegistryRecord(registry, environment: environment)
+            try saveRegistry(registry)
         } catch {
             rollbackRegistryMutation(
                 originalRegistry: originalRegistry,
                 sharedAuthBackup: sharedAuthBackup,
-                environment: environment,
+                dependencies: coreDependencies,
                 savedAuthURL: savedAuthURL,
                 savedAuthBackup: savedAuthBackup
             )
@@ -531,12 +552,12 @@ package actor ReviewAccountRegistryStore {
     }
 
     private func loadSharedAuthData() -> Data? {
-        loadAuthData(at: ReviewHomePaths.reviewAuthURL(environment: environment))
+        loadAuthData(at: coreDependencies.paths.reviewAuthURL(), dependencies: coreDependencies)
     }
 
     private func removeItemIfExists(at url: URL) throws {
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
+        if coreDependencies.fileSystem.fileExists(url.path) {
+            try coreDependencies.fileSystem.removeItem(url)
         }
     }
 }
@@ -544,21 +565,34 @@ package actor ReviewAccountRegistryStore {
 func loadRegistryRecord(
     environment: [String: String]
 ) throws -> ReviewAccountRegistryRecord {
-    try migrateLegacySharedAuthIfNeeded(environment: environment)
-    let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
-    guard let data = try? Data(contentsOf: registryURL) else {
+    try loadRegistryRecord(dependencies: .live(environment: environment))
+}
+
+func loadRegistryRecord(
+    dependencies: ReviewCoreDependencies
+) throws -> ReviewAccountRegistryRecord {
+    try migrateLegacySharedAuthIfNeeded(dependencies: dependencies)
+    let registryURL = dependencies.paths.accountsRegistryURL()
+    guard let data = try? dependencies.fileSystem.readData(registryURL) else {
         return .init()
     }
     guard let decoded = try? JSONDecoder().decode(ReviewAccountRegistryRecord.self, from: data)
     else {
         return .init()
     }
-    return migrateRegistryRecordIfNeeded(decoded, environment: environment)
+    return migrateRegistryRecordIfNeeded(decoded, dependencies: dependencies)
 }
 
 private func saveRegistryRecord(
     _ registry: ReviewAccountRegistryRecord,
     environment: [String: String]
+) throws {
+    try saveRegistryRecord(registry, dependencies: .live(environment: environment))
+}
+
+private func saveRegistryRecord(
+    _ registry: ReviewAccountRegistryRecord,
+    dependencies: ReviewCoreDependencies
 ) throws {
     if let failureMessage = ReviewAccountRegistryStore.saveRegistryRecordFailureMessageForTesting {
         throw NSError(
@@ -567,18 +601,19 @@ private func saveRegistryRecord(
             userInfo: [NSLocalizedDescriptionKey: failureMessage]
         )
     }
-    let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
-    try FileManager.default.createDirectory(
-        at: registryURL.deletingLastPathComponent(),
-        withIntermediateDirectories: true
-    )
+    let registryURL = dependencies.paths.accountsRegistryURL()
+    try dependencies.fileSystem.createDirectory(registryURL.deletingLastPathComponent(), true)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    try encoder.encode(registry).write(to: registryURL, options: .atomic)
+    try dependencies.fileSystem.writeData(encoder.encode(registry), registryURL, [.atomic])
 }
 
 private func loadAuthData(at url: URL) -> Data? {
-    try? Data(contentsOf: url)
+    loadAuthData(at: url, dependencies: .live())
+}
+
+private func loadAuthData(at url: URL, dependencies: ReviewCoreDependencies) -> Data? {
+    try? dependencies.fileSystem.readData(url)
 }
 
 private func rollbackRegistryMutation(
@@ -589,31 +624,94 @@ private func rollbackRegistryMutation(
     savedAuthBackup: Data? = nil,
     savedAccountDirectoryBackups: [SavedAccountDirectoryBackup] = []
 ) {
-    try? saveRegistryRecord(originalRegistry, environment: environment)
+    rollbackRegistryMutation(
+        originalRegistry: originalRegistry,
+        sharedAuthBackup: sharedAuthBackup,
+        dependencies: .live(environment: environment),
+        savedAuthURL: savedAuthURL,
+        savedAuthBackup: savedAuthBackup,
+        savedAccountDirectoryBackups: savedAccountDirectoryBackups
+    )
+}
+
+private func rollbackRegistryMutation(
+    originalRegistry: ReviewAccountRegistryRecord,
+    sharedAuthBackup: Data?,
+    dependencies: ReviewCoreDependencies,
+    savedAuthURL: URL? = nil,
+    savedAuthBackup: Data? = nil,
+    savedAccountDirectoryBackups: [SavedAccountDirectoryBackup] = []
+) {
+    try? saveRegistryRecord(originalRegistry, dependencies: dependencies)
     try? restoreAuthData(
         from: sharedAuthBackup,
-        to: ReviewHomePaths.reviewAuthURL(environment: environment)
+        to: dependencies.paths.reviewAuthURL(),
+        dependencies: dependencies
     )
     if let savedAuthURL {
-        try? restoreAuthData(from: savedAuthBackup, to: savedAuthURL)
+        try? restoreAuthData(from: savedAuthBackup, to: savedAuthURL, dependencies: dependencies)
     }
     for backup in savedAccountDirectoryBackups {
-        try? restoreAuthData(from: backup.authData, to: backup.directoryURL.appendingPathComponent("auth.json"))
+        try? restoreAuthData(
+            from: backup.authData,
+            to: backup.directoryURL.appendingPathComponent("auth.json"),
+            dependencies: dependencies
+        )
     }
 }
 
 private func restoreAuthData(from backup: Data?, to url: URL) throws {
+    try restoreAuthData(from: backup, to: url, dependencies: .live())
+}
+
+private func restoreAuthData(
+    from backup: Data?,
+    to url: URL,
+    dependencies: ReviewCoreDependencies
+) throws {
     if let backup {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try backup.write(to: url, options: .atomic)
+        try dependencies.fileSystem.createDirectory(url.deletingLastPathComponent(), true)
+        try dependencies.fileSystem.writeData(backup, url, [.atomic])
         return
     }
-    if FileManager.default.fileExists(atPath: url.path) {
-        try FileManager.default.removeItem(at: url)
+    if dependencies.fileSystem.fileExists(url.path) {
+        try dependencies.fileSystem.removeItem(url)
     }
 }
 
+private func ensureReviewHomeScaffold(
+    at homeURL: URL,
+    dependencies: ReviewCoreDependencies
+) throws {
+    try dependencies.fileSystem.createDirectory(homeURL, true)
+    try createEmptyFileIfMissing(
+        at: homeURL.appendingPathComponent("config.toml"),
+        dependencies: dependencies
+    )
+    try createEmptyFileIfMissing(
+        at: homeURL.appendingPathComponent("AGENTS.md"),
+        dependencies: dependencies
+    )
+}
+
+private func createEmptyFileIfMissing(
+    at url: URL,
+    dependencies: ReviewCoreDependencies
+) throws {
+    guard dependencies.fileSystem.fileExists(url.path) == false else {
+        return
+    }
+    try dependencies.fileSystem.writeData(Data(), url, [])
+}
+
 private func removeSavedAccountDirectory(_ directoryURL: URL) throws {
+    try removeSavedAccountDirectory(directoryURL, dependencies: .live())
+}
+
+private func removeSavedAccountDirectory(
+    _ directoryURL: URL,
+    dependencies: ReviewCoreDependencies
+) throws {
     if let failingPathComponent = ReviewAccountRegistryStore.savedAccountDirectoryDeleteFailurePathComponentForTesting,
        directoryURL.lastPathComponent == failingPathComponent
     {
@@ -623,7 +721,7 @@ private func removeSavedAccountDirectory(_ directoryURL: URL) throws {
             userInfo: [NSLocalizedDescriptionKey: "Directory delete failed."]
         )
     }
-    try FileManager.default.removeItem(at: directoryURL)
+    try dependencies.fileSystem.removeItem(directoryURL)
 }
 
 private struct SavedAccountDirectoryBackup {
@@ -632,10 +730,20 @@ private struct SavedAccountDirectoryBackup {
 }
 
 private func savedAccountDirectoryBackups(for directoryURLs: [URL]) -> [SavedAccountDirectoryBackup] {
+    savedAccountDirectoryBackups(for: directoryURLs, dependencies: .live())
+}
+
+private func savedAccountDirectoryBackups(
+    for directoryURLs: [URL],
+    dependencies: ReviewCoreDependencies
+) -> [SavedAccountDirectoryBackup] {
     directoryURLs.map { directoryURL in
         SavedAccountDirectoryBackup(
             directoryURL: directoryURL,
-            authData: loadAuthData(at: directoryURL.appendingPathComponent("auth.json"))
+            authData: loadAuthData(
+                at: directoryURL.appendingPathComponent("auth.json"),
+                dependencies: dependencies
+            )
         )
     }
 }
@@ -643,11 +751,18 @@ private func savedAccountDirectoryBackups(for directoryURLs: [URL]) -> [SavedAcc
 private func migrateLegacySharedAuthIfNeeded(
     environment: [String: String]
 ) throws {
-    let registryURL = ReviewHomePaths.accountsRegistryURL(environment: environment)
-    guard FileManager.default.fileExists(atPath: registryURL.path) == false else {
+    try migrateLegacySharedAuthIfNeeded(dependencies: .live(environment: environment))
+}
+
+private func migrateLegacySharedAuthIfNeeded(
+    dependencies: ReviewCoreDependencies
+) throws {
+    let registryURL = dependencies.paths.accountsRegistryURL()
+    guard dependencies.fileSystem.fileExists(registryURL.path) == false else {
         return
     }
-    guard let snapshot = loadAuthSnapshot(at: ReviewHomePaths.reviewAuthURL(environment: environment)) else {
+    let sharedAuthURL = dependencies.paths.reviewAuthURL()
+    guard let snapshot = loadAuthSnapshot(at: sharedAuthURL, dependencies: dependencies) else {
         return
     }
     var registry = ReviewAccountRegistryRecord()
@@ -658,10 +773,11 @@ private func migrateLegacySharedAuthIfNeeded(
         makeActive: true
     )
     try persistAuthSnapshot(
-        from: ReviewHomePaths.reviewAuthURL(environment: environment),
-        to: ReviewHomePaths.savedAccountAuthURL(accountKey: record.accountKey, environment: environment)
+        from: sharedAuthURL,
+        to: dependencies.paths.savedAccountAuthURL(accountKey: record.accountKey),
+        dependencies: dependencies
     )
-    try saveRegistryRecord(registry, environment: environment)
+    try saveRegistryRecord(registry, dependencies: dependencies)
 }
 
 private func upsertSavedAccountRecord(
@@ -753,21 +869,36 @@ private func persistAuthSnapshot(
     from sourceURL: URL,
     to destinationURL: URL
 ) throws {
-    try FileManager.default.createDirectory(
-        at: destinationURL.deletingLastPathComponent(),
-        withIntermediateDirectories: true
-    )
-    let data = try Data(contentsOf: sourceURL)
-    try data.write(to: destinationURL, options: .atomic)
+    try persistAuthSnapshot(from: sourceURL, to: destinationURL, dependencies: .live())
+}
+
+private func persistAuthSnapshot(
+    from sourceURL: URL,
+    to destinationURL: URL,
+    dependencies: ReviewCoreDependencies
+) throws {
+    try dependencies.fileSystem.createDirectory(destinationURL.deletingLastPathComponent(), true)
+    let data = try dependencies.fileSystem.readData(sourceURL)
+    try dependencies.fileSystem.writeData(data, destinationURL, [.atomic])
 }
 
 func canonicalizeRegistryRecord(
     _ registry: ReviewAccountRegistryRecord,
     environment: [String: String]
 ) -> ReviewAccountRegistryRecord {
+    canonicalizeRegistryRecord(
+        registry,
+        dependencies: .live(environment: environment)
+    )
+}
+
+func canonicalizeRegistryRecord(
+    _ registry: ReviewAccountRegistryRecord,
+    dependencies: ReviewCoreDependencies
+) -> ReviewAccountRegistryRecord {
     let canonicalAccountsByEmail = canonicalAccountsByNormalizedEmail(
         in: registry,
-        environment: environment
+        dependencies: dependencies
     )
     var emittedEmails: Set<String> = []
     let deduplicatedAccounts: [ReviewSavedAccountRecord] = registry.accounts.compactMap { account in
@@ -808,13 +939,27 @@ private func shouldReplaceCanonicalAccount(
     activeAccountKey: String?,
     environment: [String: String]
 ) -> Bool {
+    shouldReplaceCanonicalAccount(
+        current,
+        with: candidate,
+        activeAccountKey: activeAccountKey,
+        dependencies: .live(environment: environment)
+    )
+}
+
+private func shouldReplaceCanonicalAccount(
+    _ current: ReviewSavedAccountRecord,
+    with candidate: ReviewSavedAccountRecord,
+    activeAccountKey: String?,
+    dependencies: ReviewCoreDependencies
+) -> Bool {
     let currentHasAuthSnapshot = savedAccountAuthSnapshotExists(
         accountKey: current.accountKey,
-        environment: environment
+        dependencies: dependencies
     )
     let candidateHasAuthSnapshot = savedAccountAuthSnapshotExists(
         accountKey: candidate.accountKey,
-        environment: environment
+        dependencies: dependencies
     )
     if currentHasAuthSnapshot != candidateHasAuthSnapshot {
         return candidateHasAuthSnapshot
@@ -846,6 +991,16 @@ func canonicalAccountsByNormalizedEmail(
     in registry: ReviewAccountRegistryRecord,
     environment: [String: String]
 ) -> [String: ReviewSavedAccountRecord] {
+    canonicalAccountsByNormalizedEmail(
+        in: registry,
+        dependencies: .live(environment: environment)
+    )
+}
+
+func canonicalAccountsByNormalizedEmail(
+    in registry: ReviewAccountRegistryRecord,
+    dependencies: ReviewCoreDependencies
+) -> [String: ReviewSavedAccountRecord] {
     var canonicalAccountsByEmail: [String: ReviewSavedAccountRecord] = [:]
     for account in registry.accounts {
         let normalizedEmail = normalizedReviewAccountEmail(email: account.email)
@@ -854,7 +1009,7 @@ func canonicalAccountsByNormalizedEmail(
                 existingAccount,
                 with: account,
                 activeAccountKey: registry.activeAccountKey,
-                environment: environment
+                dependencies: dependencies
             ) {
                 canonicalAccountsByEmail[normalizedEmail] = account
             }
@@ -885,20 +1040,30 @@ private func migrateRegistryRecordIfNeeded(
     _ registry: ReviewAccountRegistryRecord,
     environment: [String: String]
 ) -> ReviewAccountRegistryRecord {
+    migrateRegistryRecordIfNeeded(
+        registry,
+        dependencies: .live(environment: environment)
+    )
+}
+
+private func migrateRegistryRecordIfNeeded(
+    _ registry: ReviewAccountRegistryRecord,
+    dependencies: ReviewCoreDependencies
+) -> ReviewAccountRegistryRecord {
     if registryUsesEmailKeys(registry) {
         let canonicalRegistry = canonicalizeRegistryRecord(
             registry,
-            environment: environment
+            dependencies: dependencies
         )
         if canonicalRegistry != registry {
-            try? saveRegistryRecord(canonicalRegistry, environment: environment)
+            try? saveRegistryRecord(canonicalRegistry, dependencies: dependencies)
         }
         return canonicalRegistry
     }
 
     let canonicalOriginalAccountsByEmail = canonicalAccountsByNormalizedEmail(
         in: registry,
-        environment: environment
+        dependencies: dependencies
     )
     let migratedAccounts = registry.accounts.map { account in
         var migrated = account
@@ -918,19 +1083,19 @@ private func migrateRegistryRecordIfNeeded(
             activeAccountKey: migratedActiveAccountKey,
             accounts: migratedAccounts
         ),
-        environment: environment
+        dependencies: dependencies
     )
 
     guard migrateSavedAccountDirectories(
         fromCanonicalAccountsByEmail: canonicalOriginalAccountsByEmail,
         to: migratedRegistry,
-        environment: environment
+        dependencies: dependencies
     ) else {
         return registry
     }
 
     if registry != migratedRegistry {
-        try? saveRegistryRecord(migratedRegistry, environment: environment)
+        try? saveRegistryRecord(migratedRegistry, dependencies: dependencies)
     }
 
     return migratedRegistry
@@ -941,61 +1106,69 @@ private func migrateSavedAccountDirectories(
     to migratedRegistry: ReviewAccountRegistryRecord,
     environment: [String: String]
 ) -> Bool {
+    migrateSavedAccountDirectories(
+        fromCanonicalAccountsByEmail: canonicalOriginalAccountsByEmail,
+        to: migratedRegistry,
+        dependencies: .live(environment: environment)
+    )
+}
+
+private func migrateSavedAccountDirectories(
+    fromCanonicalAccountsByEmail canonicalOriginalAccountsByEmail: [String: ReviewSavedAccountRecord],
+    to migratedRegistry: ReviewAccountRegistryRecord,
+    dependencies: ReviewCoreDependencies
+) -> Bool {
     for migratedAccount in migratedRegistry.accounts {
-        let destinationAuthURL = ReviewHomePaths.savedAccountAuthURL(
-            accountKey: migratedAccount.accountKey,
-            environment: environment
-        )
-        let destinationURL = ReviewHomePaths.savedAccountDirectoryURL(
-            accountKey: migratedAccount.accountKey,
-            environment: environment
-        )
+        let destinationAuthURL = dependencies.paths.savedAccountAuthURL(accountKey: migratedAccount.accountKey)
+        let destinationURL = dependencies.paths.savedAccountDirectoryURL(accountKey: migratedAccount.accountKey)
 
         var candidateURLs: [URL] = []
         if let originalAccount = canonicalOriginalAccountsByEmail[migratedAccount.accountKey] {
             candidateURLs.append(contentsOf: savedAccountDirectoryCandidateURLs(
                 accountKey: originalAccount.accountKey,
-                environment: environment
+                dependencies: dependencies
             ))
         }
         candidateURLs.append(contentsOf: savedAccountDirectoryCandidateURLs(
             accountKey: migratedAccount.accountKey,
-            environment: environment
+            dependencies: dependencies
         ))
         candidateURLs = candidateURLs.uniqued()
         let sourceURLs = candidateURLs.filter { $0 != destinationURL }
-        let canonicalSourceURL = sourceURLs.first(where: directoryContainsSavedAccountAuthSnapshot(_:))
-        let hasSourceSnapshot = sourceURLs.contains(where: directoryContainsSavedAccountAuthSnapshot(_:))
+        let canonicalSourceURL = sourceURLs.first {
+            directoryContainsSavedAccountAuthSnapshot($0, dependencies: dependencies)
+        }
+        let hasSourceSnapshot = sourceURLs.contains {
+            directoryContainsSavedAccountAuthSnapshot($0, dependencies: dependencies)
+        }
 
-        if FileManager.default.fileExists(atPath: destinationAuthURL.path) {
+        if dependencies.fileSystem.fileExists(destinationAuthURL.path) {
             guard let canonicalSourceURL else {
                 continue
             }
             let sourceAuthURL = canonicalSourceURL.appendingPathComponent("auth.json")
-            let destinationAuthData = try? Data(contentsOf: destinationAuthURL)
-            let sourceAuthData = try? Data(contentsOf: sourceAuthURL)
+            let destinationAuthData = try? dependencies.fileSystem.readData(destinationAuthURL)
+            let sourceAuthData = try? dependencies.fileSystem.readData(sourceAuthURL)
             if destinationAuthData == sourceAuthData {
                 continue
             }
-            let destinationModificationDate =
-                ((try? destinationAuthURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate)
+            let destinationModificationDate = dependencies.fileSystem.contentModificationDate(destinationAuthURL)
                 ?? .distantPast
-            let sourceModificationDate =
-                ((try? sourceAuthURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate)
+            let sourceModificationDate = dependencies.fileSystem.contentModificationDate(sourceAuthURL)
                 ?? .distantPast
             if destinationModificationDate >= sourceModificationDate {
                 continue
             }
             do {
-                try FileManager.default.removeItem(at: destinationURL)
-                try FileManager.default.copyItem(at: canonicalSourceURL, to: destinationURL)
+                try dependencies.fileSystem.removeItem(destinationURL)
+                try dependencies.fileSystem.copyItem(canonicalSourceURL, destinationURL)
                 continue
             } catch {
                 return false
             }
         }
 
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
+        if dependencies.fileSystem.fileExists(destinationURL.path) {
             if hasSourceSnapshot {
                 return false
             }
@@ -1004,17 +1177,14 @@ private func migrateSavedAccountDirectories(
 
         if let canonicalSourceURL {
             do {
-                try FileManager.default.createDirectory(
-                    at: destinationURL.deletingLastPathComponent(),
-                    withIntermediateDirectories: true
-                )
-                try FileManager.default.copyItem(at: canonicalSourceURL, to: destinationURL)
+                try dependencies.fileSystem.createDirectory(destinationURL.deletingLastPathComponent(), true)
+                try dependencies.fileSystem.copyItem(canonicalSourceURL, destinationURL)
             } catch {
                 return false
             }
         }
 
-        if FileManager.default.fileExists(atPath: destinationAuthURL.path) == false,
+        if dependencies.fileSystem.fileExists(destinationAuthURL.path) == false,
            hasSourceSnapshot
         {
             return false
@@ -1028,15 +1198,19 @@ private func savedAccountDirectoryCandidateURLs(
     accountKey: String,
     environment: [String: String]
 ) -> [URL] {
+    savedAccountDirectoryCandidateURLs(
+        accountKey: accountKey,
+        dependencies: .live(environment: environment)
+    )
+}
+
+private func savedAccountDirectoryCandidateURLs(
+    accountKey: String,
+    dependencies: ReviewCoreDependencies
+) -> [URL] {
     [
-        ReviewHomePaths.savedAccountDirectoryURL(
-            accountKey: accountKey,
-            environment: environment
-        ),
-        ReviewHomePaths.legacySavedAccountDirectoryURL(
-            accountKey: accountKey,
-            environment: environment
-        )
+        dependencies.paths.savedAccountDirectoryURL(accountKey: accountKey),
+        dependencies.paths.legacySavedAccountDirectoryURL(accountKey: accountKey),
     ].uniqued()
 }
 
@@ -1044,33 +1218,59 @@ func savedAccountAuthSnapshotExists(
     accountKey: String,
     environment: [String: String]
 ) -> Bool {
+    savedAccountAuthSnapshotExists(
+        accountKey: accountKey,
+        dependencies: .live(environment: environment)
+    )
+}
+
+func savedAccountAuthSnapshotExists(
+    accountKey: String,
+    dependencies: ReviewCoreDependencies
+) -> Bool {
     savedAccountDirectoryCandidateURLs(
         accountKey: accountKey,
-        environment: environment
+        dependencies: dependencies
     )
-    .contains(where: directoryContainsSavedAccountAuthSnapshot(_:))
+    .contains {
+        directoryContainsSavedAccountAuthSnapshot($0, dependencies: dependencies)
+    }
 }
 
 private func directoryContainsSavedAccountAuthSnapshot(_ directoryURL: URL) -> Bool {
-    FileManager.default.fileExists(
-        atPath: directoryURL.appendingPathComponent("auth.json").path
-    )
+    directoryContainsSavedAccountAuthSnapshot(directoryURL, dependencies: .live())
+}
+
+private func directoryContainsSavedAccountAuthSnapshot(
+    _ directoryURL: URL,
+    dependencies: ReviewCoreDependencies
+) -> Bool {
+    dependencies.fileSystem.fileExists(directoryURL.appendingPathComponent("auth.json").path)
 }
 
 private func persistedSavedAccountAuthURL(
     accountKey: String,
     environment: [String: String]
 ) -> URL {
+    persistedSavedAccountAuthURL(
+        accountKey: accountKey,
+        dependencies: .live(environment: environment)
+    )
+}
+
+private func persistedSavedAccountAuthURL(
+    accountKey: String,
+    dependencies: ReviewCoreDependencies
+) -> URL {
     savedAccountDirectoryCandidateURLs(
         accountKey: accountKey,
-        environment: environment
+        dependencies: dependencies
     )
-    .first(where: directoryContainsSavedAccountAuthSnapshot(_:))?
+    .first {
+        directoryContainsSavedAccountAuthSnapshot($0, dependencies: dependencies)
+    }?
     .appendingPathComponent("auth.json")
-    ?? ReviewHomePaths.savedAccountAuthURL(
-        accountKey: accountKey,
-        environment: environment
-    )
+    ?? dependencies.paths.savedAccountAuthURL(accountKey: accountKey)
 }
 
 private func savedAccountDirectories(
@@ -1078,35 +1278,31 @@ private func savedAccountDirectories(
     fallbackAccountKey: String? = nil,
     environment: [String: String]
 ) -> [URL] {
-    let accountsDirectoryURL = ReviewHomePaths.accountsDirectoryURL(environment: environment)
-    let directoryURLs = (try? FileManager.default.contentsOfDirectory(
-        at: accountsDirectoryURL,
-        includingPropertiesForKeys: nil,
-        options: [.skipsHiddenFiles]
-    )) ?? []
+    savedAccountDirectories(
+        matchingNormalizedEmail: normalizedEmail,
+        fallbackAccountKey: fallbackAccountKey,
+        dependencies: .live(environment: environment)
+    )
+}
+
+private func savedAccountDirectories(
+    matchingNormalizedEmail normalizedEmail: String,
+    fallbackAccountKey: String? = nil,
+    dependencies: ReviewCoreDependencies
+) -> [URL] {
+    let accountsDirectoryURL = dependencies.paths.accountsDirectoryURL()
+    let directoryURLs = (try? dependencies.fileSystem.contentsOfDirectory(accountsDirectoryURL, true)) ?? []
     let candidatePathComponents: Set<String> = {
         var components: Set<String> = [
-            ReviewHomePaths.savedAccountDirectoryURL(
-                accountKey: normalizedEmail,
-                environment: environment
-            ).lastPathComponent,
-            ReviewHomePaths.legacySavedAccountDirectoryURL(
-                accountKey: normalizedEmail,
-                environment: environment
-            ).lastPathComponent,
+            dependencies.paths.savedAccountDirectoryURL(accountKey: normalizedEmail).lastPathComponent,
+            dependencies.paths.legacySavedAccountDirectoryURL(accountKey: normalizedEmail).lastPathComponent,
         ]
         if let fallbackAccountKey {
             components.insert(
-                ReviewHomePaths.savedAccountDirectoryURL(
-                    accountKey: fallbackAccountKey,
-                    environment: environment
-                ).lastPathComponent
+                dependencies.paths.savedAccountDirectoryURL(accountKey: fallbackAccountKey).lastPathComponent
             )
             components.insert(
-                ReviewHomePaths.legacySavedAccountDirectoryURL(
-                    accountKey: fallbackAccountKey,
-                    environment: environment
-                ).lastPathComponent
+                dependencies.paths.legacySavedAccountDirectoryURL(accountKey: fallbackAccountKey).lastPathComponent
             )
         }
         return components
@@ -1114,9 +1310,10 @@ private func savedAccountDirectories(
 
     var resolvedDirectories = directoryURLs.filter { candidatePathComponents.contains($0.lastPathComponent) }
     resolvedDirectories.append(contentsOf: directoryURLs.filter { directoryURL in
-        guard directoryContainsSavedAccountAuthSnapshot(directoryURL),
+        guard directoryContainsSavedAccountAuthSnapshot(directoryURL, dependencies: dependencies),
               let snapshot = loadAuthSnapshot(
-                at: directoryURL.appendingPathComponent("auth.json")
+                at: directoryURL.appendingPathComponent("auth.json"),
+                dependencies: dependencies
               )
         else {
             return false
@@ -1125,7 +1322,7 @@ private func savedAccountDirectories(
     })
     var seenPaths: Set<String> = []
     return resolvedDirectories.filter { directoryURL in
-        guard FileManager.default.fileExists(atPath: directoryURL.path) else {
+        guard dependencies.fileSystem.fileExists(directoryURL.path) else {
             return false
         }
         return seenPaths.insert(directoryURL.path).inserted
@@ -1145,7 +1342,11 @@ struct ReviewStoredAuthSnapshot: Equatable, Sendable {
 }
 
 func loadAuthSnapshot(at authURL: URL) -> ReviewStoredAuthSnapshot? {
-    guard let data = try? Data(contentsOf: authURL),
+    loadAuthSnapshot(at: authURL, dependencies: .live())
+}
+
+func loadAuthSnapshot(at authURL: URL, dependencies: ReviewCoreDependencies) -> ReviewStoredAuthSnapshot? {
+    guard let data = try? dependencies.fileSystem.readData(authURL),
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           let authMode = object["auth_mode"] as? String,
           authMode == "chatgpt",

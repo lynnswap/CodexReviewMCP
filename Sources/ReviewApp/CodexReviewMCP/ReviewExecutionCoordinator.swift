@@ -13,15 +13,19 @@ package actor ReviewExecutionCoordinator {
         package var defaultTimeoutSeconds: Int?
         package var codexCommand: String
         package var environment: [String: String]
+        package var coreDependencies: ReviewCoreDependencies
 
         package init(
             defaultTimeoutSeconds: Int? = nil,
             codexCommand: String = "codex",
-            environment: [String: String] = ProcessInfo.processInfo.environment
+            environment: [String: String] = ProcessInfo.processInfo.environment,
+            coreDependencies: ReviewCoreDependencies? = nil
         ) {
+            let resolvedCoreDependencies = coreDependencies ?? .live(environment: environment)
             self.defaultTimeoutSeconds = defaultTimeoutSeconds
             self.codexCommand = codexCommand
-            self.environment = environment
+            self.environment = resolvedCoreDependencies.environment
+            self.coreDependencies = resolvedCoreDependencies
         }
     }
 
@@ -56,7 +60,7 @@ package actor ReviewExecutionCoordinator {
     ) async throws -> ReviewReadResult {
         let request = try request.validated()
         let requestOptions = try request.reviewRequestOptions().validated()
-        let initialResolvedModel = resolveInitialReviewModel(environment: configuration.environment)
+        let initialResolvedModel = resolveInitialReviewModel()
         let jobID = try await store.enqueueReview(
             sessionID: sessionID,
             request: requestOptions,
@@ -192,13 +196,15 @@ package actor ReviewExecutionCoordinator {
         stateChangeStream: AsyncStream<Void>,
         store: CodexReviewStore
     ) async throws {
-        let now = Date()
-        let runner = AppServerReviewRunner(
+        let now = configuration.coreDependencies.dateNow()
+        var runner = AppServerReviewRunner(
             settingsBuilder: ReviewExecutionSettingsBuilder(
                 codexCommand: configuration.codexCommand,
                 environment: configuration.environment
-            )
+            ),
+            coreDependencies: configuration.coreDependencies
         )
+        runner.clock = configuration.coreDependencies.clock
         let requestedTerminationReason: @Sendable () async -> ReviewTerminationReason? = { [weak self] in
             guard let self else {
                 return nil
@@ -265,7 +271,7 @@ package actor ReviewExecutionCoordinator {
                     reason: reason,
                     model: initialModel,
                     startedAt: now,
-                    endedAt: Date()
+                    endedAt: configuration.coreDependencies.dateNow()
                 )
             } else {
                 await store.failToStart(
@@ -273,7 +279,7 @@ package actor ReviewExecutionCoordinator {
                     message: "Failed to start review.",
                     model: initialModel,
                     startedAt: now,
-                    endedAt: Date()
+                    endedAt: configuration.coreDependencies.dateNow()
                 )
             }
         } catch let error as ReviewBootstrapFailure {
@@ -283,7 +289,7 @@ package actor ReviewExecutionCoordinator {
                     reason: reason,
                     model: error.model ?? initialModel,
                     startedAt: now,
-                    endedAt: Date()
+                    endedAt: configuration.coreDependencies.dateNow()
                 )
             } else {
                 await store.failToStart(
@@ -291,7 +297,7 @@ package actor ReviewExecutionCoordinator {
                     message: error.errorDescription ?? "Failed to start review.",
                     model: error.model ?? initialModel,
                     startedAt: now,
-                    endedAt: Date()
+                    endedAt: configuration.coreDependencies.dateNow()
                 )
             }
         } catch let error as ReviewError where isBootstrapFailure(error) {
@@ -301,7 +307,7 @@ package actor ReviewExecutionCoordinator {
                     reason: reason,
                     model: initialModel,
                     startedAt: now,
-                    endedAt: Date()
+                    endedAt: configuration.coreDependencies.dateNow()
                 )
             } else {
                 await store.failToStart(
@@ -309,7 +315,7 @@ package actor ReviewExecutionCoordinator {
                     message: error.errorDescription ?? "Failed to start review.",
                     model: initialModel,
                     startedAt: now,
-                    endedAt: Date()
+                    endedAt: configuration.coreDependencies.dateNow()
                 )
             }
         } catch {
@@ -319,7 +325,7 @@ package actor ReviewExecutionCoordinator {
                 message: message,
                 model: initialModel,
                 startedAt: now,
-                endedAt: Date()
+                endedAt: configuration.coreDependencies.dateNow()
             )
         }
 
@@ -423,6 +429,24 @@ package actor ReviewExecutionCoordinator {
             cancelled: cancelled,
             status: status
         )
+    }
+
+    private func resolveInitialReviewModel() -> String? {
+        let localConfig = (try? ReviewLocalConfigClient(dependencies: configuration.coreDependencies).load()) ?? .init()
+        let codexHome = configuration.coreDependencies.paths.codexHomeURL()
+        let fallbackConfig = loadFallbackAppServerConfig(
+            environment: configuration.environment,
+            codexHome: codexHome
+        )
+        let profileClearsReviewModel = activeProfileClearsReviewModel(
+            environment: configuration.environment,
+            codexHome: codexHome
+        )
+        return resolveReviewModelSelection(
+            localConfig: localConfig,
+            resolvedConfig: fallbackConfig,
+            profileClearsReviewModel: profileClearsReviewModel
+        ).reportedModelBeforeThreadStart
     }
 }
 

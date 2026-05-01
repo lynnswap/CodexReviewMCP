@@ -12,7 +12,7 @@ extension CodexReviewStore {
     public convenience init() {
         let environment = ProcessInfo.processInfo.environment
         let arguments = CommandLine.arguments
-        self.init(
+        self.init(dependencies: .live(
             configuration: Self.makeConfiguration(
                 environment: environment,
                 arguments: arguments
@@ -21,7 +21,7 @@ extension CodexReviewStore {
                 environment: environment,
                 arguments: arguments
             )
-        )
+        ))
     }
 
     package convenience init(
@@ -44,8 +44,8 @@ extension CodexReviewStore {
                 let baseSession = try await authSessionFactory()
                 return try await LegacyProbeScopedReviewAuthSession(
                     base: baseSession,
-                    sharedEnvironment: configuration.environment,
-                    probeEnvironment: environment
+                    sharedDependencies: configuration.coreDependencies,
+                    probeDependencies: configuration.coreDependencies.replacingEnvironment(environment)
                 )
             }
         } else {
@@ -76,8 +76,9 @@ extension CodexReviewStore {
         inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
-        let components = ReviewMonitorCoordinator.live(
+        self.init(dependencies: .live(
             configuration: configuration,
+            diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
             sharedAuthSessionFactory: sharedAuthSessionFactory,
             loginAuthSessionFactory: loginAuthSessionFactory,
@@ -85,12 +86,7 @@ extension CodexReviewStore {
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
             inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
-        )
-        self.init(
-            coordinator: components.coordinator,
-            settingsService: components.settingsService,
-            diagnosticsURL: diagnosticsURL
-        )
+        ))
     }
 
     package func startReview(
@@ -180,7 +176,7 @@ extension CodexReviewStore {
             throw ReviewError.accessDenied("Session \(sessionID) is already closed.")
         }
         let request = try request.validated()
-        let jobID = UUID().uuidString
+        let jobID = coreDependencies.uuid().uuidString
         appendQueuedJob(
             .init(jobID: jobID, sessionID: sessionID, request: request, initialModel: initialModel)
         )
@@ -343,7 +339,7 @@ extension CodexReviewStore {
 
         switch job.status {
         case .queued:
-            let endedAt = Date()
+            let endedAt = coreDependencies.dateNow()
             updateJob(id: jobID) { job in
                 job.cancellationRequested = false
                 job.status = .cancelled
@@ -473,10 +469,14 @@ extension CodexReviewStore {
         return error.localizedDescription
     }
 
-    private static func makeConfiguration(
+    package static func makeConfiguration(
         environment: [String: String],
         arguments: [String]
     ) -> ReviewServerConfiguration {
+        let coreDependencies = ReviewCoreDependencies.live(
+            environment: environment,
+            arguments: arguments
+        )
         let port = environment[CodexReviewStoreTestEnvironment.portKey]
             .flatMap(Int.init)
             ?? argumentValue(
@@ -497,11 +497,12 @@ extension CodexReviewStore {
                 environment: environment,
                 arguments: arguments
             ),
-            environment: environment
+            environment: environment,
+            coreDependencies: coreDependencies
         )
     }
 
-    private static func makeDiagnosticsURL(
+    package static func makeDiagnosticsURL(
         environment: [String: String],
         arguments: [String]
     ) -> URL? {
@@ -517,7 +518,7 @@ extension CodexReviewStore {
         return URL(fileURLWithPath: path)
     }
 
-    private static func argumentValue(
+    package static func argumentValue(
         flag: String,
         arguments: [String]
     ) -> String? {
@@ -653,7 +654,7 @@ extension CodexReviewStore {
         guard let startedAt = job.startedAt else {
             return nil
         }
-        let endedAt = job.endedAt ?? (job.isTerminal ? Date() : nil) ?? Date()
+        let endedAt = job.endedAt ?? (job.isTerminal ? coreDependencies.dateNow() : nil) ?? coreDependencies.dateNow()
         return Int(endedAt.timeIntervalSince(startedAt))
     }
 
@@ -695,14 +696,11 @@ extension CodexReviewStore {
         seed: ReviewMonitorCoordinator.Seed,
         diagnosticsURL: URL? = nil
     ) -> CodexReviewStore {
-        let harness = ReviewMonitorTestingHarness(seed: seed)
-        return CodexReviewStore(
-            coordinator: .init(harness: harness),
-            settingsService: .init(
-                initialSnapshot: harness.currentSettingsSnapshot,
-                harness: harness
-            ),
-            diagnosticsURL: diagnosticsURL
+        CodexReviewStore(
+            dependencies: .preview(
+                seed: seed,
+                diagnosticsURL: diagnosticsURL
+            )
         )
     }
 
@@ -711,6 +709,7 @@ extension CodexReviewStore {
         diagnosticsURL: URL? = nil
     ) -> CodexReviewStore {
         CodexReviewStore(
+            coreDependencies: .live(),
             coordinator: .init(harness: harness),
             settingsService: .init(
                 initialSnapshot: harness.currentSettingsSnapshot,
@@ -739,27 +738,11 @@ extension CodexReviewStore {
     ) -> CodexReviewStore {
         let environment = ProcessInfo.processInfo.environment
         let arguments = CommandLine.arguments
-        let configuration = makeConfiguration(
+        return CodexReviewStore(dependencies: .live(
             environment: environment,
-            arguments: arguments
-        )
-        let diagnosticsURL = makeDiagnosticsURL(
-            environment: environment,
-            arguments: arguments
-        )
-        let appServerManager = AppServerSupervisor(
-            configuration: .init(
-                codexCommand: configuration.codexCommand,
-                environment: configuration.environment
-            )
-        )
-        return makeReviewMonitorStore(
-            configuration: configuration,
-            diagnosticsURL: diagnosticsURL,
-            appServerManager: appServerManager,
-            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
-            webAuthenticationSessionFactory: ReviewMonitorWebAuthenticationSession.startSystem
-        )
+            arguments: arguments,
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration
+        ))
     }
 
     static func makeReviewMonitorStore(
@@ -776,13 +759,13 @@ extension CodexReviewStore {
             webAuthenticationSessionFactory: webAuthenticationSessionFactory
         )
 
-        return CodexReviewStore(
+        return CodexReviewStore(dependencies: .live(
             configuration: configuration,
             diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
             loginAuthSessionFactory: loginAuthSessionFactoryOverride ?? loginAuthSessionFactory,
             deferStartupAuthRefreshUntilPrepared: true
-        )
+        ))
     }
 
     static func makeReviewMonitorLoginAuthSessionFactory(
@@ -795,7 +778,8 @@ extension CodexReviewStore {
             let runtimeManager = runtimeManagerFactory?(environment) ?? AppServerSupervisor(
                 configuration: .init(
                     codexCommand: configuration.codexCommand,
-                    environment: environment
+                    environment: environment,
+                    coreDependencies: configuration.coreDependencies.replacingEnvironment(environment)
                 )
             )
             do {
@@ -820,6 +804,7 @@ extension CodexReviewStore {
 
 private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
     private let base: any ReviewAuthSession
+    private let fileSystem: ReviewFileSystemClient
     private let sharedAuthURL: URL
     private let probeAuthURL: URL
     private let originalSharedAuthData: Data?
@@ -828,13 +813,14 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
 
     init(
         base: any ReviewAuthSession,
-        sharedEnvironment: [String: String],
-        probeEnvironment: [String: String]
+        sharedDependencies: ReviewCoreDependencies,
+        probeDependencies: ReviewCoreDependencies
     ) async throws {
         self.base = base
-        sharedAuthURL = ReviewHomePaths.reviewAuthURL(environment: sharedEnvironment)
-        probeAuthURL = ReviewHomePaths.reviewAuthURL(environment: probeEnvironment)
-        originalSharedAuthData = try? Data(contentsOf: sharedAuthURL)
+        fileSystem = sharedDependencies.fileSystem
+        sharedAuthURL = sharedDependencies.paths.reviewAuthURL()
+        probeAuthURL = probeDependencies.paths.reviewAuthURL()
+        originalSharedAuthData = try? sharedDependencies.fileSystem.readData(sharedAuthURL)
         originalSharedAuthEmail = extractedAuthSnapshotEmail(from: originalSharedAuthData)
     }
 
@@ -843,7 +829,7 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
         if case .chatGPT(let email, _)? = response.account,
            let email = email.nilIfEmpty
         {
-            let currentSharedAuthData = try? Data(contentsOf: sharedAuthURL)
+            let currentSharedAuthData = try? fileSystem.readData(sharedAuthURL)
             if currentSharedAuthData != nil,
                (
                    currentSharedAuthData != originalSharedAuthData
@@ -882,18 +868,15 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
     }
 
     private func copySharedAuthToProbe() {
-        guard let data = try? Data(contentsOf: sharedAuthURL) else {
+        guard let data = try? fileSystem.readData(sharedAuthURL) else {
             return
         }
-        try? FileManager.default.createDirectory(
-            at: probeAuthURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: probeAuthURL, options: .atomic)
+        try? fileSystem.createDirectory(probeAuthURL.deletingLastPathComponent(), true)
+        try? fileSystem.writeData(data, probeAuthURL, [.atomic])
     }
 
     private func removeProbeAuth() {
-        try? FileManager.default.removeItem(at: probeAuthURL)
+        try? fileSystem.removeItem(probeAuthURL)
     }
 
     private func restoreSharedAuthIfNeeded() {
@@ -902,13 +885,10 @@ private actor LegacyProbeScopedReviewAuthSession: ReviewAuthSession {
         }
         restoredSharedAuth = true
         if let originalSharedAuthData {
-            try? FileManager.default.createDirectory(
-                at: sharedAuthURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try? originalSharedAuthData.write(to: sharedAuthURL, options: .atomic)
+            try? fileSystem.createDirectory(sharedAuthURL.deletingLastPathComponent(), true)
+            try? fileSystem.writeData(originalSharedAuthData, sharedAuthURL, [.atomic])
         } else {
-            try? FileManager.default.removeItem(at: sharedAuthURL)
+            try? fileSystem.removeItem(sharedAuthURL)
         }
     }
 }
@@ -1571,7 +1551,8 @@ extension ReviewMonitorCoordinator {
         let executionCoordinator = ReviewExecutionCoordinator(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
-                environment: configuration.environment
+                environment: configuration.environment,
+                coreDependencies: configuration.coreDependencies
             ),
             appServerManager: serverRuntime.appServerManager,
             runtimeStateDidChange: { [weak serverRuntime] runtimeState in
@@ -1932,7 +1913,8 @@ package final class ReviewMonitorServerRuntime {
             CLIReviewAuthSession(
                 configuration: .init(
                     codexCommand: configuration.codexCommand,
-                    environment: environment
+                    environment: environment,
+                    coreDependencies: configuration.coreDependencies.replacingEnvironment(environment)
                 )
             )
         }
@@ -1957,7 +1939,8 @@ package final class ReviewMonitorServerRuntime {
         CLIReviewAuthSession(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
-                environment: environment
+                environment: environment,
+                coreDependencies: configuration.coreDependencies.replacingEnvironment(environment)
             )
         )
     }
@@ -1965,7 +1948,8 @@ package final class ReviewMonitorServerRuntime {
     private var server: ReviewMCPHTTPServer?
     private var waitTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
-    private var startupTaskID: UUID?
+    private var startupTaskID: UInt64?
+    private var nextStartupTaskID: UInt64 = 0
     private var appServerRuntimeGeneration = 0
     private var deferredAddAccountRuntimeEffect: DeferredAddAccountRuntimeEffect?
     private var deferredAddAccountRuntimeReconcileTask: Task<Void, Never>?
@@ -1973,10 +1957,22 @@ package final class ReviewMonitorServerRuntime {
     private var observedHasRunningJobs: Bool?
     private var observationHandles: Set<ObservationHandle> = []
     private var discoveryFileURL: URL {
-        ReviewHomePaths.discoveryFileURL(environment: configuration.environment)
+        configuration.coreDependencies.paths.discoveryFileURL()
     }
     private var runtimeStateFileURL: URL {
-        ReviewHomePaths.runtimeStateFileURL(environment: configuration.environment)
+        configuration.coreDependencies.paths.runtimeStateFileURL()
+    }
+    private var discoveryClient: ReviewDiscoveryClient {
+        ReviewDiscoveryClient(dependencies: configuration.coreDependencies)
+    }
+    private var runtimeStateClient: ReviewRuntimeStateClient {
+        ReviewRuntimeStateClient(dependencies: configuration.coreDependencies)
+    }
+    private var localConfigClient: ReviewLocalConfigClient {
+        ReviewLocalConfigClient(dependencies: configuration.coreDependencies)
+    }
+    private var codexHomeURL: URL {
+        configuration.coreDependencies.paths.codexHomeURL()
     }
     var currentServer: ReviewMCPHTTPServer? {
         server
@@ -2116,16 +2112,22 @@ package final class ReviewMonitorServerRuntime {
     }
 
     var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
-        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
-        let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
+        let localConfig = (try? localConfigClient.load()) ?? .init()
+        let fallbackConfig = loadFallbackAppServerConfig(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
         let profileClearsReviewModel = activeProfileClearsReviewModel(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let profileClearsServiceTier = activeProfileClearsServiceTier(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let displayedOverrides = resolveDisplayedSettingsOverrides(
             localConfig: localConfig,
@@ -2164,10 +2166,12 @@ package final class ReviewMonitorServerRuntime {
         self.appServerManager = appServerManager ?? AppServerSupervisor(
             configuration: .init(
                 codexCommand: configuration.codexCommand,
-                environment: configuration.environment
+                environment: configuration.environment,
+                clock: configuration.coreDependencies.clock,
+                coreDependencies: configuration.coreDependencies
             )
         )
-        self.accountRegistryStore = ReviewAccountRegistryStore(environment: configuration.environment)
+        self.accountRegistryStore = ReviewAccountRegistryStore(coreDependencies: configuration.coreDependencies)
         self.sharedAuthSessionFactory = sharedAuthSessionFactory
         self.loginAuthSessionFactory = loginAuthSessionFactory
         self.rateLimitObservationClock = rateLimitObservationClock
@@ -2175,8 +2179,8 @@ package final class ReviewMonitorServerRuntime {
         self.inactiveRateLimitRefreshInterval = inactiveRateLimitRefreshInterval
         self.deferStartupAuthRefreshUntilPrepared = deferStartupAuthRefreshUntilPrepared
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
-        var seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
-        let sharedInitialAccount = loadSharedReviewAccount(environment: configuration.environment)
+        var seededAccounts = loadRegisteredReviewAccounts(dependencies: configuration.coreDependencies)
+        let sharedInitialAccount = loadSharedReviewAccount(dependencies: configuration.coreDependencies)
         var shouldClearInitialSelection = false
         if let sharedInitialAccount {
             let matchingSavedAccount = seededAccounts.accounts.first {
@@ -2193,7 +2197,7 @@ package final class ReviewMonitorServerRuntime {
                 } catch {
                     shouldClearInitialSelection = false
                 }
-                seededAccounts = loadRegisteredReviewAccounts(environment: configuration.environment)
+                seededAccounts = loadRegisteredReviewAccounts(dependencies: configuration.coreDependencies)
             }
         }
 
@@ -2268,7 +2272,7 @@ package final class ReviewMonitorServerRuntime {
         if deferStartupAuthRefreshUntilPrepared == false {
             authOrchestrator?.startStartupRefresh(auth: store.auth)
         }
-        let startupID = UUID()
+        let startupID = makeStartupTaskID()
         let task = Task { @MainActor [weak self, weak store] in
             guard let self, let store else {
                 return
@@ -2328,8 +2332,11 @@ package final class ReviewMonitorServerRuntime {
 
     func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
         let transport = try await appServerManager.checkoutAuthTransport()
-        let localConfig = (try? loadReviewLocalConfig(environment: configuration.environment)) ?? .init()
-        let fallbackConfig = loadFallbackAppServerConfig(environment: configuration.environment)
+        let localConfig = (try? localConfigClient.load()) ?? .init()
+        let fallbackConfig = loadFallbackAppServerConfig(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
         let configResponse: AppServerConfigReadResponse = try await transport.request(
             method: "config/read",
             params: AppServerConfigReadParams(
@@ -2358,13 +2365,16 @@ package final class ReviewMonitorServerRuntime {
             fallback: fallbackConfig
         )
         let profileClearsReviewModel = activeProfileClearsReviewModel(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let profileClearsReasoningEffort = activeProfileClearsReasoningEffort(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let profileClearsServiceTier = activeProfileClearsServiceTier(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let displayedOverrides = resolveDisplayedSettingsOverrides(
             localConfig: localConfig,
@@ -2394,23 +2404,29 @@ package final class ReviewMonitorServerRuntime {
         serviceTier: CodexReviewServiceTier?,
         persistServiceTier: Bool
     ) async throws {
-        let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let localConfigPresence = try loadReviewLocalConfigPresence(environment: configuration.environment)
+        let profile = loadActiveReviewProfile(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
+        let localConfigPresence = try localConfigClient.loadPresence()
         let hasRootReviewModel = localConfigPresence.hasReviewModel
         let hasProfileReviewModelOverride = activeProfileHasReviewModelOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let writeModelAtRoot = profile == nil
             || (hasRootReviewModel && hasProfileReviewModelOverride == false)
         let hasRootReasoningEffort = localConfigPresence.hasModelReasoningEffort
         let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let writeReasoningAtRoot = profile == nil
             || (hasRootReasoningEffort && hasProfileReasoningEffortOverride == false)
         let hasRootServiceTier = localConfigPresence.hasServiceTier
         let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let writeServiceTierAtRoot = profile == nil
             || (hasRootServiceTier && hasProfileServiceTierOverride == false)
@@ -2457,11 +2473,15 @@ package final class ReviewMonitorServerRuntime {
     func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
-        let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let localConfigPresence = try loadReviewLocalConfigPresence(environment: configuration.environment)
+        let profile = loadActiveReviewProfile(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
+        let localConfigPresence = try localConfigClient.loadPresence()
         let hasRootReasoningEffort = localConfigPresence.hasModelReasoningEffort
         let hasProfileReasoningEffortOverride = activeProfileHasReasoningEffortOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let forceRoot = profile == nil
             || (hasRootReasoningEffort && hasProfileReasoningEffortOverride == false)
@@ -2483,11 +2503,15 @@ package final class ReviewMonitorServerRuntime {
     func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
-        let profile = loadActiveReviewProfile(environment: configuration.environment)
-        let localConfigPresence = try loadReviewLocalConfigPresence(environment: configuration.environment)
+        let profile = loadActiveReviewProfile(
+            environment: configuration.environment,
+            codexHome: codexHomeURL
+        )
+        let localConfigPresence = try localConfigClient.loadPresence()
         let hasRootServiceTier = localConfigPresence.hasServiceTier
         let hasProfileServiceTierOverride = activeProfileHasServiceTierOverride(
-            environment: configuration.environment
+            environment: configuration.environment,
+            codexHome: codexHomeURL
         )
         let forceRoot = profile == nil
             || (hasRootServiceTier && hasProfileServiceTierOverride == false)
@@ -2584,7 +2608,7 @@ package final class ReviewMonitorServerRuntime {
     }
 
     private func performStartup(
-        startupID: UUID,
+        startupID: UInt64,
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
@@ -2600,7 +2624,7 @@ package final class ReviewMonitorServerRuntime {
             }
 
             self.server = server
-            ReviewRuntimeStateStore.remove(at: runtimeStateFileURL)
+            runtimeStateClient.remove(at: runtimeStateFileURL)
 
             let appServerRuntimeState = try await appServerManager.prepare()
             guard startupTaskID == startupID, self.server === server else {
@@ -2654,6 +2678,11 @@ package final class ReviewMonitorServerRuntime {
         }
     }
 
+    private func makeStartupTaskID() -> UInt64 {
+        nextStartupTaskID += 1
+        return nextStartupTaskID
+    }
+
     private func startServer(
         _ server: ReviewMCPHTTPServer,
         forceRestartIfNeeded: Bool
@@ -2672,19 +2701,19 @@ package final class ReviewMonitorServerRuntime {
     }
 
     private func replayAddressInUseCleanup() async throws {
-        let runtimeState = ReviewRuntimeStateStore.read(from: runtimeStateFileURL)
+        let runtimeState = runtimeStateClient.read(from: runtimeStateFileURL)
         if let endpointRecord = addressInUseCleanupRecord(runtimeState: runtimeState) {
             try await forceRestart(
                 endpointRecord: endpointRecord,
                 runtimeState: runtimeState
             )
-            ReviewDiscovery.removeIfOwned(
+            discoveryClient.removeIfOwned(
                 pid: endpointRecord.pid,
                 url: URL(string: endpointRecord.url),
                 serverStartTime: endpointRecord.serverStartTime,
                 at: discoveryFileURL
             )
-            ReviewRuntimeStateStore.removeIfOwned(
+            runtimeStateClient.removeIfOwned(
                 serverPID: endpointRecord.pid,
                 serverStartTime: endpointRecord.serverStartTime,
                 at: runtimeStateFileURL
@@ -2695,7 +2724,7 @@ package final class ReviewMonitorServerRuntime {
     private func addressInUseCleanupRecord(
         runtimeState: ReviewRuntimeStateRecord?
     ) -> LiveEndpointRecord? {
-        if let endpointRecord = ReviewDiscovery.readPersisted(from: discoveryFileURL),
+        if let endpointRecord = discoveryClient.readPersisted(from: discoveryFileURL),
            discoveryMatchesListenAddress(
             endpointRecord,
             host: configuration.host,
@@ -2706,7 +2735,7 @@ package final class ReviewMonitorServerRuntime {
         }
 
         guard let runtimeState,
-              let url = ReviewDiscovery.makeURL(
+              let url = discoveryClient.makeURL(
                 host: configuration.host,
                 port: configuration.port,
                 endpointPath: configuration.endpoint
@@ -2845,16 +2874,16 @@ package final class ReviewMonitorServerRuntime {
             appServerStartTime: appServerRuntimeState.startTime,
             appServerProcessGroupLeaderPID: appServerRuntimeState.processGroupLeaderPID,
             appServerProcessGroupLeaderStartTime: appServerRuntimeState.processGroupLeaderStartTime,
-            updatedAt: Date()
+            updatedAt: configuration.coreDependencies.dateNow()
         )
-        try? ReviewRuntimeStateStore.write(runtimeState, to: runtimeStateFileURL)
+        try? runtimeStateClient.write(runtimeState, to: runtimeStateFileURL)
     }
 
     private func removeRuntimeState(endpointRecord: LiveEndpointRecord?) {
         guard let endpointRecord else {
             return
         }
-        ReviewRuntimeStateStore.removeIfOwned(
+        runtimeStateClient.removeIfOwned(
             serverPID: endpointRecord.pid,
             serverStartTime: endpointRecord.serverStartTime,
             at: runtimeStateFileURL

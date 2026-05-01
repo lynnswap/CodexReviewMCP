@@ -16,6 +16,7 @@ package actor AppServerSupervisor: AppServerManaging {
     package struct Configuration: Sendable {
         package var codexCommand: String
         package var environment: [String: String]
+        package var coreDependencies: ReviewCoreDependencies
         package var startupTimeout: Duration
         package var clock: any ReviewClock
 
@@ -23,24 +24,29 @@ package actor AppServerSupervisor: AppServerManaging {
             codexCommand: String = "codex",
             environment: [String: String] = ProcessInfo.processInfo.environment,
             startupTimeout: Duration = .seconds(30),
-            clock: any ReviewClock = ContinuousClock()
+            clock: (any ReviewClock)? = nil,
+            coreDependencies: ReviewCoreDependencies? = nil
         ) {
+            let resolvedCoreDependencies = coreDependencies ?? .live(environment: environment)
             self.codexCommand = codexCommand
-            self.environment = environment
+            self.environment = resolvedCoreDependencies.environment
+            self.coreDependencies = resolvedCoreDependencies
             self.startupTimeout = startupTimeout
-            self.clock = clock
+            self.clock = clock ?? resolvedCoreDependencies.clock
         }
 
         package init(
             codexCommand: String = "codex",
             environment: [String: String] = ProcessInfo.processInfo.environment,
-            startupTimeout: Duration = .seconds(30)
+            startupTimeout: Duration = .seconds(30),
+            coreDependencies: ReviewCoreDependencies? = nil
         ) {
             self.init(
                 codexCommand: codexCommand,
                 environment: environment,
                 startupTimeout: startupTimeout,
-                clock: ContinuousClock()
+                clock: nil,
+                coreDependencies: coreDependencies
             )
         }
     }
@@ -375,12 +381,10 @@ package actor AppServerSupervisor: AppServerManaging {
     }
 
     private func makeStartContext(launchID: UUID) async throws -> StartContext {
-        try ReviewHomePaths.ensureReviewHomeScaffold(environment: configuration.environment)
+        try configuration.coreDependencies.ensureReviewHomeScaffold()
         // Intentionally use ~/.codex_review directly for app-server.
         // We no longer create a per-launch isolated CODEX_HOME or strip codex_review from config.
-        let codexHomeURL = ReviewHomePaths.codexHomeURL(
-            environment: configuration.environment
-        )
+        let codexHomeURL = configuration.coreDependencies.paths.codexHomeURL()
 
         let launchCommand = try makeAppServerLaunchCommand(
             codexCommand: configuration.codexCommand,

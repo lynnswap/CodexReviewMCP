@@ -3,11 +3,16 @@ import ReviewDomain
 
 package struct AppServerReviewRunner: Sendable {
     package var settingsBuilder: ReviewExecutionSettingsBuilder
+    package var coreDependencies: ReviewCoreDependencies
     package var threadUnavailableGracePeriod: Duration = .seconds(1)
     package var clock: any ReviewClock = ContinuousClock()
 
-    package init(settingsBuilder: ReviewExecutionSettingsBuilder = .init()) {
+    package init(
+        settingsBuilder: ReviewExecutionSettingsBuilder = .init(),
+        coreDependencies: ReviewCoreDependencies? = nil
+    ) {
         self.settingsBuilder = settingsBuilder
+        self.coreDependencies = coreDependencies ?? .live(environment: settingsBuilder.environment)
     }
 
     /// `requestedTerminationReason` can change while the review is running.
@@ -55,14 +60,13 @@ package struct AppServerReviewRunner: Sendable {
 
         let state = AppServerReviewState()
         let initializeResponse = await session.initializeResponse()
-        let resolvedCodexHome = ReviewHomePaths.resolvedCodexHomeURL(
-            appServerCodexHome: initializeResponse.codexHome,
-            environment: settings.command.environment
+        let resolvedCodexHome = coreDependencies.paths.resolvedCodexHomeURL(
+            appServerCodexHome: initializeResponse.codexHome
         )
 
         let localConfig: ReviewLocalConfig
         do {
-            localConfig = try loadReviewLocalConfig(environment: settings.command.environment)
+            localConfig = try ReviewLocalConfigClient(dependencies: coreDependencies).load()
         } catch {
             throw ReviewError.bootstrapFailed("Failed to read ReviewMCP config: \(error.localizedDescription)")
         }

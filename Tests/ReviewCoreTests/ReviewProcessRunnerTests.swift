@@ -71,6 +71,40 @@ struct AppServerReviewRunnerTests {
         #expect(result.model == "gpt-5.4-mini")
     }
 
+    @Test func appServerReviewRunnerReadsReviewConfigFromInjectedPaths() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let environmentHome = try makeTemporaryDirectory()
+        let injectedHome = try makeTemporaryDirectory()
+        try writeReviewLocalConfig(homeURL: environmentHome, content: #"review_model = "gpt-env""#)
+        try writeReviewLocalConfig(homeURL: injectedHome, content: #"review_model = "gpt-injected""#)
+        let environment = ["HOME": environmentHome.path]
+        let coreDependencies = ReviewCoreDependencies(
+            environment: environment,
+            paths: ReviewPathResolver(
+                environment: ["HOME": injectedHome.path],
+                homeDirectoryForCurrentUser: environmentHome
+            )
+        )
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(environment: environment),
+            coreDependencies: coreDependencies
+        )
+        let session = MockAppServerSessionTransport(mode: .success(finalReview: "Looks solid overall."))
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            stateChangeStream: await StateChangeSignal().subscription(),
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        #expect(result.state == ReviewJobState.succeeded)
+        #expect(result.model == "gpt-injected")
+    }
+
     @Test func appServerReviewRunnerWaitsForSecondNotificationBatchBeforeCleaningUp() async throws {
         let cwd = try makeTemporaryDirectory()
         let runner = AppServerReviewRunner(
