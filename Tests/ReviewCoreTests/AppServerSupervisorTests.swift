@@ -321,6 +321,13 @@ struct AppServerSupervisorTests {
                 return .failure(error)
             }
         }
+
+        try await withTestTimeout {
+            while await recorder.requestCount() < 1 {
+                await Task.yield()
+            }
+        }
+
         let secondTask = Task<Result<AppServerConfigReadResponse, Error>, Never> {
             do {
                 return .success(
