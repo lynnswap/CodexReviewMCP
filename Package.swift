@@ -49,10 +49,6 @@ let package = Package(
     targets: [
         .target(
             name: "ReviewDomain",
-            dependencies: [
-                .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "Logging", package: "swift-log"),
-            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

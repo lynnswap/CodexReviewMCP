@@ -1,5 +1,4 @@
 import Foundation
-import MCP
 
 public struct ReviewLogEntry: Identifiable, Sendable, Hashable {
     public enum Kind: String, Sendable, Hashable {
@@ -41,15 +40,4 @@ public struct ReviewLogEntry: Identifiable, Sendable, Hashable {
         self.timestamp = timestamp
     }
 
-    package func structuredContent() -> Value {
-        var object: [String: Value] = [
-            "id": .string(id.uuidString),
-            "kind": .string(kind.rawValue),
-            "replacesGroup": .bool(replacesGroup),
-            "text": .string(text),
-            "timestamp": .string(timestamp.ISO8601Format()),
-        ]
-        object["groupId"] = groupID.map(Value.string) ?? .null
-        return .object(object)
-    }
 }
