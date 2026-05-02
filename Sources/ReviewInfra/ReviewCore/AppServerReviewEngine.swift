@@ -104,8 +104,8 @@ package actor AppServerReviewEngine: ReviewEngine {
                 },
                 onStart: onStart,
                 onReviewStarted: {
-                    await self.clearBootstrapTransport(jobID: jobID)
                     await onReviewStarted()
+                    await self.clearBootstrapTransport(jobID: jobID)
                 },
                 onEvent: onEvent,
                 requestedTerminationReason: {
