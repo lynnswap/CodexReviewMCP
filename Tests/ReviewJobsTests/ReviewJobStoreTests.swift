@@ -1,7 +1,9 @@
 import Foundation
 import Testing
 import ReviewTestSupport
-@testable import ReviewInfra
+@testable import ReviewAppServerIntegration
+@testable import ReviewInfrastructure
+@testable import ReviewMCPAdapter
 @_spi(Testing) @testable import ReviewApp
 @testable import ReviewDomain
 

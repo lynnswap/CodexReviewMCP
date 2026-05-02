@@ -2,7 +2,9 @@ import Foundation
 import Testing
 import ReviewDomain
 import ReviewTestSupport
-@testable import ReviewInfra
+@testable import ReviewAppServerIntegration
+@testable import ReviewInfrastructure
+@testable import ReviewMCPAdapter
 
 
 @Suite(.serialized)

@@ -165,6 +165,10 @@ flowchart LR
 
 まず、再編後の target 一覧を次のたたき台にします。ここでは「レイヤー間で受け渡す protocol bundle」と「その live 実装」を別 target にし、composition root だけが具体実装を組み立てます。
 
+### 実装フェーズ上の注意
+
+PR3 時点では、`ReviewMCPAdapter` / `ReviewAppServerIntegration` / `ReviewInfrastructure` の実体 target を先に作り、旧 `ReviewInfra` は互換 facade として残します。`ReviewApp` は `ReviewInfra` の直接 import をやめていますが、target 名の `ReviewApplication` への rename、facade target の削除、application core から live wiring を完全に外す作業は PR4 で行います。
+
 ### 再編後の target 一覧
 
 | Target | 種別 | 役割 | 依存先 |

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import ReviewTestSupport
-@testable import ReviewInfra
+@testable import ReviewMCPAdapter
 
 
 @Suite(.serialized) struct ReviewStdioAdapterTests {

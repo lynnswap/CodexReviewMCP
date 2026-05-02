@@ -13,6 +13,11 @@ package struct ProcessStartTime: Codable, Hashable, Sendable {
 package struct ProcessIdentity: Hashable, Sendable {
     package var pid: pid_t
     package var startTime: ProcessStartTime
+
+    package init(pid: pid_t, startTime: ProcessStartTime) {
+        self.pid = pid
+        self.startTime = startTime
+    }
 }
 
 package func isProcessAlive(_ pid: pid_t) -> Bool {

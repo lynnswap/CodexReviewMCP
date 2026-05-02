@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import ReviewDomain
+import ReviewInfrastructure
 
 struct AppServerLaunchCommand {
     var executable: String

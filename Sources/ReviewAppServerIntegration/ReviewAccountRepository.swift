@@ -1,5 +1,6 @@
 import Foundation
 import ReviewDomain
+import ReviewInfrastructure
 
 package struct ReviewSavedRateLimitWindowRecord: Codable, Equatable, Sendable {
     package var windowDurationMinutes: Int

@@ -1,6 +1,6 @@
 import Foundation
 import MCP
-@testable import ReviewInfra
+@testable import ReviewMCPAdapter
 
 import ReviewDomain
 import Testing
