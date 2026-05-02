@@ -46,7 +46,7 @@ enum SidebarPickerSelection: CaseIterable, Hashable {
     var systemImage: String {
         switch self {
         case .workspace:
-            "folder"
+            "list.bullet"
         case .account:
             "person"
         }

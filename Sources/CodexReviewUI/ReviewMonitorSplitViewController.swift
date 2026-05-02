@@ -11,6 +11,9 @@ import ReviewDomain
 @Observable
 final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDelegate {
     private static let autosaveName = NSSplitView.AutosaveName("CodexReviewMCP.ReviewMonitorSplitView")
+    private static let sidebarPickerToolbarItemIdentifier = NSToolbarItem.Identifier(
+        "CodexReviewMCP.ReviewMonitor.Toolbar.SidebarPicker"
+    )
     private static let addAccountToolbarItemIdentifier = NSToolbarItem.Identifier(
         "CodexReviewMCP.ReviewMonitor.Toolbar.AddAccount"
     )
@@ -22,6 +25,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
     private var sidebarItem: NSSplitViewItem?
     private var contentItem: NSSplitViewItem?
     private var toolbar: NSToolbar?
+    private var sidebarPickerToolbarItem: ReviewMonitorSidebarPickerToolbarItem?
     private var addAccountToolbarItem: ReviewMonitorAddAccountToolbarItem?
     @ObservationIgnored private let toolbarObservationScope = ObservationScope()
     private var sidebarCollapseObservation: NSKeyValueObservation?
@@ -48,15 +52,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             uiState: uiState
         )
         let transportViewController = ReviewMonitorTransportViewController(uiState: uiState)
-        let sidebarSegmentedAccessoryViewController = ReviewMonitorSidebarSegmentedAccessoryViewController(
-            uiState: uiState
-        )
         let statusAccessoryViewController = ReviewMonitorServerStatusAccessoryViewController(
             store: store,
             uiState: uiState
         )
         if #available(macOS 26.1, *) {
-            sidebarSegmentedAccessoryViewController.preferredScrollEdgeEffectStyle = .soft
             statusAccessoryViewController.preferredScrollEdgeEffectStyle = .soft
         }
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
@@ -64,7 +64,6 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         sidebarItem.minimumThickness = 220
         sidebarItem.preferredThicknessFraction = 0.22
         sidebarItem.titlebarSeparatorStyle = .none
-        sidebarItem.addTopAlignedAccessoryViewController(sidebarSegmentedAccessoryViewController)
         sidebarItem.addBottomAlignedAccessoryViewController(statusAccessoryViewController)
 
         let contentItem = NSSplitViewItem(viewController: transportViewController)
@@ -179,7 +178,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
-            .toggleSidebar,
+            Self.sidebarPickerToolbarItemIdentifier,
             .flexibleSpace,
             .sidebarTrackingSeparator,
             .flexibleSpace,
@@ -188,7 +187,7 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
-            .toggleSidebar,
+            Self.sidebarPickerToolbarItemIdentifier,
             Self.addAccountToolbarItemIdentifier,
             .sidebarTrackingSeparator,
             .space,
@@ -202,10 +201,8 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         willBeInsertedIntoToolbar flag: Bool
     ) -> NSToolbarItem? {
         switch itemIdentifier {
-        case .toggleSidebar:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.autovalidates = true
-            return item
+        case Self.sidebarPickerToolbarItemIdentifier:
+            return resolvedSidebarPickerToolbarItem()
 
         case Self.addAccountToolbarItemIdentifier:
             let item = resolvedAddAccountToolbarItem()
@@ -220,6 +217,33 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
 
         default:
             return nil
+        }
+    }
+
+    private func resolvedSidebarPickerToolbarItem() -> ReviewMonitorSidebarPickerToolbarItem {
+        if let sidebarPickerToolbarItem {
+            return sidebarPickerToolbarItem
+        }
+
+        let item = ReviewMonitorSidebarPickerToolbarItem(
+            itemIdentifier: Self.sidebarPickerToolbarItemIdentifier,
+            uiState: uiState
+        ) { [weak self] selection in
+            self?.handleSidebarPickerSelection(selection)
+        }
+        sidebarPickerToolbarItem = item
+        return item
+    }
+
+    private func handleSidebarPickerSelection(_ selection: SidebarPickerSelection) {
+        guard uiState.sidebarSelection != selection else {
+            toggleSidebar(nil)
+            return
+        }
+
+        uiState.sidebarSelection = selection
+        if sidebarItem?.isCollapsed == true {
+            toggleSidebar(nil)
         }
     }
 
@@ -321,15 +345,6 @@ extension ReviewMonitorSplitViewController {
         sidebarItem?.bottomAlignedAccessoryViewControllers.first?.isHidden ?? false
     }
 
-    var sidebarTopAccessorySegmentAccessibilityDescriptionsForTesting: [String] {
-        guard let accessoryViewController = sidebarItem?.topAlignedAccessoryViewControllers.first
-            as? ReviewMonitorSidebarSegmentedAccessoryViewController
-        else {
-            return []
-        }
-        return accessoryViewController.segmentAccessibilityDescriptionsForTesting
-    }
-
     var contentAccessoryCountForTesting: Int {
         contentItem?.bottomAlignedAccessoryViewControllers.count ?? 0
     }
@@ -348,6 +363,40 @@ extension ReviewMonitorSplitViewController {
 
     var toolbarIdentifiersForTesting: [NSToolbarItem.Identifier] {
         toolbar?.items.map(\.itemIdentifier) ?? []
+    }
+
+    var sidebarPickerToolbarItemIdentifierForTesting: NSToolbarItem.Identifier {
+        Self.sidebarPickerToolbarItemIdentifier
+    }
+
+    var sidebarPickerToolbarSegmentAccessibilityDescriptionsForTesting: [String] {
+        sidebarPickerToolbarItem?.segmentAccessibilityDescriptionsForTesting ?? []
+    }
+
+    var sidebarPickerToolbarSelectedSelectionForTesting: SidebarPickerSelection? {
+        sidebarPickerToolbarItem?.selectedSelectionForTesting
+    }
+
+    var sidebarPickerToolbarOverflowMenuItemTitlesForTesting: [String] {
+        sidebarPickerToolbarItem?.overflowMenuItemTitlesForTesting ?? []
+    }
+
+    var sidebarItemIsCollapsedForTesting: Bool {
+        sidebarItem?.isCollapsed ?? false
+    }
+
+    func selectSidebarPickerToolbarSegmentForTesting(_ selection: SidebarPickerSelection) {
+        guard let sidebarPickerToolbarItem else {
+            fatalError("Sidebar picker toolbar item is not configured yet.")
+        }
+        sidebarPickerToolbarItem.selectSegmentForTesting(selection)
+    }
+
+    func selectSidebarPickerToolbarOverflowMenuItemForTesting(_ selection: SidebarPickerSelection) {
+        guard let sidebarPickerToolbarItem else {
+            fatalError("Sidebar picker toolbar item is not configured yet.")
+        }
+        sidebarPickerToolbarItem.selectOverflowMenuItemForTesting(selection)
     }
 
     var addAccountToolbarItemIdentifierForTesting: NSToolbarItem.Identifier {
