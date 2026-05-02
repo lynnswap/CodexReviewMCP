@@ -4,6 +4,7 @@ import ReviewDomain
 @testable import ReviewAppServerIntegration
 @testable import ReviewInfrastructure
 @testable import ReviewMCPAdapter
+@testable import ReviewMonitorRuntime
 
 @_spi(Testing) @testable import ReviewApplication
 

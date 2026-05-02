@@ -7,6 +7,7 @@
 
 import AppKit
 import ReviewApplication
+import ReviewMonitorRuntime
 @_spi(PreviewSupport) import CodexReviewUI
 
 enum CodexReviewMonitorNativeAuthentication {

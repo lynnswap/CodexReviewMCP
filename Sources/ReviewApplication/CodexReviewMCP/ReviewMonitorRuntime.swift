@@ -1,6 +1,36 @@
 import Foundation
 import ReviewDomain
-import ReviewInfrastructure
+
+@MainActor
+package protocol ReviewMonitorServerCoordinating: AnyObject {
+    var isActive: Bool { get }
+
+    func attachStore(_ store: CodexReviewStore)
+    func start(store: CodexReviewStore, forceRestartIfNeeded: Bool) async
+    func stop(store: CodexReviewStore) async
+    func waitUntilStopped() async
+}
+
+@MainActor
+package protocol ReviewMonitorAuthCoordinating: AnyObject {
+    func refresh(auth: CodexReviewAuthModel) async
+    func signIn(auth: CodexReviewAuthModel) async
+    func addAccount(auth: CodexReviewAuthModel) async
+    func cancelAuthentication(auth: CodexReviewAuthModel) async
+    func switchAccount(auth: CodexReviewAuthModel, accountKey: String) async throws
+    func removeAccount(auth: CodexReviewAuthModel, accountKey: String) async throws
+    func reorderPersistedAccount(auth: CodexReviewAuthModel, accountKey: String, toIndex: Int) async throws
+    func signOutActiveAccount(auth: CodexReviewAuthModel) async throws
+    func refreshAccountRateLimits(auth: CodexReviewAuthModel, accountKey: String) async
+    func startStartupRefresh(auth: CodexReviewAuthModel)
+    func cancelStartupRefresh()
+    func reconcileAuthenticatedSession(
+        auth: CodexReviewAuthModel,
+        serverIsRunning: Bool,
+        runtimeGeneration: Int
+    ) async
+    func requiresCurrentSessionRecovery(auth: CodexReviewAuthModel, accountKey: String) -> Bool
+}
 
 @MainActor
 package class ReviewMonitorTestingHarness {
@@ -257,8 +287,8 @@ package final class ReviewMonitorCoordinator {
     }
 
     private struct LiveMode {
-        let serverRuntime: ReviewMonitorServerRuntime
-        let authOrchestrator: ReviewMonitorAuthOrchestrator
+        let serverRuntime: any ReviewMonitorServerCoordinating
+        let authOrchestrator: any ReviewMonitorAuthCoordinating
         let executionCoordinator: ReviewExecutionCoordinator
     }
 
@@ -275,8 +305,8 @@ package final class ReviewMonitorCoordinator {
 
     package init(
         seed: Seed,
-        serverRuntime: ReviewMonitorServerRuntime,
-        authOrchestrator: ReviewMonitorAuthOrchestrator,
+        serverRuntime: any ReviewMonitorServerCoordinating,
+        authOrchestrator: any ReviewMonitorAuthCoordinating,
         executionCoordinator: ReviewExecutionCoordinator
     ) {
         self.seed = seed

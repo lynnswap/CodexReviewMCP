@@ -4,6 +4,7 @@ import Darwin
 import Foundation
 import Observation
 import ObservationBridge
+import ReviewApplication
 import ReviewAppServerIntegration
 import ReviewApplicationDependencies
 import ReviewDomain
@@ -91,399 +92,6 @@ extension CodexReviewStore {
         ))
     }
 
-    package func startReview(
-        sessionID: String,
-        request: ReviewStartRequest
-    ) async throws -> ReviewReadResult {
-        try await coordinator.startReview(
-            sessionID: sessionID,
-            request: request,
-            store: self
-        )
-    }
-
-    package func readReview(
-        jobID: String,
-        sessionID: String
-    ) throws -> ReviewReadResult {
-        let job = try authorizedJob(jobID: jobID, sessionID: sessionID)
-        return ReviewReadResult(
-            jobID: job.id,
-            threadID: job.threadID,
-            turnID: job.turnID,
-            model: job.model,
-            status: job.status.state,
-            review: job.isTerminal ? job.reviewText : (job.reviewText.nilIfEmpty ?? job.lastAgentMessage ?? ""),
-            lastAgentMessage: job.lastAgentMessage ?? "",
-            logs: job.logEntries,
-            rawLogText: job.rawLogText,
-            cancellation: job.cancellation,
-            error: job.errorMessage
-        )
-    }
-
-    package func listReviews(
-        sessionID: String,
-        cwd: String? = nil,
-        statuses: [ReviewJobState]? = nil,
-        limit: Int? = nil
-    ) -> ReviewListResult {
-        let filtered = filteredJobs(sessionID: sessionID, cwd: cwd, statuses: statuses)
-        let clampedLimit = min(max(limit ?? 20, 1), 100)
-        return ReviewListResult(items: Array(filtered.prefix(clampedLimit)).map(makeListItem))
-    }
-
-    package func cancelReview(
-        selectedJobID jobID: String,
-        sessionID: String,
-        cancellation: ReviewCancellation = .system()
-    ) async throws -> ReviewCancelOutcome {
-        try await coordinator.cancelReviewByID(
-            jobID: jobID,
-            sessionID: sessionID,
-            cancellation: cancellation,
-            store: self
-        )
-    }
-
-    package func cancelReview(
-        selector: ReviewJobSelector,
-        sessionID: String,
-        cancellation: ReviewCancellation = .system()
-    ) async throws -> ReviewCancelOutcome {
-        try await coordinator.cancelReviewBySelector(
-            selector: selector,
-            sessionID: sessionID,
-            cancellation: cancellation,
-            store: self
-        )
-    }
-
-    package func hasActiveJobs(for sessionID: String) -> Bool {
-        for workspace in workspaces {
-            if workspace.jobs.contains(where: { $0.sessionID == sessionID && $0.isTerminal == false }) {
-                return true
-            }
-        }
-        return false
-    }
-
-    package func closeSession(_ sessionID: String, reason: String) async {
-        await coordinator.closeSession(sessionID, reason: reason, store: self)
-    }
-
-    package func enqueueReview(
-        sessionID: String,
-        request: ReviewRequestOptions,
-        initialModel: String? = nil
-    ) throws -> String {
-        if coordinator.isSessionClosed(sessionID) {
-            throw ReviewError.accessDenied("Session \(sessionID) is already closed.")
-        }
-        let request = try request.validated()
-        let jobID = coreDependencies.uuid().uuidString
-        appendQueuedJob(
-            .init(jobID: jobID, sessionID: sessionID, request: request, initialModel: initialModel)
-        )
-        return jobID
-    }
-
-    package func markStarted(
-        jobID: String,
-        startedAt: Date
-    ) {
-        updateJob(id: jobID) { job in
-            job.startedAt = startedAt
-            job.cancellationRequested = false
-            if job.status == .queued {
-                job.status = .running
-                job.summary = "Running."
-            }
-        }
-    }
-
-    package func handle(jobID: String, event: ReviewProcessEvent) {
-        switch event {
-        case .progress(_, let message):
-            guard let message = message?.nilIfEmpty else {
-                return
-            }
-            updateJob(id: jobID) { job in
-                job.summary = message
-                job.appendLogEntry(.init(kind: .progress, text: message))
-            }
-        case .reviewStarted(let reviewThreadID, let threadID, let turnID, let model):
-            updateJob(id: jobID) { job in
-                job.reviewThreadID = reviewThreadID
-                job.threadID = threadID
-                job.turnID = turnID
-                job.model = model
-                job.summary = "Review started: \(reviewThreadID)"
-            }
-        case .logEntry(let entry):
-            updateJob(id: jobID) { job in
-                job.appendLogEntry(entry)
-            }
-        case .rawLine(let line):
-            updateJob(id: jobID) { job in
-                job.appendLogEntry(.init(kind: .diagnostic, text: line))
-            }
-        case .agentMessage(let message):
-            updateJob(id: jobID) { job in
-                job.lastAgentMessage = message
-            }
-        case .failed(let message):
-            updateJob(id: jobID) { job in
-                job.errorMessage = message.nilIfEmpty
-            }
-        }
-    }
-
-    package func completeReview(jobID: String, outcome: ReviewProcessOutcome) {
-        updateJob(id: jobID) { job in
-            job.status = .init(state: outcome.state)
-            job.cancellationRequested = false
-            job.summary = if outcome.state == .cancelled {
-                job.cancellation?.message ?? outcome.errorMessage?.nilIfEmpty ?? outcome.summary
-            } else {
-                outcome.summary
-            }
-            job.model = outcome.model ?? job.model
-            job.hasFinalReview = outcome.hasFinalReview
-            if outcome.hasFinalReview {
-                job.lastAgentMessage = outcome.content.nilIfEmpty
-                    ?? outcome.lastAgentMessage.nilIfEmpty
-                    ?? job.lastAgentMessage
-            } else if outcome.state == .cancelled {
-                let preservedContent = outcome.content.nilIfEmpty
-                let preservedMessage = outcome.lastAgentMessage.nilIfEmpty
-                let cancellationMessage = outcome.errorMessage?.nilIfEmpty
-                if let preservedContent,
-                   preservedContent != cancellationMessage
-                {
-                    job.lastAgentMessage = preservedContent
-                } else if let preservedMessage,
-                          preservedMessage != cancellationMessage
-                {
-                    job.lastAgentMessage = preservedMessage
-                }
-            } else {
-                job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
-            }
-            job.errorMessage = reviewAuthDisplayMessage(from: outcome.errorMessage)
-            if outcome.state != .cancelled {
-                job.cancellation = nil
-            }
-            job.reviewThreadID = outcome.reviewThreadID ?? job.reviewThreadID
-            job.threadID = outcome.threadID ?? job.threadID
-            job.turnID = outcome.turnID ?? job.turnID
-            job.startedAt = outcome.startedAt
-            job.endedAt = outcome.endedAt
-            job.exitCode = outcome.exitCode
-        }
-    }
-
-    package func failToStart(
-        jobID: String,
-        message: String,
-        model: String? = nil,
-        startedAt: Date,
-        endedAt: Date
-    ) {
-        updateJob(id: jobID) { job in
-            job.cancellationRequested = false
-            job.cancellation = nil
-            job.status = .failed
-            job.summary = "Failed to start review."
-            job.model = model ?? job.model
-            job.errorMessage = reviewAuthDisplayMessage(from: message)
-            job.startedAt = startedAt
-            job.endedAt = endedAt
-            if message.isEmpty == false {
-                job.appendLogEntry(.init(kind: .error, text: message))
-            }
-        }
-    }
-
-    package func markBootstrapCancelled(
-        jobID: String,
-        cancellation: ReviewCancellation,
-        model: String? = nil,
-        startedAt: Date,
-        endedAt: Date
-    ) {
-        updateJob(id: jobID) { job in
-            job.cancellationRequested = false
-            job.cancellation = cancellation
-            job.status = .cancelled
-            job.summary = cancellation.message
-            job.model = model ?? job.model
-            job.hasFinalReview = false
-            job.errorMessage = cancellation.message.nilIfEmpty ?? job.errorMessage
-            if job.startedAt == nil {
-                job.startedAt = startedAt
-            }
-            job.endedAt = endedAt
-        }
-    }
-
-    package func requestCancellation(
-        jobID: String,
-        sessionID: String,
-        cancellation: ReviewCancellation
-    ) throws -> ReviewCancelResult {
-        let requestCancellationDelay = Self.requestCancellationDelay
-        if requestCancellationDelay > 0 {
-            Thread.sleep(forTimeInterval: requestCancellationDelay)
-        }
-        guard let location = jobLocation(id: jobID) else {
-            throw ReviewError.jobNotFound("Job \(jobID) was not found.")
-        }
-        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard job.sessionID == sessionID else {
-            throw ReviewError.accessDenied("Job \(jobID) belongs to another MCP session.")
-        }
-        if job.isTerminal {
-            return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: false)
-        }
-
-        if job.cancellationRequested {
-            return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: true)
-        }
-
-        switch job.status {
-        case .queued:
-            let endedAt = coreDependencies.dateNow()
-            updateJob(id: jobID) { job in
-                job.cancellationRequested = false
-                job.cancellation = cancellation
-                job.status = .cancelled
-                job.summary = cancellation.message
-                job.hasFinalReview = false
-                if cancellation.message.isEmpty == false {
-                    job.errorMessage = cancellation.message
-                }
-                job.endedAt = endedAt
-            }
-            return ReviewCancelResult(jobID: jobID, state: .cancelled, signalled: false)
-        case .running:
-            let pendingMessage = "Cancellation requested."
-            updateJob(id: jobID) { job in
-                job.cancellationRequested = true
-                job.cancellation = cancellation
-                job.summary = pendingMessage
-                job.hasFinalReview = false
-                job.errorMessage = pendingMessage
-            }
-            return ReviewCancelResult(jobID: jobID, state: .running, signalled: true)
-        case .succeeded, .failed, .cancelled:
-            return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: false)
-        }
-    }
-
-    package func discardQueuedOrRunningJob(jobID: String) {
-        removeJob(id: jobID)
-    }
-
-    package func resolveJob(
-        jobID: String,
-        sessionID: String
-    ) throws -> CodexReviewJob {
-        try authorizedJob(jobID: jobID, sessionID: sessionID)
-    }
-
-    package func pendingTerminationReason(
-        jobID: String,
-        sessionID: String
-    ) -> ReviewTerminationReason? {
-        let defaultReason = "Cancellation requested."
-        let closedSessionReason: ReviewTerminationReason? = {
-            guard coordinator.isSessionClosed(sessionID) else {
-                return nil
-            }
-            return .cancelled(.sessionClosed(message: defaultReason))
-        }()
-
-        guard let location = jobLocation(id: jobID) else {
-            return closedSessionReason
-        }
-        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard job.sessionID == sessionID else {
-            return .cancelled(.system(message: defaultReason))
-        }
-        if job.status == .cancelled || job.cancellationRequested {
-            return .cancelled(job.cancellation ?? .system(message: job.errorMessage?.nilIfEmpty ?? defaultReason))
-        }
-        return closedSessionReason
-    }
-
-    package func closeSessionState(_ sessionID: String) -> [String] {
-        coordinator.closeSessionState(sessionID)
-    }
-
-    package func pruneClosedJobIfNeeded(jobID: String) {
-        guard let location = jobLocation(id: jobID)
-        else {
-            return
-        }
-        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard coordinator.isSessionClosed(job.sessionID),
-              job.isTerminal
-        else {
-            return
-        }
-        removeJob(id: jobID)
-    }
-
-    package func pruneClosedSessionJobs(
-        sessionID: String,
-        excludingJobIDs: Set<String> = []
-    ) {
-        guard coordinator.isSessionClosed(sessionID) else {
-            return
-        }
-
-        for workspace in workspaces.reversed() {
-            workspace.jobs.removeAll { job in
-                job.sessionID == sessionID
-                    && job.isTerminal
-                    && excludingJobIDs.contains(job.id) == false
-            }
-        }
-        workspaces.removeAll { $0.jobs.isEmpty }
-        writeDiagnosticsIfNeeded()
-    }
-
-    package func resolveJob(
-        sessionID: String,
-        selector: ReviewJobSelector
-    ) throws -> CodexReviewJob {
-        if let jobID = selector.jobID?.nilIfEmpty {
-            return try authorizedJob(jobID: jobID, sessionID: sessionID)
-        }
-
-        let effectiveStatuses = selector.statuses ?? [.queued, .running]
-        let candidates = filteredJobs(
-            sessionID: sessionID,
-            cwd: selector.cwd,
-            statuses: effectiveStatuses
-        )
-        guard candidates.isEmpty == false else {
-            throw ReviewJobSelectionError.notFound("No matching review jobs were found.")
-        }
-        guard candidates.count == 1 else {
-            throw ReviewJobSelectionError.ambiguous(candidates.map(makeListItem))
-        }
-        return candidates[0]
-    }
-
-    fileprivate static func errorMessage(from error: Error) -> String {
-        if let localized = (error as? LocalizedError)?.errorDescription, localized.isEmpty == false {
-            return localized
-        }
-        return error.localizedDescription
-    }
-
     package static func makeConfiguration(
         environment: [String: String],
         arguments: [String]
@@ -544,136 +152,6 @@ extension CodexReviewStore {
         }
         return arguments[arguments.index(after: index)]
     }
-
-    private func appendQueuedJob(_ queued: ReviewQueuedJob) {
-        let job = CodexReviewJob(
-            id: queued.jobID,
-            sessionID: queued.sessionID,
-            cwd: queued.request.cwd,
-            reviewThreadID: nil,
-            targetSummary: queued.request.targetSummary,
-            model: queued.initialModel,
-            threadID: nil,
-            turnID: nil,
-            status: .queued,
-            cancellationRequested: false,
-            startedAt: nil,
-            endedAt: nil,
-            summary: "Queued.",
-            hasFinalReview: false,
-            lastAgentMessage: nil,
-            logEntries: [],
-            errorMessage: nil,
-            exitCode: nil
-        )
-
-        if let workspaceIndex = workspaces.firstIndex(where: { $0.cwd == queued.request.cwd }) {
-            let workspace = workspaces[workspaceIndex]
-            workspace.jobs = [job] + workspace.jobs
-        } else {
-            let workspace = CodexReviewWorkspace(
-                cwd: queued.request.cwd,
-                jobs: [job]
-            )
-            workspaces = [workspace] + workspaces
-        }
-        noteJobMutation()
-    }
-
-    private func updateJob(
-        id: String,
-        _ update: (CodexReviewJob) -> Void
-    ) {
-        guard let location = jobLocation(id: id) else {
-            return
-        }
-        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        update(job)
-        noteJobMutation()
-    }
-
-    private func removeJob(id: String) {
-        guard let location = jobLocation(id: id) else {
-            return
-        }
-
-        let workspace = workspaces[location.workspaceIndex]
-        workspace.jobs.remove(at: location.jobIndex)
-        if workspace.jobs.isEmpty {
-            workspaces.remove(at: location.workspaceIndex)
-        }
-        noteJobMutation()
-    }
-
-    private func filteredJobs(
-        sessionID: String,
-        cwd: String?,
-        statuses: [ReviewJobState]?
-    ) -> [CodexReviewJob] {
-        let normalizedCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        let allowedStatuses = statuses.map(Set.init)
-        var matches: [CodexReviewJob] = []
-        for workspace in workspaces {
-            for job in workspace.jobs where job.sessionID == sessionID {
-                if let normalizedCWD, job.cwd != normalizedCWD {
-                    continue
-                }
-                if let allowedStatuses, allowedStatuses.contains(job.status.state) == false {
-                    continue
-                }
-                matches.append(job)
-            }
-        }
-        return matches
-    }
-
-    private func jobLocation(id: String) -> (workspaceIndex: Int, jobIndex: Int)? {
-        for (workspaceIndex, workspace) in workspaces.enumerated() {
-            guard let jobIndex = workspace.jobs.firstIndex(where: { $0.id == id }) else {
-                continue
-            }
-            return (workspaceIndex, jobIndex)
-        }
-        return nil
-    }
-
-    private func authorizedJob(jobID: String, sessionID: String) throws -> CodexReviewJob {
-        guard let location = jobLocation(id: jobID) else {
-            throw ReviewError.jobNotFound("Job \(jobID) was not found.")
-        }
-        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard job.sessionID == sessionID else {
-            throw ReviewError.accessDenied("Job \(jobID) belongs to another MCP session.")
-        }
-        return job
-    }
-
-    private func makeListItem(_ job: CodexReviewJob) -> ReviewJobListItem {
-        ReviewJobListItem(
-            jobID: job.id,
-            cwd: job.cwd,
-            targetSummary: job.targetSummary,
-            model: job.model,
-            status: job.status.state,
-            summary: job.summary,
-            startedAt: job.startedAt,
-            endedAt: job.endedAt,
-            elapsedSeconds: elapsedSeconds(for: job),
-            threadID: job.threadID,
-            lastAgentMessage: job.lastAgentMessage ?? "",
-            cancellable: job.isTerminal == false && job.cancellationRequested == false,
-            cancellation: job.cancellation
-        )
-    }
-
-    private func elapsedSeconds(for job: CodexReviewJob) -> Int? {
-        guard let startedAt = job.startedAt else {
-            return nil
-        }
-        let endedAt = job.endedAt ?? (job.isTerminal ? coreDependencies.dateNow() : nil) ?? coreDependencies.dateNow()
-        return Int(endedAt.timeIntervalSince(startedAt))
-    }
-
 }
 
 @MainActor
@@ -699,56 +177,6 @@ public struct ReviewMonitorNativeAuthenticationConfiguration: Sendable {
 
 @MainActor
 extension CodexReviewStore {
-    public static func makePreviewStore(
-        diagnosticsURL: URL? = nil
-    ) -> CodexReviewStore {
-        makePreviewStore(
-            seed: .init(),
-            diagnosticsURL: diagnosticsURL
-        )
-    }
-
-    package static func makePreviewStore(
-        seed: ReviewMonitorCoordinator.Seed,
-        diagnosticsURL: URL? = nil
-    ) -> CodexReviewStore {
-        CodexReviewStore(
-            dependencies: .preview(
-                seed: seed,
-                diagnosticsURL: diagnosticsURL
-            )
-        )
-    }
-
-    package static func makeTestingStore(
-        harness: ReviewMonitorTestingHarness,
-        diagnosticsURL: URL? = nil
-    ) -> CodexReviewStore {
-        CodexReviewStore(
-            coreDependencies: .live(),
-            coordinator: .init(harness: harness),
-            settingsService: .init(
-                initialSnapshot: harness.currentSettingsSnapshot,
-                harness: harness
-            ),
-            diagnosticsURL: diagnosticsURL
-        )
-    }
-
-    @MainActor
-    public static func makeReviewMonitorUITestStore() -> CodexReviewStore {
-        let store = makePreviewStore()
-        store.serverState = .running
-        store.serverURL = URL(string: "http://127.0.0.1:9417/mcp")
-        let account = CodexAccount(email: "ui-test@example.com", planType: "unknown")
-        store.auth.applyPersistedAccountStates(
-            [savedAccountPayload(from: account)],
-            activeAccountKey: account.accountKey
-        )
-        store.auth.selectPersistedAccount(account.id)
-        return store
-    }
-
     public static func makeReviewMonitorStore(
         nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration
     ) -> CodexReviewStore {
@@ -1562,7 +990,7 @@ extension ReviewMonitorCoordinator {
         )
         let settingsService = ReviewMonitorSettingsService(
             initialSnapshot: serverRuntime.initialSettingsSnapshot,
-            liveBackend: serverRuntime
+            backend: serverRuntime
         )
         let executionCoordinator = ReviewExecutionCoordinator(
             configuration: .init(
@@ -1622,292 +1050,7 @@ extension ReviewMonitorCoordinator {
 }
 
 @MainActor
-package final class ReviewMonitorSettingsService {
-    private enum Backend {
-        case live(ReviewMonitorServerRuntime)
-        case harness(ReviewMonitorTestingHarness)
-    }
-
-    let initialSnapshot: CodexReviewSettingsSnapshot
-
-    private let backend: Backend
-    private weak var settingsStore: SettingsStore?
-    private var pendingRefresh = false
-    private var pendingSelection: SettingsStore.Selection?
-    private var lastPersistedSelection: SettingsStore.Selection
-
-    init(
-        initialSnapshot: CodexReviewSettingsSnapshot,
-        liveBackend: ReviewMonitorServerRuntime
-    ) {
-        self.initialSnapshot = initialSnapshot
-        backend = .live(liveBackend)
-        lastPersistedSelection = .init(
-            model: initialSnapshot.model,
-            reasoningEffort: initialSnapshot.reasoningEffort,
-            serviceTier: initialSnapshot.serviceTier
-        )
-    }
-
-    init(
-        initialSnapshot: CodexReviewSettingsSnapshot,
-        harness: ReviewMonitorTestingHarness
-    ) {
-        self.initialSnapshot = initialSnapshot
-        backend = .harness(harness)
-        lastPersistedSelection = .init(
-            model: initialSnapshot.model,
-            reasoningEffort: initialSnapshot.reasoningEffort,
-            serviceTier: initialSnapshot.serviceTier
-        )
-    }
-
-    func attach(settings: SettingsStore) {
-        settingsStore = settings
-        lastPersistedSelection = settings.currentSelection()
-    }
-
-    func refreshIfRunning(serverState: CodexReviewServerState) async {
-        guard case .running = serverState else {
-            return
-        }
-        await refresh()
-    }
-
-    func refresh() async {
-        guard let settingsStore else {
-            return
-        }
-        guard settingsStore.isLoading == false else {
-            pendingRefresh = true
-            return
-        }
-
-        settingsStore.beginLoading()
-        do {
-            let snapshot = try await refreshSettings()
-            settingsStore.apply(snapshot: snapshot)
-            lastPersistedSelection = settingsStore.currentSelection()
-            settingsStore.finishLoading(errorMessage: nil)
-        } catch {
-            settingsStore.finishLoading(errorMessage: error.localizedDescription)
-        }
-        await drainPendingWorkIfNeeded()
-    }
-
-    func updateModel(_ model: String?) async {
-        await applySelectionChange(
-            trigger: .model,
-            candidate: { settingsStore in
-                .init(
-                    model: model,
-                    reasoningEffort: settingsStore.currentSelection().reasoningEffort,
-                    serviceTier: settingsStore.currentSelection().serviceTier
-                )
-            }
-        )
-    }
-
-    func clearModelOverride() async {
-        await updateModel(nil)
-    }
-
-    func updateReasoningEffort(_ reasoningEffort: CodexReviewReasoningEffort?) async {
-        await applySelectionChange(
-            trigger: .reasoningEffort,
-            candidate: { settingsStore in
-                .init(
-                    model: settingsStore.currentSelection().model,
-                    reasoningEffort: reasoningEffort,
-                    serviceTier: settingsStore.currentSelection().serviceTier
-                )
-            }
-        )
-    }
-
-    func updateServiceTier(_ serviceTier: CodexReviewServiceTier?) async {
-        await applySelectionChange(
-            trigger: .serviceTier,
-            candidate: { settingsStore in
-                .init(
-                    model: settingsStore.currentSelection().model,
-                    reasoningEffort: settingsStore.currentSelection().reasoningEffort,
-                    serviceTier: serviceTier
-                )
-            }
-        )
-    }
-
-    private func applySelectionChange(
-        trigger: SettingsStore.SelectionTrigger,
-        candidate: (SettingsStore) -> SettingsStore.Selection
-    ) async {
-        guard let settingsStore else {
-            return
-        }
-
-        let normalized = settingsStore.normalizeSelection(
-            model: candidate(settingsStore).model,
-            reasoningEffort: candidate(settingsStore).reasoningEffort,
-            serviceTier: candidate(settingsStore).serviceTier,
-            catalog: settingsStore.models,
-            clearIncompatibleOverrides: trigger == .model
-        )
-        settingsStore.applyNormalizedSelection(normalized, catalog: settingsStore.models)
-
-        guard normalized != lastPersistedSelection else {
-            pendingSelection = nil
-            return
-        }
-        guard settingsStore.isLoading == false else {
-            pendingSelection = normalized
-            return
-        }
-
-        await persistSelectionChange(
-            trigger: trigger,
-            previous: lastPersistedSelection,
-            candidate: normalized
-        )
-    }
-
-    private func persistSelectionChange(
-        trigger: SettingsStore.SelectionTrigger,
-        previous: SettingsStore.Selection,
-        candidate: SettingsStore.Selection
-    ) async {
-        guard let settingsStore else {
-            return
-        }
-
-        settingsStore.beginLoading()
-        do {
-            try await persistSelection(
-                trigger: trigger,
-                previous: previous,
-                candidate: candidate
-            )
-            lastPersistedSelection = settingsStore.selectionAfterPersisting(
-                trigger: trigger,
-                previous: previous,
-                candidate: candidate
-            )
-            settingsStore.finishLoading(errorMessage: nil)
-        } catch {
-            settingsStore.apply(snapshot: settingsStore.snapshot(selection: previous))
-            lastPersistedSelection = previous
-            settingsStore.finishLoading(errorMessage: error.localizedDescription)
-        }
-        await drainPendingWorkIfNeeded()
-    }
-
-    private func drainPendingWorkIfNeeded() async {
-        if pendingRefresh {
-            pendingRefresh = false
-            await refresh()
-            return
-        }
-        guard let pendingSelection, let settingsStore else {
-            return
-        }
-        self.pendingSelection = nil
-
-        let previous = lastPersistedSelection
-        let triggers = settingsStore.selectionTriggers(
-            previous: previous,
-            candidate: pendingSelection
-        )
-        guard triggers.isEmpty == false else {
-            return
-        }
-
-        var appliedSelection = previous
-        for trigger in triggers {
-            await persistSelectionChange(
-                trigger: trigger,
-                previous: appliedSelection,
-                candidate: pendingSelection
-            )
-            guard settingsStore.currentSelection() == pendingSelection else {
-                return
-            }
-            appliedSelection = settingsStore.selectionAfterPersisting(
-                trigger: trigger,
-                previous: appliedSelection,
-                candidate: pendingSelection
-            )
-        }
-    }
-
-    private func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
-        switch backend {
-        case .live(let liveBackend):
-            return try await liveBackend.refreshSettings()
-        case .harness(let harness):
-            return try await harness.refreshSettings()
-        }
-    }
-
-    private func persistSelection(
-        trigger: SettingsStore.SelectionTrigger,
-        previous: SettingsStore.Selection,
-        candidate: SettingsStore.Selection
-    ) async throws {
-        switch backend {
-        case .live(let liveBackend):
-            try await persistSelection(
-                trigger: trigger,
-                previous: previous,
-                candidate: candidate,
-                updateModel: liveBackend.updateSettingsModel,
-                updateReasoningEffort: liveBackend.updateSettingsReasoningEffort,
-                updateServiceTier: liveBackend.updateSettingsServiceTier
-            )
-        case .harness(let harness):
-            try await persistSelection(
-                trigger: trigger,
-                previous: previous,
-                candidate: candidate,
-                updateModel: harness.updateSettingsModel,
-                updateReasoningEffort: harness.updateSettingsReasoningEffort,
-                updateServiceTier: harness.updateSettingsServiceTier
-            )
-        }
-    }
-
-    private func persistSelection(
-        trigger: SettingsStore.SelectionTrigger,
-        previous: SettingsStore.Selection,
-        candidate: SettingsStore.Selection,
-        updateModel: @escaping @MainActor (
-            String?,
-            CodexReviewReasoningEffort?,
-            Bool,
-            CodexReviewServiceTier?,
-            Bool
-        ) async throws -> Void,
-        updateReasoningEffort: @escaping @MainActor (CodexReviewReasoningEffort?) async throws -> Void,
-        updateServiceTier: @escaping @MainActor (CodexReviewServiceTier?) async throws -> Void
-    ) async throws {
-        switch trigger {
-        case .model:
-            try await updateModel(
-                candidate.model,
-                candidate.reasoningEffort,
-                previous.reasoningEffort != candidate.reasoningEffort,
-                candidate.serviceTier,
-                previous.serviceTier != candidate.serviceTier
-            )
-        case .reasoningEffort:
-            try await updateReasoningEffort(candidate.reasoningEffort)
-        case .serviceTier:
-            try await updateServiceTier(candidate.serviceTier)
-        }
-    }
-}
-
-@MainActor
-package final class ReviewMonitorServerRuntime {
+package final class ReviewMonitorServerRuntime: ReviewMonitorServerCoordinating, ReviewMonitorSettingsBackend, ReviewMonitorAuthRuntimeManaging {
     private struct DeferredAddAccountRuntimeEffect {
         var accountKey: String
         var runtimeGeneration: Int
@@ -1998,14 +1141,14 @@ package final class ReviewMonitorServerRuntime {
     var currentServer: ReviewMCPHTTPServer? {
         server
     }
-    var authRuntimeState: CodexAuthRuntimeState {
+    package var authRuntimeState: CodexAuthRuntimeState {
         .init(
             serverIsRunning: server != nil,
             runtimeGeneration: appServerRuntimeGeneration
         )
     }
 
-    func resolveAddAccountRuntimeEffect(
+    package func resolveAddAccountRuntimeEffect(
         accountKey: String,
         runtimeGeneration: Int
     ) -> CodexAuthRuntimeEffect {
@@ -2021,7 +1164,7 @@ package final class ReviewMonitorServerRuntime {
         )
     }
 
-    func applyAddAccountRuntimeEffect(
+    package func applyAddAccountRuntimeEffect(
         _ effect: CodexAuthRuntimeEffect,
         auth: CodexReviewAuthModel
     ) async {
@@ -2132,7 +1275,7 @@ package final class ReviewMonitorServerRuntime {
         )
     }
 
-    var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
+    package var initialSettingsSnapshot: CodexReviewSettingsSnapshot {
         let localConfig = (try? localConfigClient.load()) ?? .init()
         let fallbackConfig = loadFallbackAppServerConfig(
             environment: configuration.environment,
@@ -2169,7 +1312,7 @@ package final class ReviewMonitorServerRuntime {
         )
     }
 
-    var isActive: Bool {
+    package var isActive: Bool {
         server != nil || waitTask != nil || startupTask != nil
     }
 
@@ -2262,7 +1405,7 @@ package final class ReviewMonitorServerRuntime {
         self.initialAccount = resolvedInitialAccount
     }
 
-    func attachStore(_ store: CodexReviewStore) {
+    package func attachStore(_ store: CodexReviewStore) {
         attachedStore = store
         observedHasRunningJobs = store.hasRunningJobs
         observationScope.cancelAll()
@@ -2286,7 +1429,7 @@ package final class ReviewMonitorServerRuntime {
         .store(in: observationScope)
     }
 
-    func start(
+    package func start(
         store: CodexReviewStore,
         forceRestartIfNeeded: Bool
     ) async {
@@ -2313,7 +1456,7 @@ package final class ReviewMonitorServerRuntime {
         }
     }
 
-    func stop(store: CodexReviewStore) async {
+    package func stop(store: CodexReviewStore) async {
         let startupTask = self.startupTask
         self.startupTask = nil
         startupTaskID = nil
@@ -2342,7 +1485,7 @@ package final class ReviewMonitorServerRuntime {
         await startupTask?.value
     }
 
-    func waitUntilStopped() async {
+    package func waitUntilStopped() async {
         if let startupTask {
             await startupTask.value
         }
@@ -2351,7 +1494,7 @@ package final class ReviewMonitorServerRuntime {
         }
     }
 
-    func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
+    package func refreshSettings() async throws -> CodexReviewSettingsSnapshot {
         let transport = try await appServerManager.checkoutAuthTransport()
         let localConfig = (try? localConfigClient.load()) ?? .init()
         let fallbackConfig = loadFallbackAppServerConfig(
@@ -2418,7 +1561,7 @@ package final class ReviewMonitorServerRuntime {
         )
     }
 
-    func updateSettingsModel(
+    package func updateSettingsModel(
         _ model: String?,
         reasoningEffort: CodexReviewReasoningEffort?,
         persistReasoningEffort: Bool,
@@ -2491,7 +1634,7 @@ package final class ReviewMonitorServerRuntime {
         try await writeSettings(edits: edits)
     }
 
-    func updateSettingsReasoningEffort(
+    package func updateSettingsReasoningEffort(
         _ reasoningEffort: CodexReviewReasoningEffort?
     ) async throws {
         let profile = loadActiveReviewProfile(
@@ -2521,7 +1664,7 @@ package final class ReviewMonitorServerRuntime {
         )
     }
 
-    func updateSettingsServiceTier(
+    package func updateSettingsServiceTier(
         _ serviceTier: CodexReviewServiceTier?
     ) async throws {
         let profile = loadActiveReviewProfile(
@@ -2827,7 +1970,7 @@ package final class ReviewMonitorServerRuntime {
         }
     }
 
-    func cancelRunningJobs(reason: String) async throws {
+    package func cancelRunningJobs(reason: String) async throws {
         guard let store = attachedStore else {
             return
         }
@@ -2842,7 +1985,7 @@ package final class ReviewMonitorServerRuntime {
         }
     }
 
-    func recycleSharedAppServerAfterAuthChange() async {
+    package func recycleSharedAppServerAfterAuthChange() async {
         guard let server else {
             return
         }
@@ -2931,12 +2074,7 @@ package final class ReviewMonitorServerRuntime {
 
 }
 
-private struct ReviewQueuedJob {
-    var jobID: String
-    var sessionID: String
-    var request: ReviewRequestOptions
-    var initialModel: String?
-}
+
 
 package func forceRestart(
     _ discovery: LiveEndpointRecord,
