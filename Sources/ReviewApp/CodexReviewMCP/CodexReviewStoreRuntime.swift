@@ -365,14 +365,13 @@ extension CodexReviewStore {
             }
             return ReviewCancelResult(jobID: jobID, state: .cancelled, signalled: false)
         case .running:
+            let pendingMessage = "Cancellation requested."
             updateJob(id: jobID) { job in
                 job.cancellationRequested = true
                 job.cancellation = cancellation
-                job.summary = cancellation.message
+                job.summary = pendingMessage
                 job.hasFinalReview = false
-                if cancellation.message.isEmpty == false {
-                    job.errorMessage = cancellation.message
-                }
+                job.errorMessage = pendingMessage
             }
             return ReviewCancelResult(jobID: jobID, state: .running, signalled: true)
         case .succeeded, .failed, .cancelled:

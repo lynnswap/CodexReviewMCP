@@ -143,6 +143,48 @@ struct ReviewJobStoreTests {
         #expect(await transport.isClosed())
     }
 
+    @Test func runningCancellationKeepsPendingMessageUntilTerminalOutcome() throws {
+        let store = CodexReviewStore.makePreviewStore()
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-running-pending-cancel",
+            sessionID: "session-pending-cancel",
+            targetSummary: "Uncommitted changes",
+            status: .running,
+            summary: "Running."
+        )
+        store.workspaces = [
+            CodexReviewWorkspace(
+                cwd: "/tmp/repo",
+                jobs: [job]
+            )
+        ]
+
+        let outcome = try store.requestCancellation(
+            jobID: job.id,
+            sessionID: "session-pending-cancel",
+            cancellation: .userInterface()
+        )
+        let pendingResult = try store.readReview(
+            jobID: job.id,
+            sessionID: "session-pending-cancel"
+        )
+        let pendingListItem = try #require(store.listReviews(sessionID: "session-pending-cancel").items.first)
+
+        #expect(outcome.state == .running)
+        #expect(outcome.signalled)
+        #expect(job.status == .running)
+        #expect(job.cancellationRequested)
+        #expect(job.cancellation?.source == .userInterface)
+        #expect(job.cancellation?.message == "Cancelled by user from Review Monitor.")
+        #expect(pendingResult.status == .running)
+        #expect(pendingResult.cancellation?.source == .userInterface)
+        #expect(pendingResult.review == "Cancellation requested.")
+        #expect(pendingResult.error == "Cancellation requested.")
+        #expect(pendingListItem.status == .running)
+        #expect(pendingListItem.summary == "Cancellation requested.")
+        #expect(pendingListItem.cancellation?.source == .userInterface)
+    }
+
     @Test func repeatedCancellationKeepsOriginalCancellationMetadata() async throws {
         let manager = MockAppServerManager { _ in .interruptIgnoredLongRunning() }
         let store = try makeTestStore(manager: manager)
