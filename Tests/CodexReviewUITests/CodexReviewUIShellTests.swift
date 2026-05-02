@@ -16,12 +16,8 @@ struct CodexReviewUIShellTests {
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
-        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
+        #expect(viewController.sidebarTopAccessoryCountForTesting == 0)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
-        #expect(
-            viewController.sidebarTopAccessorySegmentAccessibilityDescriptionsForTesting ==
-                ["Workspace", "Account"]
-        )
         #expect(viewController.contentAccessoryCountForTesting == 0)
         #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
         #expect(viewController.contentPaneViewControllerForTesting.isShowingEmptyStateForTesting)
@@ -33,7 +29,7 @@ struct CodexReviewUIShellTests {
         viewController.loadViewIfNeeded()
 
         #expect(viewController.splitViewItems.count == 2)
-        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
+        #expect(viewController.sidebarTopAccessoryCountForTesting == 0)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
         #expect(viewController.contentAccessoryCountForTesting == 0)
         #expect(viewController.sidebarViewControllerForTesting.isShowingEmptyStateForTesting)
@@ -51,7 +47,7 @@ struct CodexReviewUIShellTests {
 
         #expect(viewController.splitViewItems.count == 2)
         #expect(viewController.sidebarPresentationForTesting == .unavailable)
-        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
+        #expect(viewController.sidebarTopAccessoryCountForTesting == 0)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
     }
 
@@ -66,7 +62,7 @@ struct CodexReviewUIShellTests {
         viewController.loadViewIfNeeded()
 
         #expect(viewController.sidebarPresentationForTesting == .jobList)
-        #expect(viewController.sidebarTopAccessoryCountForTesting == 1)
+        #expect(viewController.sidebarTopAccessoryCountForTesting == 0)
         #expect(viewController.sidebarAccessoryCountForTesting == 1)
     }
 
@@ -171,13 +167,116 @@ struct CodexReviewUIShellTests {
 
         #expect(window.toolbar != nil)
         #expect(harness.rootViewController.contentKindForTesting == .contentView)
-        #expect(viewController.toolbarIdentifiersForTesting.contains(.toggleSidebar))
+        #expect(viewController.toolbarIdentifiersForTesting.contains(viewController.sidebarPickerToolbarItemIdentifierForTesting))
+        #expect(viewController.toolbarIdentifiersForTesting.contains(.toggleSidebar) == false)
         #expect(viewController.toolbarIdentifiersForTesting.contains(.sidebarTrackingSeparator))
+        #expect(
+            viewController.sidebarPickerToolbarSegmentAccessibilityDescriptionsForTesting ==
+                ["Workspace", "Account"]
+        )
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .hidden)
         #expect(window.isMovableByWindowBackground == false)
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
+    }
+
+    @Test func sidebarPickerToolbarItemSwitchesSidebarPresentation() async throws {
+        let store = CodexReviewStore.makePreviewStore()
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+
+        #expect(viewController.sidebarPresentationForTesting == .jobList)
+        #expect(viewController.sidebarPickerToolbarSelectedSelectionForTesting == .workspace)
+
+        viewController.selectSidebarPickerToolbarSegmentForTesting(.account)
+        try await waitForSidebarPresentation(viewController, .accountList)
+
+        #expect(sidebarItem.isCollapsed == false)
+        #expect(viewController.sidebarPickerToolbarSelectedSelectionForTesting == .account)
+    }
+
+    @Test func sidebarPickerToolbarItemTogglesSidebarWhenCurrentSelectionIsClicked() async throws {
+        let store = CodexReviewStore.makePreviewStore()
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+        window.layoutIfNeeded()
+
+        viewController.selectSidebarPickerToolbarSegmentForTesting(.workspace)
+        window.layoutIfNeeded()
+
+        #expect(sidebarItem.isCollapsed)
+
+        viewController.selectSidebarPickerToolbarSegmentForTesting(.workspace)
+        window.layoutIfNeeded()
+
+        #expect(sidebarItem.isCollapsed == false)
+        #expect(viewController.sidebarPickerToolbarSelectedSelectionForTesting == .workspace)
+    }
+
+    @Test func sidebarPickerToolbarItemOpensCollapsedSidebarWhenSwitchingSelection() async throws {
+        let store = CodexReviewStore.makePreviewStore()
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = true
+        window.layoutIfNeeded()
+
+        viewController.selectSidebarPickerToolbarSegmentForTesting(.account)
+        window.layoutIfNeeded()
+        try await waitForSidebarPresentation(viewController, .accountList)
+
+        #expect(sidebarItem.isCollapsed == false)
+        #expect(viewController.sidebarPickerToolbarSelectedSelectionForTesting == .account)
+    }
+
+    @Test func sidebarPickerToolbarItemProvidesOverflowMenuActions() async throws {
+        let store = CodexReviewStore.makePreviewStore()
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        let sidebarItem = try #require(viewController.splitViewItems.first)
+        sidebarItem.isCollapsed = false
+
+        #expect(viewController.sidebarPickerToolbarOverflowMenuItemTitlesForTesting == ["Workspace", "Account"])
+
+        viewController.selectSidebarPickerToolbarOverflowMenuItemForTesting(.account)
+        try await waitForSidebarPresentation(viewController, .accountList)
+
+        #expect(sidebarItem.isCollapsed == false)
+        #expect(viewController.sidebarPickerToolbarSelectedSelectionForTesting == .account)
+
+        viewController.selectSidebarPickerToolbarOverflowMenuItemForTesting(.account)
+        window.layoutIfNeeded()
+
+        #expect(sidebarItem.isCollapsed)
+    }
+
+    @Test func sidebarPickerToolbarItemTracksExternalSelectionChanges() async throws {
+        let store = CodexReviewStore.makePreviewStore()
+        let uiState = ReviewMonitorUIState(auth: store.auth)
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: uiState)
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+
+        viewController.attach(to: window)
+        #expect(viewController.sidebarPickerToolbarSelectedSelectionForTesting == .workspace)
+
+        uiState.sidebarSelection = .account
+        try await waitForCondition {
+            viewController.sidebarPickerToolbarSelectedSelectionForTesting == .account
+        }
     }
 
     @Test func splitViewShowsAddAccountToolbarItemOnlyForAccountSidebar() async throws {
