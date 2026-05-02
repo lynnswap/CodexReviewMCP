@@ -5,12 +5,12 @@ extension CodexReviewStore {
     package func cancelReview(
         jobID: String,
         sessionID: String,
-        reason: String = "Cancellation requested."
+        cancellation: ReviewCancellation = .system()
     ) async throws {
         _ = try await coordinator.cancelReviewByID(
             jobID: jobID,
             sessionID: sessionID,
-            reason: reason,
+            cancellation: cancellation,
             store: self
         )
     }
@@ -18,7 +18,7 @@ extension CodexReviewStore {
     package func completeCancellationLocally(
         jobID: String,
         sessionID: String,
-        reason: String = "Cancellation requested."
+        cancellation: ReviewCancellation = .system()
     ) throws {
         guard let job = workspaces
             .lazy
@@ -35,10 +35,11 @@ extension CodexReviewStore {
         }
 
         job.cancellationRequested = false
+        job.cancellation = cancellation
         job.status = .cancelled
-        job.summary = "Review cancelled."
+        job.summary = cancellation.message
         job.hasFinalReview = false
-        job.errorMessage = reason.nilIfEmpty ?? job.errorMessage
+        job.errorMessage = cancellation.message.nilIfEmpty ?? job.errorMessage
         job.endedAt = Date()
         noteJobMutation()
     }
@@ -75,6 +76,9 @@ extension CodexReviewStore {
     public func cancelAllRunningJobs(
         reason: String = "Cancellation requested."
     ) async throws {
+        let cancellation = ReviewCancellation.system(
+            message: reason.nilIfEmpty ?? "Cancellation requested."
+        )
         let jobs = workspaces
             .flatMap(\.jobs)
             .filter { $0.isTerminal == false }
@@ -84,7 +88,7 @@ extension CodexReviewStore {
                 try await cancelReview(
                     jobID: job.id,
                     sessionID: job.sessionID,
-                    reason: reason
+                    cancellation: cancellation
                 )
             } catch {
                 let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -110,6 +114,7 @@ extension CodexReviewStore {
         let resolvedError = failureMessage.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         for job in workspaces.flatMap(\.jobs) where job.isTerminal == false {
             job.cancellationRequested = false
+            job.cancellation = nil
             job.status = .failed
             if let resolvedError {
                 job.summary = "Failed to cancel review: \(resolvedError)"

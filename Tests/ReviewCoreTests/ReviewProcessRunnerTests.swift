@@ -1009,7 +1009,7 @@ private actor CancellationFlag {
     }
 
     func cancel(_ reason: String) {
-        cancellationReason = .cancelled(reason)
+        cancellationReason = .cancelled(.system(message: reason))
     }
 }
 

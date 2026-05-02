@@ -195,19 +195,19 @@ package enum ReviewHelpCatalog {
     }
 
     package static var reviewStartDescription: String {
-        "Run a repository review through `codex app-server` and wait for the terminal result. Pass `target` as an object with a supported `type`. The returned `model` is the effective resolved review model. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`."
+        "Run a repository review through `codex app-server` and wait for the terminal result. Pass `target` as an object with a supported `type`. The returned `model` is the effective resolved review model, and cancelled jobs may include structured `cancellation` metadata. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`."
     }
 
     package static var reviewReadDescription: String {
-        "Read the current or final state of a review job owned by the current MCP session. Returns the effective resolved review `model`, ordered `logs`, and `rawLogText`. Read `\(toolURI("review_read"))` for details."
+        "Read the current or final state of a review job owned by the current MCP session. Returns the effective resolved review `model`, ordered `logs`, `rawLogText`, and structured `cancellation` metadata when available. Read `\(toolURI("review_read"))` for details."
     }
 
     package static var reviewListDescription: String {
-        "List review jobs owned by the current MCP session. `items[].model` is the effective resolved review model, not the raw thread model. Read `\(toolURI("review_list"))` for details."
+        "List review jobs owned by the current MCP session. `items[].model` is the effective resolved review model, not the raw thread model, and `items[].cancellation` is present when cancellation metadata is available. Read `\(toolURI("review_list"))` for details."
     }
 
     package static var reviewCancelDescription: String {
-        "Cancel a running review job owned by the current MCP session. Pass either `jobId` or a selector (`cwd`, `statuses`). Read `\(toolURI("review_cancel"))` for details."
+        "Cancel a running review job owned by the current MCP session. Pass either `jobId` or a selector (`cwd`, `statuses`). Responses include structured `cancellation` metadata when cancellation is requested. Read `\(toolURI("review_cancel"))` for details."
     }
 
     private static var overviewMarkdown: String {
@@ -301,6 +301,7 @@ package enum ReviewHelpCatalog {
             - `model` (effective resolved review model)
             - `status`
             - `review`
+            - `cancellation` when cancellation metadata is available
             - `error`
 
             Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
@@ -333,7 +334,7 @@ package enum ReviewHelpCatalog {
 
             Use `review_list` first if you do not know the ID.
 
-            The response includes `model`, which is the effective resolved review model.
+            The response includes `model`, which is the effective resolved review model. Cancelled jobs include `cancellation.source` and `cancellation.message` when available.
             """
         case "review_list":
             return """
@@ -353,7 +354,7 @@ package enum ReviewHelpCatalog {
             - `statuses`
             - `limit`
 
-            `items[].model` is the effective resolved review model, not the raw thread model.
+            `items[].model` is the effective resolved review model, not the raw thread model. `items[].cancellation` is present when cancellation metadata is available.
             """
         case "review_cancel":
             return """
@@ -376,6 +377,8 @@ package enum ReviewHelpCatalog {
               "cwd": "/absolute/path/to/repo"
             }
             ```
+
+            Cancelled responses include `cancellation.source` and `cancellation.message`; UI-triggered cancellations use `source: "userInterface"`.
             """
         default:
             preconditionFailure("Unexpected tool name: \(toolName)")

@@ -39,8 +39,8 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
     package typealias StartReviewHandler = @MainActor @Sendable (_ sessionID: String, _ request: ReviewStartRequest) async throws -> ReviewReadResult
     package typealias ReadReviewHandler = @MainActor @Sendable (_ sessionID: String, _ jobID: String) async throws -> ReviewReadResult
     package typealias ListReviewsHandler = @MainActor @Sendable (_ sessionID: String, _ cwd: String?, _ statuses: [ReviewJobState]?, _ limit: Int?) async -> ReviewListResult
-    package typealias CancelByIDHandler = @MainActor @Sendable (_ sessionID: String, _ jobID: String) async throws -> ReviewCancelOutcome
-    package typealias CancelBySelectorHandler = @MainActor @Sendable (_ sessionID: String, _ cwd: String?, _ statuses: [ReviewJobState]?) async throws -> ReviewCancelOutcome
+    package typealias CancelByIDHandler = @MainActor @Sendable (_ sessionID: String, _ jobID: String, _ cancellation: ReviewCancellation) async throws -> ReviewCancelOutcome
+    package typealias CancelBySelectorHandler = @MainActor @Sendable (_ sessionID: String, _ cwd: String?, _ statuses: [ReviewJobState]?, _ cancellation: ReviewCancellation) async throws -> ReviewCancelOutcome
     package typealias CloseSessionHandler = @MainActor @Sendable (_ sessionID: String) async -> Void
     package typealias HasActiveJobsHandler = @MainActor @Sendable (_ sessionID: String) async -> Bool
 
@@ -86,11 +86,11 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
                     listReviews: { cwd, statuses, limit in
                         await listReviews(sessionID, cwd, statuses, limit)
                     },
-                    cancelReviewByID: { jobID in
-                        try await cancelReviewByID(sessionID, jobID)
+                    cancelReviewByID: { jobID, cancellation in
+                        try await cancelReviewByID(sessionID, jobID, cancellation)
                     },
-                    cancelReviewBySelector: { cwd, statuses in
-                        try await cancelReviewBySelector(sessionID, cwd, statuses)
+                    cancelReviewBySelector: { cwd, statuses, cancellation in
+                        try await cancelReviewBySelector(sessionID, cwd, statuses, cancellation)
                     }
                 )
             },
@@ -196,8 +196,8 @@ private extension ReviewMCPHTTPServer {
         startReview: @escaping @MainActor @Sendable (ReviewStartRequest) async throws -> ReviewReadResult,
         readReview: @escaping @MainActor @Sendable (String) async throws -> ReviewReadResult,
         listReviews: @escaping @MainActor @Sendable (String?, [ReviewJobState]?, Int?) async -> ReviewListResult,
-        cancelReviewByID: @escaping @MainActor @Sendable (String) async throws -> ReviewCancelOutcome,
-        cancelReviewBySelector: @escaping @MainActor @Sendable (String?, [ReviewJobState]?) async throws -> ReviewCancelOutcome
+        cancelReviewByID: @escaping @MainActor @Sendable (String, ReviewCancellation) async throws -> ReviewCancelOutcome,
+        cancelReviewBySelector: @escaping @MainActor @Sendable (String?, [ReviewJobState]?, ReviewCancellation) async throws -> ReviewCancelOutcome
     ) async -> Server {
         let _ = transport
         let server = Server(

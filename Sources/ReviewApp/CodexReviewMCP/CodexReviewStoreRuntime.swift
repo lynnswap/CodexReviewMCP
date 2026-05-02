@@ -115,6 +115,7 @@ extension CodexReviewStore {
             lastAgentMessage: job.lastAgentMessage ?? "",
             logs: job.logEntries,
             rawLogText: job.rawLogText,
+            cancellation: job.cancellation,
             error: job.errorMessage
         )
     }
@@ -133,23 +134,25 @@ extension CodexReviewStore {
     package func cancelReview(
         selectedJobID jobID: String,
         sessionID: String,
-        reason: String = "Cancellation requested."
+        cancellation: ReviewCancellation = .system()
     ) async throws -> ReviewCancelOutcome {
         try await coordinator.cancelReviewByID(
             jobID: jobID,
             sessionID: sessionID,
-            reason: reason,
+            cancellation: cancellation,
             store: self
         )
     }
 
     package func cancelReview(
         selector: ReviewJobSelector,
-        sessionID: String
+        sessionID: String,
+        cancellation: ReviewCancellation = .system()
     ) async throws -> ReviewCancelOutcome {
         try await coordinator.cancelReviewBySelector(
             selector: selector,
             sessionID: sessionID,
+            cancellation: cancellation,
             store: self
         )
     }
@@ -238,7 +241,11 @@ extension CodexReviewStore {
         updateJob(id: jobID) { job in
             job.status = .init(state: outcome.state)
             job.cancellationRequested = false
-            job.summary = outcome.summary
+            job.summary = if outcome.state == .cancelled {
+                job.cancellation?.message ?? outcome.errorMessage?.nilIfEmpty ?? outcome.summary
+            } else {
+                outcome.summary
+            }
             job.model = outcome.model ?? job.model
             job.hasFinalReview = outcome.hasFinalReview
             if outcome.hasFinalReview {
@@ -262,6 +269,9 @@ extension CodexReviewStore {
                 job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
             }
             job.errorMessage = reviewAuthDisplayMessage(from: outcome.errorMessage)
+            if outcome.state != .cancelled {
+                job.cancellation = nil
+            }
             job.reviewThreadID = outcome.reviewThreadID ?? job.reviewThreadID
             job.threadID = outcome.threadID ?? job.threadID
             job.turnID = outcome.turnID ?? job.turnID
@@ -280,6 +290,7 @@ extension CodexReviewStore {
     ) {
         updateJob(id: jobID) { job in
             job.cancellationRequested = false
+            job.cancellation = nil
             job.status = .failed
             job.summary = "Failed to start review."
             job.model = model ?? job.model
@@ -294,18 +305,19 @@ extension CodexReviewStore {
 
     package func markBootstrapCancelled(
         jobID: String,
-        reason: String,
+        cancellation: ReviewCancellation,
         model: String? = nil,
         startedAt: Date,
         endedAt: Date
     ) {
         updateJob(id: jobID) { job in
             job.cancellationRequested = false
+            job.cancellation = cancellation
             job.status = .cancelled
-            job.summary = "Review cancelled."
+            job.summary = cancellation.message
             job.model = model ?? job.model
             job.hasFinalReview = false
-            job.errorMessage = reason.nilIfEmpty ?? job.errorMessage
+            job.errorMessage = cancellation.message.nilIfEmpty ?? job.errorMessage
             if job.startedAt == nil {
                 job.startedAt = startedAt
             }
@@ -316,7 +328,7 @@ extension CodexReviewStore {
     package func requestCancellation(
         jobID: String,
         sessionID: String,
-        reason: String
+        cancellation: ReviewCancellation
     ) throws -> ReviewCancelResult {
         let requestCancellationDelay = Self.requestCancellationDelay
         if requestCancellationDelay > 0 {
@@ -342,11 +354,12 @@ extension CodexReviewStore {
             let endedAt = coreDependencies.dateNow()
             updateJob(id: jobID) { job in
                 job.cancellationRequested = false
+                job.cancellation = cancellation
                 job.status = .cancelled
-                job.summary = "Review cancelled."
+                job.summary = cancellation.message
                 job.hasFinalReview = false
-                if reason.isEmpty == false {
-                    job.errorMessage = reason
+                if cancellation.message.isEmpty == false {
+                    job.errorMessage = cancellation.message
                 }
                 job.endedAt = endedAt
             }
@@ -354,10 +367,11 @@ extension CodexReviewStore {
         case .running:
             updateJob(id: jobID) { job in
                 job.cancellationRequested = true
-                job.summary = "Cancellation requested."
+                job.cancellation = cancellation
+                job.summary = cancellation.message
                 job.hasFinalReview = false
-                if reason.isEmpty == false {
-                    job.errorMessage = reason
+                if cancellation.message.isEmpty == false {
+                    job.errorMessage = cancellation.message
                 }
             }
             return ReviewCancelResult(jobID: jobID, state: .running, signalled: true)
@@ -386,7 +400,7 @@ extension CodexReviewStore {
             guard coordinator.isSessionClosed(sessionID) else {
                 return nil
             }
-            return .cancelled(defaultReason)
+            return .cancelled(.sessionClosed(message: defaultReason))
         }()
 
         guard let location = jobLocation(id: jobID) else {
@@ -394,10 +408,10 @@ extension CodexReviewStore {
         }
         let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
         guard job.sessionID == sessionID else {
-            return .cancelled(defaultReason)
+            return .cancelled(.system(message: defaultReason))
         }
         if job.status == .cancelled || job.cancellationRequested {
-            return .cancelled(job.errorMessage?.nilIfEmpty ?? defaultReason)
+            return .cancelled(job.cancellation ?? .system(message: job.errorMessage?.nilIfEmpty ?? defaultReason))
         }
         return closedSessionReason
     }
@@ -646,7 +660,8 @@ extension CodexReviewStore {
             elapsedSeconds: elapsedSeconds(for: job),
             threadID: job.threadID,
             lastAgentMessage: job.lastAgentMessage ?? "",
-            cancellable: job.isTerminal == false && job.cancellationRequested == false
+            cancellable: job.isTerminal == false && job.cancellationRequested == false,
+            cancellation: job.cancellation
         )
     }
 
@@ -2533,14 +2548,14 @@ package final class ReviewMonitorServerRuntime {
     func cancelReview(
         jobID: String,
         sessionID: String,
-        reason: String,
+        cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws {
         let job = try store.resolveJob(jobID: jobID, sessionID: sessionID)
         _ = try await store.cancelReview(
             selectedJobID: job.id,
             sessionID: sessionID,
-            reason: reason
+            cancellation: cancellation
         )
     }
 
@@ -2570,16 +2585,17 @@ package final class ReviewMonitorServerRuntime {
                     limit: limit
                 )
             },
-            cancelReviewByID: { [weak store] sessionID, jobID in
+            cancelReviewByID: { [weak store] sessionID, jobID, cancellation in
                 guard let store else {
                     throw ReviewError.io("Review store is unavailable.")
                 }
                 return try await store.cancelReview(
                     selectedJobID: jobID,
-                    sessionID: sessionID
+                    sessionID: sessionID,
+                    cancellation: cancellation
                 )
             },
-            cancelReviewBySelector: { [weak store] sessionID, cwd, statuses in
+            cancelReviewBySelector: { [weak store] sessionID, cwd, statuses, cancellation in
                 guard let store else {
                     throw ReviewError.io("Review store is unavailable.")
                 }
@@ -2589,7 +2605,8 @@ package final class ReviewMonitorServerRuntime {
                         cwd: cwd,
                         statuses: statuses
                     ),
-                    sessionID: sessionID
+                    sessionID: sessionID,
+                    cancellation: cancellation
                 )
             },
             closeSession: { [weak store] sessionID in

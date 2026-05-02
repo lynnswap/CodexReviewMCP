@@ -451,6 +451,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public var turnID: String?
     public var status: CodexReviewJobStatus
     public var cancellationRequested: Bool
+    public var cancellation: ReviewCancellation?
     public var startedAt: Date?
     public var endedAt: Date?
     public var summary: String
@@ -510,6 +511,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         turnID: String?,
         status: CodexReviewJobStatus,
         cancellationRequested: Bool = false,
+        cancellation: ReviewCancellation? = nil,
         startedAt: Date?,
         endedAt: Date?,
         summary: String,
@@ -530,6 +532,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         self.turnID = turnID
         self.status = status
         self.cancellationRequested = cancellationRequested
+        self.cancellation = cancellation
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.summary = summary

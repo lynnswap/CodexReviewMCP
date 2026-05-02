@@ -986,7 +986,7 @@ package struct AppServerReviewRunner: Sendable {
             return "Review cancelled."
         }
         if case .cancelled(let reason)? = await requestedTerminationReason() {
-            return reason
+            return reason.message
         }
         return nil
     }

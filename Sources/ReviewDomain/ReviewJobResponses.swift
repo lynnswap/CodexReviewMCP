@@ -11,6 +11,7 @@ package struct ReviewReadResult: Sendable, Hashable {
     package var lastAgentMessage: String
     package var logs: [ReviewLogEntry]
     package var rawLogText: String
+    package var cancellation: ReviewCancellation?
     package var error: String?
 
     package init(
@@ -23,6 +24,7 @@ package struct ReviewReadResult: Sendable, Hashable {
         lastAgentMessage: String,
         logs: [ReviewLogEntry],
         rawLogText: String,
+        cancellation: ReviewCancellation? = nil,
         error: String? = nil
     ) {
         self.jobID = jobID
@@ -34,6 +36,7 @@ package struct ReviewReadResult: Sendable, Hashable {
         self.lastAgentMessage = lastAgentMessage
         self.logs = logs
         self.rawLogText = rawLogText
+        self.cancellation = cancellation
         self.error = error
     }
 
@@ -56,6 +59,9 @@ package struct ReviewReadResult: Sendable, Hashable {
         }
         object["turnId"] = turnID.map(Value.string) ?? .null
         object["model"] = model.map(Value.string) ?? .null
+        if let cancellation {
+            object["cancellation"] = cancellation.structuredContent()
+        }
         if includeDetails {
             object["logs"] = .array(logs.map { $0.structuredContent() })
             object["rawLogText"] = .string(rawLogText)
@@ -83,6 +89,7 @@ package struct ReviewJobListItem: Sendable, Hashable {
     package var threadID: String?
     package var lastAgentMessage: String
     package var cancellable: Bool
+    package var cancellation: ReviewCancellation?
 
     package init(
         jobID: String,
@@ -96,7 +103,8 @@ package struct ReviewJobListItem: Sendable, Hashable {
         elapsedSeconds: Int?,
         threadID: String?,
         lastAgentMessage: String,
-        cancellable: Bool
+        cancellable: Bool,
+        cancellation: ReviewCancellation? = nil
     ) {
         self.jobID = jobID
         self.cwd = cwd
@@ -110,6 +118,7 @@ package struct ReviewJobListItem: Sendable, Hashable {
         self.threadID = threadID
         self.lastAgentMessage = lastAgentMessage
         self.cancellable = cancellable
+        self.cancellation = cancellation
     }
 
     package func structuredContent() -> Value {
@@ -122,6 +131,9 @@ package struct ReviewJobListItem: Sendable, Hashable {
             "cancellable": .bool(cancellable),
         ]
         object["model"] = model.map(Value.string) ?? .null
+        if let cancellation {
+            object["cancellation"] = cancellation.structuredContent()
+        }
         if let startedAt {
             object["startedAt"] = .string(startedAt.ISO8601Format())
         }
@@ -181,17 +193,20 @@ package struct ReviewCancelOutcome: Sendable, Hashable {
     package var threadID: String?
     package var cancelled: Bool
     package var status: ReviewJobState
+    package var cancellation: ReviewCancellation?
 
     package init(
         jobID: String,
         threadID: String? = nil,
         cancelled: Bool,
-        status: ReviewJobState
+        status: ReviewJobState,
+        cancellation: ReviewCancellation? = nil
     ) {
         self.jobID = jobID
         self.threadID = threadID
         self.cancelled = cancelled
         self.status = status
+        self.cancellation = cancellation
     }
 
     package func structuredContent() -> Value {
@@ -203,6 +218,9 @@ package struct ReviewCancelOutcome: Sendable, Hashable {
         ]
         if let threadID {
             object["threadId"] = .string(threadID)
+        }
+        if let cancellation {
+            object["cancellation"] = cancellation.structuredContent()
         }
         return .object(object)
     }

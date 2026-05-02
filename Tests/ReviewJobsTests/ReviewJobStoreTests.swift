@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import ReviewTestSupport
 @testable import ReviewInfra
-@testable import ReviewApp
+@_spi(Testing) @testable import ReviewApp
 @testable import ReviewDomain
 
 @Suite(.serialized)
@@ -141,6 +141,81 @@ struct ReviewJobStoreTests {
         #expect(outcome.cancelled)
         #expect(result.status == .cancelled)
         #expect(await transport.isClosed())
+    }
+
+    @Test func repeatedCancellationKeepsOriginalCancellationMetadata() async throws {
+        let manager = MockAppServerManager { _ in .interruptIgnoredLongRunning() }
+        let store = try makeTestStore(manager: manager)
+
+        await store.start()
+        defer { Task { await store.stop() } }
+
+        let reviewTask = Task {
+            try await store.startReview(
+                sessionID: "session-repeat-cancel",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
+            )
+        }
+
+        let transport = await manager.waitForTransport(sessionID: "session-repeat-cancel")
+        await transport.waitForRequest("review/start")
+        let firstOutcome = try await store.cancelReview(
+            selector: .init(cwd: nil, statuses: [.running]),
+            sessionID: "session-repeat-cancel",
+            cancellation: .userInterface()
+        )
+        let secondOutcome = try await store.cancelReview(
+            selector: .init(cwd: nil, statuses: [.running, .cancelled]),
+            sessionID: "session-repeat-cancel",
+            cancellation: .mcpClient()
+        )
+        await store.closeSession("session-repeat-cancel", reason: "MCP session closed.")
+        let result = try await reviewTask.value
+
+        #expect(firstOutcome.cancellation?.source == .userInterface)
+        #expect(secondOutcome.cancellation?.source == .userInterface)
+        #expect(result.status == .cancelled)
+        #expect(result.cancellation?.source == .userInterface)
+        #expect(result.error == "Cancelled by user from Review Monitor.")
+        #expect(result.review == "Cancelled by user from Review Monitor.")
+    }
+
+    @Test func cancellingAlreadyCancelledJobWithoutMetadataDoesNotInventCancellation() async throws {
+        let manager = MockAppServerManager { _ in .longRunning() }
+        let store = try makeTestStore(manager: manager)
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-legacy-cancelled",
+            sessionID: "session-legacy-cancelled",
+            targetSummary: "target-legacy-cancelled",
+            status: .cancelled,
+            summary: "Cancelled.",
+            errorMessage: "Cancelled."
+        )
+        store.workspaces = [
+            CodexReviewWorkspace(
+                cwd: "/tmp/repo",
+                jobs: [job]
+            )
+        ]
+
+        let outcome = try await store.cancelReview(
+            selectedJobID: job.id,
+            sessionID: "session-legacy-cancelled",
+            cancellation: .mcpClient()
+        )
+        let result = try store.readReview(
+            jobID: job.id,
+            sessionID: "session-legacy-cancelled"
+        )
+
+        #expect(outcome.cancelled)
+        #expect(outcome.cancellation == nil)
+        #expect(result.status == .cancelled)
+        #expect(result.cancellation == nil)
+        #expect(job.cancellation == nil)
     }
 
     @Test func codexReviewStoreCloseSessionCancelsActiveReviews() async throws {

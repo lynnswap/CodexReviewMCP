@@ -89,6 +89,7 @@ Returns:
 - `model` effective resolved review model
 - `status`
 - `review`
+- `cancellation` when cancellation metadata is available
 - `error`
 
 Notes:
@@ -125,6 +126,7 @@ Returns:
 - `logs`
 - `rawLogText`
 - `lastAgentMessage`
+- `cancellation` when cancellation metadata is available
 - `error`
 
 ### `review_list`
@@ -152,6 +154,7 @@ Returns:
   - `threadId`
   - `lastAgentMessage`
   - `cancellable`
+  - `cancellation` when cancellation metadata is available
 
 ### `review_cancel`
 
@@ -169,6 +172,7 @@ Notes:
 
 - `cwd` is a search key, not a unique identifier.
 - Without `jobId`, `review_cancel` searches only the current MCP session.
+- Responses include `cancellation.source` and `cancellation.message` when cancellation metadata is available. UI-triggered cancellations use `source: "userInterface"`.
 
 ## Resources
 
