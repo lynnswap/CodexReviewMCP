@@ -1,7 +1,7 @@
 import Foundation
+import ReviewApplicationDependencies
 import ReviewDomain
 import ReviewRuntime
-import ReviewInfra
 
 package actor ReviewExecutionCoordinator {
     private enum ExecutionPhase {
@@ -10,22 +10,12 @@ package actor ReviewExecutionCoordinator {
     }
 
     package struct Configuration: Sendable {
-        package var defaultTimeoutSeconds: Int?
-        package var codexCommand: String
-        package var environment: [String: String]
-        package var coreDependencies: ReviewCoreDependencies
+        package var dateNow: @Sendable () -> Date
 
         package init(
-            defaultTimeoutSeconds: Int? = nil,
-            codexCommand: String = "codex",
-            environment: [String: String] = ProcessInfo.processInfo.environment,
-            coreDependencies: ReviewCoreDependencies? = nil
+            dateNow: @escaping @Sendable () -> Date = { Date() }
         ) {
-            let resolvedCoreDependencies = coreDependencies ?? .live(environment: environment)
-            self.defaultTimeoutSeconds = defaultTimeoutSeconds
-            self.codexCommand = codexCommand
-            self.environment = resolvedCoreDependencies.environment
-            self.coreDependencies = resolvedCoreDependencies
+            self.dateNow = dateNow
         }
     }
 
@@ -35,22 +25,18 @@ package actor ReviewExecutionCoordinator {
         var requestedTerminationReason: ReviewTerminationReason?
         var stateChangeContinuation: AsyncStream<Void>.Continuation
         var phase: ExecutionPhase
-        var bootstrapTransport: (any AppServerSessionTransport)?
     }
 
     private let configuration: Configuration
-    private let appServerManager: any AppServerManaging
-    private let runtimeStateDidChange: @Sendable (AppServerRuntimeState) async -> Void
+    private let reviewEngine: any ReviewEngine
     private var executions: [String: ExecutionHandle] = [:]
 
     package init(
         configuration: Configuration = .init(),
-        appServerManager: any AppServerManaging,
-        runtimeStateDidChange: @escaping @Sendable (AppServerRuntimeState) async -> Void = { _ in }
+        reviewEngine: any ReviewEngine
     ) {
         self.configuration = configuration
-        self.appServerManager = appServerManager
-        self.runtimeStateDidChange = runtimeStateDidChange
+        self.reviewEngine = reviewEngine
     }
 
     package func startReview(
@@ -60,7 +46,7 @@ package actor ReviewExecutionCoordinator {
     ) async throws -> ReviewReadResult {
         let request = try request.validated()
         let requestOptions = try request.reviewRequestOptions().validated()
-        let initialResolvedModel = resolveInitialReviewModel()
+        let initialResolvedModel = await reviewEngine.initialReviewModel()
         let jobID = try await store.enqueueReview(
             sessionID: sessionID,
             request: requestOptions,
@@ -85,8 +71,7 @@ package actor ReviewExecutionCoordinator {
             task: task,
             requestedTerminationReason: nil,
             stateChangeContinuation: stateChangeContinuation,
-            phase: .bootstrapping,
-            bootstrapTransport: nil
+            phase: .bootstrapping
         )
         if let pendingTerminationReason = await store.pendingTerminationReason(
             jobID: jobID,
@@ -193,15 +178,7 @@ package actor ReviewExecutionCoordinator {
         stateChangeStream: AsyncStream<Void>,
         store: CodexReviewStore
     ) async throws {
-        let now = configuration.coreDependencies.dateNow()
-        var runner = AppServerReviewRunner(
-            settingsBuilder: ReviewExecutionSettingsBuilder(
-                codexCommand: configuration.codexCommand,
-                environment: configuration.environment
-            ),
-            coreDependencies: configuration.coreDependencies
-        )
-        runner.clock = configuration.coreDependencies.clock
+        let now = configuration.dateNow()
         let requestedTerminationReason: @Sendable () async -> ReviewTerminationReason? = { [weak self] in
             guard let self else {
                 return nil
@@ -210,40 +187,12 @@ package actor ReviewExecutionCoordinator {
         }
 
         do {
-            if case .cancelled(let reason)? = await requestedTerminationReason() {
-                throw ReviewBootstrapFailure(message: reason.message, model: initialModel)
-            }
-
-            let transport = try await appServerManager.checkoutTransport(sessionID: sessionID)
-            defer {
-                clearBootstrapState(jobID: jobID)
-            }
-            defer {
-                Task {
-                    await transport.close()
-                }
-            }
-            setBootstrapTransport(
+            let outcome = try await reviewEngine.runReview(
                 jobID: jobID,
-                transport: transport
-            )
-            if let runtimeState = await appServerManager.currentRuntimeState() {
-                await runtimeStateDidChange(runtimeState)
-            }
-            if case .cancelled(let reason)? = await requestedTerminationReason() {
-                throw ReviewBootstrapFailure(message: reason.message, model: initialModel)
-            }
-
-            let outcome = try await runner.run(
-                session: transport,
+                sessionID: sessionID,
                 request: request,
-                defaultTimeoutSeconds: configuration.defaultTimeoutSeconds,
                 resolvedModelHint: initialModel,
-                diagnosticLineStream: await appServerManager.diagnosticLineStream(),
                 stateChangeStream: stateChangeStream,
-                diagnosticsTail: { [appServerManager] in
-                    await appServerManager.diagnosticsTail()
-                },
                 onStart: { startedAt in
                     await store.markStarted(
                         jobID: jobID,
@@ -268,7 +217,7 @@ package actor ReviewExecutionCoordinator {
                     cancellation: reason,
                     model: initialModel,
                     startedAt: now,
-                    endedAt: configuration.coreDependencies.dateNow()
+                    endedAt: configuration.dateNow()
                 )
             } else {
                 await store.failToStart(
@@ -276,7 +225,7 @@ package actor ReviewExecutionCoordinator {
                     message: "Failed to start review.",
                     model: initialModel,
                     startedAt: now,
-                    endedAt: configuration.coreDependencies.dateNow()
+                    endedAt: configuration.dateNow()
                 )
             }
         } catch let error as ReviewBootstrapFailure {
@@ -286,7 +235,7 @@ package actor ReviewExecutionCoordinator {
                     cancellation: reason,
                     model: error.model ?? initialModel,
                     startedAt: now,
-                    endedAt: configuration.coreDependencies.dateNow()
+                    endedAt: configuration.dateNow()
                 )
             } else {
                 await store.failToStart(
@@ -294,7 +243,7 @@ package actor ReviewExecutionCoordinator {
                     message: error.errorDescription ?? "Failed to start review.",
                     model: error.model ?? initialModel,
                     startedAt: now,
-                    endedAt: configuration.coreDependencies.dateNow()
+                    endedAt: configuration.dateNow()
                 )
             }
         } catch let error as ReviewError where isBootstrapFailure(error) {
@@ -304,7 +253,7 @@ package actor ReviewExecutionCoordinator {
                     cancellation: reason,
                     model: initialModel,
                     startedAt: now,
-                    endedAt: configuration.coreDependencies.dateNow()
+                    endedAt: configuration.dateNow()
                 )
             } else {
                 await store.failToStart(
@@ -312,7 +261,7 @@ package actor ReviewExecutionCoordinator {
                     message: error.errorDescription ?? "Failed to start review.",
                     model: initialModel,
                     startedAt: now,
-                    endedAt: configuration.coreDependencies.dateNow()
+                    endedAt: configuration.dateNow()
                 )
             }
         } catch {
@@ -322,7 +271,7 @@ package actor ReviewExecutionCoordinator {
                 message: message,
                 model: initialModel,
                 startedAt: now,
-                endedAt: configuration.coreDependencies.dateNow()
+                endedAt: configuration.dateNow()
             )
         }
 
@@ -369,37 +318,11 @@ package actor ReviewExecutionCoordinator {
         handle.stateChangeContinuation.finish()
     }
 
-    private func setBootstrapTransport(
-        jobID: String,
-        transport: any AppServerSessionTransport
-    ) {
-        guard var handle = executions[jobID] else {
-            return
-        }
-        guard handle.phase == .bootstrapping else {
-            return
-        }
-        handle.bootstrapTransport = transport
-        executions[jobID] = handle
-    }
-
     private func markExecutionRunning(jobID: String) {
         guard var handle = executions[jobID] else {
             return
         }
         handle.phase = .running
-        handle.bootstrapTransport = nil
-        executions[jobID] = handle
-    }
-
-    private func clearBootstrapState(jobID: String) {
-        guard var handle = executions[jobID] else {
-            return
-        }
-        handle.bootstrapTransport = nil
-        if handle.phase == .bootstrapping {
-            handle.phase = .running
-        }
         executions[jobID] = handle
     }
 
@@ -410,11 +333,10 @@ package actor ReviewExecutionCoordinator {
         guard handle.phase == .bootstrapping else {
             return
         }
-        if let bootstrapTransport = handle.bootstrapTransport {
-            await bootstrapTransport.close()
-            return
+        let interrupted = await reviewEngine.interruptReview(jobID: jobID)
+        if interrupted == false {
+            handle.task.cancel()
         }
-        handle.task.cancel()
     }
 
     private func cancelResolvedJob(
@@ -456,23 +378,6 @@ package actor ReviewExecutionCoordinator {
         )
     }
 
-    private func resolveInitialReviewModel() -> String? {
-        let localConfig = (try? ReviewLocalConfigClient(dependencies: configuration.coreDependencies).load()) ?? .init()
-        let codexHome = configuration.coreDependencies.paths.codexHomeURL()
-        let fallbackConfig = loadFallbackAppServerConfig(
-            environment: configuration.environment,
-            codexHome: codexHome
-        )
-        let profileClearsReviewModel = activeProfileClearsReviewModel(
-            environment: configuration.environment,
-            codexHome: codexHome
-        )
-        return resolveReviewModelSelection(
-            localConfig: localConfig,
-            resolvedConfig: fallbackConfig,
-            profileClearsReviewModel: profileClearsReviewModel
-        ).reportedModelBeforeThreadStart
-    }
 }
 
 private func makeStateChangeStream() -> (AsyncStream<Void>, AsyncStream<Void>.Continuation) {

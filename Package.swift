@@ -54,8 +54,18 @@ let package = Package(
             ]
         ),
         .target(
+            name: "ReviewApplicationDependencies",
+            dependencies: [
+                "ReviewDomain",
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
             name: "ReviewInfra",
             dependencies: [
+                "ReviewApplicationDependencies",
                 "ReviewDomain",
                 "ReviewRuntime",
                 .product(name: "MCP", package: "swift-sdk"),
@@ -110,6 +120,7 @@ let package = Package(
         .target(
             name: "ReviewApp",
             dependencies: [
+                "ReviewApplicationDependencies",
                 "ReviewDomain",
                 "ReviewInfra",
                 "ReviewRuntime",
@@ -214,7 +225,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewCoreTests",
-            dependencies: ["ReviewDomain", "ReviewCore", "ReviewRuntime", "ReviewTestSupport", "ReviewInfra"],
+            dependencies: ["ReviewApplicationDependencies", "ReviewDomain", "ReviewCore", "ReviewRuntime", "ReviewTestSupport", "ReviewInfra"],
             path: "Tests/ReviewCoreTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
