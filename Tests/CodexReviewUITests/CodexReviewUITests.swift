@@ -962,8 +962,10 @@ struct CodexReviewUITests {
         await viewController.sidebarViewControllerForTesting.cancelJobForTesting(job)
 
         #expect(job.status == .cancelled)
-        #expect(job.summary == "Review cancelled.")
-        #expect(job.errorMessage == "Cancellation requested.")
+        #expect(job.summary == "Cancelled by user from Review Monitor.")
+        #expect(job.errorMessage == "Cancelled by user from Review Monitor.")
+        #expect(job.cancellation?.source == .userInterface)
+        #expect(job.cancellation?.message == "Cancelled by user from Review Monitor.")
         #expect(job.startedAt == startedAt)
         #expect(job.endedAt != nil)
     }
@@ -2970,7 +2972,7 @@ final class CountingStartBackend: ReviewMonitorTestingHarness {
     override func cancelReviewByID(
         jobID _: String,
         sessionID _: String,
-        reason _: String,
+        cancellation _: ReviewCancellation,
         store _: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         throw TestFailure("cancel review is not expected in CountingStartBackend")
@@ -3026,7 +3028,7 @@ final class AuthActionBackend: ReviewMonitorTestingHarness {
     override func cancelReviewByID(
         jobID _: String,
         sessionID _: String,
-        reason _: String,
+        cancellation _: ReviewCancellation,
         store _: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         throw TestFailure("cancel review is not expected in AuthActionBackend")
@@ -3068,12 +3070,12 @@ final class FailingCancellationBackend: ReviewMonitorTestingHarness {
     override func cancelReviewByID(
         jobID: String,
         sessionID: String,
-        reason: String,
+        cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         _ = jobID
         _ = sessionID
-        _ = reason
+        _ = cancellation
         _ = store
         throw ReviewError.io("Cancellation failed.")
     }
@@ -3129,12 +3131,12 @@ final class BlockingSettingsBackend: ReviewMonitorTestingHarness {
     override func cancelReviewByID(
         jobID: String,
         sessionID: String,
-        reason: String,
+        cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         _ = jobID
         _ = sessionID
-        _ = reason
+        _ = cancellation
         _ = store
         throw TestFailure("cancel review is not expected in BlockingSettingsBackend")
     }

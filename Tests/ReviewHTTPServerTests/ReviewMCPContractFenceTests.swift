@@ -314,12 +314,13 @@ struct ReviewMCPContractFenceTests {
 
     @Test func reviewCancelStructuredContentKeysRemainStable() async throws {
         let handler = makeHandler(
-            cancelReviewByID: { _ in
+            cancelReviewByID: { _, cancellation in
                 ReviewCancelOutcome(
                     jobID: "job_4",
                     threadID: "thr_4",
                     cancelled: true,
-                    status: ReviewJobState.cancelled
+                    status: ReviewJobState.cancelled,
+                    cancellation: cancellation
                 )
             }
         )
@@ -337,12 +338,112 @@ struct ReviewMCPContractFenceTests {
         let object = try #require(result.structuredContent?.objectValue)
         #expect(Set(object.keys) == [
             "cancelled",
+            "cancellation",
             "jobId",
             "status",
             "threadId",
             "turnId",
         ])
         #expect(object["turnId"] == Value.null)
+        try expectCancellation(
+            object["cancellation"],
+            source: "mcpClient",
+            message: "Cancellation requested by MCP client."
+        )
+    }
+
+    @Test func reviewCancelWithoutCancellationMetadataUsesNeutralText() async throws {
+        let handler = makeHandler(
+            cancelReviewByID: { _, _ in
+                ReviewCancelOutcome(
+                    jobID: "job_legacy_cancelled",
+                    threadID: "thr_legacy_cancelled",
+                    cancelled: true,
+                    status: ReviewJobState.cancelled
+                )
+            }
+        )
+
+        let result = await handler.handle(
+            params: CallTool.Parameters(
+                name: "review_cancel",
+                arguments: [
+                    "jobId": "job_legacy_cancelled",
+                ]
+            )
+        )
+
+        #expect(result.isError == false)
+        let content = try #require(result.content.first)
+        guard case .text(let text, _, _) = content else {
+            Issue.record("Expected text content")
+            return
+        }
+        #expect(text == "Review cancelled.")
+        let object = try #require(result.structuredContent?.objectValue)
+        #expect(Set(object.keys) == [
+            "cancelled",
+            "jobId",
+            "status",
+            "threadId",
+            "turnId",
+        ])
+        #expect(object["turnId"] == Value.null)
+    }
+
+    @Test func cancelledReviewStructuredContentIncludesCancellationMetadata() async throws {
+        let cancellation = ReviewCancellation.userInterface()
+        let startResult = ReviewReadResult(
+            jobID: "job_start_cancelled",
+            status: .cancelled,
+            review: cancellation.message,
+            lastAgentMessage: "",
+            logs: [],
+            rawLogText: "",
+            cancellation: cancellation,
+            error: cancellation.message
+        ).structuredContentForStart()
+        let readResult = ReviewReadResult(
+            jobID: "job_read_cancelled",
+            status: .cancelled,
+            review: cancellation.message,
+            lastAgentMessage: "",
+            logs: [],
+            rawLogText: "",
+            cancellation: cancellation,
+            error: cancellation.message
+        ).structuredContentForRead()
+        let listResult = ReviewJobListItem(
+            jobID: "job_list_cancelled",
+            cwd: "/tmp/repo",
+            targetSummary: "current changes",
+            model: nil,
+            status: .cancelled,
+            summary: cancellation.message,
+            startedAt: nil,
+            endedAt: nil,
+            elapsedSeconds: nil,
+            threadID: nil,
+            lastAgentMessage: "",
+            cancellable: false,
+            cancellation: cancellation
+        ).structuredContent()
+
+        try expectCancellation(
+            startResult.objectValue?["cancellation"],
+            source: "userInterface",
+            message: cancellation.message
+        )
+        try expectCancellation(
+            readResult.objectValue?["cancellation"],
+            source: "userInterface",
+            message: cancellation.message
+        )
+        try expectCancellation(
+            listResult.objectValue?["cancellation"],
+            source: "userInterface",
+            message: cancellation.message
+        )
     }
 }
 
@@ -358,11 +459,11 @@ private func makeHandler(
     listReviews: @escaping @MainActor @Sendable (String?, [ReviewJobState]?, Int?) async -> ReviewListResult = { _, _, _ in
         .init(items: [])
     },
-    cancelReviewByID: @escaping @MainActor @Sendable (String) async throws -> ReviewCancelOutcome = { _ in
+    cancelReviewByID: @escaping @MainActor @Sendable (String, ReviewCancellation) async throws -> ReviewCancelOutcome = { _, _ in
         Issue.record("Unexpected cancelReviewByID call")
         throw ReviewError.invalidArguments("unexpected")
     },
-    cancelReviewBySelector: @escaping @MainActor @Sendable (String?, [ReviewJobState]?) async throws -> ReviewCancelOutcome = { _, _ in
+    cancelReviewBySelector: @escaping @MainActor @Sendable (String?, [ReviewJobState]?, ReviewCancellation) async throws -> ReviewCancelOutcome = { _, _, _ in
         Issue.record("Unexpected cancelReviewBySelector call")
         throw ReviewError.invalidArguments("unexpected")
     }
@@ -375,6 +476,16 @@ private func makeHandler(
         cancelReviewByID: cancelReviewByID,
         cancelReviewBySelector: cancelReviewBySelector
     )
+}
+
+private func expectCancellation(
+    _ value: Value?,
+    source: String,
+    message: String
+) throws {
+    let object = try #require(value?.objectValue)
+    #expect(object["source"] == .string(source))
+    #expect(object["message"] == .string(message))
 }
 
 private actor ReviewStartRequestRecorder {

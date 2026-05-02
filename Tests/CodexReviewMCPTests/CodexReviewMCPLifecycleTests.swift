@@ -304,11 +304,20 @@ struct CodexReviewMCPLifecycleTests {
 
             _ = try await store.cancelReview(
                 selector: .init(cwd: nil, statuses: [.running]),
-                sessionID: "session-a"
+                sessionID: "session-a",
+                cancellation: .userInterface()
             )
             let cancelledResult = try await sessionAReview.value
 
             #expect(cancelledResult.status == .cancelled)
+            #expect(cancelledResult.cancellation?.source == .userInterface)
+            #expect(cancelledResult.error == "Cancelled by user from Review Monitor.")
+            let rereadCancelledResult = try store.readReview(
+                jobID: cancelledResult.jobID,
+                sessionID: "session-a"
+            )
+            #expect(rereadCancelledResult.cancellation?.source == .userInterface)
+            #expect(rereadCancelledResult.review == "Cancelled by user from Review Monitor.")
             #expect(await sessionATransport.isClosed())
             #expect(await sessionBTransport.isClosed() == false)
             #expect(await manager.shutdownCount() == 0)
@@ -459,6 +468,31 @@ struct CodexReviewMCPLifecycleTests {
         #expect(failedJob.errorMessage == "Cancellation failed.")
         #expect(cancelledJob.status == .cancelled)
         #expect(cancelledJob.errorMessage == "Account change requested.")
+    }
+
+    @Test func cancelAllRunningJobsNormalizesEmptyReason() async throws {
+        let store = CodexReviewStore.makePreviewStore()
+        let job = CodexReviewJob.makeForTesting(
+            id: "job-empty-reason",
+            sessionID: "session-empty-reason",
+            targetSummary: "target-empty-reason",
+            status: .running,
+            summary: "Running"
+        )
+        store.workspaces = [
+            CodexReviewWorkspace(
+                cwd: "/tmp/repo",
+                jobs: [job]
+            )
+        ]
+
+        try await store.cancelAllRunningJobs(reason: "")
+
+        #expect(job.status == .cancelled)
+        #expect(job.cancellation?.source == .system)
+        #expect(job.cancellation?.message == "Cancellation requested.")
+        #expect(job.summary == "Cancellation requested.")
+        #expect(job.errorMessage == "Cancellation requested.")
     }
 
     @Test func terminateAllRunningJobsLocallyFinalizesCancellationRequestedJobs() {

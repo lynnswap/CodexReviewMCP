@@ -7,8 +7,8 @@ struct ReviewToolHandler {
     let startReview: @MainActor @Sendable (ReviewStartRequest) async throws -> ReviewReadResult
     let readReview: @MainActor @Sendable (String) async throws -> ReviewReadResult
     let listReviews: @MainActor @Sendable (String?, [ReviewJobState]?, Int?) async -> ReviewListResult
-    let cancelReviewByID: @MainActor @Sendable (String) async throws -> ReviewCancelOutcome
-    let cancelReviewBySelector: @MainActor @Sendable (String?, [ReviewJobState]?) async throws -> ReviewCancelOutcome
+    let cancelReviewByID: @MainActor @Sendable (String, ReviewCancellation) async throws -> ReviewCancelOutcome
+    let cancelReviewBySelector: @MainActor @Sendable (String?, [ReviewJobState]?, ReviewCancellation) async throws -> ReviewCancelOutcome
 
     func handle(params: CallTool.Parameters) async -> CallTool.Result {
         switch params.name {
@@ -87,20 +87,27 @@ struct ReviewToolHandler {
     private func handleCancel(params: CallTool.Parameters) async -> CallTool.Result {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewCancelArguments.self)
+            let cancellation = ReviewCancellation.mcpClient()
             let result: ReviewCancelOutcome
             if let rawJobID = arguments.jobID {
                 guard let jobID = rawJobID.nilIfEmpty else {
                     return toolError("`jobId` cannot be empty.")
                 }
-                result = try await cancelReviewByID(jobID)
+                result = try await cancelReviewByID(jobID, cancellation)
             } else {
                 result = try await cancelReviewBySelector(
                     arguments.cwd,
-                    arguments.statuses
+                    arguments.statuses,
+                    cancellation
                 )
             }
+            let message = if result.cancelled {
+                result.cancellation?.message ?? "Review cancelled."
+            } else {
+                "Review was already finished."
+            }
             return try CallTool.Result(
-                content: [.text(text: result.cancelled ? "Cancellation requested." : "Review was already finished.", annotations: nil, _meta: nil)],
+                content: [.text(text: message, annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContent(),
                 isError: false
             )

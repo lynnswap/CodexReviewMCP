@@ -183,39 +183,42 @@ package class ReviewMonitorTestingHarness {
     package func cancelReviewByID(
         jobID: String,
         sessionID: String,
-        reason: String,
+        cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         let job = try store.resolveJob(jobID: jobID, sessionID: sessionID)
         try store.completeCancellationLocally(
             jobID: job.id,
             sessionID: sessionID,
-            reason: reason
+            cancellation: cancellation
         )
         return .init(
             jobID: job.id,
             threadID: job.threadID,
             cancelled: true,
-            status: .cancelled
+            status: .cancelled,
+            cancellation: cancellation
         )
     }
 
     package func cancelReviewBySelector(
         selector: ReviewJobSelector,
         sessionID: String,
+        cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         let job = try store.resolveJob(sessionID: sessionID, selector: selector)
         try store.completeCancellationLocally(
             jobID: job.id,
             sessionID: sessionID,
-            reason: "Cancellation requested."
+            cancellation: cancellation
         )
         return .init(
             jobID: job.id,
             threadID: job.threadID,
             cancelled: true,
-            status: .cancelled
+            status: .cancelled,
+            cancellation: cancellation
         )
     }
 
@@ -553,7 +556,7 @@ package final class ReviewMonitorCoordinator {
     package func cancelReviewByID(
         jobID: String,
         sessionID: String,
-        reason: String,
+        cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         switch mode {
@@ -561,14 +564,14 @@ package final class ReviewMonitorCoordinator {
             return try await live.executionCoordinator.cancelReview(
                 jobID: jobID,
                 sessionID: sessionID,
-                reason: reason,
+                cancellation: cancellation,
                 store: store
             )
         case .harness(let harness):
             return try await harness.cancelReviewByID(
                 jobID: jobID,
                 sessionID: sessionID,
-                reason: reason,
+                cancellation: cancellation,
                 store: store
             )
         }
@@ -577,6 +580,7 @@ package final class ReviewMonitorCoordinator {
     package func cancelReviewBySelector(
         selector: ReviewJobSelector,
         sessionID: String,
+        cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         switch mode {
@@ -584,12 +588,14 @@ package final class ReviewMonitorCoordinator {
             return try await live.executionCoordinator.cancelReview(
                 selector: selector,
                 sessionID: sessionID,
+                cancellation: cancellation,
                 store: store
             )
         case .harness(let harness):
             return try await harness.cancelReviewBySelector(
                 selector: selector,
                 sessionID: sessionID,
+                cancellation: cancellation,
                 store: store
             )
         }

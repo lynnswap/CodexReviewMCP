@@ -372,7 +372,8 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         }
         try await store.cancelReview(
             jobID: job.id,
-            sessionID: job.sessionID
+            sessionID: job.sessionID,
+            cancellation: .userInterface()
         )
     }
 

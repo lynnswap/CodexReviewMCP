@@ -112,10 +112,9 @@ package actor ReviewExecutionCoordinator {
     package func cancelReview(
         jobID: String,
         sessionID: String,
-        reason: String = "Cancellation requested.",
+        cancellation: ReviewCancellation = .system(),
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
-        let normalizedReason = reason.nilIfEmpty ?? "Cancellation requested."
         let job = try await store.resolveJob(
             sessionID: sessionID,
             selector: .init(jobID: jobID)
@@ -123,7 +122,7 @@ package actor ReviewExecutionCoordinator {
         return try await cancelResolvedJob(
             job: job,
             sessionID: sessionID,
-            reason: normalizedReason,
+            cancellation: cancellation,
             store: store
         )
     }
@@ -131,13 +130,14 @@ package actor ReviewExecutionCoordinator {
     package func cancelReview(
         selector: ReviewJobSelector,
         sessionID: String,
+        cancellation: ReviewCancellation = .system(),
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         let job = try await store.resolveJob(sessionID: sessionID, selector: selector)
         return try await cancelResolvedJob(
             job: job,
             sessionID: sessionID,
-            reason: "Cancellation requested.",
+            cancellation: cancellation,
             store: store
         )
     }
@@ -148,10 +148,7 @@ package actor ReviewExecutionCoordinator {
         store: CodexReviewStore
     ) async {
         let targetIDs = await store.closeSessionState(sessionID)
-        let closeReason = ReviewTerminationReason.cancelled(reason.nilIfEmpty ?? "Cancellation requested.")
-        for jobID in targetIDs {
-            await recordRequestedTerminationReason(jobID: jobID, reason: closeReason)
-        }
+        let closeCancellation = ReviewCancellation.sessionClosed(message: reason.nilIfEmpty ?? "Cancellation requested.")
         for jobID in targetIDs {
             guard let job = try? await store.resolveJob(jobID: jobID, sessionID: sessionID) else {
                 continue
@@ -159,7 +156,7 @@ package actor ReviewExecutionCoordinator {
             _ = try? await cancelResolvedJob(
                 job: job,
                 sessionID: sessionID,
-                reason: reason,
+                cancellation: closeCancellation,
                 store: store
             )
         }
@@ -178,7 +175,7 @@ package actor ReviewExecutionCoordinator {
             _ = try? await cancelResolvedJob(
                 job: job,
                 sessionID: handle.sessionID,
-                reason: reason,
+                cancellation: .system(message: reason.nilIfEmpty ?? "Cancellation requested."),
                 store: store
             )
         }
@@ -214,7 +211,7 @@ package actor ReviewExecutionCoordinator {
 
         do {
             if case .cancelled(let reason)? = await requestedTerminationReason() {
-                throw ReviewBootstrapFailure(message: reason, model: initialModel)
+                throw ReviewBootstrapFailure(message: reason.message, model: initialModel)
             }
 
             let transport = try await appServerManager.checkoutTransport(sessionID: sessionID)
@@ -234,7 +231,7 @@ package actor ReviewExecutionCoordinator {
                 await runtimeStateDidChange(runtimeState)
             }
             if case .cancelled(let reason)? = await requestedTerminationReason() {
-                throw ReviewBootstrapFailure(message: reason, model: initialModel)
+                throw ReviewBootstrapFailure(message: reason.message, model: initialModel)
             }
 
             let outcome = try await runner.run(
@@ -268,7 +265,7 @@ package actor ReviewExecutionCoordinator {
             if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
                 await store.markBootstrapCancelled(
                     jobID: jobID,
-                    reason: reason,
+                    cancellation: reason,
                     model: initialModel,
                     startedAt: now,
                     endedAt: configuration.coreDependencies.dateNow()
@@ -286,7 +283,7 @@ package actor ReviewExecutionCoordinator {
             if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
                 await store.markBootstrapCancelled(
                     jobID: jobID,
-                    reason: reason,
+                    cancellation: reason,
                     model: error.model ?? initialModel,
                     startedAt: now,
                     endedAt: configuration.coreDependencies.dateNow()
@@ -304,7 +301,7 @@ package actor ReviewExecutionCoordinator {
             if case .cancelled(let reason)? = self.requestedTerminationReason(jobID: jobID) {
                 await store.markBootstrapCancelled(
                     jobID: jobID,
-                    reason: reason,
+                    cancellation: reason,
                     model: initialModel,
                     startedAt: now,
                     endedAt: configuration.coreDependencies.dateNow()
@@ -338,12 +335,31 @@ package actor ReviewExecutionCoordinator {
         jobID: String,
         reason: ReviewTerminationReason
     ) async {
+        await recordRequestedTerminationReasonIfNeeded(jobID: jobID, reason: reason)
+    }
+
+    @discardableResult
+    private func recordRequestedTerminationReasonIfNeeded(
+        jobID: String,
+        reason: ReviewTerminationReason,
+        notify: Bool = true
+    ) async -> ReviewTerminationReason? {
         guard var handle = executions[jobID] else {
-            return
+            return nil
+        }
+        if let existingReason = handle.requestedTerminationReason {
+            return existingReason
         }
         handle.requestedTerminationReason = reason
         executions[jobID] = handle
-        handle.stateChangeContinuation.yield(())
+        if notify {
+            handle.stateChangeContinuation.yield(())
+        }
+        return reason
+    }
+
+    private func notifyTerminationReasonChange(jobID: String) async {
+        executions[jobID]?.stateChangeContinuation.yield(())
     }
 
     private func removeExecution(jobID: String) async {
@@ -404,22 +420,30 @@ package actor ReviewExecutionCoordinator {
     private func cancelResolvedJob(
         job: CodexReviewJob,
         sessionID: String,
-        reason: String,
+        cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
-        let normalizedReason = reason.nilIfEmpty ?? "Cancellation requested."
-        let terminationReason = ReviewTerminationReason.cancelled(normalizedReason)
-        await recordRequestedTerminationReason(jobID: job.id, reason: terminationReason)
+        let recordedReason = await recordRequestedTerminationReasonIfNeeded(
+            jobID: job.id,
+            reason: .cancelled(cancellation),
+            notify: false
+        )
+        let existingCancellation = await job.cancellation
+        let effectiveCancellation = recordedReason?.cancellation
+            ?? existingCancellation
+            ?? cancellation
         let result = try await store.requestCancellation(
             jobID: job.id,
             sessionID: sessionID,
-            reason: normalizedReason
+            cancellation: effectiveCancellation
         )
+        await notifyTerminationReasonChange(jobID: job.id)
         if result.signalled {
             await interruptExecutionIfNeeded(jobID: job.id)
         }
         let resolvedThreadID = await job.threadID
         let status = await job.status.state
+        let resolvedCancellation = await job.cancellation ?? (result.signalled ? effectiveCancellation : nil)
         let cancelled = result.state == .cancelled
             || status == .cancelled
             || (result.signalled && status == .running)
@@ -427,7 +451,8 @@ package actor ReviewExecutionCoordinator {
             jobID: job.id,
             threadID: resolvedThreadID,
             cancelled: cancelled,
-            status: status
+            status: status,
+            cancellation: cancelled ? resolvedCancellation : nil
         )
     }
 
