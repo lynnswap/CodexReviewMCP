@@ -8,7 +8,7 @@
 
 ## 全体像
 
-この図では、各レイヤーが参照する protocol boundary を中心に描きます。live / test の差し替えは、この protocol の実装を入れ替えることで行います。
+この図では、各レイヤーが参照する protocol boundary を中心に描きます。矢印は target import ではなく、boundary の参照方向と実装関係です。live / test の差し替えは、この protocol の実装を入れ替えることで行います。
 
 ```mermaid
 flowchart TB
@@ -73,7 +73,7 @@ flowchart TB
 
 読み方:
 
-- UI layer は外側の `ReviewStoreProtocol` だけを見ます。AppKit/SwiftUI は `CodexReviewStore` の concrete 実装を直接組み立てません。
+- UI layer は `ReviewApplication` の store/state を直接 observe します。ただし `CodexReviewStore` の生成や live dependency wiring は composition root に置き、UI から app-server integration は見ません。
 - MCP / CLI は `ReviewToolProtocol` だけを見ます。tool call の decode/encode と store intent の橋渡しに限定します。
 - `ReviewApplication` の接続は `Store protocol -> state/workflows -> ReviewApplicationDependencies` です。外側から workflow や個別 dependency protocol を直接触らせません。
 - workflow は app-server や file system の concrete 実装を知りません。
@@ -86,12 +86,13 @@ flowchart TB
 | Area | 主な場所 | 役割 |
 | --- | --- | --- |
 | UI layer | `Sources/CodexReviewUI` | AppKit/SwiftUI の native rendering。`@Observable` state を直接 observe する |
-| Interface adapters | `Sources/ReviewMCPAdapter`, `Sources/ReviewCLI` | MCP / CLI の入力を application intent に変換する |
+| Interface adapters | `Sources/ReviewMCPAdapter` | MCP / HTTP/SSE / STDIO の入力を application intent に変換する |
 | ReviewApplication | `Sources/ReviewApplication` | `@Observable` state、workflow、dependency boundary を持つ中心層 |
 | ReviewApplicationDependencies | `Sources/ReviewApplicationDependencies` | レイヤー間で受け渡す dependency protocol bundle |
 | App-server integration | `Sources/ReviewAppServerIntegration` | `codex app-server` との protocol、auth、config/read、review/start を扱う |
 | Platform infrastructure | `Sources/ReviewInfrastructure` | discovery、runtime state、account files、clock/process/file system などの live dependency 実装 |
 | ReviewDomain | `Sources/ReviewDomain` | request / response / settings / account key などの pure value |
+| Composition roots | `Sources/ReviewCLI`, `Tools/CodexReviewMonitor` | application、adapter、live implementation を組み立てる |
 
 注意点:
 
@@ -107,6 +108,8 @@ flowchart TB
 全体図に concrete type を全部載せると読めなくなるため、詳細は protocol boundary ごとに分けます。
 
 ### UI と入力
+
+この図の矢印は user/tool input が store intent に変換され、Observation で native UI に反映される流れです。target import 依存ではありません。
 
 ```mermaid
 flowchart LR
@@ -126,6 +129,8 @@ flowchart LR
 
 ### Application 内部
 
+この図の矢印は `ReviewApplication` 内部の状態更新と workflow 呼び出しの流れです。
+
 ```mermaid
 flowchart TB
     Store["CodexReviewStore<br/>source of truth"]
@@ -139,6 +144,8 @@ flowchart TB
 ```
 
 ### 外部連携
+
+この図の点線は `ReviewApplicationDependencies` に対する live 実装の提供関係です。
 
 ```mermaid
 flowchart LR
@@ -267,11 +274,13 @@ flowchart TB
 2. `ReviewApplicationDependencies` を新設し、レイヤー間で受け渡す dependency bundle を定義する。最初は `ReviewEngine`, `AuthClient`, `SettingsRepository`, `RuntimeRegistry`, `SystemClient` 程度を内包すればよい。
 3. `ReviewAppServerIntegration` に app-server 連携を移す。`AppServerSupervisor`, `AppServerReviewRunner`, auth session、`config/read` はここへ閉じ込める。
 4. `ReviewInfrastructure` に platform infrastructure を移す。local config/discovery/account registry、clock/process/file system はここへ閉じ込める。
-5. `CodexReviewUI` と MCP adapter は `ReviewApplication` だけを見る。
+5. `CodexReviewUI` と MCP adapter は live implementation targets を直接見ない。UI は `ReviewApplication` の observable state を直接 observe し、MCP adapter は tool input を store intent に変換する。
 
 ## review_start の実行フロー
 
 STDIO クライアントの場合も HTTP/SSE クライアントの場合も、MCP adapter は request を store intent に変換します。review 実行の live details は `ReviewApplicationDependencies` の実装側に閉じ込めます。
+
+この sequence の矢印は `review_start` の呼び出しと結果返却の流れです。target import 依存ではありません。
 
 ```mermaid
 sequenceDiagram
@@ -304,7 +313,9 @@ sequenceDiagram
     Codex-->>Live: notifications / agent output / completion
     Live-->>Workflow: events / final outcome
     Workflow-->>Store: mutate job state
-    Store-->>Adapter: ReviewReadResult
+    Store-->>StoreAPI: ReviewReadResult
+    StoreAPI-->>Tool: ReviewReadResult
+    Tool-->>Adapter: structured tool result
     Adapter-->>Client: structured MCP result
 ```
 
@@ -315,6 +326,8 @@ sequenceDiagram
 - `review_cancel` は `ReviewWorkflow` から `ReviewApplicationDependencies` へ cancellation を渡し、live 実装が app-server の interrupt / cleanup details を扱います。
 
 ## State と Observation の流れ
+
+この図の矢印は状態更新と observation delivery の流れです。`ReviewApplicationDependencies` 以外は target import 依存を表していません。
 
 ```mermaid
 flowchart LR
@@ -342,6 +355,8 @@ flowchart LR
 - AppKit controller は `ObservationBridge` の `ObservationScope` で store/job を直接 observe し、native view を更新します。
 
 ## 主な責務境界
+
+この図の矢印は boundary をまたぐ intent / workflow / external effect の流れです。target import 依存は Swift Package ターゲット依存の図だけで扱います。
 
 ```mermaid
 flowchart TB
