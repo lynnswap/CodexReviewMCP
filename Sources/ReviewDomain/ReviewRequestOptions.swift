@@ -1,5 +1,4 @@
 import Foundation
-import ReviewDomain
 
 package typealias ReviewRequestOptions = ReviewJobRequest
 

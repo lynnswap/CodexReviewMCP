@@ -1,4 +1,5 @@
 import Foundation
+import ReviewApplicationDependencies
 import ReviewDomain
 
 package struct AppServerReviewRunner: Sendable {

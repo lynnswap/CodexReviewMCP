@@ -1,5 +1,4 @@
 import Foundation
-import ReviewDomain
 
 package struct ReviewStartRequest: Codable, Hashable, Sendable {
     package var cwd: String

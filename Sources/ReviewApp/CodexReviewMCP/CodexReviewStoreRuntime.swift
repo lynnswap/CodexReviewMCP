@@ -4,6 +4,7 @@ import Darwin
 import Foundation
 import Observation
 import ObservationBridge
+import ReviewApplicationDependencies
 import ReviewDomain
 import ReviewRuntime
 import ReviewInfra
@@ -1564,22 +1565,27 @@ extension ReviewMonitorCoordinator {
         )
         let executionCoordinator = ReviewExecutionCoordinator(
             configuration: .init(
-                codexCommand: configuration.codexCommand,
-                environment: configuration.environment,
-                coreDependencies: configuration.coreDependencies
+                dateNow: configuration.coreDependencies.dateNow
             ),
-            appServerManager: serverRuntime.appServerManager,
-            runtimeStateDidChange: { [weak serverRuntime] runtimeState in
-                await MainActor.run {
-                    guard let serverRuntime, let server = serverRuntime.currentServer else {
-                        return
+            reviewEngine: AppServerReviewEngine(
+                configuration: .init(
+                    codexCommand: configuration.codexCommand,
+                    environment: configuration.environment,
+                    coreDependencies: configuration.coreDependencies
+                ),
+                appServerManager: serverRuntime.appServerManager,
+                runtimeStateDidChange: { [weak serverRuntime] runtimeState in
+                    await MainActor.run {
+                        guard let serverRuntime, let server = serverRuntime.currentServer else {
+                            return
+                        }
+                        serverRuntime.writeRuntimeState(
+                            endpointRecord: server.currentEndpointRecord(),
+                            appServerRuntimeState: runtimeState
+                        )
                     }
-                    serverRuntime.writeRuntimeState(
-                        endpointRecord: server.currentEndpointRecord(),
-                        appServerRuntimeState: runtimeState
-                    )
                 }
-            }
+            )
         )
         let authOrchestrator = ReviewMonitorAuthOrchestrator(
             configuration: configuration,

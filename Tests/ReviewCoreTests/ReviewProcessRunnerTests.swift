@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ReviewApplicationDependencies
 import ReviewTestSupport
 @testable import ReviewInfra
 
