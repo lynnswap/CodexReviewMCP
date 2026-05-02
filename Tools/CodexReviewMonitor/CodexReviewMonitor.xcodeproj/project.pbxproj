@@ -12,6 +12,7 @@
 		F0A100000000000000000006 /* ReviewTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000007 /* ReviewTestSupport */; };
 		F0A100000000000000000009 /* CodexReviewUI in Frameworks */ = {isa = PBXBuildFile; productRef = F0A100000000000000000005 /* CodexReviewUI */; };
 		F0A10000000000000000000A /* ReviewApplication in Frameworks */ = {isa = PBXBuildFile; productRef = F0A10000000000000000000B /* ReviewApplication */; };
+		F0A10000000000000000000C /* ReviewMonitorRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = F0A10000000000000000000D /* ReviewMonitorRuntime */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -76,6 +77,7 @@
 			files = (
 				F0A100000000000000000004 /* CodexReviewUI in Frameworks */,
 				F0A10000000000000000000A /* ReviewApplication in Frameworks */,
+				F0A10000000000000000000C /* ReviewMonitorRuntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -142,6 +144,7 @@
 			packageProductDependencies = (
 				F0A100000000000000000005 /* CodexReviewUI */,
 				F0A10000000000000000000B /* ReviewApplication */,
+				F0A10000000000000000000D /* ReviewMonitorRuntime */,
 			);
 			productName = CodexReviewMonitor;
 			productReference = AB19F42F2F77D8AD009726F1 /* CodexReviewMonitor.app */;
@@ -716,6 +719,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = F0A100000000000000000002 /* XCLocalSwiftPackageReference "../.." */;
 			productName = ReviewApplication;
+		};
+		F0A10000000000000000000D /* ReviewMonitorRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F0A100000000000000000002 /* XCLocalSwiftPackageReference "../.." */;
+			productName = ReviewMonitorRuntime;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

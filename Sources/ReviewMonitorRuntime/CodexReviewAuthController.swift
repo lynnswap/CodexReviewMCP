@@ -1,26 +1,9 @@
 import Foundation
+import ReviewApplication
 import ReviewAppServerIntegration
 import ReviewDomain
 import ReviewInfrastructure
 import ReviewMCPAdapter
-
-@MainActor
-package struct CodexAuthRuntimeState {
-    var serverIsRunning: Bool
-    var runtimeGeneration: Int
-
-    static let stopped = Self(
-        serverIsRunning: false,
-        runtimeGeneration: 0
-    )
-}
-
-@MainActor
-package enum CodexAuthRuntimeEffect {
-    case none
-    case recycleNow(accountKey: String, runtimeGeneration: Int)
-    case deferRecycleUntilJobsDrain(accountKey: String, runtimeGeneration: Int)
-}
 
 @MainActor
 package class ReviewMonitorAuthRuntimeDriver {
@@ -47,9 +30,9 @@ package class ReviewMonitorAuthRuntimeDriver {
 }
 
 @MainActor
-package final class ReviewMonitorAuthOrchestrator {
+package final class ReviewMonitorAuthOrchestrator: ReviewMonitorAuthCoordinating {
     package enum RuntimeBridge {
-        case live(ReviewMonitorServerRuntime)
+        case live(any ReviewMonitorAuthRuntimeManaging)
         case testing(ReviewMonitorAuthRuntimeDriver)
     }
 

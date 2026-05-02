@@ -1,7 +1,6 @@
 import Foundation
 import Observation
 import ReviewDomain
-import ReviewInfrastructure
 
 @MainActor
 @Observable
@@ -16,13 +15,13 @@ public final class CodexReviewStore {
     }
 
     @ObservationIgnored package let diagnosticsURL: URL?
-    @ObservationIgnored package let coreDependencies: ReviewCoreDependencies
+    @ObservationIgnored package let coreDependencies: ReviewStoreDependencies
     @ObservationIgnored package let coordinator: ReviewMonitorCoordinator
     @ObservationIgnored package let settingsService: ReviewMonitorSettingsService
     @ObservationIgnored package var previewSupportRetainer: AnyObject?
 
     package init(
-        coreDependencies: ReviewCoreDependencies = .live(),
+        coreDependencies: ReviewStoreDependencies = .live(),
         coordinator: ReviewMonitorCoordinator,
         settingsService: ReviewMonitorSettingsService,
         diagnosticsURL: URL? = nil
