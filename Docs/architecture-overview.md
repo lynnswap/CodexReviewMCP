@@ -275,7 +275,7 @@ flowchart TB
 
 | 現状 | 目標 |
 | --- | --- |
-| `ReviewMonitorRuntime` が monitor/server runtime wiring をまとめて持っている | 必要なら server lifecycle、auth orchestration、settings backend、store factory をさらに小さな runtime module に分ける |
+| `ReviewMonitorRuntime` の source file は責務別に分割済みだが、`ReviewMonitorServerRuntime` / `ReviewMonitorAuthOrchestrator` 自体はまだ大きい | 必要なら class 内の server lifecycle、auth orchestration、settings backend、runtime recycle をさらに小さな runtime component に分ける |
 | UI と app-server 連携が同じ外側の関心として見える | UI layer と app-server integration を分け、composition root でだけ合流させる |
 | `ReviewMonitorServerRuntime` に server/settings/auth/recycle が集中する | runtime target 内で `ServerWorkflow`, `SettingsWorkflow`, `AuthWorkflow`, `ReviewWorkflow` 相当へ分ける |
 | `ReviewCLI` が CLI helper の都合で live targets も直接 import している | composition root として許容しつつ、不要な direct import が増えないように維持する |
@@ -287,7 +287,8 @@ flowchart TB
 3. 済: `ReviewMCPAdapter` / `ReviewAppServerIntegration` / `ReviewInfrastructure` の実体 target を作り、旧 `ReviewInfra` の中身を分ける。
 4. 済: `ReviewApp` を `ReviewApplication` へ改名し、`ReviewRuntime` を吸収し、facade target を削除する。
 5. 済: `ReviewMonitorRuntime` を新設し、`ReviewApplication` から live implementation target への import を消す。
-6. 任意: `ReviewMonitorRuntime` 内部の server/settings/auth/recycle を、実装の読みにくさが残る場合にさらに分割する。
+6. 済: `ReviewMonitorRuntime` の巨大 source file を、live store factory、native auth、auth session、coordinator wiring、server runtime、force restart、rate limit support に分割する。
+7. 任意: `ReviewMonitorServerRuntime` / `ReviewMonitorAuthOrchestrator` 内部の server/settings/auth/recycle を、実装の読みにくさが残る場合にさらに component 化する。
 
 ## review_start の実行フロー
 
@@ -421,6 +422,6 @@ flowchart TB
 
 現状把握から見える、次に議論しやすい論点です。
 
-1. `ReviewMonitorRuntime` に集まっている server lifecycle、settings、auth seed、runtime recycle を、必要に応じて小さな runtime component に分けます。
+1. `ReviewMonitorServerRuntime` / `ReviewMonitorAuthOrchestrator` に残る server lifecycle、settings、auth seed、runtime recycle を、必要に応じて小さな runtime component に分けます。
 2. `ReviewApplication -> ReviewMCPAdapter / ReviewAppServerIntegration / ReviewInfrastructure` の target edge は削除済みです。この状態を維持します。
 3. UI は直接 observation で描画しており、余分な ViewModel 層はありません。この点は維持します。
