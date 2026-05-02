@@ -1,6 +1,7 @@
 import Foundation
 import ReviewApplicationDependencies
 import ReviewDomain
+import ReviewInfrastructure
 
 package struct AppServerReviewRunner: Sendable {
     package var settingsBuilder: ReviewExecutionSettingsBuilder

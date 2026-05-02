@@ -1,5 +1,6 @@
 import Foundation
 import ReviewDomain
+import ReviewInfrastructure
 
 package enum AppServerJSONValue: Codable, Sendable, Equatable {
     case string(String)

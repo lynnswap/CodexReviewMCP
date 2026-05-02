@@ -1,6 +1,8 @@
 import Foundation
+import ReviewAppServerIntegration
 import ReviewDomain
-import ReviewInfra
+import ReviewInfrastructure
+import ReviewMCPAdapter
 
 @MainActor
 package struct CodexAuthRuntimeState {

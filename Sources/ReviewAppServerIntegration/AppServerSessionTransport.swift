@@ -1,5 +1,6 @@
 import Foundation
 import ReviewDomain
+import ReviewInfrastructure
 
 package protocol AppServerSessionTransport: Sendable {
     func initializeResponse() async -> AppServerInitializeResponse

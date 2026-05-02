@@ -1,6 +1,6 @@
 import Foundation
 import ReviewDomain
-import ReviewInfra
+import ReviewInfrastructure
 
 @MainActor
 package class ReviewMonitorTestingHarness {

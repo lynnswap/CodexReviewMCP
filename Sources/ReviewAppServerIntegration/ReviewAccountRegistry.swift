@@ -1,5 +1,6 @@
 import Foundation
 import ReviewDomain
+import ReviewInfrastructure
 
 package actor ReviewAccountRegistryStore {
     nonisolated(unsafe) static var saveRegistryRecordFailureMessageForTesting: String?

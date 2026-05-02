@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 import ReviewDomain
-import ReviewInfra
+import ReviewInfrastructure
 
 @MainActor
 @Observable

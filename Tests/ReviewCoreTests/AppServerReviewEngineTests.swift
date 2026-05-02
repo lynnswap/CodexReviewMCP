@@ -3,7 +3,9 @@ import Testing
 import ReviewApplicationDependencies
 import ReviewTestSupport
 @testable import ReviewDomain
-@testable import ReviewInfra
+@testable import ReviewAppServerIntegration
+@testable import ReviewInfrastructure
+@testable import ReviewMCPAdapter
 
 @Suite(.serialized)
 struct AppServerReviewEngineTests {

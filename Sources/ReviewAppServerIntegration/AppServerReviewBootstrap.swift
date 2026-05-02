@@ -1,6 +1,7 @@
 import Foundation
 import ReviewApplicationDependencies
 import ReviewDomain
+import ReviewInfrastructure
 
 enum AppServerReviewRunnerSignal: Sendable {
     case notification(AppServerServerNotification)

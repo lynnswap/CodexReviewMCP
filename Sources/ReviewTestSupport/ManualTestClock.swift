@@ -1,5 +1,5 @@
 import Foundation
-package import ReviewInfra
+package import ReviewInfrastructure
 
 public final class ManualTestClock: Clock, @unchecked Sendable {
     public typealias Instant = ContinuousClock.Instant

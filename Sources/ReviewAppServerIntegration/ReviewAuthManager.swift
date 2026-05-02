@@ -1,4 +1,5 @@
 import Foundation
+import ReviewInfrastructure
 
 package enum ReviewAuthError: LocalizedError, Sendable, Equatable {
     case authenticationRequired(String)

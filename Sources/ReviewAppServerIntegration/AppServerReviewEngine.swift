@@ -1,6 +1,7 @@
 import Foundation
 import ReviewApplicationDependencies
 import ReviewDomain
+import ReviewInfrastructure
 
 package actor AppServerReviewEngine: ReviewEngine {
     package struct Configuration: Sendable {

@@ -4,10 +4,12 @@ import Darwin
 import Foundation
 import Observation
 import ObservationBridge
+import ReviewAppServerIntegration
 import ReviewApplicationDependencies
 import ReviewDomain
+import ReviewInfrastructure
+import ReviewMCPAdapter
 import ReviewRuntime
-import ReviewInfra
 
 extension CodexReviewStore {
     public convenience init() {
