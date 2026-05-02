@@ -2,85 +2,157 @@
 
 作成日: 2026-05-02
 
-このドキュメントは、CodexReviewMCP の現状を GitHub Mermaid で俯瞰するためのメモです。
+このドキュメントは、CodexReviewMCP の現状の複雑さを踏まえ、整理後の依存方向を GitHub Mermaid で俯瞰するためのメモです。
 
-ここでの目的は「いま何がどこにあるか」を見えるようにすることです。移行案やリファクタリング方針は、別途この図を起点に判断します。
+ここでの目的は、議論しやすい粒度で「何を中心に置き、何を外側へ出すか」を見えるようにすることです。
 
 ## 全体像
 
+この図では、各レイヤーが参照する protocol boundary を中心に描きます。live / test の差し替えは、この protocol の実装を入れ替えることで行います。
+
 ```mermaid
 flowchart TB
-    subgraph UI["Entry points / UI"]
-        Monitor["CodexReviewMonitor app<br/>Tools/CodexReviewMonitor"]
-        CodexUI["CodexReviewUI<br/>AppKit + SwiftUI"]
-        CLI["ReviewCLI<br/>server / stdio adapter"]
-        FacadeMCP["CodexReviewMCP / CodexReviewModel<br/>facade targets"]
+    subgraph Inputs["Input layers"]
+        direction LR
+        subgraph UI["UI layer"]
+            ViewLayer["Views / ViewControllers"]
+            StorePort["ReviewStoreProtocol<br/>observable state + user intents"]
+        end
+
+        subgraph Adapter["Interface adapters"]
+            MCPBoundary["MCP boundary"]
+            CLIBoundary["CLI boundary"]
+            ToolPort["ReviewToolProtocol<br/>review_start / read / list / cancel"]
+        end
     end
 
-    subgraph Model["Application state / orchestration"]
-        Store["CodexReviewStore<br/>@Observable source of truth"]
-        Auth["CodexReviewAuthModel<br/>account/session state"]
-        Settings["SettingsStore<br/>review settings state"]
-        Workspace["CodexReviewWorkspace<br/>workspace grouping"]
-        Job["CodexReviewJob<br/>status/log projections"]
-        Coordinator["ReviewMonitorCoordinator<br/>live vs test harness switch"]
-        ServerRuntime["ReviewMonitorServerRuntime<br/>embedded server lifecycle"]
-        AuthOrchestrator["ReviewMonitorAuthOrchestrator<br/>auth/account orchestration"]
-        Execution["ReviewExecutionCoordinator<br/>review task actor"]
+    subgraph App["ReviewApplication"]
+        StoreProtocol["Store protocol<br/>state + intents"]
+        AppState["Application state<br/>auth / settings / workspace / job"]
+        Workflows["Workflows<br/>ReviewWorkflow / AuthWorkflow / SettingsWorkflow / ServerWorkflow"]
+        Dependencies["ReviewApplicationDependencies<br/>dependency protocol bundle"]
     end
 
-    subgraph Data["Infrastructure / external effects"]
-        HTTP["ReviewMCPHTTPServer<br/>ReviewHTTPApplication<br/>ReviewToolHandler"]
-        Stdio["ReviewStdioAdapter<br/>STDIO -> HTTP/SSE bridge"]
-        Supervisor["AppServerSupervisor<br/>shared codex app-server lifecycle"]
-        Runner["AppServerReviewRunner<br/>app-server review protocol"]
-        Config["ReviewDiscovery / LocalConfig<br/>RuntimeState / AccountRegistry"]
-        Files["~/.codex_review<br/>config, endpoint, runtime state, accounts"]
-        AppServer["codex app-server<br/>JSON-RPC over stdio"]
+    subgraph Implementations["Protocol implementations"]
+        direction LR
+        subgraph Platform["Platform infrastructure"]
+            RuntimeRegistryImpl["RuntimeRegistry implementation"]
+            SystemClientImpl["SystemClient implementation"]
+            Files["~/.codex_review"]
+            Process["process / clock / file system"]
+        end
+
+        subgraph AppServer["App-server integration"]
+            ReviewEngineImpl["ReviewEngine implementation"]
+            AuthClientImpl["AuthClient implementation"]
+            SettingsRepoImpl["SettingsRepository implementation"]
+            Codex["codex app-server"]
+        end
     end
 
-    Monitor --> CodexUI
-    CodexUI --> Store
-    CLI --> Store
-    FacadeMCP --> Store
+    ViewLayer --> StorePort
+    MCPBoundary --> ToolPort
+    CLIBoundary --> ToolPort
 
-    Store --> Auth
-    Store --> Settings
-    Store --> Workspace
-    Workspace --> Job
-    Store --> Coordinator
-    Coordinator --> ServerRuntime
-    Coordinator --> AuthOrchestrator
-    Coordinator --> Execution
+    StorePort --> StoreProtocol
+    ToolPort --> StoreProtocol
+    StoreProtocol --> AppState
+    StoreProtocol --> Workflows
+    AppState --> Workflows
+    Workflows --> Dependencies
 
-    ServerRuntime --> HTTP
-    ServerRuntime --> Supervisor
-    ServerRuntime --> Config
-    AuthOrchestrator --> Supervisor
-    Execution --> Supervisor
-    Execution --> Runner
+    Dependencies -.->|implemented by| AppServer
+    Dependencies -.->|implemented by| Platform
 
-    HTTP --> Store
-    Stdio --> HTTP
-    Runner --> AppServer
-    Supervisor --> AppServer
-    Config --> Files
+    ReviewEngineImpl --> Codex
+    AuthClientImpl --> Codex
+    SettingsRepoImpl --> Codex
+    RuntimeRegistryImpl --> Files
+    SystemClientImpl --> Process
 ```
 
-### 現状の対応表
+読み方:
 
-| Area | 現在の主な場所 | 役割 |
+- UI layer は外側の `ReviewStoreProtocol` だけを見ます。AppKit/SwiftUI は `CodexReviewStore` の concrete 実装を直接組み立てません。
+- MCP / CLI は `ReviewToolProtocol` だけを見ます。tool call の decode/encode と store intent の橋渡しに限定します。
+- `ReviewApplication` の接続は `Store protocol -> state/workflows -> ReviewApplicationDependencies` です。外側から workflow や個別 dependency protocol を直接触らせません。
+- workflow は app-server や file system の concrete 実装を知りません。
+- `App-server integration` は app-server 系 protocol の live 実装だけを持ちます。
+- `Platform infrastructure` は runtime registry、clock、process、file system の live 実装だけを持ちます。
+- test 用実装は図に出していません。`ReviewApplicationDependencies` に準拠する実装へ差し替える前提です。
+
+### 対応表
+
+| Area | 主な場所 | 役割 |
 | --- | --- | --- |
-| Entry points / UI | `Sources/CodexReviewUI`, `Tools/CodexReviewMonitor`, `Sources/ReviewCLI` | AppKit/SwiftUI UI、CLI entry point、STDIO/HTTP の起動口 |
-| Application state / orchestration | `Sources/ReviewApp`, `Sources/ReviewRuntime`, `Sources/ReviewDomain` | `@Observable` state、認証/設定/レビュー実行の orchestration、job/workspace/domain model |
-| Infrastructure / external effects | `Sources/ReviewInfra` | MCP HTTP server、STDIO adapter、`codex app-server` supervisor、設定/発見/永続化ファイル、外部 process IO |
+| UI layer | `Sources/CodexReviewUI` | AppKit/SwiftUI の native rendering。`@Observable` state を直接 observe する |
+| Interface adapters | `Sources/ReviewMCPAdapter`, `Sources/ReviewCLI` | MCP / CLI の入力を application intent に変換する |
+| ReviewApplication | `Sources/ReviewApplication` | `@Observable` state、workflow、dependency boundary を持つ中心層 |
+| ReviewApplicationDependencies | `Sources/ReviewApplicationDependencies` | レイヤー間で受け渡す dependency protocol bundle |
+| App-server integration | `Sources/ReviewAppServerIntegration` | `codex app-server` との protocol、auth、config/read、review/start を扱う |
+| Platform infrastructure | `Sources/ReviewInfrastructure` | discovery、runtime state、account files、clock/process/file system などの live dependency 実装 |
+| ReviewDomain | `Sources/ReviewDomain` | request / response / settings / account key などの pure value |
 
 注意点:
 
-- 現状の target 名と責務境界は完全には一致していません。
-- `ReviewApp` は application state の中心ですが、embedded server lifecycle や auth runtime など一部 infrastructure 寄りの責務も握っています。
-- `ReviewInfra` は外部副作用の集約先ですが、`ReviewRuntime` に依存しているため、純粋な下位 infrastructure 層としてはまだ境界が混ざっています。
-- UI は `CodexReviewStore` / `CodexReviewWorkspace` / `CodexReviewJob` を直接 observe しており、`Observation + direct native rendering` に近い構成です。
+- `ReviewApplication` は `ReviewInfrastructure` / `ReviewAppServerIntegration` を import しません。
+- 個別 protocol は `ReviewApplicationDependencies` の内側に隠し、レイヤー間では bundle として受け渡します。
+- live wiring は app / executable などの composition root に置きます。
+- UI layer と app-server integration は直接依存しません。
+- `ReviewRuntime` は独立 target として残さず、`CodexReviewJob` / `CodexReviewWorkspace` などの observable state は `ReviewApplication` に寄せます。
+- UI は `CodexReviewStore` / `CodexReviewWorkspace` / `CodexReviewJob` を直接 observe します。描画用 ViewModel や mirror state は追加しません。
+
+## 境界別の詳細
+
+全体図に concrete type を全部載せると読めなくなるため、詳細は protocol boundary ごとに分けます。
+
+### UI と入力
+
+```mermaid
+flowchart LR
+    User["User action"] --> UI["CodexReviewUI"]
+    MCPClient["MCP client"] --> MCP["ReviewMCPAdapter"]
+    CLIUser["CLI invocation"] --> CLI["ReviewCLI"]
+
+    UI --> StoreProtocol["ReviewStoreProtocol"]
+    MCP --> ToolProtocol["ReviewToolProtocol"]
+    CLI --> ToolProtocol
+    ToolProtocol --> StoreProtocol
+    StoreProtocol --> Store["CodexReviewStore"]
+    Store --> Workflows["ReviewApplication workflows"]
+    Store --> Observation["Observation / ObservationBridge"]
+    Observation --> NativeUI["Native AppKit / SwiftUI rendering"]
+```
+
+### Application 内部
+
+```mermaid
+flowchart TB
+    Store["CodexReviewStore<br/>source of truth"]
+    State["Observable state<br/>auth / settings / workspace / job"]
+    Workflows["Workflows<br/>ReviewWorkflow / AuthWorkflow / SettingsWorkflow / ServerWorkflow"]
+    Dependencies["ReviewApplicationDependencies<br/>dependency bundle"]
+
+    Store --> State
+    Store --> Workflows
+    Workflows --> Dependencies
+```
+
+### 外部連携
+
+```mermaid
+flowchart LR
+    Dependencies["ReviewApplicationDependencies"]
+    AppServerIntegration["App-server integration<br/>live app-server dependency implementations"]
+    PlatformInfra["Platform infrastructure<br/>live platform dependency implementations"]
+    AppServer["codex app-server"]
+    Files["~/.codex_review"]
+
+    AppServerIntegration -.->|implements| Dependencies
+    PlatformInfra -.->|implements| Dependencies
+    AppServerIntegration --> AppServer
+    PlatformInfra --> Files
+```
 
 ## Swift Package ターゲット依存
 
@@ -88,102 +160,117 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    ReviewDomain["ReviewDomain<br/>review target / responses / settings / accounts"]
-    ReviewRuntime["ReviewRuntime<br/>CodexReviewJob"]
-    ReviewInfra["ReviewInfra<br/>HTTP / STDIO / app-server / config"]
-    ReviewApp["ReviewApp<br/>store / coordinator / runtime / auth"]
+    ReviewDomain["ReviewDomain<br/>pure values"]
+    ReviewApplicationDependencies["ReviewApplicationDependencies<br/>dependency protocol bundle"]
+    ReviewApplication["ReviewApplication<br/>store / state / workflows"]
     CodexReviewUI["CodexReviewUI<br/>AppKit + SwiftUI"]
-    ReviewCLI["ReviewCLI<br/>server and adapter commands"]
-    CodexReviewMCP["CodexReviewMCP<br/>facade"]
-    CodexReviewModel["CodexReviewModel<br/>facade"]
-    ReviewCoreFacade["ReviewCore<br/>facade"]
-    ReviewHTTPFacade["ReviewHTTPServer<br/>facade"]
-    ReviewStdioFacade["ReviewStdioAdapter<br/>facade"]
+    ReviewMCPAdapter["ReviewMCPAdapter<br/>MCP tools / HTTP / STDIO"]
+    ReviewAppServerIntegration["ReviewAppServerIntegration<br/>codex app-server adapters"]
+    ReviewInfrastructure["ReviewInfrastructure<br/>platform/file/process adapters"]
+    ReviewCLI["ReviewCLI<br/>composition root"]
+    CodexReviewMonitor["CodexReviewMonitor<br/>composition root"]
     MCPExecutable["CodexReviewMCPExecutable<br/>codex-review-mcp"]
     MCPServerExecutable["CodexReviewMCPServerExecutable"]
 
-    ReviewRuntime --> ReviewDomain
-    ReviewInfra --> ReviewDomain
-    ReviewInfra --> ReviewRuntime
-    ReviewApp --> ReviewDomain
-    ReviewApp --> ReviewRuntime
-    ReviewApp --> ReviewInfra
-    CodexReviewUI --> ReviewApp
-    CodexReviewUI --> ReviewDomain
-    CodexReviewUI --> ReviewRuntime
-    ReviewCLI --> ReviewApp
-    ReviewCLI --> ReviewInfra
-    CodexReviewMCP --> ReviewApp
-    CodexReviewMCP --> ReviewDomain
-    CodexReviewMCP --> ReviewRuntime
-    CodexReviewModel --> ReviewApp
-    CodexReviewModel --> ReviewDomain
-    CodexReviewModel --> ReviewRuntime
-    ReviewCoreFacade --> ReviewInfra
-    ReviewHTTPFacade --> ReviewInfra
-    ReviewStdioFacade --> ReviewInfra
+    ReviewApplicationDependencies --> ReviewDomain
+    ReviewApplication --> ReviewDomain
+    ReviewApplication --> ReviewApplicationDependencies
+    CodexReviewUI --> ReviewApplication
+    ReviewMCPAdapter --> ReviewApplication
+    ReviewMCPAdapter --> ReviewDomain
+    ReviewAppServerIntegration --> ReviewApplicationDependencies
+    ReviewAppServerIntegration --> ReviewDomain
+    ReviewInfrastructure --> ReviewApplicationDependencies
+    ReviewInfrastructure --> ReviewDomain
+
+    ReviewCLI --> ReviewApplication
+    ReviewCLI --> ReviewMCPAdapter
+    ReviewCLI --> ReviewAppServerIntegration
+    ReviewCLI --> ReviewInfrastructure
+
+    CodexReviewMonitor --> ReviewApplication
+    CodexReviewMonitor --> CodexReviewUI
+    CodexReviewMonitor --> ReviewAppServerIntegration
+    CodexReviewMonitor --> ReviewInfrastructure
+
     MCPExecutable --> ReviewCLI
     MCPServerExecutable --> ReviewCLI
 ```
 
-この図で見ると、現状の中核は `ReviewApp -> ReviewInfra` と `CodexReviewUI -> ReviewApp` です。UI は Model に乗り、Model が Infra を呼び出す構成になっています。
+この図では、現状の `ReviewApp -> ReviewInfra` を削除しています。依存 bundle は `ReviewApplicationDependencies` に切り出し、`ReviewApplication` / `ReviewAppServerIntegration` / `ReviewInfrastructure` が同じ dependency target を見る形にします。UI layer は application だけを見て、app-server integration を見ません。app / CLI が live wiring を担います。互換性維持のための facade target は削除します。
+
+## 何を壊してよいか
+
+| 現状 | 整理後 |
+| --- | --- |
+| `ReviewApp` が `ReviewInfra` を直接 import する | `ReviewApplication` は dependency bundle の境界だけを持ち、live 実装を知らない |
+| UI と app-server 連携が同じ外側の関心として見える | UI layer と app-server integration を分け、composition root でだけ合流させる |
+| `ReviewMonitorServerRuntime` に server/settings/auth/recycle が集中する | `ServerWorkflow`, `SettingsWorkflow`, `AuthWorkflow`, `ReviewWorkflow` に分ける |
+| `ReviewRuntime` が job state の別 target になっている | observable state は `ReviewApplication` に集約する |
+| facade target が re-export で依存を隠す | composition root が明示的に組み立てる |
+
+## 最初の実装単位
+
+1. 既存の `ReviewApp` を `ReviewApplication` に改名/再編し、`CodexReviewStore` / auth / settings / workspace / job state を集約する。
+2. `ReviewApplicationDependencies` を新設し、レイヤー間で受け渡す dependency bundle を定義する。最初は `ReviewEngine`, `AuthClient`, `SettingsRepository`, `RuntimeRegistry`, `SystemClient` 程度を内包すればよい。
+3. `ReviewAppServerIntegration` に app-server 連携を移す。`AppServerSupervisor`, `AppServerReviewRunner`, auth session、`config/read` はここへ閉じ込める。
+4. `ReviewInfrastructure` に platform infrastructure を移す。local config/discovery/account registry、clock/process/file system はここへ閉じ込める。
+5. `CodexReviewUI` と MCP adapter は `ReviewApplication` だけを見る。
 
 ## review_start の実行フロー
 
-STDIO クライアントの場合は `ReviewStdioAdapter` を通ります。HTTP/SSE クライアントの場合は `ReviewMCPHTTPServer` に直接入ります。
+STDIO クライアントの場合も HTTP/SSE クライアントの場合も、MCP adapter は request を store intent に変換します。review 実行の live details は `ReviewApplicationDependencies` の実装側に閉じ込めます。
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Client as MCP client
-    participant Adapter as ReviewStdioAdapter
-    participant HTTP as ReviewMCPHTTPServer
-    participant App as ReviewHTTPApplication
-    participant Tool as ReviewToolHandler
+    participant Adapter as ReviewMCPAdapter
+    participant Tool as ReviewToolProtocol
+    participant StoreAPI as Store protocol
     participant Store as CodexReviewStore
-    participant Exec as ReviewExecutionCoordinator
-    participant Supervisor as AppServerSupervisor
-    participant Runner as AppServerReviewRunner
+    participant Workflow as ReviewWorkflow
+    participant Deps as ReviewApplicationDependencies
+    participant Live as App-server integration
     participant Codex as codex app-server
 
     alt HTTP/SSE client
-        Client->>HTTP: initialize / call review_start
+        Client->>Adapter: initialize / call review_start
     else STDIO client
         Client->>Adapter: JSON-RPC over stdio
-        Adapter->>HTTP: POST /mcp with MCP session
     end
-    HTTP->>App: route HTTP request
-    App->>Tool: CallTool review_start
-    Tool->>Store: startReview(sessionID, ReviewStartRequest)
-    Store->>Exec: startReview(sessionID, request, store)
-    Exec->>Store: enqueueReview(...)
-    Exec->>Supervisor: checkoutTransport(sessionID)
-    Supervisor->>Codex: ensure shared app-server process
-    Exec->>Runner: run(session, request, callbacks)
-    Runner->>Codex: config/read
-    Runner->>Codex: thread/start
-    Runner->>Codex: review/start
-    Codex-->>Runner: notifications / agent output / completion
-    Runner-->>Store: onEvent(...) / completeReview(...)
-    Store-->>Tool: ReviewReadResult
-    Tool-->>HTTP: structured CallTool result
-    HTTP-->>Client: review result
+    Adapter->>Tool: invoke review_start intent
+    Tool->>StoreAPI: reviewStart(request)
+    StoreAPI->>Store: forward to source-of-truth store
+    Store->>Workflow: startReview(sessionID, request)
+    Workflow->>Store: enqueueReview(...)
+    Workflow->>Deps: run review through dependency bundle
+    Deps->>Live: dispatch to live implementation
+    Live->>Codex: config/read
+    Live->>Codex: thread/start
+    Live->>Codex: review/start
+    Codex-->>Live: notifications / agent output / completion
+    Live-->>Workflow: events / final outcome
+    Workflow-->>Store: mutate job state
+    Store-->>Adapter: ReviewReadResult
+    Adapter-->>Client: structured MCP result
 ```
 
 補足:
 
 - `review_start` は最終結果まで待つ primary flow です。
 - `review_read` / `review_list` は `CodexReviewStore` 上の session-scoped job state を読むだけの軽い経路です。
-- `review_cancel` は `ReviewExecutionCoordinator` に termination reason を記録し、bootstrap 中なら transport/task を止め、実行中なら app-server の `turn/interrupt` に進みます。
+- `review_cancel` は `ReviewWorkflow` から `ReviewApplicationDependencies` へ cancellation を渡し、live 実装が app-server の interrupt / cleanup details を扱います。
 
 ## State と Observation の流れ
 
 ```mermaid
 flowchart LR
-    Intent["User action / MCP tool call"] --> StoreAPI["CodexReviewStore methods<br/>start, signIn, startReview, cancelReview"]
-    StoreAPI --> Coordinator["ReviewMonitorCoordinator<br/>mode switch and orchestration"]
-    Coordinator --> Work["ReviewMonitorServerRuntime<br/>ReviewExecutionCoordinator<br/>ReviewMonitorAuthOrchestrator"]
-    Work --> Mutation["Mutate @Observable state<br/>serverState, auth, workspaces, jobs"]
+    Intent["User action / MCP tool call"] --> StoreAPI["CodexReviewStore intent methods"]
+    StoreAPI --> Workflows["ReviewApplication workflows"]
+    Workflows --> Dependencies["ReviewApplicationDependencies"]
+    Dependencies -.->|dependency implementation| Outcome["events / outcomes"]
+    Outcome --> Mutation["Mutate @Observable state<br/>serverState, auth, workspaces, jobs"]
     Mutation --> Observation["Observation / ObservationBridge"]
     Observation --> NativeUI["AppKit / SwiftUI native rendering"]
 
@@ -193,7 +280,7 @@ flowchart LR
     WorkspaceTree --> JobTree["CodexReviewJob<br/>- status<br/>- summary<br/>- log projections"]
 ```
 
-現状の state ownership:
+整理後の state ownership:
 
 - `CodexReviewStore` が UI と MCP server の両方から使われる root state です。
 - `CodexReviewAuthModel` は認証・アカウント選択の source of truth です。
@@ -206,46 +293,56 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph Session["MCP session boundary"]
-        SessionID["sessionID"]
-        SessionJobs["session-scoped jobs"]
-        SessionClose["closeSession / deferred cleanup"]
+    subgraph InputBoundary["Input boundary"]
+        UIIntent["UI intent"]
+        MCPIntent["MCP tool call"]
+        CLIIntent["CLI command"]
+        StoreBoundary["ReviewStoreProtocol"]
+        ToolBoundary["ReviewToolProtocol"]
     end
 
-    subgraph Review["Review execution boundary"]
-        Request["ReviewStartRequest / ReviewRequestOptions"]
-        JobState["CodexReviewJob state"]
-        Termination["ReviewTerminationReason / ReviewCancellation"]
+    subgraph AppBoundary["Application boundary"]
+        StoreState["CodexReviewStore state"]
+        WorkflowRules["Workflow rules"]
+        DependencyBundle["ReviewApplicationDependencies<br/>dependency bundle"]
     end
 
-    subgraph Runtime["Shared runtime boundary"]
-        EmbeddedHTTP["embedded MCP HTTP server"]
-        SharedAppServer["one shared codex app-server"]
-        RuntimeFiles["discovery and runtime-state files"]
+    subgraph AppServerBoundary["App-server integration boundary"]
+        AppServerAdapters["App-server dependency implementations"]
+        SharedAppServer["codex app-server"]
     end
 
-    SessionID --> SessionJobs
-    SessionClose --> SessionJobs
-    Request --> JobState
-    Termination --> JobState
-    EmbeddedHTTP --> SessionID
-    EmbeddedHTTP --> RuntimeFiles
-    SharedAppServer --> RuntimeFiles
-    JobState --> SharedAppServer
+    subgraph PlatformBoundary["Platform infrastructure boundary"]
+        PlatformAdapters["Platform dependency implementations"]
+        RuntimeFiles["discovery / runtime-state / account files"]
+    end
+
+    UIIntent --> StoreBoundary
+    MCPIntent --> ToolBoundary
+    CLIIntent --> ToolBoundary
+    ToolBoundary --> StoreBoundary
+    StoreBoundary --> StoreState
+    StoreState --> WorkflowRules
+    WorkflowRules --> DependencyBundle
+    AppServerAdapters -.->|supplies implementation| DependencyBundle
+    PlatformAdapters -.->|supplies implementation| DependencyBundle
+    AppServerAdapters --> SharedAppServer
+    PlatformAdapters --> RuntimeFiles
 ```
 
 責務の読み方:
 
-- MCP session は HTTP transport の session と、store 内の job 所有権を結びます。
-- Review execution は job 単位で `ReviewExecutionCoordinator` が Task と cancellation を管理します。
-- Shared runtime は `ReviewMonitorServerRuntime` と `AppServerSupervisor` が扱い、HTTP endpoint discovery と app-server runtime state を `~/.codex_review` に反映します。
+- Input boundary は intent 変換だけを担当します。
+- Application boundary は state と workflow rules を持ち、外部副作用は `ReviewApplicationDependencies` に閉じます。
+- App-server integration boundary は `codex app-server` protocol details を担当します。UI layer からは直接見えません。
+- Platform infrastructure boundary は file/process/clock/runtime registry を担当します。application state を直接所有しません。
 
 ## 見直し時の起点
 
 現状把握から見える、次に議論しやすい論点です。
 
-1. `ReviewApp` の中に application state と runtime lifecycle が同居しているため、`Store/Service` と infrastructure client の境界を先に決める必要があります。
-2. `CodexReviewStore` の API は個別 method です。イベント処理を統一するか、現状の explicit method を維持するかは、テスト容易性と変更頻度で判断できます。
-3. `ReviewInfra` が `ReviewRuntime` に依存しているため、厳密な層構造にするなら job projection/state をどこに置くかを再検討する余地があります。
-4. UI は直接 observation で描画しており、余分な ViewModel 層はありません。この点は `Observation + Single Source of Truth` と相性がよいです。
-5. `ReviewMonitorServerRuntime` / `CodexReviewStoreRuntime.swift` は起動、設定、認証、server recycle、account seed などが集まっているため、責務を分ける場合の最初の候補です。
+1. `ReviewApplication` を中心に置き、`ReviewApp --> ReviewInfra` の直接依存を消します。
+2. `ReviewRuntime` は独立 target として残さず、observable state を `ReviewApplication` に寄せます。
+3. facade target は互換性維持目的なら削除します。composition root が live wiring を明示的に持つ方が読みやすいです。
+4. `ReviewMonitorServerRuntime` / `CodexReviewStoreRuntime.swift` に集まっている server lifecycle、settings、auth seed、runtime recycle を workflow と dependency bundle に分解します。
+5. UI は直接 observation で描画しており、余分な ViewModel 層はありません。この点は維持します。
