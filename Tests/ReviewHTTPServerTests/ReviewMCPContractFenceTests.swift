@@ -352,6 +352,45 @@ struct ReviewMCPContractFenceTests {
         )
     }
 
+    @Test func reviewCancelWithoutCancellationMetadataUsesNeutralText() async throws {
+        let handler = makeHandler(
+            cancelReviewByID: { _, _ in
+                ReviewCancelOutcome(
+                    jobID: "job_legacy_cancelled",
+                    threadID: "thr_legacy_cancelled",
+                    cancelled: true,
+                    status: ReviewJobState.cancelled
+                )
+            }
+        )
+
+        let result = await handler.handle(
+            params: CallTool.Parameters(
+                name: "review_cancel",
+                arguments: [
+                    "jobId": "job_legacy_cancelled",
+                ]
+            )
+        )
+
+        #expect(result.isError == false)
+        let content = try #require(result.content.first)
+        guard case .text(let text, _, _) = content else {
+            Issue.record("Expected text content")
+            return
+        }
+        #expect(text == "Review cancelled.")
+        let object = try #require(result.structuredContent?.objectValue)
+        #expect(Set(object.keys) == [
+            "cancelled",
+            "jobId",
+            "status",
+            "threadId",
+            "turnId",
+        ])
+        #expect(object["turnId"] == Value.null)
+    }
+
     @Test func cancelledReviewStructuredContentIncludesCancellationMetadata() async throws {
         let cancellation = ReviewCancellation.userInterface()
         let startResult = ReviewReadResult(

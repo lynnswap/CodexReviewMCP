@@ -101,8 +101,13 @@ struct ReviewToolHandler {
                     cancellation
                 )
             }
+            let message = if result.cancelled {
+                result.cancellation?.message ?? "Review cancelled."
+            } else {
+                "Review was already finished."
+            }
             return try CallTool.Result(
-                content: [.text(text: result.cancelled ? (result.cancellation?.message ?? cancellation.message) : "Review was already finished.", annotations: nil, _meta: nil)],
+                content: [.text(text: message, annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContent(),
                 isError: false
             )
