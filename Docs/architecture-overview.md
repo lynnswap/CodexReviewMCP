@@ -156,48 +156,100 @@ flowchart LR
 
 ## Swift Package ターゲット依存
 
-矢印は「左の target が右の target を import / depend している」向きです。
+まず、再編後の target 一覧を次のたたき台にします。ここでは「レイヤー間で受け渡す protocol bundle」と「その live 実装」を別 target にし、composition root だけが具体実装を組み立てます。
+
+### 再編後の target 一覧
+
+| Target | 種別 | 役割 | 依存先 |
+| --- | --- | --- | --- |
+| `ReviewDomain` | library | request / response / settings / account / cancellation などの pure value | なし。可能なら `MCP` 依存も外す |
+| `ReviewApplicationDependencies` | library | `ReviewApplication` が外部副作用を呼ぶための dependency protocol bundle | `ReviewDomain` |
+| `ReviewApplication` | library | `CodexReviewStore`、observable state、workflow、`ReviewStoreProtocol`、`ReviewToolProtocol` | `ReviewDomain`, `ReviewApplicationDependencies`, `ObservationBridge` |
+| `CodexReviewUI` | library | AppKit / SwiftUI の direct native rendering | 原則 `ReviewApplication`, `ObservationBridge` |
+| `ReviewMCPAdapter` | library | MCP / HTTP/SSE / STDIO の入力を store intent に変換する adapter | `ReviewApplication`, `ReviewDomain`, `MCP`, `NIO`, `Logging` |
+| `ReviewAppServerIntegration` | library | `codex app-server` と話す live dependency 実装 | `ReviewApplicationDependencies`, `ReviewDomain` |
+| `ReviewInfrastructure` | library | file/process/clock/runtime registry/local config の live dependency 実装 | `ReviewApplicationDependencies`, `ReviewDomain` |
+| `ReviewCLI` | library | CLI / executable の composition root | `ReviewApplication`, `ReviewMCPAdapter`, `ReviewAppServerIntegration`, `ReviewInfrastructure`, `Logging` |
+| `CodexReviewMCPExecutable` | executable | `codex-review-mcp` entry point | `ReviewCLI` |
+| `CodexReviewMCPServerExecutable` | executable | server executable entry point | `ReviewCLI` |
+| `ReviewTestSupport` | test support library | fake dependencies、deterministic clock、test builders | `ReviewApplication`, `ReviewApplicationDependencies`, `ReviewDomain` |
+
+`CodexReviewMonitor` は SwiftPM target ではなく Xcode app target です。ただし dependency graph 上は composition root として扱い、`ReviewApplication` / `CodexReviewUI` / live implementation targets を組み立てる場所にします。
+
+### 削除または吸収する target
+
+| 現 target | 方針 |
+| --- | --- |
+| `ReviewInfra` | `ReviewMCPAdapter`, `ReviewAppServerIntegration`, `ReviewInfrastructure` に分割して廃止 |
+| `ReviewRuntime` | `ReviewApplication` に吸収。job/workspace の observable state は application state として扱う |
+| `ReviewCore` | facade target なので削除 |
+| `ReviewHTTPServer` | facade target なので削除。HTTP/SSE adapter は `ReviewMCPAdapter` へ移す |
+| `ReviewStdioAdapter` | facade target なので削除。STDIO adapter は `ReviewMCPAdapter` へ移す |
+| `CodexReviewModel` | facade target なので削除 |
+| `CodexReviewMCP` | facade target なので削除。app / CLI の composition root が必要 target を明示 import する |
+
+次の図では SwiftPM の全 edge を描かず、依存ルールだけを描きます。`ReviewDomain` は pure values として多くの target から参照されるため、図からは省略します。executable から composition root への依存も下の表に分けます。
 
 ```mermaid
-flowchart LR
-    ReviewDomain["ReviewDomain<br/>pure values"]
-    ReviewApplicationDependencies["ReviewApplicationDependencies<br/>dependency protocol bundle"]
-    ReviewApplication["ReviewApplication<br/>store / state / workflows"]
-    CodexReviewUI["CodexReviewUI<br/>AppKit + SwiftUI"]
-    ReviewMCPAdapter["ReviewMCPAdapter<br/>MCP tools / HTTP / STDIO"]
-    ReviewAppServerIntegration["ReviewAppServerIntegration<br/>codex app-server adapters"]
-    ReviewInfrastructure["ReviewInfrastructure<br/>platform/file/process adapters"]
-    ReviewCLI["ReviewCLI<br/>composition root"]
-    CodexReviewMonitor["CodexReviewMonitor<br/>composition root"]
-    MCPExecutable["CodexReviewMCPExecutable<br/>codex-review-mcp"]
-    MCPServerExecutable["CodexReviewMCPServerExecutable"]
+flowchart TB
+    subgraph Inputs["Input targets"]
+        direction LR
+        CodexReviewUI["CodexReviewUI<br/>UI rendering"]
+        ReviewMCPAdapter["ReviewMCPAdapter<br/>MCP / HTTP/SSE / STDIO"]
+    end
 
-    ReviewApplicationDependencies --> ReviewDomain
-    ReviewApplication --> ReviewDomain
-    ReviewApplication --> ReviewApplicationDependencies
+    subgraph AppCore["Application core"]
+        direction TB
+        ReviewApplication["ReviewApplication<br/>store / state / workflows"]
+        ReviewApplicationDependencies["ReviewApplicationDependencies<br/>dependency protocol bundle"]
+        ReviewApplication --> ReviewApplicationDependencies
+    end
+
+    subgraph Live["Live implementation targets"]
+        direction LR
+        ReviewAppServerIntegration["ReviewAppServerIntegration<br/>codex app-server"]
+        ReviewInfrastructure["ReviewInfrastructure<br/>platform / file / process"]
+    end
+
+    subgraph Roots["Composition roots"]
+        direction LR
+        ReviewCLI["ReviewCLI"]
+        CodexReviewMonitor["CodexReviewMonitor"]
+    end
+
     CodexReviewUI --> ReviewApplication
     ReviewMCPAdapter --> ReviewApplication
-    ReviewMCPAdapter --> ReviewDomain
-    ReviewAppServerIntegration --> ReviewApplicationDependencies
-    ReviewAppServerIntegration --> ReviewDomain
-    ReviewInfrastructure --> ReviewApplicationDependencies
-    ReviewInfrastructure --> ReviewDomain
 
-    ReviewCLI --> ReviewApplication
+    ReviewAppServerIntegration --> ReviewApplicationDependencies
+    ReviewInfrastructure --> ReviewApplicationDependencies
+
     ReviewCLI --> ReviewMCPAdapter
+    ReviewCLI --> ReviewApplication
     ReviewCLI --> ReviewAppServerIntegration
     ReviewCLI --> ReviewInfrastructure
 
-    CodexReviewMonitor --> ReviewApplication
     CodexReviewMonitor --> CodexReviewUI
+    CodexReviewMonitor --> ReviewApplication
     CodexReviewMonitor --> ReviewAppServerIntegration
     CodexReviewMonitor --> ReviewInfrastructure
-
-    MCPExecutable --> ReviewCLI
-    MCPServerExecutable --> ReviewCLI
 ```
 
 この図では、現状の `ReviewApp -> ReviewInfra` を削除しています。依存 bundle は `ReviewApplicationDependencies` に切り出し、`ReviewApplication` / `ReviewAppServerIntegration` / `ReviewInfrastructure` が同じ dependency target を見る形にします。UI layer は application だけを見て、app-server integration を見ません。app / CLI が live wiring を担います。互換性維持のための facade target は削除します。
+
+補足:
+
+- `ReviewDomain` は shared value target です。`ReviewApplication`, `ReviewApplicationDependencies`, adapter, live implementation から参照されますが、主要な依存ルールを読みやすくするため図では省略しています。
+- `CodexReviewMCPExecutable` と `CodexReviewMCPServerExecutable` はどちらも `ReviewCLI` だけに依存します。
+- `ReviewTestSupport` は production graph から外し、test target だけが参照します。
+
+### Composition root wiring
+
+| Composition root | 組み立てる target |
+| --- | --- |
+| `ReviewCLI` | `ReviewApplication`, `ReviewMCPAdapter`, `ReviewAppServerIntegration`, `ReviewInfrastructure` |
+| `CodexReviewMonitor` | `ReviewApplication`, `CodexReviewUI`, `ReviewAppServerIntegration`, `ReviewInfrastructure` |
+| `CodexReviewMCPExecutable` | `ReviewCLI` |
+| `CodexReviewMCPServerExecutable` | `ReviewCLI` |
 
 ## 何を壊してよいか
 
