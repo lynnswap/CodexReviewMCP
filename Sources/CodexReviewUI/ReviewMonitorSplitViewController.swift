@@ -1,10 +1,9 @@
 import AppKit
 import Combine
-import ReviewApp
 import Foundation
 import Observation
 import ObservationBridge
-import ReviewRuntime
+import ReviewApplication
 import ReviewDomain
 
 @MainActor

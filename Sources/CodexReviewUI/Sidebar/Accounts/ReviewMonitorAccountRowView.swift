@@ -1,4 +1,4 @@
-import ReviewApp
+import ReviewApplication
 import ReviewDomain
 import SwiftUI
 

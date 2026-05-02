@@ -9,8 +9,8 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "CodexReviewModel",
-            targets: ["CodexReviewModel"]
+            name: "ReviewApplication",
+            targets: ["ReviewApplication"]
         ),
         .library(
             name: "ReviewTestSupport",
@@ -19,14 +19,6 @@ let package = Package(
         .library(
             name: "CodexReviewUI",
             targets: ["CodexReviewUI"]
-        ),
-        .library(
-            name: "CodexReviewMCP",
-            targets: ["CodexReviewMCP"]
-        ),
-        .library(
-            name: "ReviewInfra",
-            targets: ["ReviewInfra"]
         ),
         .library(
             name: "ReviewInfrastructure",
@@ -39,10 +31,6 @@ let package = Package(
         .library(
             name: "ReviewMCPAdapter",
             targets: ["ReviewMCPAdapter"]
-        ),
-        .library(
-            name: "ReviewApp",
-            targets: ["ReviewApp"]
         ),
         .executable(
             name: "codex-review-mcp",
@@ -100,8 +88,6 @@ let package = Package(
         .target(
             name: "ReviewMCPAdapter",
             dependencies: [
-                "ReviewApplicationDependencies",
-                "ReviewAppServerIntegration",
                 "ReviewDomain",
                 "ReviewInfrastructure",
                 .product(name: "MCP", package: "swift-sdk"),
@@ -116,59 +102,16 @@ let package = Package(
             ]
         ),
         .target(
-            name: "ReviewInfra",
-            dependencies: [
-                "ReviewInfrastructure",
-                "ReviewAppServerIntegration",
-                "ReviewMCPAdapter",
-            ],
-            path: "Sources/ReviewInfraFacade",
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ],
-        ),
-        .target(
-            name: "ReviewCore",
-            dependencies: [
-                "ReviewInfra",
-            ],
-            path: "Sources/ReviewCoreFacade",
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ]
-        ),
-        .target(
-            name: "ReviewHTTPServer",
-            dependencies: [
-                "ReviewInfra",
-            ],
-            path: "Sources/ReviewHTTPServerFacade",
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ]
-        ),
-        .target(
-            name: "ReviewStdioAdapter",
-            dependencies: [
-                "ReviewInfra",
-            ],
-            path: "Sources/ReviewStdioAdapterFacade",
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ]
-        ),
-        .target(
-            name: "ReviewApp",
+            name: "ReviewApplication",
             dependencies: [
                 "ReviewApplicationDependencies",
                 "ReviewAppServerIntegration",
                 "ReviewDomain",
                 "ReviewInfrastructure",
                 "ReviewMCPAdapter",
-                "ReviewRuntime",
                 .product(name: "ObservationBridge", package: "ObservationBridge"),
             ],
-            path: "Sources/ReviewApp",
+            path: "Sources/ReviewApplication",
             sources: [
                 "CodexReviewModel",
                 "CodexReviewMCP",
@@ -178,31 +121,11 @@ let package = Package(
             ]
         ),
         .target(
-            name: "ReviewRuntime",
-            dependencies: [
-                "ReviewDomain",
-            ],
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ]
-        ),
-        .target(
-            name: "CodexReviewModel",
-            dependencies: [
-                "ReviewApp",
-            ],
-            path: "Sources/CodexReviewModelFacade",
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ]
-        ),
-        .target(
             name: "CodexReviewUI",
             dependencies: [
-                "ReviewApp",
+                "ReviewApplication",
                 .product(name: "ObservationBridge", package: "ObservationBridge"),
                 "ReviewDomain",
-                "ReviewRuntime",
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -211,7 +134,7 @@ let package = Package(
         .target(
             name: "ReviewCLI",
             dependencies: [
-                "ReviewApp",
+                "ReviewApplication",
                 "ReviewAppServerIntegration",
                 "ReviewInfrastructure",
                 "ReviewMCPAdapter",
@@ -222,20 +145,9 @@ let package = Package(
             ]
         ),
         .target(
-            name: "CodexReviewMCP",
-            dependencies: [
-                "ReviewApp",
-                .product(name: "ObservationBridge", package: "ObservationBridge"),
-            ],
-            path: "Sources/CodexReviewMCPFacade",
-            swiftSettings: [
-                .swiftLanguageMode(.v6),
-            ]
-        ),
-        .target(
             name: "ReviewTestSupport",
             dependencies: [
-                "ReviewApp",
+                "ReviewApplication",
                 "ReviewAppServerIntegration",
                 "ReviewDomain",
                 "ReviewInfrastructure",
@@ -263,7 +175,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewJobsTests",
-            dependencies: ["ReviewDomain", "ReviewCore", "ReviewRuntime", "CodexReviewMCP", "ReviewTestSupport", "ReviewApp", "ReviewInfra", "ReviewAppServerIntegration", "ReviewInfrastructure", "ReviewMCPAdapter"],
+            dependencies: ["ReviewApplication", "ReviewDomain", "ReviewTestSupport", "ReviewAppServerIntegration", "ReviewInfrastructure", "ReviewMCPAdapter"],
             path: "Tests/ReviewJobsTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -271,7 +183,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewCoreTests",
-            dependencies: ["ReviewApplicationDependencies", "ReviewDomain", "ReviewCore", "ReviewRuntime", "ReviewTestSupport", "ReviewInfra", "ReviewAppServerIntegration", "ReviewInfrastructure", "ReviewMCPAdapter"],
+            dependencies: ["ReviewApplication", "ReviewApplicationDependencies", "ReviewDomain", "ReviewTestSupport", "ReviewAppServerIntegration", "ReviewInfrastructure", "ReviewMCPAdapter"],
             path: "Tests/ReviewCoreTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -279,7 +191,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewHTTPServerTests",
-            dependencies: ["ReviewHTTPServer", "ReviewMCPAdapter", "ReviewCore", "ReviewDomain", "ReviewRuntime", "CodexReviewMCP", "ReviewInfra"],
+            dependencies: ["ReviewApplication", "ReviewDomain", "ReviewMCPAdapter"],
             path: "Tests/ReviewHTTPServerTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -287,7 +199,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewCLITests",
-            dependencies: ["ReviewCLI", "ReviewCore", "ReviewDomain", "ReviewRuntime", "ReviewApp", "ReviewInfra", "ReviewAppServerIntegration", "ReviewInfrastructure", "ReviewMCPAdapter"],
+            dependencies: ["ReviewApplication", "ReviewCLI", "ReviewDomain", "ReviewAppServerIntegration", "ReviewInfrastructure", "ReviewMCPAdapter"],
             path: "Tests/ReviewCLITests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -295,7 +207,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewStdioAdapterTests",
-            dependencies: ["ReviewStdioAdapter", "ReviewMCPAdapter", "ReviewHTTPServer", "ReviewCore", "ReviewDomain", "ReviewRuntime", "ReviewTestSupport", "ReviewInfra"],
+            dependencies: ["ReviewDomain", "ReviewMCPAdapter", "ReviewTestSupport"],
             path: "Tests/ReviewStdioAdapterTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -303,7 +215,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CodexReviewMCPTests",
-            dependencies: ["CodexReviewMCP", "CodexReviewModel", "ReviewHTTPServer", "ReviewCore", "ReviewDomain", "ReviewRuntime", "ReviewTestSupport", "ReviewApp", "ReviewInfra", "ReviewAppServerIntegration", "ReviewInfrastructure", "ReviewMCPAdapter"],
+            dependencies: ["ReviewApplication", "ReviewDomain", "ReviewTestSupport", "ReviewAppServerIntegration", "ReviewInfrastructure", "ReviewMCPAdapter"],
             path: "Tests/CodexReviewMCPTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -311,7 +223,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CodexReviewUITests",
-            dependencies: ["CodexReviewUI", "CodexReviewModel", "ReviewDomain", "ReviewRuntime", "ReviewTestSupport", "ReviewApp"],
+            dependencies: ["CodexReviewUI", "ReviewApplication", "ReviewDomain", "ReviewTestSupport"],
             path: "Tests/CodexReviewUITests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

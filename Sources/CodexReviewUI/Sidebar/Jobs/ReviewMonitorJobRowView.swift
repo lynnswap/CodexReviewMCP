@@ -1,6 +1,6 @@
 import Foundation
 import SwiftUI
-import ReviewRuntime
+import ReviewApplication
 import ReviewDomain
 
 struct ReviewMonitorJobRowView: View {

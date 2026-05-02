@@ -1,6 +1,6 @@
 import AppKit
 import Combine
-import ReviewApp
+import ReviewApplication
 import SwiftUI
 
 @MainActor

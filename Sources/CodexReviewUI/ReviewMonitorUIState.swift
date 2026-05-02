@@ -1,6 +1,5 @@
 import Observation
-import ReviewApp
-import ReviewRuntime
+import ReviewApplication
 import SwiftUI
 import ReviewDomain
 

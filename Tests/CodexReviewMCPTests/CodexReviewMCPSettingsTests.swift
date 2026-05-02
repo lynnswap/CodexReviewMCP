@@ -8,8 +8,7 @@ import ReviewDomain
 @testable import ReviewAppServerIntegration
 @testable import ReviewInfrastructure
 @testable import ReviewMCPAdapter
-@_spi(Testing) @testable import ReviewApp
-@testable import ReviewRuntime
+@_spi(Testing) @testable import ReviewApplication
 
 @Suite(.serialized)
 @MainActor

@@ -2,11 +2,10 @@ import AppKit
 import Foundation
 import SwiftUI
 import Testing
-@_spi(Testing) @testable import ReviewApp
+@_spi(Testing) @testable import ReviewApplication
 @_spi(PreviewSupport) @testable import CodexReviewUI
 import ReviewTestSupport
 import ReviewDomain
-import ReviewRuntime
 
 @MainActor
 private extension CodexReviewAuthModel {

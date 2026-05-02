@@ -1,6 +1,5 @@
 import Foundation
 import ReviewDomain
-import ReviewRuntime
 
 extension CodexReviewJob {
     @_spi(Testing)

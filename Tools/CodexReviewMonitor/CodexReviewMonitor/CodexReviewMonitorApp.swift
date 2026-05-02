@@ -6,7 +6,7 @@
 //
 
 import AppKit
-import CodexReviewMCP
+import ReviewApplication
 @_spi(PreviewSupport) import CodexReviewUI
 
 enum CodexReviewMonitorNativeAuthentication {
