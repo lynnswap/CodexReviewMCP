@@ -1,5 +1,3 @@
-import MCP
-
 public enum ReviewCancellationSource: String, Codable, Sendable, Hashable {
     case userInterface
     case mcpClient
@@ -38,12 +36,5 @@ public struct ReviewCancellation: Codable, Sendable, Hashable {
         message: String = "Cancellation requested."
     ) -> ReviewCancellation {
         ReviewCancellation(source: .system, message: message)
-    }
-
-    package func structuredContent() -> Value {
-        .object([
-            "source": .string(source.rawValue),
-            "message": .string(message),
-        ])
     }
 }
