@@ -1,5 +1,5 @@
 import AppKit
-import ReviewApp
+import ReviewApplication
 
 @MainActor
 private func configureReviewMonitorWindowBase(_ window: NSWindow) {

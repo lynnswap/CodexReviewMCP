@@ -1,6 +1,6 @@
 import Foundation
 import Logging
-import ReviewApp
+import ReviewApplication
 import ReviewMCPAdapter
 
 public enum ReviewCLI {

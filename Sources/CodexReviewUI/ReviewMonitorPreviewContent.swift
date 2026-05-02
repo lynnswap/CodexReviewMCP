@@ -1,7 +1,6 @@
 import Foundation
-@_spi(Testing) import ReviewApp
+@_spi(Testing) import ReviewApplication
 import ReviewDomain
-import ReviewRuntime
 
 @_spi(PreviewSupport)
 @MainActor

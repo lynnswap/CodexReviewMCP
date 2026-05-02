@@ -1,5 +1,5 @@
 import Foundation
-import ReviewApp
+import ReviewApplication
 package import ReviewAppServerIntegration
 package import ReviewInfrastructure
 package import ReviewMCPAdapter

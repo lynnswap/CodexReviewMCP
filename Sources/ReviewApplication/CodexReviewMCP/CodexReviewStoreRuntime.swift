@@ -9,7 +9,6 @@ import ReviewApplicationDependencies
 import ReviewDomain
 import ReviewInfrastructure
 import ReviewMCPAdapter
-import ReviewRuntime
 
 extension CodexReviewStore {
     public convenience init() {

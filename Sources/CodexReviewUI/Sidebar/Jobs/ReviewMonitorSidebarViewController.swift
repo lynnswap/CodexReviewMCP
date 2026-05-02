@@ -1,8 +1,7 @@
 import AppKit
 import Observation
-import ReviewApp
 import ObservationBridge
-import ReviewRuntime
+import ReviewApplication
 import SwiftUI
 import ReviewDomain
 

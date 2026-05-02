@@ -5,9 +5,7 @@ import ReviewDomain
 @testable import ReviewInfrastructure
 @testable import ReviewMCPAdapter
 
-@_spi(Testing) @testable import ReviewApp
-@testable import ReviewDomain
-@testable import ReviewRuntime
+@_spi(Testing) @testable import ReviewApplication
 
 @Suite(.serialized)
 @MainActor

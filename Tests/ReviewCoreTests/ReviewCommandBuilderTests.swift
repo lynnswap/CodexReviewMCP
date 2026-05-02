@@ -3,7 +3,7 @@ import Testing
 @testable import ReviewAppServerIntegration
 @testable import ReviewInfrastructure
 @testable import ReviewMCPAdapter
-@testable import ReviewApp
+@testable import ReviewApplication
 @testable import ReviewDomain
 
 @Suite struct ReviewExecutionSettingsBuilderTests {

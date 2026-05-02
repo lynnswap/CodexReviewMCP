@@ -1,11 +1,10 @@
 import AppKit
 import Foundation
 import Testing
-@_spi(Testing) @testable import ReviewApp
+@_spi(Testing) @testable import ReviewApplication
 @_spi(PreviewSupport) @testable import CodexReviewUI
 import ReviewTestSupport
 import ReviewDomain
-import ReviewRuntime
 
 @Suite(.serialized)
 @MainActor

@@ -1,5 +1,5 @@
 import AppKit
-import ReviewApp
+import ReviewApplication
 import ReviewDomain
 
 @MainActor

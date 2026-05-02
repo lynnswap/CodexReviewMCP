@@ -4,7 +4,7 @@ import ReviewTestSupport
 @testable import ReviewAppServerIntegration
 @testable import ReviewInfrastructure
 @testable import ReviewMCPAdapter
-@_spi(Testing) @testable import ReviewApp
+@_spi(Testing) @testable import ReviewApplication
 
 @Suite(.serialized)
 @MainActor

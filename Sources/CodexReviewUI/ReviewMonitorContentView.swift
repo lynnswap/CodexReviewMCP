@@ -1,6 +1,6 @@
 import AppKit
 import ObservationBridge
-import ReviewApp
+import ReviewApplication
 import ReviewDomain
 import SwiftUI
 

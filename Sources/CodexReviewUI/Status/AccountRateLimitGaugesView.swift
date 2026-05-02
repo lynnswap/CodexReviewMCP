@@ -1,5 +1,5 @@
 import SwiftUI
-import ReviewApp
+import ReviewApplication
 import ReviewDomain
 
 struct AccountRateLimitGaugesView: View {

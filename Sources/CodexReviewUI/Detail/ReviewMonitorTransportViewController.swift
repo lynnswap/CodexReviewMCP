@@ -1,7 +1,6 @@
 import AppKit
 import ObservationBridge
-import ReviewApp
-import ReviewRuntime
+import ReviewApplication
 import ReviewDomain
 
 @MainActor

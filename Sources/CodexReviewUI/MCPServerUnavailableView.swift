@@ -6,7 +6,7 @@
 //
 
 import SwiftUI
-import ReviewApp
+import ReviewApplication
 
 struct MCPServerUnavailableView: View {
     let store: CodexReviewStore
