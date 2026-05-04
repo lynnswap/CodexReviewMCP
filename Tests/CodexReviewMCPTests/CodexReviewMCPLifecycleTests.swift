@@ -303,8 +303,14 @@ struct CodexReviewMCPLifecycleTests {
             await sessionATransport.waitForRequest("review/start")
             await sessionBTransport.waitForRequest("review/start")
 
+            let sessionAJobID = try #require(
+                store.workspaces
+                    .flatMap(\.jobs)
+                    .first { $0.sessionID == "session-a" }?
+                    .id
+            )
             _ = try await store.cancelReview(
-                selector: .init(cwd: nil, statuses: [.running]),
+                selector: .init(jobID: sessionAJobID),
                 sessionID: "session-a",
                 cancellation: .userInterface()
             )

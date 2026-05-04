@@ -82,6 +82,31 @@ struct ReviewMCPContractFenceTests {
         #expect(targetHelp.contents.first?.text?.contains(#"# `target.type = "commit"`"#) == true)
     }
 
+    @Test func reviewJobToolsDocumentProcessWideScope() throws {
+        let overview = try ReviewHelpCatalog.readResource(uri: ReviewHelpCatalog.overviewURI)
+        let readHelp = try ReviewHelpCatalog.readResource(
+            uri: ReviewHelpCatalog.toolURI("review_read")
+        )
+        let listHelp = try ReviewHelpCatalog.readResource(
+            uri: ReviewHelpCatalog.toolURI("review_list")
+        )
+        let cancelHelp = try ReviewHelpCatalog.readResource(
+            uri: ReviewHelpCatalog.toolURI("review_cancel")
+        )
+        let helpText = [
+            try #require(overview.contents.first?.text),
+            try #require(readHelp.contents.first?.text),
+            try #require(listHelp.contents.first?.text),
+            try #require(cancelHelp.contents.first?.text),
+            ReviewHelpCatalog.reviewReadDescription,
+            ReviewHelpCatalog.reviewListDescription,
+            ReviewHelpCatalog.reviewCancelDescription,
+        ].joined(separator: "\n")
+
+        #expect(helpText.contains("current MCP session") == false)
+        #expect(helpText.contains("known to this Review Monitor process"))
+    }
+
     @Test func reviewStartHelpUsesCanonicalTargetObjectOnly() throws {
         let toolHelp = try ReviewHelpCatalog.readResource(
             uri: ReviewHelpCatalog.toolURI("review_start")

@@ -56,7 +56,7 @@ package enum ReviewHelpCatalog {
     Primary execution flow:
     - `review_start` runs a review and waits for the terminal result.
     - `review_read` rereads a known job.
-    - `review_list` discovers jobs for the current MCP session.
+    - `review_list` discovers jobs known to this Review Monitor process.
     - `review_cancel` cancels a running job.
     """
 
@@ -199,15 +199,15 @@ package enum ReviewHelpCatalog {
     }
 
     package static var reviewReadDescription: String {
-        "Read the current or final state of a review job owned by the current MCP session. Returns `run`, `lifecycle`, `output`, ordered `logs`, and `rawLogText`. Read `\(toolURI("review_read"))` for details."
+        "Read the current or final state of any review job known to this Review Monitor process. Returns `run`, `lifecycle`, `output`, ordered `logs`, and `rawLogText`. Read `\(toolURI("review_read"))` for details."
     }
 
     package static var reviewListDescription: String {
-        "List review jobs owned by the current MCP session. Each item groups metadata under `run`, `lifecycle`, and `output`. Read `\(toolURI("review_list"))` for details."
+        "List review jobs known to this Review Monitor process. Each item groups metadata under `run`, `lifecycle`, and `output`. Read `\(toolURI("review_list"))` for details."
     }
 
     package static var reviewCancelDescription: String {
-        "Cancel a running review job owned by the current MCP session. Pass either `jobId` or a selector (`cwd`, `statuses`). Cancellation metadata is returned as `lifecycle.cancellation` when available. Read `\(toolURI("review_cancel"))` for details."
+        "Cancel a running review job known to this Review Monitor process. Pass either `jobId` or a selector (`cwd`, `statuses`). Cancellation metadata is returned as `lifecycle.cancellation` when available. Read `\(toolURI("review_cancel"))` for details."
     }
 
     private static var overviewMarkdown: String {
@@ -237,7 +237,7 @@ package enum ReviewHelpCatalog {
 
         - `review_start`: run a review and wait for completion.
         - `review_read`: reread one known job.
-        - `review_list`: discover jobs for this MCP session.
+        - `review_list`: discover jobs known to this Review Monitor process.
         - `review_cancel`: cancel one job by ID or selector.
 
         ## Templates
@@ -318,7 +318,7 @@ package enum ReviewHelpCatalog {
             return """
             # `review_read`
 
-            Reads one known review job by `jobId`.
+            Reads any review job known to this Review Monitor process by `jobId`.
 
             ## Minimal Input
 
@@ -336,7 +336,7 @@ package enum ReviewHelpCatalog {
             return """
             # `review_list`
 
-            Lists jobs for the current MCP session.
+            Lists jobs known to this Review Monitor process, including jobs started by other MCP sessions.
 
             ## Minimal Input
 
@@ -356,7 +356,7 @@ package enum ReviewHelpCatalog {
             return """
             # `review_cancel`
 
-            Cancels one running job.
+            Cancels one running job known to this Review Monitor process.
 
             ## By ID
 

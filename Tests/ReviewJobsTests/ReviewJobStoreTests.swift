@@ -30,6 +30,31 @@ struct ReviewJobStoreTests {
         #expect(await manager.prepareCount() == 1)
     }
 
+    @Test func completedReviewRemainsAfterSessionCloses() async throws {
+        let manager = MockAppServerManager { _ in .success(finalReview: "Review ok") }
+        let store = try makeTestStore(manager: manager)
+
+        await store.start()
+        defer { Task { await store.stop() } }
+
+        let result = try await store.startReview(
+            sessionID: "session-completed",
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                target: .uncommittedChanges
+            )
+        )
+
+        await store.closeSession("session-completed", reason: "MCP session closed.")
+
+        let listed = store.listReviews(statuses: [.succeeded])
+        let reread = try store.readReview(jobID: result.jobID)
+        #expect(store.workspaces.flatMap(\.jobs).map(\.id) == [result.jobID])
+        #expect(listed.items.map(\.jobID) == [result.jobID])
+        #expect(reread.core.lifecycle.status == .succeeded)
+        #expect(reread.core.reviewText == "Review ok")
+    }
+
     @Test func codexReviewStoreStoresParsedReviewResult() async throws {
         let dash = "\u{2014}"
         let cwd = FileManager.default.temporaryDirectory.path
@@ -178,6 +203,39 @@ struct ReviewJobStoreTests {
         #expect(await transport.isClosed())
     }
 
+    @Test func cancelCanTargetReviewFromAnotherSession() async throws {
+        let manager = MockAppServerManager { _ in .longRunning() }
+        let store = try makeTestStore(manager: manager)
+
+        await store.start()
+        defer { Task { await store.stop() } }
+
+        let reviewTask = Task {
+            try await store.startReview(
+                sessionID: "session-owner",
+                request: .init(
+                    cwd: FileManager.default.temporaryDirectory.path,
+                    target: .uncommittedChanges
+                )
+            )
+        }
+
+        let transport = await manager.waitForTransport(sessionID: "session-owner")
+        await transport.waitForRequest("review/start")
+        let jobID = try #require(store.workspaces.first?.jobs.first?.id)
+        let outcome = try await store.cancelReview(
+            selectedJobID: jobID,
+            sessionID: "session-other",
+            cancellation: .mcpClient()
+        )
+        let result = try await reviewTask.value
+
+        #expect(outcome.cancelled)
+        #expect(result.core.lifecycle.status == .cancelled)
+        #expect(result.core.lifecycle.cancellation?.source == .mcpClient)
+        #expect(await transport.isClosed())
+    }
+
     @Test func runningCancellationKeepsPendingMessageUntilTerminalOutcome() throws {
         let store = CodexReviewStore.makePreviewStore()
         let job = CodexReviewJob.makeForTesting(
@@ -203,7 +261,7 @@ struct ReviewJobStoreTests {
             jobID: job.id,
             sessionID: "session-pending-cancel"
         )
-        let pendingListItem = try #require(store.listReviews(sessionID: "session-pending-cancel").items.first)
+        let pendingListItem = try #require(store.listReviews().items.first)
 
         #expect(outcome.state == .running)
         #expect(outcome.signalled)
@@ -319,6 +377,31 @@ struct ReviewJobStoreTests {
 
         #expect(result.core.lifecycle.status == .cancelled)
         #expect(result.core.lifecycle.errorMessage == "session closed")
+        #expect(store.workspaces.flatMap(\.jobs).map(\.id) == [result.jobID])
+        #expect(store.listReviews(statuses: [.cancelled]).items.map(\.jobID) == [result.jobID])
+    }
+
+    @Test func terminalReviewsRemainAcrossStopAndRestart() async throws {
+        let manager = MockAppServerManager { _ in .success(finalReview: "Review ok") }
+        let store = try makeTestStore(manager: manager)
+
+        await store.start()
+        let result = try await store.startReview(
+            sessionID: "session-retained",
+            request: .init(
+                cwd: FileManager.default.temporaryDirectory.path,
+                target: .uncommittedChanges
+            )
+        )
+
+        await store.stop()
+        #expect(store.workspaces.flatMap(\.jobs).map(\.id) == [result.jobID])
+
+        await store.start()
+        defer { Task { await store.stop() } }
+
+        #expect(store.workspaces.flatMap(\.jobs).map(\.id) == [result.jobID])
+        #expect(store.listReviews(statuses: [.succeeded]).items.map(\.jobID) == [result.jobID])
     }
 
     @Test func codexReviewStoreFailsToStartWhenReviewStartFails() async throws {

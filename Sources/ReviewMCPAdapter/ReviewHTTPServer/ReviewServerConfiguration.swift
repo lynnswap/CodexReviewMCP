@@ -192,8 +192,7 @@ private final class ReviewSessionToolAdapter: ReviewToolProtocol, @unchecked Sen
 
     func readReview(jobID: String) async throws -> ReviewReadResult {
         try await requireStore().readReview(
-            jobID: jobID,
-            sessionID: sessionID
+            jobID: jobID
         )
     }
 
@@ -206,7 +205,6 @@ private final class ReviewSessionToolAdapter: ReviewToolProtocol, @unchecked Sen
             return .init(items: [])
         }
         return await store.listReviews(
-            sessionID: sessionID,
             cwd: cwd,
             statuses: statuses,
             limit: limit
@@ -219,7 +217,6 @@ private final class ReviewSessionToolAdapter: ReviewToolProtocol, @unchecked Sen
     ) async throws -> ReviewCancelOutcome {
         try await requireStore().cancelReview(
             selectedJobID: jobID,
-            sessionID: sessionID,
             cancellation: cancellation
         )
     }
@@ -230,7 +227,6 @@ private final class ReviewSessionToolAdapter: ReviewToolProtocol, @unchecked Sen
     ) async throws -> ReviewCancelOutcome {
         try await requireStore().cancelReview(
             selector: selector,
-            sessionID: sessionID,
             cancellation: cancellation
         )
     }

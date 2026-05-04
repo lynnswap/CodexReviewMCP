@@ -2970,7 +2970,6 @@ final class CountingStartBackend: ReviewMonitorTestingHarness {
 
     override func cancelReviewByID(
         jobID _: String,
-        sessionID _: String,
         cancellation _: ReviewCancellation,
         store _: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
@@ -3026,7 +3025,6 @@ final class AuthActionBackend: ReviewMonitorTestingHarness {
 
     override func cancelReviewByID(
         jobID _: String,
-        sessionID _: String,
         cancellation _: ReviewCancellation,
         store _: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
@@ -3068,12 +3066,10 @@ final class FailingCancellationBackend: ReviewMonitorTestingHarness {
 
     override func cancelReviewByID(
         jobID: String,
-        sessionID: String,
         cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         _ = jobID
-        _ = sessionID
         _ = cancellation
         _ = store
         throw ReviewError.io("Cancellation failed.")
@@ -3129,12 +3125,10 @@ final class BlockingSettingsBackend: ReviewMonitorTestingHarness {
 
     override func cancelReviewByID(
         jobID: String,
-        sessionID: String,
         cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         _ = jobID
-        _ = sessionID
         _ = cancellation
         _ = store
         throw TestFailure("cancel review is not expected in BlockingSettingsBackend")

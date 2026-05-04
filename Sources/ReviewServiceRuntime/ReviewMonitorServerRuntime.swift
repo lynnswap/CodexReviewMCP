@@ -638,14 +638,13 @@ package final class ReviewMonitorServerRuntime: ReviewMonitorServerCoordinating,
 
     func cancelReview(
         jobID: String,
-        sessionID: String,
+        sessionID _: String,
         cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws {
-        let job = try store.resolveJob(jobID: jobID, sessionID: sessionID)
+        let job = try store.resolveJob(selector: .init(jobID: jobID))
         _ = try await store.cancelReview(
             selectedJobID: job.id,
-            sessionID: sessionID,
             cancellation: cancellation
         )
     }

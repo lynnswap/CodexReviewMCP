@@ -59,7 +59,6 @@ public final class CodexReviewStore {
 
         serverState = .starting
         serverURL = nil
-        resetReviews()
         writeDiagnosticsIfNeeded()
         await coordinator.start(
             store: self,
@@ -330,7 +329,7 @@ public final class CodexReviewStore {
         writeDiagnosticsIfNeeded()
     }
 
-    package func transitionToStopped(resetJobs: Bool = true) {
+    package func transitionToStopped(resetJobs: Bool = false) {
         serverURL = nil
         if resetJobs {
             resetReviews()

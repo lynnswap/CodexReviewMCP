@@ -87,25 +87,21 @@ package actor ReviewExecutionCoordinator {
             throw error
         }
 
-        let result = try await store.readReview(jobID: jobID, sessionID: sessionID)
+        let result = try await store.readReview(jobID: jobID)
         await removeExecution(jobID: jobID)
-        await store.pruneClosedJobIfNeeded(jobID: jobID)
         return result
     }
 
     package func cancelReview(
         jobID: String,
-        sessionID: String,
         cancellation: ReviewCancellation = .system(),
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
         let job = try await store.resolveJob(
-            sessionID: sessionID,
             selector: .init(jobID: jobID)
         )
         return try await cancelResolvedJob(
             job: job,
-            sessionID: sessionID,
             cancellation: cancellation,
             store: store
         )
@@ -113,14 +109,12 @@ package actor ReviewExecutionCoordinator {
 
     package func cancelReview(
         selector: ReviewJobSelector,
-        sessionID: String,
         cancellation: ReviewCancellation = .system(),
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
-        let job = try await store.resolveJob(sessionID: sessionID, selector: selector)
+        let job = try await store.resolveJob(selector: selector)
         return try await cancelResolvedJob(
             job: job,
-            sessionID: sessionID,
             cancellation: cancellation,
             store: store
         )
@@ -139,15 +133,10 @@ package actor ReviewExecutionCoordinator {
             }
             _ = try? await cancelResolvedJob(
                 job: job,
-                sessionID: sessionID,
                 cancellation: closeCancellation,
                 store: store
             )
         }
-        await store.pruneClosedSessionJobs(
-            sessionID: sessionID,
-            excludingJobIDs: Set(executions.keys)
-        )
     }
 
     package func shutdown(reason: String, store: CodexReviewStore) async {
@@ -158,7 +147,6 @@ package actor ReviewExecutionCoordinator {
             }
             _ = try? await cancelResolvedJob(
                 job: job,
-                sessionID: handle.sessionID,
                 cancellation: .system(message: reason.nilIfEmpty ?? "Cancellation requested."),
                 store: store
             )
@@ -340,7 +328,6 @@ package actor ReviewExecutionCoordinator {
 
     private func cancelResolvedJob(
         job: CodexReviewJob,
-        sessionID: String,
         cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
@@ -355,7 +342,7 @@ package actor ReviewExecutionCoordinator {
             ?? cancellation
         let result = try await store.requestCancellation(
             jobID: job.id,
-            sessionID: sessionID,
+            sessionID: job.sessionID,
             cancellation: effectiveCancellation
         )
         await notifyTerminationReasonChange(jobID: job.id)
