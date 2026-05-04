@@ -5,8 +5,8 @@ import Observation
 import Testing
 import ReviewTestSupport
 import ReviewDomain
-@testable import ReviewAppServerIntegration
-@testable import ReviewInfrastructure
+@testable import ReviewAppServerAdapter
+@testable import ReviewPlatform
 @testable import ReviewMCPAdapter
 @_spi(Testing) @testable import ReviewApplication
 

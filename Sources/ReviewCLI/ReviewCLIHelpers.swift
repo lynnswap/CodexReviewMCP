@@ -3,7 +3,7 @@ import Dispatch
 import Foundation
 import Logging
 import ReviewDomain
-import ReviewInfrastructure
+import ReviewPlatform
 import ReviewMCPAdapter
 
 struct ServerOptions {

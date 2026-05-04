@@ -1,7 +1,7 @@
 import Darwin
 import Dispatch
 import Foundation
-import ReviewInfrastructure
+import ReviewPlatform
 
 func forceRestart(_ discovery: LiveEndpointRecord) async throws {
     do {

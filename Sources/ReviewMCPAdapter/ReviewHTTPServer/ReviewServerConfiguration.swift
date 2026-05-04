@@ -2,7 +2,7 @@ import Foundation
 import Logging
 import MCP
 import ReviewDomain
-import ReviewInfrastructure
+import ReviewPlatform
 
 package struct ReviewServerConfiguration: Sendable {
     package var host: String

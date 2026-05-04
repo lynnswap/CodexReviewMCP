@@ -1,7 +1,7 @@
 import Foundation
-package import ReviewAppServerIntegration
+package import ReviewAppServerAdapter
 import ReviewDomain
-package import ReviewInfrastructure
+package import ReviewPlatform
 
 package enum MockAppServerMode: Sendable {
     case success(

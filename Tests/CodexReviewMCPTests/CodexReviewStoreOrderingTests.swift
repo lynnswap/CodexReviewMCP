@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import ReviewDomain
-@testable import ReviewMonitorRuntime
+@testable import ReviewServiceRuntime
 @_spi(Testing) @testable import ReviewApplication
 
 @Suite(.serialized)

@@ -1,10 +1,10 @@
 import Foundation
 import Testing
-import ReviewApplicationDependencies
+import ReviewPorts
 import ReviewTestSupport
 @testable import ReviewDomain
-@testable import ReviewAppServerIntegration
-@testable import ReviewInfrastructure
+@testable import ReviewAppServerAdapter
+@testable import ReviewPlatform
 @testable import ReviewMCPAdapter
 
 @Suite(.serialized)

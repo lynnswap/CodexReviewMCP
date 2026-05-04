@@ -11,7 +11,7 @@ swift test --filter ReviewCoreTests
 swift test --filter ReviewHTTPServerTests
 swift test --filter ReviewCLITests
 swift test --filter CodexReviewMCPTests
-swift test --filter CodexReviewUITests
+swift test --filter ReviewUITests
 swift test --no-parallel --filter ReviewStdioAdapterTests
 
 xcodebuild test \

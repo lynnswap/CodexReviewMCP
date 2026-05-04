@@ -1,5 +1,5 @@
 import Foundation
-import ReviewApplicationDependencies
+import ReviewPorts
 import ReviewDomain
 
 package actor ReviewExecutionCoordinator {

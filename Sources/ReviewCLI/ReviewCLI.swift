@@ -2,7 +2,7 @@ import Foundation
 import Logging
 import ReviewApplication
 import ReviewMCPAdapter
-import ReviewMonitorRuntime
+import ReviewServiceRuntime
 
 public enum ReviewCLI {
     public static func runServer(args: [String], environment: [String: String]) async -> Int32 {

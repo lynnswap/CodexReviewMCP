@@ -32,19 +32,19 @@ flowchart TB
         StoreProtocol["Store protocol<br/>state + intents"]
         AppState["Application state<br/>auth / settings / workspace / job"]
         Workflows["Workflows<br/>ReviewWorkflow / AuthWorkflow / SettingsWorkflow / ServerWorkflow"]
-        Dependencies["ReviewApplicationDependencies<br/>dependency protocol bundle"]
+        Dependencies["ReviewPorts<br/>dependency protocol bundle"]
     end
 
     subgraph Implementations["Protocol implementations"]
         direction LR
-        subgraph Platform["Platform infrastructure"]
+        subgraph Platform["ReviewPlatform services"]
             RuntimeRegistryImpl["RuntimeRegistry implementation"]
             SystemClientImpl["SystemClient implementation"]
             Files["~/.codex_review"]
             Process["process / clock / file system"]
         end
 
-        subgraph AppServer["App-server integration"]
+        subgraph AppServer["App-server adapter"]
             ReviewEngineImpl["ReviewEngine implementation"]
             AuthClientImpl["AuthClient implementation"]
             SettingsRepoImpl["SettingsRepository implementation"]
@@ -75,34 +75,34 @@ flowchart TB
 
 読み方:
 
-- UI layer は `ReviewApplication` の store/state を直接 observe します。ただし `CodexReviewStore` の生成や live dependency wiring は composition root に置き、UI から app-server integration は見ません。
+- UI layer は `ReviewApplication` の store/state を直接 observe します。ただし `CodexReviewStore` の生成や live dependency wiring は composition root に置き、UI から app-server adapter は見ません。
 - MCP / CLI は `ReviewToolProtocol` だけを見ます。tool call の decode/encode と store intent の橋渡しに限定します。
-- `ReviewApplication` の接続は `Store protocol -> state/workflows -> ReviewApplicationDependencies` です。外側から workflow や個別 dependency protocol を直接触らせません。
+- `ReviewApplication` の接続は `Store protocol -> state/workflows -> ReviewPorts` です。外側から workflow や個別 dependency protocol を直接触らせません。
 - workflow は app-server や file system の concrete 実装を知りません。
-- `App-server integration` は app-server 系 protocol の live 実装だけを持ちます。
-- `Platform infrastructure` は runtime registry、clock、process、file system の live 実装だけを持ちます。
-- test 用実装は図に出していません。`ReviewApplicationDependencies` に準拠する実装へ差し替える前提です。
+- `App-server adapter` は app-server 系 protocol の live 実装だけを持ちます。
+- `ReviewPlatform services` は runtime registry、clock、process、file system の live 実装だけを持ちます。
+- test 用実装は図に出していません。`ReviewPorts` に準拠する実装へ差し替える前提です。
 
 ### 対応表
 
 | Area | 主な場所 | 役割 |
 | --- | --- | --- |
-| UI layer | `Sources/CodexReviewUI` | AppKit/SwiftUI の native rendering。`@Observable` state を直接 observe する |
+| UI layer | `Sources/ReviewUI` | AppKit/SwiftUI の native rendering。`@Observable` state を直接 observe する |
 | Interface adapters | `Sources/ReviewMCPAdapter` | MCP / HTTP/SSE / STDIO の入力を application intent に変換する |
 | ReviewApplication | `Sources/ReviewApplication` | `@Observable` state、workflow、dependency boundary を持つ中心層 |
-| ReviewApplicationDependencies | `Sources/ReviewApplicationDependencies` | レイヤー間で受け渡す dependency protocol bundle |
-| ReviewMonitorRuntime | `Sources/ReviewMonitorRuntime` | monitor app / server の live wiring と store factory |
-| App-server integration | `Sources/ReviewAppServerIntegration` | `codex app-server` との protocol、auth、config/read、review/start を扱う |
-| Platform infrastructure | `Sources/ReviewInfrastructure` | discovery、runtime state、account files、clock/process/file system などの live dependency 実装 |
+| ReviewPorts | `Sources/ReviewPorts` | レイヤー間で受け渡す dependency protocol bundle |
+| ReviewServiceRuntime | `Sources/ReviewServiceRuntime` | monitor app / server の live wiring と store factory |
+| App-server adapter | `Sources/ReviewAppServerAdapter` | `codex app-server` との protocol、auth、config/read、review/start を扱う |
+| ReviewPlatform services | `Sources/ReviewPlatform` | discovery、runtime state、account files、clock/process/file system などの live dependency 実装 |
 | ReviewDomain | `Sources/ReviewDomain` | request / response / settings / account key などの pure value |
 | Composition roots | `Sources/ReviewCLI`, `Tools/CodexReviewMonitor` | application、adapter、live implementation を組み立てる |
 
 設計上の注意点:
 
-- 現在、`ReviewApplication` は `ReviewInfrastructure` / `ReviewAppServerIntegration` / `ReviewMCPAdapter` を import しません。
-- 個別 protocol は `ReviewApplicationDependencies` の内側に隠し、レイヤー間では bundle として受け渡します。
-- live wiring は `ReviewMonitorRuntime` と app / executable などの composition root に置きます。
-- UI layer と app-server integration は直接依存しません。
+- 現在、`ReviewApplication` は `ReviewPlatform` / `ReviewAppServerAdapter` / `ReviewMCPAdapter` を import しません。
+- 個別 protocol は `ReviewPorts` の内側に隠し、レイヤー間では bundle として受け渡します。
+- live wiring は `ReviewServiceRuntime` と app / executable などの composition root に置きます。
+- UI layer と app-server adapter は直接依存しません。
 - `ReviewRuntime` は独立 target として残さず、`CodexReviewJob` / `CodexReviewWorkspace` などの observable state は `ReviewApplication` に寄せます。
 - UI は `CodexReviewStore` / `CodexReviewWorkspace` / `CodexReviewJob` を直接 observe します。描画用 ViewModel や mirror state は追加しません。
 
@@ -116,7 +116,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    User["User action"] --> UI["CodexReviewUI"]
+    User["User action"] --> UI["ReviewUI"]
     MCPClient["MCP client"] --> MCP["ReviewMCPAdapter"]
     CLIUser["CLI invocation"] --> CLI["ReviewCLI"]
 
@@ -139,7 +139,7 @@ flowchart TB
     Store["CodexReviewStore<br/>source of truth"]
     State["Observable state<br/>auth / settings / workspace / job"]
     Workflows["Workflows<br/>ReviewWorkflow / AuthWorkflow / SettingsWorkflow / ServerWorkflow"]
-    Dependencies["ReviewApplicationDependencies<br/>dependency bundle"]
+    Dependencies["ReviewPorts<br/>dependency bundle"]
 
     Store --> State
     Store --> Workflows
@@ -148,20 +148,20 @@ flowchart TB
 
 ### 外部連携
 
-この図の点線は `ReviewApplicationDependencies` に対する live 実装の提供関係です。
+この図の点線は `ReviewPorts` に対する live 実装の提供関係です。
 
 ```mermaid
 flowchart LR
-    Dependencies["ReviewApplicationDependencies"]
-    AppServerIntegration["App-server integration<br/>live app-server dependency implementations"]
-    PlatformInfra["Platform infrastructure<br/>live platform dependency implementations"]
+    Dependencies["ReviewPorts"]
+    AppServerAdapter["App-server adapter<br/>live app-server dependency implementations"]
+    PlatformServices["ReviewPlatform services<br/>live platform dependency implementations"]
     AppServer["codex app-server"]
     Files["~/.codex_review"]
 
-    AppServerIntegration -.->|implements| Dependencies
-    PlatformInfra -.->|implements| Dependencies
-    AppServerIntegration --> AppServer
-    PlatformInfra --> Files
+    AppServerAdapter -.->|implements| Dependencies
+    PlatformServices -.->|implements| Dependencies
+    AppServerAdapter --> AppServer
+    PlatformServices --> Files
 ```
 
 ## Swift Package ターゲット依存
@@ -170,34 +170,34 @@ flowchart LR
 
 ### 実装フェーズ上の注意
 
-`ReviewApplication` から live implementation target への import は削除済みです。monitor app / server の live wiring は `ReviewMonitorRuntime` に切り出し、`ReviewApplication` は store、state、workflow、preview/testing harness の境界だけを持ちます。
+`ReviewApplication` から live implementation target への import は削除済みです。monitor app / server の live wiring は `ReviewServiceRuntime` に切り出し、`ReviewApplication` は store、state、workflow、preview/testing harness の境界だけを持ちます。
 
-`ReviewMonitorRuntime` は composition root を補助する target です。`ReviewApplication`, `ReviewMCPAdapter`, `ReviewAppServerIntegration`, `ReviewInfrastructure` を組み立て、live の `CodexReviewStore` を作ります。
+`ReviewServiceRuntime` は composition root を補助する target です。`ReviewApplication`, `ReviewMCPAdapter`, `ReviewAppServerAdapter`, `ReviewPlatform` を組み立て、live の `CodexReviewStore` を作ります。
 
 ### 再編後の target 一覧
 
 | Target | 種別 | 役割 | 依存先 |
 | --- | --- | --- | --- |
 | `ReviewDomain` | library | request / response / settings / account / cancellation などの pure value | なし |
-| `ReviewApplicationDependencies` | library | `ReviewApplication` が外部副作用を呼ぶための dependency protocol bundle | `ReviewDomain` |
-| `ReviewApplication` | library | `CodexReviewStore`、observable state、workflow、preview/testing harness | `ReviewApplicationDependencies`, `ReviewDomain`, `ObservationBridge` |
-| `ReviewMonitorRuntime` | library | monitor app / server の live store factory、server lifecycle、auth orchestration、settings backend wiring | `ReviewApplication`, `ReviewApplicationDependencies`, `ReviewAppServerIntegration`, `ReviewDomain`, `ReviewInfrastructure`, `ReviewMCPAdapter`, `ObservationBridge` |
-| `CodexReviewUI` | library | AppKit / SwiftUI の direct native rendering | `ReviewApplication`, `ReviewDomain`, `ObservationBridge` |
-| `ReviewMCPAdapter` | library | MCP / HTTP/SSE / STDIO の入力を handler closure に変換する adapter | `ReviewDomain`, `ReviewInfrastructure`, `MCP`, `NIO`, `Logging` |
-| `ReviewAppServerIntegration` | library | `codex app-server` と話す live dependency 実装 | `ReviewApplicationDependencies`, `ReviewDomain`, `ReviewInfrastructure`, `MCP`, `TOMLDecoder` |
-| `ReviewInfrastructure` | library | file/process/clock/runtime registry/local config の live dependency 実装 | `ReviewDomain` |
-| `ReviewCLI` | library | CLI / executable の composition root | `ReviewApplication`, `ReviewMCPAdapter`, `ReviewMonitorRuntime`, `ReviewAppServerIntegration`, `ReviewInfrastructure`, `Logging` |
-| `CodexReviewMCPExecutable` | executable | `codex-review-mcp` entry point | `ReviewCLI` |
-| `CodexReviewMCPServerExecutable` | executable | server executable entry point | `ReviewCLI` |
-| `ReviewTestSupport` | test support library | fake dependencies、deterministic clock、test builders | `ReviewApplication`, `ReviewAppServerIntegration`, `ReviewDomain`, `ReviewInfrastructure`, `ReviewMCPAdapter`, `ReviewMonitorRuntime` |
+| `ReviewPorts` | library | `ReviewApplication` が外部副作用を呼ぶための dependency protocol bundle | `ReviewDomain` |
+| `ReviewApplication` | library | `CodexReviewStore`、observable state、workflow、preview/testing harness | `ReviewPorts`, `ReviewDomain`, `ObservationBridge` |
+| `ReviewServiceRuntime` | library | monitor app / server の live store factory、server lifecycle、auth orchestration、settings backend wiring | `ReviewApplication`, `ReviewPorts`, `ReviewAppServerAdapter`, `ReviewDomain`, `ReviewPlatform`, `ReviewMCPAdapter`, `ObservationBridge` |
+| `ReviewUI` | library | AppKit / SwiftUI の direct native rendering | `ReviewApplication`, `ReviewDomain`, `ObservationBridge` |
+| `ReviewMCPAdapter` | library | MCP / HTTP/SSE / STDIO の入力を handler closure に変換する adapter | `ReviewDomain`, `ReviewPlatform`, `MCP`, `NIO`, `Logging` |
+| `ReviewAppServerAdapter` | library | `codex app-server` と話す live dependency 実装 | `ReviewPorts`, `ReviewDomain`, `ReviewPlatform`, `MCP`, `TOMLDecoder` |
+| `ReviewPlatform` | library | file/process/clock/runtime registry/local config の live dependency 実装 | `ReviewDomain` |
+| `ReviewCLI` | library | CLI / executable の composition root | `ReviewApplication`, `ReviewMCPAdapter`, `ReviewServiceRuntime`, `ReviewAppServerAdapter`, `ReviewPlatform`, `Logging` |
+| `CodexReviewMCPCommand` | executable | `codex-review-mcp` entry point | `ReviewCLI` |
+| `CodexReviewMCPServerCommand` | executable | server executable entry point | `ReviewCLI` |
+| `ReviewTestSupport` | test support library | fake dependencies、deterministic clock、test builders | `ReviewApplication`, `ReviewAppServerAdapter`, `ReviewDomain`, `ReviewPlatform`, `ReviewMCPAdapter`, `ReviewServiceRuntime` |
 
-`CodexReviewMonitor` は SwiftPM target ではなく Xcode app target です。現在は `CodexReviewUI`, `ReviewApplication`, `ReviewMonitorRuntime` を直接参照します。
+`CodexReviewMonitor` は SwiftPM target ではなく Xcode app target です。現在は `ReviewUI`, `ReviewApplication`, `ReviewServiceRuntime` を直接参照します。
 
 ### 削除または吸収する target
 
 | 現 target | 方針 |
 | --- | --- |
-| `ReviewInfra` | `ReviewMCPAdapter`, `ReviewAppServerIntegration`, `ReviewInfrastructure` に分割して廃止 |
+| `ReviewInfra` | `ReviewMCPAdapter`, `ReviewAppServerAdapter`, `ReviewPlatform` に分割して廃止 |
 | `ReviewRuntime` | `ReviewApplication` に吸収。job/workspace の observable state は application state として扱う |
 | `ReviewCore` | facade target なので削除 |
 | `ReviewHTTPServer` | facade target なので削除。HTTP/SSE adapter は `ReviewMCPAdapter` へ移す |
@@ -211,22 +211,22 @@ flowchart LR
 flowchart TB
     subgraph Inputs["Input targets"]
         direction LR
-        CodexReviewUI["CodexReviewUI<br/>UI rendering"]
+        ReviewUI["ReviewUI<br/>UI rendering"]
         ReviewMCPAdapter["ReviewMCPAdapter<br/>MCP / HTTP/SSE / STDIO"]
     end
 
     subgraph AppCore["Application core"]
         direction TB
         ReviewApplication["ReviewApplication<br/>store / state / workflows"]
-        ReviewApplicationDependencies["ReviewApplicationDependencies<br/>dependency protocol bundle"]
-        ReviewApplication --> ReviewApplicationDependencies
+        ReviewPorts["ReviewPorts<br/>dependency protocol bundle"]
+        ReviewApplication --> ReviewPorts
     end
 
     subgraph Live["Live implementation targets"]
         direction LR
-        ReviewAppServerIntegration["ReviewAppServerIntegration<br/>codex app-server"]
-        ReviewInfrastructure["ReviewInfrastructure<br/>platform / file / process"]
-        ReviewMonitorRuntime["ReviewMonitorRuntime<br/>monitor / server live wiring"]
+        ReviewAppServerAdapter["ReviewAppServerAdapter<br/>codex app-server"]
+        ReviewPlatform["ReviewPlatform<br/>platform / file / process"]
+        ReviewServiceRuntime["ReviewServiceRuntime<br/>monitor / server live wiring"]
     end
 
     subgraph Roots["Composition roots"]
@@ -235,64 +235,64 @@ flowchart TB
         CodexReviewMonitor["CodexReviewMonitor"]
     end
 
-    CodexReviewUI --> ReviewApplication
+    ReviewUI --> ReviewApplication
 
-    ReviewAppServerIntegration --> ReviewApplicationDependencies
-    ReviewMonitorRuntime --> ReviewApplication
-    ReviewMonitorRuntime --> ReviewMCPAdapter
-    ReviewMonitorRuntime --> ReviewAppServerIntegration
-    ReviewMonitorRuntime --> ReviewInfrastructure
+    ReviewAppServerAdapter --> ReviewPorts
+    ReviewServiceRuntime --> ReviewApplication
+    ReviewServiceRuntime --> ReviewMCPAdapter
+    ReviewServiceRuntime --> ReviewAppServerAdapter
+    ReviewServiceRuntime --> ReviewPlatform
 
     ReviewCLI --> ReviewMCPAdapter
     ReviewCLI --> ReviewApplication
-    ReviewCLI --> ReviewMonitorRuntime
-    ReviewCLI --> ReviewAppServerIntegration
-    ReviewCLI --> ReviewInfrastructure
+    ReviewCLI --> ReviewServiceRuntime
+    ReviewCLI --> ReviewAppServerAdapter
+    ReviewCLI --> ReviewPlatform
 
-    CodexReviewMonitor --> CodexReviewUI
+    CodexReviewMonitor --> ReviewUI
     CodexReviewMonitor --> ReviewApplication
-    CodexReviewMonitor --> ReviewMonitorRuntime
+    CodexReviewMonitor --> ReviewServiceRuntime
 ```
 
-この図では、互換性維持のための facade target は削除済みです。`ReviewApplication -> ReviewMCPAdapter / ReviewAppServerIntegration / ReviewInfrastructure` の edge も削除済みで、live target の合流点は `ReviewMonitorRuntime` と composition root だけです。
+この図では、互換性維持のための facade target は削除済みです。`ReviewApplication -> ReviewMCPAdapter / ReviewAppServerAdapter / ReviewPlatform` の edge も削除済みで、live target の合流点は `ReviewServiceRuntime` と composition root だけです。
 
 補足:
 
-- `ReviewDomain` は shared value target です。`ReviewApplication`, `ReviewApplicationDependencies`, adapter, live implementation から参照されますが、主要な依存を読みやすくするため図では省略しています。
-- `CodexReviewMCPExecutable` と `CodexReviewMCPServerExecutable` はどちらも `ReviewCLI` だけに依存します。
+- `ReviewDomain` は shared value target です。`ReviewApplication`, `ReviewPorts`, adapter, live implementation から参照されますが、主要な依存を読みやすくするため図では省略しています。
+- `CodexReviewMCPCommand` と `CodexReviewMCPServerCommand` はどちらも `ReviewCLI` だけに依存します。
 - `ReviewTestSupport` は production target から参照しません。
 
 ### Composition root wiring
 
 | Composition root | 組み立てる target |
 | --- | --- |
-| `ReviewCLI` | `ReviewApplication`, `ReviewMCPAdapter`, `ReviewMonitorRuntime`, `ReviewAppServerIntegration`, `ReviewInfrastructure` |
-| `CodexReviewMonitor` | `ReviewApplication`, `CodexReviewUI`, `ReviewMonitorRuntime` |
-| `CodexReviewMCPExecutable` | `ReviewCLI` |
-| `CodexReviewMCPServerExecutable` | `ReviewCLI` |
+| `ReviewCLI` | `ReviewApplication`, `ReviewMCPAdapter`, `ReviewServiceRuntime`, `ReviewAppServerAdapter`, `ReviewPlatform` |
+| `CodexReviewMonitor` | `ReviewApplication`, `ReviewUI`, `ReviewServiceRuntime` |
+| `CodexReviewMCPCommand` | `ReviewCLI` |
+| `CodexReviewMCPServerCommand` | `ReviewCLI` |
 
 ## 残りの整理方針
 
 | 現状 | 目標 |
 | --- | --- |
-| `ReviewMonitorRuntime` の source file は責務別に分割済みだが、`ReviewMonitorServerRuntime` / `ReviewMonitorAuthOrchestrator` 自体はまだ大きい | 必要なら class 内の server lifecycle、auth orchestration、settings backend、runtime recycle をさらに小さな runtime component に分ける |
-| UI と app-server 連携が同じ外側の関心として見える | UI layer と app-server integration を分け、composition root でだけ合流させる |
+| `ReviewServiceRuntime` の source file は責務別に分割済みだが、`ReviewMonitorServerRuntime` / `ReviewMonitorAuthOrchestrator` 自体はまだ大きい | 必要なら class 内の server lifecycle、auth orchestration、settings backend、runtime recycle をさらに小さな runtime component に分ける |
+| UI と app-server 連携が同じ外側の関心として見える | UI layer と app-server adapter を分け、composition root でだけ合流させる |
 | `ReviewMonitorServerRuntime` に server/settings/auth/recycle が集中する | runtime target 内で `ServerWorkflow`, `SettingsWorkflow`, `AuthWorkflow`, `ReviewWorkflow` 相当へ分ける |
 | `ReviewCLI` が CLI helper の都合で live targets も直接 import している | composition root として許容しつつ、不要な direct import が増えないように維持する |
 
 ## 実装単位
 
 1. 済: `ReviewDomain` から MCP conversion を外し、wire conversion を adapter 側へ寄せる。
-2. 済: `ReviewApplicationDependencies` を新設し、review execution boundary として `ReviewEngine` を置く。
-3. 済: `ReviewMCPAdapter` / `ReviewAppServerIntegration` / `ReviewInfrastructure` の実体 target を作り、旧 `ReviewInfra` の中身を分ける。
+2. 済: `ReviewPorts` を新設し、review execution boundary として `ReviewEngine` を置く。
+3. 済: `ReviewMCPAdapter` / `ReviewAppServerAdapter` / `ReviewPlatform` の実体 target を作り、旧 `ReviewInfra` の中身を分ける。
 4. 済: `ReviewApp` を `ReviewApplication` へ改名し、`ReviewRuntime` を吸収し、facade target を削除する。
-5. 済: `ReviewMonitorRuntime` を新設し、`ReviewApplication` から live implementation target への import を消す。
-6. 済: `ReviewMonitorRuntime` の巨大 source file を、live store factory、native auth、auth session、coordinator wiring、server runtime、force restart、rate limit support に分割する。
+5. 済: `ReviewServiceRuntime` を新設し、`ReviewApplication` から live implementation target への import を消す。
+6. 済: `ReviewServiceRuntime` の巨大 source file を、live store factory、native auth、auth session、coordinator wiring、server runtime、force restart、rate limit support に分割する。
 7. 任意: `ReviewMonitorServerRuntime` / `ReviewMonitorAuthOrchestrator` 内部の server/settings/auth/recycle を、実装の読みにくさが残る場合にさらに component 化する。
 
 ## review_start の実行フロー
 
-STDIO クライアントの場合も HTTP/SSE クライアントの場合も、MCP adapter は request を store intent に変換します。review 実行の live details は `ReviewApplicationDependencies` の実装側に閉じ込めます。
+STDIO クライアントの場合も HTTP/SSE クライアントの場合も、MCP adapter は request を store intent に変換します。review 実行の live details は `ReviewPorts` の実装側に閉じ込めます。
 
 この sequence の矢印は `review_start` の呼び出しと結果返却の流れです。target import 依存ではありません。
 
@@ -305,8 +305,8 @@ sequenceDiagram
     participant StoreAPI as Store protocol
     participant Store as CodexReviewStore
     participant Workflow as ReviewWorkflow
-    participant Deps as ReviewApplicationDependencies
-    participant Live as App-server integration
+    participant Deps as ReviewPorts
+    participant Live as App-server adapter
     participant Codex as codex app-server
 
     alt HTTP/SSE client
@@ -337,17 +337,17 @@ sequenceDiagram
 
 - `review_start` は最終結果まで待つ primary flow です。
 - `review_read` / `review_list` は `CodexReviewStore` 上の session-scoped job state を読むだけの軽い経路です。
-- `review_cancel` は `ReviewWorkflow` から `ReviewApplicationDependencies` へ cancellation を渡し、live 実装が app-server の interrupt / cleanup details を扱います。
+- `review_cancel` は `ReviewWorkflow` から `ReviewPorts` へ cancellation を渡し、live 実装が app-server の interrupt / cleanup details を扱います。
 
 ## State と Observation の流れ
 
-この図の矢印は状態更新と observation delivery の流れです。`ReviewApplicationDependencies` 以外は target import 依存を表していません。
+この図の矢印は状態更新と observation delivery の流れです。`ReviewPorts` 以外は target import 依存を表していません。
 
 ```mermaid
 flowchart LR
     Intent["User action / MCP tool call"] --> StoreAPI["CodexReviewStore intent methods"]
     StoreAPI --> Workflows["ReviewApplication workflows"]
-    Workflows --> Dependencies["ReviewApplicationDependencies"]
+    Workflows --> Dependencies["ReviewPorts"]
     Dependencies -.->|dependency implementation| Outcome["events / outcomes"]
     Outcome --> Mutation["Mutate @Observable state<br/>serverState, auth, workspaces, jobs"]
     Mutation --> Observation["Observation / ObservationBridge"]
@@ -385,15 +385,15 @@ flowchart TB
     subgraph AppBoundary["Application boundary"]
         StoreState["CodexReviewStore state"]
         WorkflowRules["Workflow rules"]
-        DependencyBundle["ReviewApplicationDependencies<br/>dependency bundle"]
+        DependencyBundle["ReviewPorts<br/>dependency bundle"]
     end
 
-    subgraph AppServerBoundary["App-server integration boundary"]
+    subgraph AppServerBoundary["App-server adapter boundary"]
         AppServerAdapters["App-server dependency implementations"]
         SharedAppServer["codex app-server"]
     end
 
-    subgraph PlatformBoundary["Platform infrastructure boundary"]
+    subgraph PlatformBoundary["ReviewPlatform services boundary"]
         PlatformAdapters["Platform dependency implementations"]
         RuntimeFiles["discovery / runtime-state / account files"]
     end
@@ -414,14 +414,14 @@ flowchart TB
 責務の読み方:
 
 - Input boundary は intent 変換だけを担当します。
-- Application boundary は state と workflow rules を持ち、外部副作用は `ReviewApplicationDependencies` に閉じます。
-- App-server integration boundary は `codex app-server` protocol details を担当します。UI layer からは直接見えません。
-- Platform infrastructure boundary は file/process/clock/runtime registry を担当します。application state を直接所有しません。
+- Application boundary は state と workflow rules を持ち、外部副作用は `ReviewPorts` に閉じます。
+- App-server adapter boundary は `codex app-server` protocol details を担当します。UI layer からは直接見えません。
+- ReviewPlatform services boundary は file/process/clock/runtime registry を担当します。application state を直接所有しません。
 
 ## 見直し時の起点
 
 現状把握から見える、次に議論しやすい論点です。
 
 1. `ReviewMonitorServerRuntime` / `ReviewMonitorAuthOrchestrator` に残る server lifecycle、settings、auth seed、runtime recycle を、必要に応じて小さな runtime component に分けます。
-2. `ReviewApplication -> ReviewMCPAdapter / ReviewAppServerIntegration / ReviewInfrastructure` の target edge は削除済みです。この状態を維持します。
+2. `ReviewApplication -> ReviewMCPAdapter / ReviewAppServerAdapter / ReviewPlatform` の target edge は削除済みです。この状態を維持します。
 3. UI は直接 observation で描画しており、余分な ViewModel 層はありません。この点は維持します。

@@ -1,9 +1,9 @@
 import Foundation
 import ReviewApplication
-package import ReviewAppServerIntegration
-package import ReviewInfrastructure
+package import ReviewAppServerAdapter
+package import ReviewPlatform
 import ReviewMCPAdapter
-import ReviewMonitorRuntime
+import ReviewServiceRuntime
 
 package struct ReviewDependencyTestHome {
     package var homeURL: URL
