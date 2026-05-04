@@ -195,19 +195,19 @@ package enum ReviewHelpCatalog {
     }
 
     package static var reviewStartDescription: String {
-        "Run a repository review through `codex app-server` and wait for the terminal result. Pass `target` as an object with a supported `type`. The returned `model` is the effective resolved review model, and cancelled jobs may include structured `cancellation` metadata. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`."
+        "Run a repository review through `codex app-server` and wait for the terminal result. Pass `target` as an object with a supported `type`. Responses group metadata under `run`, `lifecycle`, and `output`. If you are unsure about the arguments, read `\(toolURI("review_start"))` or browse `resources/templates/list`."
     }
 
     package static var reviewReadDescription: String {
-        "Read the current or final state of a review job owned by the current MCP session. Returns the effective resolved review `model`, ordered `logs`, `rawLogText`, and structured `cancellation` metadata when available. Read `\(toolURI("review_read"))` for details."
+        "Read the current or final state of a review job owned by the current MCP session. Returns `run`, `lifecycle`, `output`, ordered `logs`, and `rawLogText`. Read `\(toolURI("review_read"))` for details."
     }
 
     package static var reviewListDescription: String {
-        "List review jobs owned by the current MCP session. `items[].model` is the effective resolved review model, not the raw thread model, and `items[].cancellation` is present when cancellation metadata is available. Read `\(toolURI("review_list"))` for details."
+        "List review jobs owned by the current MCP session. Each item groups metadata under `run`, `lifecycle`, and `output`. Read `\(toolURI("review_list"))` for details."
     }
 
     package static var reviewCancelDescription: String {
-        "Cancel a running review job owned by the current MCP session. Pass either `jobId` or a selector (`cwd`, `statuses`). Responses include structured `cancellation` metadata when cancellation is requested. Read `\(toolURI("review_cancel"))` for details."
+        "Cancel a running review job owned by the current MCP session. Pass either `jobId` or a selector (`cwd`, `statuses`). Cancellation metadata is returned as `lifecycle.cancellation` when available. Read `\(toolURI("review_cancel"))` for details."
     }
 
     private static var overviewMarkdown: String {
@@ -296,15 +296,11 @@ package enum ReviewHelpCatalog {
             ## Returns
 
             - `jobId`
-            - `threadId`
-            - `turnId`
-            - `model` (effective resolved review model)
-            - `status`
-            - `review`
-            - `cancellation` when cancellation metadata is available
-            - `error`
+            - `run.reviewThreadId`, `run.threadId`, `run.turnId`, `run.model`
+            - `lifecycle.status`, `lifecycle.exitCode`, timing fields, `lifecycle.cancellation`, `lifecycle.errorMessage`
+            - `output.summary`, `output.review`, `output.hasFinalReview`, `output.lastAgentMessage`, `output.reviewResult`
 
-            Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
+            Use `review_read` to fetch ordered `logs` and `rawLogText`.
 
             ReviewMCP resolves the reported review model in this order:
 
@@ -334,7 +330,7 @@ package enum ReviewHelpCatalog {
 
             Use `review_list` first if you do not know the ID.
 
-            The response includes `model`, which is the effective resolved review model. Cancelled jobs include `cancellation.source` and `cancellation.message` when available.
+            The response includes `run.model`, which is the effective resolved review model, and `output.reviewResult`, which contains parsed finding state and title/body/location fields when available. Cancelled jobs include `lifecycle.cancellation.source` and `lifecycle.cancellation.message` when available.
             """
         case "review_list":
             return """
@@ -354,7 +350,7 @@ package enum ReviewHelpCatalog {
             - `statuses`
             - `limit`
 
-            `items[].model` is the effective resolved review model, not the raw thread model. `items[].cancellation` is present when cancellation metadata is available.
+            `items[].run.model` is the effective resolved review model, not the raw thread model. `items[].output.reviewResult` contains parsed finding state and title/body/location fields when available. `items[].lifecycle.cancellation` is present when cancellation metadata is available.
             """
         case "review_cancel":
             return """
@@ -378,7 +374,7 @@ package enum ReviewHelpCatalog {
             }
             ```
 
-            Cancelled responses include `cancellation.source` and `cancellation.message`; UI-triggered cancellations use `source: "userInterface"`.
+            Cancelled responses include `lifecycle.cancellation.source` and `lifecycle.cancellation.message`; UI-triggered cancellations use `source: "userInterface"`.
             """
         default:
             preconditionFailure("Unexpected tool name: \(toolName)")

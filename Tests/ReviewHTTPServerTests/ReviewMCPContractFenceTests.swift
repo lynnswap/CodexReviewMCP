@@ -139,12 +139,16 @@ struct ReviewMCPContractFenceTests {
             startReview: { _ in
                 ReviewReadResult(
                     jobID: "job_1",
-                    threadID: "thr_1",
-                    turnID: "turn_1",
-                    model: "gpt-5.4",
-                    status: ReviewJobState.succeeded,
-                    review: "Looks good",
-                    lastAgentMessage: "",
+                    core: makeCore(
+                        status: .succeeded,
+                        threadID: "thr_1",
+                        turnID: "turn_1",
+                        model: "gpt-5.4",
+                        summary: "Review completed successfully.",
+                        hasFinalReview: true,
+                        lastAgentMessage: "Looks good"
+                    ),
+                    cancellable: false,
                     logs: [],
                     rawLogText: ""
                 )
@@ -167,12 +171,68 @@ struct ReviewMCPContractFenceTests {
         let object = try #require(result.structuredContent?.objectValue)
         #expect(Set(object.keys) == [
             "jobId",
-            "model",
-            "review",
-            "status",
-            "threadId",
-            "turnId",
+            "lifecycle",
+            "output",
+            "run",
         ])
+    }
+
+    @Test func reviewStartStructuredContentIncludesParsedReviewResult() async throws {
+        let dash = "\u{2014}"
+        let reviewResult = ParsedReviewResult.parse(finalReviewText: """
+        The changes introduce one issue.
+
+        Review comment:
+
+        - [P2] Keep result data structured \(dash) /tmp/repo/Sources/App.swift:11-13
+          UI clients should not have to parse rendered review text.
+        """)
+        let handler = makeHandler(
+            startReview: { _ in
+                ReviewReadResult(
+                    jobID: "job_structured",
+                    core: makeCore(
+                        status: .succeeded,
+                        threadID: "thr_structured",
+                        turnID: "turn_structured",
+                        model: "gpt-5.4",
+                        summary: "Review completed successfully.",
+                        hasFinalReview: true,
+                        lastAgentMessage: "review text",
+                        reviewResult: reviewResult
+                    ),
+                    cancellable: false,
+                    logs: [],
+                    rawLogText: ""
+                )
+            }
+        )
+
+        let result = await handler.handle(
+            params: CallTool.Parameters(
+                name: "review_start",
+                arguments: [
+                    "cwd": "/tmp/repo",
+                    "target": [
+                        "type": "uncommittedChanges",
+                    ],
+                ]
+            )
+        )
+
+        let object = try #require(result.structuredContent?.objectValue)
+        let outputObject = try #require(object["output"]?.objectValue)
+        let resultObject = try #require(outputObject["reviewResult"]?.objectValue)
+        #expect(resultObject["state"] == Value.string("hasFindings"))
+        #expect(resultObject["findingCount"] == Value.int(1))
+        let findingObject = try #require(resultObject["findings"]?.arrayValue?.first?.objectValue)
+        #expect(findingObject["title"] == Value.string("[P2] Keep result data structured"))
+        #expect(findingObject["body"] == Value.string("UI clients should not have to parse rendered review text."))
+        #expect(findingObject["priority"] == Value.int(2))
+        let locationObject = try #require(findingObject["location"]?.objectValue)
+        #expect(locationObject["path"] == Value.string("/tmp/repo/Sources/App.swift"))
+        #expect(locationObject["startLine"] == Value.int(11))
+        #expect(locationObject["endLine"] == Value.int(13))
     }
 
     @Test func reviewStartStillAcceptsLegacyStringTargets() async throws {
@@ -182,12 +242,16 @@ struct ReviewMCPContractFenceTests {
                 await recorder.record(request)
                 return ReviewReadResult(
                     jobID: "job_legacy",
-                    threadID: "thr_legacy",
-                    turnID: "turn_legacy",
-                    model: "gpt-5.4",
-                    status: ReviewJobState.succeeded,
-                    review: "Looks good",
-                    lastAgentMessage: "",
+                    core: makeCore(
+                        status: .succeeded,
+                        threadID: "thr_legacy",
+                        turnID: "turn_legacy",
+                        model: "gpt-5.4",
+                        summary: "Review completed successfully.",
+                        hasFinalReview: true,
+                        lastAgentMessage: "Looks good"
+                    ),
+                    cancellable: false,
                     logs: [],
                     rawLogText: ""
                 )
@@ -217,12 +281,17 @@ struct ReviewMCPContractFenceTests {
             readReview: { _ in
                 ReviewReadResult(
                     jobID: "job_2",
-                    threadID: "thr_2",
-                    turnID: "turn_2",
-                    model: "gpt-5.4-mini",
-                    status: ReviewJobState.failed,
-                    review: "",
-                    lastAgentMessage: "last agent message",
+                    core: makeCore(
+                        status: .failed,
+                        threadID: "thr_2",
+                        turnID: "turn_2",
+                        model: "gpt-5.4-mini",
+                        exitCode: 1,
+                        summary: "Review failed.",
+                        lastAgentMessage: "last agent message",
+                        errorMessage: "boom"
+                    ),
+                    cancellable: false,
                     logs: [
                         ReviewLogEntry(
                             id: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!,
@@ -230,8 +299,7 @@ struct ReviewMCPContractFenceTests {
                             text: "Running"
                         ),
                     ],
-                    rawLogText: "raw logs",
-                    error: "boom"
+                    rawLogText: "raw logs"
                 )
             }
         )
@@ -248,16 +316,12 @@ struct ReviewMCPContractFenceTests {
         #expect(result.isError == true)
         let object = try #require(result.structuredContent?.objectValue)
         #expect(Set(object.keys) == [
-            "error",
             "jobId",
-            "lastAgentMessage",
+            "lifecycle",
             "logs",
-            "model",
+            "output",
             "rawLogText",
-            "review",
-            "status",
-            "threadId",
-            "turnId",
+            "run",
         ])
     }
 
@@ -270,14 +334,15 @@ struct ReviewMCPContractFenceTests {
                             jobID: "job_3",
                             cwd: "/tmp/repo",
                             targetSummary: "current changes",
-                            model: "gpt-5.4",
-                            status: ReviewJobState.running,
-                            summary: "Running.",
-                            startedAt: Date(timeIntervalSince1970: 1),
-                            endedAt: nil,
+                            core: makeCore(
+                                status: .running,
+                                threadID: "thr_3",
+                                model: "gpt-5.4",
+                                startedAt: Date(timeIntervalSince1970: 1),
+                                summary: "Running.",
+                                lastAgentMessage: "working"
+                            ),
                             elapsedSeconds: 12,
-                            threadID: "thr_3",
-                            lastAgentMessage: "working",
                             cancellable: true
                         ),
                     ]
@@ -299,18 +364,23 @@ struct ReviewMCPContractFenceTests {
         let firstItem = try #require(object["items"]?.arrayValue?.first?.objectValue)
         #expect(Set(object.keys) == ["items"])
         #expect(Set(firstItem.keys) == [
-            "cancellable",
             "cwd",
-            "elapsedSeconds",
             "jobId",
-            "lastAgentMessage",
-            "model",
-            "startedAt",
-            "status",
-            "summary",
+            "lifecycle",
+            "output",
+            "run",
             "targetSummary",
-            "threadId",
         ])
+        let runObject = try #require(firstItem["run"]?.objectValue)
+        #expect(runObject["threadId"] == Value.string("thr_3"))
+        #expect(runObject["model"] == Value.string("gpt-5.4"))
+        let lifecycleObject = try #require(firstItem["lifecycle"]?.objectValue)
+        #expect(lifecycleObject["status"] == Value.string("running"))
+        #expect(lifecycleObject["elapsedSeconds"] == Value.int(12))
+        #expect(lifecycleObject["cancellable"] == Value.bool(true))
+        let outputObject = try #require(firstItem["output"]?.objectValue)
+        #expect(outputObject["summary"] == Value.string("Running."))
+        #expect(outputObject["lastAgentMessage"] == Value.string("working"))
     }
 
     @Test func reviewCancelStructuredContentKeysRemainStable() async throws {
@@ -318,10 +388,14 @@ struct ReviewMCPContractFenceTests {
             cancelReviewByID: { _, cancellation in
                 ReviewCancelOutcome(
                     jobID: "job_4",
-                    threadID: "thr_4",
                     cancelled: true,
-                    status: ReviewJobState.cancelled,
-                    cancellation: cancellation
+                    core: makeCore(
+                        status: .cancelled,
+                        threadID: "thr_4",
+                        summary: cancellation.message,
+                        cancellation: cancellation,
+                        errorMessage: cancellation.message
+                    )
                 )
             }
         )
@@ -339,15 +413,17 @@ struct ReviewMCPContractFenceTests {
         let object = try #require(result.structuredContent?.objectValue)
         #expect(Set(object.keys) == [
             "cancelled",
-            "cancellation",
             "jobId",
-            "status",
-            "threadId",
-            "turnId",
+            "lifecycle",
+            "output",
+            "run",
         ])
-        #expect(object["turnId"] == Value.null)
+        let lifecycleObject = try #require(object["lifecycle"]?.objectValue)
+        #expect(lifecycleObject["status"] == Value.string("cancelled"))
+        let runObject = try #require(object["run"]?.objectValue)
+        #expect(runObject["threadId"] == Value.string("thr_4"))
         try expectCancellation(
-            object["cancellation"],
+            lifecycleObject["cancellation"],
             source: "mcpClient",
             message: "Cancellation requested by MCP client."
         )
@@ -358,9 +434,12 @@ struct ReviewMCPContractFenceTests {
             cancelReviewByID: { _, _ in
                 ReviewCancelOutcome(
                     jobID: "job_legacy_cancelled",
-                    threadID: "thr_legacy_cancelled",
                     cancelled: true,
-                    status: ReviewJobState.cancelled
+                    core: makeCore(
+                        status: .cancelled,
+                        threadID: "thr_legacy_cancelled",
+                        summary: "Review cancelled."
+                    )
                 )
             }
         )
@@ -385,67 +464,107 @@ struct ReviewMCPContractFenceTests {
         #expect(Set(object.keys) == [
             "cancelled",
             "jobId",
-            "status",
-            "threadId",
-            "turnId",
+            "lifecycle",
+            "output",
+            "run",
         ])
-        #expect(object["turnId"] == Value.null)
     }
 
     @Test func cancelledReviewStructuredContentIncludesCancellationMetadata() async throws {
         let cancellation = ReviewCancellation.userInterface()
         let startResult = ReviewReadResult(
             jobID: "job_start_cancelled",
-            status: .cancelled,
-            review: cancellation.message,
-            lastAgentMessage: "",
+            core: makeCore(
+                status: .cancelled,
+                summary: cancellation.message,
+                cancellation: cancellation,
+                errorMessage: cancellation.message
+            ),
+            cancellable: false,
             logs: [],
-            rawLogText: "",
-            cancellation: cancellation,
-            error: cancellation.message
+            rawLogText: ""
         ).structuredContentForStart()
         let readResult = ReviewReadResult(
             jobID: "job_read_cancelled",
-            status: .cancelled,
-            review: cancellation.message,
-            lastAgentMessage: "",
+            core: makeCore(
+                status: .cancelled,
+                summary: cancellation.message,
+                cancellation: cancellation,
+                errorMessage: cancellation.message
+            ),
+            cancellable: false,
             logs: [],
-            rawLogText: "",
-            cancellation: cancellation,
-            error: cancellation.message
+            rawLogText: ""
         ).structuredContentForRead()
         let listResult = ReviewJobListItem(
             jobID: "job_list_cancelled",
             cwd: "/tmp/repo",
             targetSummary: "current changes",
-            model: nil,
-            status: .cancelled,
-            summary: cancellation.message,
-            startedAt: nil,
-            endedAt: nil,
+            core: makeCore(
+                status: .cancelled,
+                summary: cancellation.message,
+                cancellation: cancellation,
+                errorMessage: cancellation.message
+            ),
             elapsedSeconds: nil,
-            threadID: nil,
-            lastAgentMessage: "",
-            cancellable: false,
-            cancellation: cancellation
+            cancellable: false
         ).structuredContent()
 
         try expectCancellation(
-            startResult.objectValue?["cancellation"],
+            startResult.objectValue?["lifecycle"]?.objectValue?["cancellation"],
             source: "userInterface",
             message: cancellation.message
         )
         try expectCancellation(
-            readResult.objectValue?["cancellation"],
+            readResult.objectValue?["lifecycle"]?.objectValue?["cancellation"],
             source: "userInterface",
             message: cancellation.message
         )
         try expectCancellation(
-            listResult.objectValue?["cancellation"],
+            listResult.objectValue?["lifecycle"]?.objectValue?["cancellation"],
             source: "userInterface",
             message: cancellation.message
         )
     }
+}
+
+private func makeCore(
+    status: ReviewJobState,
+    threadID: String? = nil,
+    turnID: String? = nil,
+    model: String? = nil,
+    exitCode: Int? = nil,
+    startedAt: Date? = nil,
+    endedAt: Date? = nil,
+    summary: String,
+    hasFinalReview: Bool = false,
+    lastAgentMessage: String? = nil,
+    reviewResult: ParsedReviewResult? = nil,
+    cancellation: ReviewCancellation? = nil,
+    errorMessage: String? = nil
+) -> ReviewJobCore {
+    ReviewJobCore(
+        run: .init(
+            reviewThreadID: threadID,
+            threadID: threadID,
+            turnID: turnID,
+            model: model
+        ),
+        lifecycle: .init(
+            status: status,
+            exitCode: exitCode,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            cancellation: cancellation,
+            errorMessage: errorMessage
+        ),
+        output: .init(
+            summary: summary,
+            hasFinalReview: hasFinalReview,
+            lastAgentMessage: lastAgentMessage,
+            reviewResult: reviewResult
+        )
+    )
 }
 
 private func makeHandler(

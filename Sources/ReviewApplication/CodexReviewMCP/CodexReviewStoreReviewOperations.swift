@@ -21,16 +21,11 @@ extension CodexReviewStore: ReviewStoreProtocol {
         let job = try authorizedJob(jobID: jobID, sessionID: sessionID)
         return ReviewReadResult(
             jobID: job.id,
-            threadID: job.threadID,
-            turnID: job.turnID,
-            model: job.model,
-            status: job.status.state,
-            review: job.isTerminal ? job.reviewText : (job.reviewText.nilIfEmpty ?? job.lastAgentMessage ?? ""),
-            lastAgentMessage: job.lastAgentMessage ?? "",
+            core: job.core,
+            elapsedSeconds: elapsedSeconds(for: job),
+            cancellable: job.isTerminal == false && job.cancellationRequested == false,
             logs: job.logEntries,
-            rawLogText: job.rawLogText,
-            cancellation: job.cancellation,
-            error: job.errorMessage
+            rawLogText: job.rawLogText
         )
     }
 
@@ -105,11 +100,11 @@ extension CodexReviewStore: ReviewStoreProtocol {
         startedAt: Date
     ) {
         updateJob(id: jobID) { job in
-            job.startedAt = startedAt
+            job.core.lifecycle.startedAt = startedAt
             job.cancellationRequested = false
-            if job.status == .queued {
-                job.status = .running
-                job.summary = "Running."
+            if job.core.lifecycle.status == .queued {
+                job.core.lifecycle.status = .running
+                job.core.output.summary = "Running."
             }
         }
     }
@@ -121,16 +116,16 @@ extension CodexReviewStore: ReviewStoreProtocol {
                 return
             }
             updateJob(id: jobID) { job in
-                job.summary = message
+                job.core.output.summary = message
                 job.appendLogEntry(.init(kind: .progress, text: message))
             }
         case .reviewStarted(let reviewThreadID, let threadID, let turnID, let model):
             updateJob(id: jobID) { job in
-                job.reviewThreadID = reviewThreadID
-                job.threadID = threadID
-                job.turnID = turnID
-                job.model = model
-                job.summary = "Review started: \(reviewThreadID)"
+                job.core.run.reviewThreadID = reviewThreadID
+                job.core.run.threadID = threadID
+                job.core.run.turnID = turnID
+                job.core.run.model = model
+                job.core.output.summary = "Review started: \(reviewThreadID)"
             }
         case .logEntry(let entry):
             updateJob(id: jobID) { job in
@@ -142,56 +137,60 @@ extension CodexReviewStore: ReviewStoreProtocol {
             }
         case .agentMessage(let message):
             updateJob(id: jobID) { job in
-                job.lastAgentMessage = message
+                job.core.output.lastAgentMessage = message
             }
         case .failed(let message):
             updateJob(id: jobID) { job in
-                job.errorMessage = message.nilIfEmpty
+                job.core.lifecycle.errorMessage = message.nilIfEmpty
             }
         }
     }
 
     package func completeReview(jobID: String, outcome: ReviewProcessOutcome) {
         updateJob(id: jobID) { job in
-            job.status = .init(state: outcome.state)
+            var core = outcome.core
             job.cancellationRequested = false
-            job.summary = if outcome.state == .cancelled {
-                job.cancellation?.message ?? outcome.errorMessage?.nilIfEmpty ?? outcome.summary
+            core.output.summary = if core.lifecycle.status == .cancelled {
+                job.core.lifecycle.cancellation?.message
+                    ?? core.lifecycle.errorMessage?.nilIfEmpty
+                    ?? core.output.summary
             } else {
-                outcome.summary
+                core.output.summary
             }
-            job.model = outcome.model ?? job.model
-            job.hasFinalReview = outcome.hasFinalReview
-            if outcome.hasFinalReview {
-                job.lastAgentMessage = outcome.content.nilIfEmpty
-                    ?? outcome.lastAgentMessage.nilIfEmpty
-                    ?? job.lastAgentMessage
-            } else if outcome.state == .cancelled {
+            core.run.model = core.run.model ?? job.core.run.model
+            if core.output.hasFinalReview {
+                core.output.lastAgentMessage = outcome.content.nilIfEmpty
+                    ?? core.output.lastAgentMessage?.nilIfEmpty
+                    ?? job.core.output.lastAgentMessage
+            } else if core.lifecycle.status == .cancelled {
                 let preservedContent = outcome.content.nilIfEmpty
-                let preservedMessage = outcome.lastAgentMessage.nilIfEmpty
-                let cancellationMessage = outcome.errorMessage?.nilIfEmpty
+                let preservedMessage = core.output.lastAgentMessage?.nilIfEmpty
+                let cancellationMessage = core.lifecycle.errorMessage?.nilIfEmpty
                 if let preservedContent,
                    preservedContent != cancellationMessage
                 {
-                    job.lastAgentMessage = preservedContent
+                    core.output.lastAgentMessage = preservedContent
                 } else if let preservedMessage,
                           preservedMessage != cancellationMessage
                 {
-                    job.lastAgentMessage = preservedMessage
+                    core.output.lastAgentMessage = preservedMessage
                 }
             } else {
-                job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
+                core.output.lastAgentMessage = core.output.lastAgentMessage?.nilIfEmpty
+                    ?? job.core.output.lastAgentMessage
             }
-            job.errorMessage = reviewAuthDisplayMessage(from: outcome.errorMessage)
-            if outcome.state != .cancelled {
-                job.cancellation = nil
+            core.lifecycle.errorMessage = reviewAuthDisplayMessage(from: core.lifecycle.errorMessage)
+            core.output.reviewResult = core.output.reviewResult
+                ?? (core.output.hasFinalReview ? nil : ParsedReviewResult.notAvailable())
+            if core.lifecycle.status == .cancelled {
+                core.lifecycle.cancellation = job.core.lifecycle.cancellation ?? core.lifecycle.cancellation
+            } else {
+                core.lifecycle.cancellation = nil
             }
-            job.reviewThreadID = outcome.reviewThreadID ?? job.reviewThreadID
-            job.threadID = outcome.threadID ?? job.threadID
-            job.turnID = outcome.turnID ?? job.turnID
-            job.startedAt = outcome.startedAt
-            job.endedAt = outcome.endedAt
-            job.exitCode = outcome.exitCode
+            core.run.reviewThreadID = core.run.reviewThreadID ?? job.core.run.reviewThreadID
+            core.run.threadID = core.run.threadID ?? job.core.run.threadID
+            core.run.turnID = core.run.turnID ?? job.core.run.turnID
+            job.core = core
         }
     }
 
@@ -204,13 +203,14 @@ extension CodexReviewStore: ReviewStoreProtocol {
     ) {
         updateJob(id: jobID) { job in
             job.cancellationRequested = false
-            job.cancellation = nil
-            job.status = .failed
-            job.summary = "Failed to start review."
-            job.model = model ?? job.model
-            job.errorMessage = reviewAuthDisplayMessage(from: message)
-            job.startedAt = startedAt
-            job.endedAt = endedAt
+            job.core.lifecycle.cancellation = nil
+            job.core.lifecycle.status = .failed
+            job.core.output.summary = "Failed to start review."
+            job.core.run.model = model ?? job.core.run.model
+            job.core.lifecycle.errorMessage = reviewAuthDisplayMessage(from: message)
+            job.core.output.reviewResult = ParsedReviewResult.notAvailable()
+            job.core.lifecycle.startedAt = startedAt
+            job.core.lifecycle.endedAt = endedAt
             if message.isEmpty == false {
                 job.appendLogEntry(.init(kind: .error, text: message))
             }
@@ -226,16 +226,18 @@ extension CodexReviewStore: ReviewStoreProtocol {
     ) {
         updateJob(id: jobID) { job in
             job.cancellationRequested = false
-            job.cancellation = cancellation
-            job.status = .cancelled
-            job.summary = cancellation.message
-            job.model = model ?? job.model
-            job.hasFinalReview = false
-            job.errorMessage = cancellation.message.nilIfEmpty ?? job.errorMessage
-            if job.startedAt == nil {
-                job.startedAt = startedAt
+            job.core.lifecycle.cancellation = cancellation
+            job.core.lifecycle.status = .cancelled
+            job.core.output.summary = cancellation.message
+            job.core.run.model = model ?? job.core.run.model
+            job.core.output.hasFinalReview = false
+            job.core.output.reviewResult = ParsedReviewResult.notAvailable()
+            job.core.lifecycle.errorMessage = cancellation.message.nilIfEmpty
+                ?? job.core.lifecycle.errorMessage
+            if job.core.lifecycle.startedAt == nil {
+                job.core.lifecycle.startedAt = startedAt
             }
-            job.endedAt = endedAt
+            job.core.lifecycle.endedAt = endedAt
         }
     }
 
@@ -256,40 +258,40 @@ extension CodexReviewStore: ReviewStoreProtocol {
             throw ReviewError.accessDenied("Job \(jobID) belongs to another MCP session.")
         }
         if job.isTerminal {
-            return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: false)
+            return ReviewCancelResult(jobID: jobID, state: job.core.lifecycle.status, signalled: false)
         }
 
         if job.cancellationRequested {
-            return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: true)
+            return ReviewCancelResult(jobID: jobID, state: job.core.lifecycle.status, signalled: true)
         }
 
-        switch job.status {
+        switch job.core.lifecycle.status {
         case .queued:
             let endedAt = coreDependencies.dateNow()
             updateJob(id: jobID) { job in
                 job.cancellationRequested = false
-                job.cancellation = cancellation
-                job.status = .cancelled
-                job.summary = cancellation.message
-                job.hasFinalReview = false
+                job.core.lifecycle.cancellation = cancellation
+                job.core.lifecycle.status = .cancelled
+                job.core.output.summary = cancellation.message
+                job.core.output.hasFinalReview = false
                 if cancellation.message.isEmpty == false {
-                    job.errorMessage = cancellation.message
+                    job.core.lifecycle.errorMessage = cancellation.message
                 }
-                job.endedAt = endedAt
+                job.core.lifecycle.endedAt = endedAt
             }
             return ReviewCancelResult(jobID: jobID, state: .cancelled, signalled: false)
         case .running:
             let pendingMessage = "Cancellation requested."
             updateJob(id: jobID) { job in
                 job.cancellationRequested = true
-                job.cancellation = cancellation
-                job.summary = pendingMessage
-                job.hasFinalReview = false
-                job.errorMessage = pendingMessage
+                job.core.lifecycle.cancellation = cancellation
+                job.core.output.summary = pendingMessage
+                job.core.output.hasFinalReview = false
+                job.core.lifecycle.errorMessage = pendingMessage
             }
             return ReviewCancelResult(jobID: jobID, state: .running, signalled: true)
         case .succeeded, .failed, .cancelled:
-            return ReviewCancelResult(jobID: jobID, state: job.status.state, signalled: false)
+            return ReviewCancelResult(jobID: jobID, state: job.core.lifecycle.status, signalled: false)
         }
     }
 
@@ -323,8 +325,11 @@ extension CodexReviewStore: ReviewStoreProtocol {
         guard job.sessionID == sessionID else {
             return .cancelled(.system(message: defaultReason))
         }
-        if job.status == .cancelled || job.cancellationRequested {
-            return .cancelled(job.cancellation ?? .system(message: job.errorMessage?.nilIfEmpty ?? defaultReason))
+        if job.core.lifecycle.status == .cancelled || job.cancellationRequested {
+            return .cancelled(
+                job.core.lifecycle.cancellation
+                    ?? .system(message: job.core.lifecycle.errorMessage?.nilIfEmpty ?? defaultReason)
+            )
         }
         return closedSessionReason
     }
@@ -401,21 +406,14 @@ extension CodexReviewStore: ReviewStoreProtocol {
             id: queued.jobID,
             sessionID: queued.sessionID,
             cwd: queued.request.cwd,
-            reviewThreadID: nil,
             targetSummary: queued.request.targetSummary,
-            model: queued.initialModel,
-            threadID: nil,
-            turnID: nil,
-            status: .queued,
+            core: ReviewJobCore(
+                run: .init(model: queued.initialModel),
+                lifecycle: .init(status: .queued),
+                output: .init(summary: "Queued.")
+            ),
             cancellationRequested: false,
-            startedAt: nil,
-            endedAt: nil,
-            summary: "Queued.",
-            hasFinalReview: false,
-            lastAgentMessage: nil,
-            logEntries: [],
-            errorMessage: nil,
-            exitCode: nil
+            logEntries: []
         )
 
         if let workspaceIndex = workspaces.firstIndex(where: { $0.cwd == queued.request.cwd }) {
@@ -469,7 +467,7 @@ extension CodexReviewStore: ReviewStoreProtocol {
                 if let normalizedCWD, job.cwd != normalizedCWD {
                     continue
                 }
-                if let allowedStatuses, allowedStatuses.contains(job.status.state) == false {
+                if let allowedStatuses, allowedStatuses.contains(job.core.lifecycle.status) == false {
                     continue
                 }
                 matches.append(job)
@@ -504,24 +502,19 @@ extension CodexReviewStore: ReviewStoreProtocol {
             jobID: job.id,
             cwd: job.cwd,
             targetSummary: job.targetSummary,
-            model: job.model,
-            status: job.status.state,
-            summary: job.summary,
-            startedAt: job.startedAt,
-            endedAt: job.endedAt,
+            core: job.core,
             elapsedSeconds: elapsedSeconds(for: job),
-            threadID: job.threadID,
-            lastAgentMessage: job.lastAgentMessage ?? "",
-            cancellable: job.isTerminal == false && job.cancellationRequested == false,
-            cancellation: job.cancellation
+            cancellable: job.isTerminal == false && job.cancellationRequested == false
         )
     }
 
     private func elapsedSeconds(for job: CodexReviewJob) -> Int? {
-        guard let startedAt = job.startedAt else {
+        guard let startedAt = job.core.lifecycle.startedAt else {
             return nil
         }
-        let endedAt = job.endedAt ?? (job.isTerminal ? coreDependencies.dateNow() : nil) ?? coreDependencies.dateNow()
+        let endedAt = job.core.lifecycle.endedAt
+            ?? (job.isTerminal ? coreDependencies.dateNow() : nil)
+            ?? coreDependencies.dateNow()
         return Int(endedAt.timeIntervalSince(startedAt))
     }
 

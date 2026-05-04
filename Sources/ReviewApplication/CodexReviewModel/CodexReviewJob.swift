@@ -444,19 +444,9 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public nonisolated let id: String
     public let sessionID: String
     public let cwd: String
-    public var reviewThreadID: String?
     public var targetSummary: String
-    public var model: String?
-    public var threadID: String?
-    public var turnID: String?
-    public var status: CodexReviewJobStatus
+    public var core: ReviewJobCore
     public var cancellationRequested: Bool
-    public var cancellation: ReviewCancellation?
-    public var startedAt: Date?
-    public var endedAt: Date?
-    public var summary: String
-    public var hasFinalReview: Bool
-    public var lastAgentMessage: String?
     public private(set) var logEntries: [ReviewLogEntry]
     public private(set) var logText: String
     public private(set) var reviewMonitorLogText: String
@@ -464,14 +454,12 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public private(set) var reviewOutputText: String
     public private(set) var activityLogText: String
     public private(set) var diagnosticText: String
-    public var errorMessage: String?
-    public var exitCode: Int?
     package private(set) var cappedLogBytes: Int
     package private(set) var reviewMonitorRevision: UInt64
     package private(set) var lastMonitorUpdate: ReviewMonitorLogUpdate
 
     public var isTerminal: Bool {
-        status.isTerminal
+        core.isTerminal
     }
 
     public var displayTitle: String {
@@ -479,65 +467,25 @@ public final class CodexReviewJob: Identifiable, Hashable {
     }
 
     public var reviewText: String {
-        if status == .cancelled {
-            if hasFinalReview,
-               let lastAgentMessage,
-               lastAgentMessage.isEmpty == false
-            {
-                return lastAgentMessage
-            }
-            if let errorMessage, errorMessage.isEmpty == false {
-                return errorMessage
-            }
-            return summary
-        }
-        if let lastAgentMessage, lastAgentMessage.isEmpty == false {
-            return lastAgentMessage
-        }
-        if let errorMessage, errorMessage.isEmpty == false {
-            return errorMessage
-        }
-        return summary
+        core.reviewText
     }
 
     package init(
         id: String,
         sessionID: String,
         cwd: String,
-        reviewThreadID: String?,
         targetSummary: String,
-        model: String?,
-        threadID: String?,
-        turnID: String?,
-        status: CodexReviewJobStatus,
+        core: ReviewJobCore,
         cancellationRequested: Bool = false,
-        cancellation: ReviewCancellation? = nil,
-        startedAt: Date?,
-        endedAt: Date?,
-        summary: String,
-        hasFinalReview: Bool,
-        lastAgentMessage: String?,
-        logEntries: [ReviewLogEntry],
-        errorMessage: String?,
-        exitCode: Int?
+        logEntries: [ReviewLogEntry]
     ) {
         let initialState = Self.trimmedLogState(entries: logEntries)
         self.id = id
         self.sessionID = sessionID
         self.cwd = cwd
-        self.reviewThreadID = reviewThreadID
         self.targetSummary = targetSummary
-        self.model = model
-        self.threadID = threadID
-        self.turnID = turnID
-        self.status = status
+        self.core = core
         self.cancellationRequested = cancellationRequested
-        self.cancellation = cancellation
-        self.startedAt = startedAt
-        self.endedAt = endedAt
-        self.summary = summary
-        self.hasFinalReview = hasFinalReview
-        self.lastAgentMessage = lastAgentMessage
         self.logState = initialState
         self.logEntries = initialState.entries
         self.logText = initialState.logText
@@ -546,8 +494,6 @@ public final class CodexReviewJob: Identifiable, Hashable {
         self.reviewOutputText = initialState.reviewOutputText
         self.activityLogText = initialState.activityLogText
         self.diagnosticText = initialState.diagnosticText
-        self.errorMessage = errorMessage
-        self.exitCode = exitCode
         self.cappedLogBytes = initialState.cappedBytes
         self.reviewMonitorRevision = 0
         self.lastMonitorUpdate = .reload(initialState.reviewMonitorLogText)

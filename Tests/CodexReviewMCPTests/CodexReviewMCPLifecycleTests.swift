@@ -53,7 +53,7 @@ struct CodexReviewMCPLifecycleTests {
         let snapshot = try readStoreDiagnosticsSnapshot(from: diagnosticsURL)
         let job = try #require(snapshot.jobs.first)
 
-        #expect(result.status == .succeeded)
+        #expect(result.core.lifecycle.status == .succeeded)
         #expect(snapshot.serverState == "Running")
         #expect(snapshot.failureMessage == nil)
         #expect(snapshot.serverURL == store.serverURL?.absoluteString)
@@ -310,15 +310,15 @@ struct CodexReviewMCPLifecycleTests {
             )
             let cancelledResult = try await sessionAReview.value
 
-            #expect(cancelledResult.status == .cancelled)
-            #expect(cancelledResult.cancellation?.source == .userInterface)
-            #expect(cancelledResult.error == "Cancelled by user from Review Monitor.")
+            #expect(cancelledResult.core.lifecycle.status == .cancelled)
+            #expect(cancelledResult.core.lifecycle.cancellation?.source == .userInterface)
+            #expect(cancelledResult.core.lifecycle.errorMessage == "Cancelled by user from Review Monitor.")
             let rereadCancelledResult = try store.readReview(
                 jobID: cancelledResult.jobID,
                 sessionID: "session-a"
             )
-            #expect(rereadCancelledResult.cancellation?.source == .userInterface)
-            #expect(rereadCancelledResult.review == "Cancelled by user from Review Monitor.")
+            #expect(rereadCancelledResult.core.lifecycle.cancellation?.source == .userInterface)
+            #expect(rereadCancelledResult.core.reviewText == "Cancelled by user from Review Monitor.")
             #expect(await sessionATransport.isClosed())
             #expect(await sessionBTransport.isClosed() == false)
             #expect(await manager.shutdownCount() == 0)
@@ -326,7 +326,7 @@ struct CodexReviewMCPLifecycleTests {
 
             await store.closeSession("session-b", reason: "test cleanup")
             let sessionBResult = try await sessionBReview.value
-            #expect(sessionBResult.status == .cancelled)
+            #expect(sessionBResult.core.lifecycle.status == .cancelled)
         } cleanup: {
             await store.stop()
         }
@@ -369,7 +369,7 @@ struct CodexReviewMCPLifecycleTests {
 
             let result = try await reviewTask.value
             let transport = try #require(await manager.createdTransport())
-            #expect(result.status == .cancelled)
+            #expect(result.core.lifecycle.status == .cancelled)
             #expect(await transport.isClosed())
         } cleanup: {
             await store.stop()
@@ -405,7 +405,7 @@ struct CodexReviewMCPLifecycleTests {
             try await waitForMainActorCondition {
                 store.workspaces.contains { workspace in
                     workspace.jobs.contains { job in
-                        job.sessionID == "session-bootstrap" && job.status == .running
+                        job.sessionID == "session-bootstrap" && job.core.lifecycle.status == .running
                     }
                 }
             }
@@ -421,8 +421,8 @@ struct CodexReviewMCPLifecycleTests {
                 try await reviewTask.value
             }
 
-            #expect(result.status == .cancelled)
-            #expect(result.error == "Cancellation requested.")
+            #expect(result.core.lifecycle.status == .cancelled)
+            #expect(result.core.lifecycle.errorMessage == "Cancellation requested.")
             #expect(await transport.isClosed())
         } cleanup: {
             await store.stop()
@@ -465,10 +465,10 @@ struct CodexReviewMCPLifecycleTests {
             try await store.cancelAllRunningJobs(reason: "Account change requested.")
         }
 
-        #expect(failedJob.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(failedJob.errorMessage == "Cancellation failed.")
-        #expect(cancelledJob.status == .cancelled)
-        #expect(cancelledJob.errorMessage == "Account change requested.")
+        #expect(failedJob.core.output.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(failedJob.core.lifecycle.errorMessage == "Cancellation failed.")
+        #expect(cancelledJob.core.lifecycle.status == .cancelled)
+        #expect(cancelledJob.core.lifecycle.errorMessage == "Account change requested.")
     }
 
     @Test func cancelAllRunningJobsNormalizesEmptyReason() async throws {
@@ -489,11 +489,11 @@ struct CodexReviewMCPLifecycleTests {
 
         try await store.cancelAllRunningJobs(reason: "")
 
-        #expect(job.status == .cancelled)
-        #expect(job.cancellation?.source == .system)
-        #expect(job.cancellation?.message == "Cancellation requested.")
-        #expect(job.summary == "Cancellation requested.")
-        #expect(job.errorMessage == "Cancellation requested.")
+        #expect(job.core.lifecycle.status == .cancelled)
+        #expect(job.core.lifecycle.cancellation?.source == .system)
+        #expect(job.core.lifecycle.cancellation?.message == "Cancellation requested.")
+        #expect(job.core.output.summary == "Cancellation requested.")
+        #expect(job.core.lifecycle.errorMessage == "Cancellation requested.")
     }
 
     @Test func terminateAllRunningJobsLocallyFinalizesCancellationRequestedJobs() {
@@ -506,7 +506,7 @@ struct CodexReviewMCPLifecycleTests {
             summary: "Cancellation requested."
         )
         requestedJob.cancellationRequested = true
-        requestedJob.errorMessage = "Account change requested."
+        requestedJob.core.lifecycle.errorMessage = "Account change requested."
         let failedJob = CodexReviewJob.makeForTesting(
             id: "job-failed",
             sessionID: "session-b",
@@ -526,17 +526,17 @@ struct CodexReviewMCPLifecycleTests {
             failureMessage: "Cancellation failed."
         )
 
-        #expect(requestedJob.status == .failed)
+        #expect(requestedJob.core.lifecycle.status == .failed)
         #expect(requestedJob.cancellationRequested == false)
-        #expect(requestedJob.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(requestedJob.errorMessage == "Cancellation failed.")
-        #expect(requestedJob.endedAt != nil)
+        #expect(requestedJob.core.output.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(requestedJob.core.lifecycle.errorMessage == "Cancellation failed.")
+        #expect(requestedJob.core.lifecycle.endedAt != nil)
 
-        #expect(failedJob.status == .failed)
+        #expect(failedJob.core.lifecycle.status == .failed)
         #expect(failedJob.cancellationRequested == false)
-        #expect(failedJob.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(failedJob.errorMessage == "Cancellation failed.")
-        #expect(failedJob.endedAt != nil)
+        #expect(failedJob.core.output.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(failedJob.core.lifecycle.errorMessage == "Cancellation failed.")
+        #expect(failedJob.core.lifecycle.endedAt != nil)
     }
 
 }

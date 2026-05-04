@@ -32,13 +32,26 @@ Key inputs:
 Returns:
 
 - `jobId`
-- `threadId` when available
-- `turnId`
-- `model` effective resolved review model
-- `status`
-- `review`
-- `cancellation` when cancellation metadata is available
-- `error`
+- `run`
+  - `reviewThreadId`
+  - `threadId`
+  - `turnId`
+  - `model` effective resolved review model
+- `lifecycle`
+  - `status`
+  - `exitCode`
+  - `startedAt`
+  - `endedAt`
+  - `elapsedSeconds`
+  - `cancellable`
+  - `cancellation` when cancellation metadata is available
+  - `errorMessage`
+- `output`
+  - `summary`
+  - `review`
+  - `hasFinalReview`
+  - `lastAgentMessage`
+  - `reviewResult` parsed finding state (`hasFindings`, `noFindings`, or `unknown`) with title/body/location fields when available
 
 Notes:
 
@@ -48,7 +61,7 @@ Notes:
   2. the effective dedicated Codex config in `~/.codex_review/config.toml` `review_model`
   3. backend-reported `thread/start.model`
   4. the effective dedicated Codex config in `~/.codex_review/config.toml` `model` only as a pre-thread-start fallback when the backend does not report a model
-- Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
+- Use `review_read` to fetch ordered `logs` and `rawLogText`.
 
 If you are unsure how to build the `target` object, read:
 
@@ -66,16 +79,11 @@ This is optional for normal clients because `review_start` already returns the f
 Returns:
 
 - `jobId`
-- `threadId` when available
-- `turnId`
-- `model` effective resolved review model
-- `status`
-- `review`
+- `run`
+- `lifecycle`
+- `output`
 - `logs`
 - `rawLogText`
-- `lastAgentMessage`
-- `cancellation` when cancellation metadata is available
-- `error`
 
 ### `review_list`
 
@@ -93,16 +101,9 @@ Returns:
   - `jobId`
   - `cwd`
   - `targetSummary`
-  - `model` effective resolved review model
-  - `status`
-  - `summary`
-  - `startedAt`
-  - `endedAt`
-  - `elapsedSeconds`
-  - `threadId`
-  - `lastAgentMessage`
-  - `cancellable`
-  - `cancellation` when cancellation metadata is available
+  - `run`
+  - `lifecycle`
+  - `output`
 
 ### `review_cancel`
 
@@ -120,7 +121,7 @@ Notes:
 
 - `cwd` is a search key, not a unique identifier.
 - Without `jobId`, `review_cancel` searches only the current MCP session.
-- Responses include `cancellation.source` and `cancellation.message` when cancellation metadata is available. UI-triggered cancellations use `source: "userInterface"`.
+- Responses include `lifecycle.cancellation.source` and `lifecycle.cancellation.message` when cancellation metadata is available. UI-triggered cancellations use `source: "userInterface"`.
 
 ## Discovery Resources
 

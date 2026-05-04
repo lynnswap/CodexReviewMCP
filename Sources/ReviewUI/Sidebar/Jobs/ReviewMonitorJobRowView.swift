@@ -19,7 +19,7 @@ struct ReviewMonitorJobRowView: View {
                 }
                 .lineLimit(1)
                 HStack{
-                    if let model = job.model{
+                    if let model = job.core.run.model {
                         Text(model)
                     }
                     if let subtitle = subtitleText {
@@ -35,12 +35,12 @@ struct ReviewMonitorJobRowView: View {
             ZStack {
                 Image(systemName: "circle.fill")
                     .foregroundStyle(.clear)
-                if job.status == .running {
+                if job.core.lifecycle.status == .running {
                     ProgressView()
                         .controlSize(.mini)
                 }
             }
-            .animation(.default, value: job.status)
+            .animation(.default, value: job.core.lifecycle.status)
         }
         .transaction(value: job.id) { transaction in
             transaction.disablesAnimations = true
@@ -48,23 +48,23 @@ struct ReviewMonitorJobRowView: View {
     }
 
     private var subtitleText: String? {
-        if job.hasFinalReview,
-           let finalReview = job.lastAgentMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if job.core.output.hasFinalReview,
+           let finalReview = job.core.output.lastAgentMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
            finalReview.isEmpty == false
         {
             return finalReview
         }
-        if job.status == .cancelled {
+        if job.core.lifecycle.status == .cancelled {
             let reviewText = job.reviewText.trimmingCharacters(in: .whitespacesAndNewlines)
             return reviewText.isEmpty ? nil : reviewText
         }
-        if let errorMessage = job.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let errorMessage = job.core.lifecycle.errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
            errorMessage.isEmpty == false
         {
-            let summary = job.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = job.core.output.summary.trimmingCharacters(in: .whitespacesAndNewlines)
             return summary.isEmpty ? errorMessage : summary
         }
-        guard let lastAgentMessage = job.lastAgentMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let lastAgentMessage = job.core.output.lastAgentMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
               lastAgentMessage.isEmpty == false
         else {
             return nil
@@ -77,10 +77,10 @@ struct ReviewMonitorJobRowView: View {
 struct TimerLabelView:View{
     var job: CodexReviewJob
     var body:some View{
-        if let startedAt = job.startedAt {
+        if let startedAt = job.core.lifecycle.startedAt {
             Text(
-                timerInterval: startedAt...(job.endedAt ?? .distantFuture),
-                pauseTime: job.endedAt,
+                timerInterval: startedAt...(job.core.lifecycle.endedAt ?? .distantFuture),
+                pauseTime: job.core.lifecycle.endedAt,
                 countsDown: false,
                 showsHours: true
             )
@@ -103,7 +103,7 @@ struct TimerLabelView:View{
     }
 }
 
-extension CodexReviewJobStatus {
+extension ReviewJobState {
     var color: Color {
         switch self {
         case .queued: .gray

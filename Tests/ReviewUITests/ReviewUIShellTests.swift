@@ -964,7 +964,7 @@ struct ReviewUIShellTests {
         let runningJob = try #require(
             store.workspaces
                 .flatMap { $0.jobs }
-                .first(where: { $0.status == .running })
+                .first(where: { $0.core.lifecycle.status == .running })
         )
         let initialRevision = runningJob.reviewMonitorRevision
         let initialLog = runningJob.reviewMonitorLogText

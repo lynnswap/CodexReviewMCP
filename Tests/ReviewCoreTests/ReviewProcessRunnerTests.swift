@@ -34,11 +34,11 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == ReviewJobState.succeeded)
-        #expect(result.reviewThreadID == "thr-review")
-        #expect(result.threadID == "thr-review")
-        #expect(result.turnID == "turn-review")
-        #expect(result.model == "gpt-5.4-mini")
+        #expect(result.core.lifecycle.status == ReviewJobState.succeeded)
+        #expect(result.core.run.reviewThreadID == "thr-review")
+        #expect(result.core.run.threadID == "thr-review")
+        #expect(result.core.run.turnID == "turn-review")
+        #expect(result.core.run.model == "gpt-5.4-mini")
         #expect(result.content == "Looks solid overall.")
         #expect(await recorder.reviewThreadID == "thr-review")
         #expect(await recorder.reviewModel == "gpt-5.4-mini")
@@ -70,8 +70,48 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == ReviewJobState.succeeded)
-        #expect(result.model == "gpt-5.4-mini")
+        #expect(result.core.lifecycle.status == ReviewJobState.succeeded)
+        #expect(result.core.run.model == "gpt-5.4-mini")
+    }
+
+    @Test func appServerReviewRunnerParsesStructuredReviewResult() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let dash = "\u{2014}"
+        let finalReview = """
+        The changes introduce one issue.
+
+        Review comment:
+
+        - [P2] Keep result metadata available \(dash) \(cwd.path)/Sources/App.swift:7-9
+          The final review text is currently the only place where finding metadata survives.
+        """
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = MockAppServerSessionTransport(mode: .success(finalReview: finalReview))
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            stateChangeStream: await StateChangeSignal().subscription(),
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        let reviewResult = try #require(result.core.output.reviewResult)
+        #expect(reviewResult.state == .hasFindings)
+        #expect(reviewResult.findingCount == 1)
+        let finding = try #require(reviewResult.findings.first)
+        #expect(finding.title == "[P2] Keep result metadata available")
+        #expect(finding.body == "The final review text is currently the only place where finding metadata survives.")
+        #expect(finding.priority == 2)
+        #expect(finding.location?.path == "\(cwd.path)/Sources/App.swift")
+        #expect(finding.location?.startLine == 7)
+        #expect(finding.location?.endLine == 9)
     }
 
     @Test func appServerReviewRunnerReadsReviewConfigFromInjectedPaths() async throws {
@@ -104,8 +144,8 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == ReviewJobState.succeeded)
-        #expect(result.model == "gpt-injected")
+        #expect(result.core.lifecycle.status == ReviewJobState.succeeded)
+        #expect(result.core.run.model == "gpt-injected")
     }
 
     @Test func appServerReviewRunnerWaitsForSecondNotificationBatchBeforeCleaningUp() async throws {
@@ -127,7 +167,7 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
+        #expect(result.core.lifecycle.status == .succeeded)
         #expect(result.content == "Looks solid overall.")
         #expect(await session.backgroundCleanCount == 1)
         #expect(await session.unsubscribeCount == 1)
@@ -189,7 +229,7 @@ struct AppServerReviewRunnerTests {
         await stateChanges.yield()
         let result = try await task.value
 
-        #expect(result.state == ReviewJobState.cancelled)
+        #expect(result.core.lifecycle.status == ReviewJobState.cancelled)
         #expect(await session.backgroundCleanCount >= 1)
         #expect(await session.unsubscribeCount >= 1)
     }
@@ -228,7 +268,7 @@ struct AppServerReviewRunnerTests {
         await stateChanges.yield()
         let result = try await task.value
 
-        #expect(result.state == .cancelled)
+        #expect(result.core.lifecycle.status == .cancelled)
         #expect(await session.backgroundCleanCount >= 1)
         #expect(await session.unsubscribeCount >= 1)
     }
@@ -266,8 +306,8 @@ struct AppServerReviewRunnerTests {
             try await task.value
         }
 
-        #expect(result.state == .cancelled)
-        #expect(result.errorMessage == "Cancellation requested before state stream started consuming.")
+        #expect(result.core.lifecycle.status == .cancelled)
+        #expect(result.core.lifecycle.errorMessage == "Cancellation requested before state stream started consuming.")
     }
 
     @Test func appServerReviewRunnerPreservesParentThreadIDWhenReviewThreadDiffers() async throws {
@@ -304,9 +344,9 @@ struct AppServerReviewRunnerTests {
         await stateChanges.yield()
         let result = try await task.value
 
-        #expect(result.state == ReviewJobState.cancelled)
-        #expect(result.reviewThreadID == "thr-review")
-        #expect(result.threadID == "thr-parent")
+        #expect(result.core.lifecycle.status == ReviewJobState.cancelled)
+        #expect(result.core.run.reviewThreadID == "thr-review")
+        #expect(result.core.run.threadID == "thr-parent")
     }
 
     @Test func appServerReviewRunnerStopsLocallyWhenInterruptRequestFails() async throws {
@@ -343,8 +383,8 @@ struct AppServerReviewRunnerTests {
         await stateChanges.yield()
         let result = try await task.value
 
-        #expect(result.state == ReviewJobState.cancelled)
-        #expect(result.errorMessage?.contains("Cancellation requested.") == true)
+        #expect(result.core.lifecycle.status == ReviewJobState.cancelled)
+        #expect(result.core.lifecycle.errorMessage?.contains("Cancellation requested.") == true)
         #expect(await session.backgroundCleanCount >= 1)
         #expect(await session.unsubscribeCount >= 1)
     }
@@ -371,8 +411,8 @@ struct AppServerReviewRunnerTests {
             }
         )
 
-        #expect(result.state == ReviewJobState.failed)
-        #expect(result.exitCode == 124)
+        #expect(result.core.lifecycle.status == ReviewJobState.failed)
+        #expect(result.core.lifecycle.exitCode == 124)
         #expect(await session.isClosed())
     }
 
@@ -413,7 +453,7 @@ struct AppServerReviewRunnerTests {
         await stateChanges.yield()
         let result = try await task.value
 
-        #expect(result.state == .cancelled)
+        #expect(result.core.lifecycle.status == .cancelled)
         #expect(await session.isClosed())
     }
 
@@ -486,8 +526,8 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .failed)
-        #expect(result.errorMessage == "Review thread closed before the review completed.")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage == "Review thread closed before the review completed.")
     }
 
     @Test func appServerReviewRunnerWaitsForTerminalEventsAfterThreadCloses() async throws {
@@ -510,7 +550,7 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
+        #expect(result.core.lifecycle.status == .succeeded)
         #expect(result.content == "Looks solid overall.")
     }
 
@@ -534,8 +574,8 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .failed)
-        #expect(result.errorMessage == "Review thread closed before the review completed.")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage == "Review thread closed before the review completed.")
     }
 
     @Test func appServerReviewRunnerSucceedsWhenBestEffortCommandOutputPrecedesCompletion() async throws {
@@ -559,7 +599,7 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
+        #expect(result.core.lifecycle.status == .succeeded)
         #expect(result.content == "Looks solid overall.")
     }
 
@@ -585,8 +625,8 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .failed)
-        #expect(result.errorMessage == "mock app-server transport disconnected")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage == "mock app-server transport disconnected")
     }
 
     @Test func appServerReviewRunnerWaitsForTransportDisconnectGraceBeforeFailing() async throws {
@@ -626,8 +666,8 @@ struct AppServerReviewRunnerTests {
             try await task.value
         }
 
-        #expect(result.state == .failed)
-        #expect(result.errorMessage == "mock app-server transport disconnected")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage == "mock app-server transport disconnected")
     }
 
     @Test func appServerReviewRunnerDoesNotLetCancelledThreadUnavailableGraceFailActiveReview() async throws {
@@ -652,7 +692,7 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
+        #expect(result.core.lifecycle.status == .succeeded)
         #expect(result.content == "Looks solid overall.")
     }
 
@@ -675,7 +715,7 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
+        #expect(result.core.lifecycle.status == .succeeded)
         #expect(result.content == "Looks solid overall.")
     }
 
@@ -700,9 +740,9 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
-        #expect(result.turnID == "turn-review")
-        #expect(result.threadID == "thr-review")
+        #expect(result.core.lifecycle.status == .succeeded)
+        #expect(result.core.run.turnID == "turn-review")
+        #expect(result.core.run.threadID == "thr-review")
         #expect(result.content == "Looks solid overall.")
     }
 
@@ -727,9 +767,9 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
-        #expect(result.reviewThreadID == "thr-review")
-        #expect(result.threadID == "thr-parent")
+        #expect(result.core.lifecycle.status == .succeeded)
+        #expect(result.core.run.reviewThreadID == "thr-review")
+        #expect(result.core.run.threadID == "thr-parent")
         #expect(result.content == "Looks solid overall.")
     }
 
@@ -752,8 +792,8 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .failed)
-        #expect(result.errorMessage == "review failed hard")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage == "review failed hard")
     }
 
     @Test func appServerReviewRunnerLetsTerminalErrorOverrideCompletedTurn() async throws {
@@ -775,8 +815,8 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .failed)
-        #expect(result.errorMessage == "review failed after completion")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage == "review failed after completion")
     }
 
     @Test func appServerReviewRunnerPreservesFailureWhenTurnCompletesAfterError() async throws {
@@ -798,8 +838,8 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .failed)
-        #expect(result.errorMessage == "review failed before completion")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage == "review failed before completion")
     }
 
     @Test func appServerReviewRunnerFailsWhenFinalReviewArrivesWithoutTurnCompletionAfterThreadUnload() async throws {
@@ -824,8 +864,8 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .failed)
-        #expect(result.errorMessage == "Review thread closed before the review completed.")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage == "Review thread closed before the review completed.")
     }
 
     @Test func appServerReviewRunnerAcceptsLateFinalReviewAfterCompletedTurnAndThreadUnload() async throws {
@@ -850,7 +890,7 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .succeeded)
+        #expect(result.core.lifecycle.status == .succeeded)
         #expect(result.content == "Looks solid overall.")
     }
 
@@ -876,8 +916,8 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .failed)
-        #expect(result.errorMessage == "mock app-server transport disconnected")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage == "mock app-server transport disconnected")
     }
 
     @Test func appServerReviewRunnerReturnsCancelledOutcomeAfterCompletedTurnWithoutFinalReview() async throws {
@@ -918,8 +958,8 @@ struct AppServerReviewRunnerTests {
             try await task.value
         }
 
-        #expect(result.state == .cancelled)
-        #expect(result.errorMessage == "Cancellation requested after completed turn.")
+        #expect(result.core.lifecycle.status == .cancelled)
+        #expect(result.core.lifecycle.errorMessage == "Cancellation requested after completed turn.")
     }
 
     @Test func appServerReviewRunnerPrefersTimeoutOverThreadUnavailableFailure() async throws {
@@ -942,9 +982,9 @@ struct AppServerReviewRunnerTests {
             requestedTerminationReason: { nil as ReviewTerminationReason? }
         )
 
-        #expect(result.state == .failed)
-        #expect(result.exitCode == 124)
-        #expect(result.errorMessage == "Review timed out after 0 seconds.")
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.exitCode == 124)
+        #expect(result.core.lifecycle.errorMessage == "Review timed out after 0 seconds.")
     }
 
     @Test func remainingReviewTimeoutDurationSubtractsElapsedBootstrapTime() throws {

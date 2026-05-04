@@ -224,10 +224,12 @@ package class ReviewMonitorTestingHarness {
         )
         return .init(
             jobID: job.id,
-            threadID: job.threadID,
             cancelled: true,
-            status: .cancelled,
-            cancellation: cancellation
+            core: ReviewJobCore(
+                run: .init(threadID: job.core.run.threadID),
+                lifecycle: .init(status: .cancelled, cancellation: cancellation),
+                output: .init(summary: cancellation.message)
+            )
         )
     }
 
@@ -245,10 +247,12 @@ package class ReviewMonitorTestingHarness {
         )
         return .init(
             jobID: job.id,
-            threadID: job.threadID,
             cancelled: true,
-            status: .cancelled,
-            cancellation: cancellation
+            core: ReviewJobCore(
+                run: .init(threadID: job.core.run.threadID),
+                lifecycle: .init(status: .cancelled, cancellation: cancellation),
+                output: .init(summary: cancellation.message)
+            )
         )
     }
 
