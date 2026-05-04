@@ -8,12 +8,10 @@ package protocol ReviewStoreProtocol: AnyObject, Sendable {
     ) async throws -> ReviewReadResult
 
     func readReview(
-        jobID: String,
-        sessionID: String
+        jobID: String
     ) async throws -> ReviewReadResult
 
     func listReviews(
-        sessionID: String,
         cwd: String?,
         statuses: [ReviewJobState]?,
         limit: Int?
@@ -21,13 +19,11 @@ package protocol ReviewStoreProtocol: AnyObject, Sendable {
 
     func cancelReview(
         selectedJobID jobID: String,
-        sessionID: String,
         cancellation: ReviewCancellation
     ) async throws -> ReviewCancelOutcome
 
     func cancelReview(
         selector: ReviewJobSelector,
-        sessionID: String,
         cancellation: ReviewCancellation
     ) async throws -> ReviewCancelOutcome
 

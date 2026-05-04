@@ -4,12 +4,11 @@ import ReviewDomain
 extension CodexReviewStore {
     package func cancelReview(
         jobID: String,
-        sessionID: String,
+        sessionID _: String,
         cancellation: ReviewCancellation = .system()
     ) async throws {
         _ = try await coordinator.cancelReviewByID(
             jobID: jobID,
-            sessionID: sessionID,
             cancellation: cancellation,
             store: self
         )
@@ -17,7 +16,7 @@ extension CodexReviewStore {
 
     package func completeCancellationLocally(
         jobID: String,
-        sessionID: String,
+        sessionID _: String,
         cancellation: ReviewCancellation = .system()
     ) throws {
         guard let job = workspaces
@@ -26,9 +25,6 @@ extension CodexReviewStore {
             .first(where: { $0.id == jobID })
         else {
             throw ReviewError.jobNotFound("Job \(jobID) was not found.")
-        }
-        guard job.sessionID == sessionID else {
-            throw ReviewError.accessDenied("Job \(jobID) belongs to another MCP session.")
         }
         guard job.isTerminal == false else {
             return
@@ -47,7 +43,7 @@ extension CodexReviewStore {
 
     package func recordCancellationFailure(
         jobID: String,
-        sessionID: String,
+        sessionID _: String,
         message: String
     ) throws {
         guard let job = workspaces
@@ -56,9 +52,6 @@ extension CodexReviewStore {
             .first(where: { $0.id == jobID })
         else {
             throw ReviewError.jobNotFound("Job \(jobID) was not found.")
-        }
-        guard job.sessionID == sessionID else {
-            throw ReviewError.accessDenied("Job \(jobID) belongs to another MCP session.")
         }
 
         if let message = message.nilIfEmpty {

@@ -133,24 +133,27 @@ struct CodexReviewStoreOrderingTests {
         ])
     }
 
-    @Test func listReviewsPreservesWorkspaceAndJobArrayOrder() {
+    @Test func listReviewsPreservesWorkspaceAndJobArrayOrderAcrossSessions() {
         let store = CodexReviewStore(configuration: .init())
         let alphaFirstJob = makeJob(
             id: "job-a",
             cwd: "/tmp/workspace-alpha",
             targetSummary: "Alpha 1",
+            sessionID: "session-1",
             startedAt: nil
         )
         let alphaSecondJob = makeJob(
             id: "job-c",
             cwd: "/tmp/workspace-alpha",
             targetSummary: "Alpha 2",
+            sessionID: "session-2",
             startedAt: nil
         )
         let betaJob = makeJob(
             id: "job-b",
             cwd: "/tmp/workspace-beta",
             targetSummary: "Beta 1",
+            sessionID: "session-3",
             startedAt: nil
         )
         let alphaWorkspace = CodexReviewWorkspace(
@@ -166,9 +169,15 @@ struct CodexReviewStoreOrderingTests {
             workspaces: [alphaWorkspace, betaWorkspace]
         )
 
-        let listed = store.listReviews(sessionID: "session-1")
+        let listed = store.listReviews()
+        let filtered = store.listReviews(
+            cwd: "/tmp/workspace-alpha",
+            statuses: [.running],
+            limit: 1
+        )
 
         #expect(listed.items.map(\.jobID) == ["job-a", "job-c", "job-b"])
+        #expect(filtered.items.map(\.jobID) == ["job-a"])
     }
 
     @Test func selectorRequiresSingleMatchingJob() {
@@ -199,10 +208,7 @@ struct CodexReviewStoreOrderingTests {
         )
 
         do {
-            _ = try store.resolveJob(
-                sessionID: "session-1",
-                selector: .init(statuses: [.running])
-            )
+            _ = try store.resolveJob(selector: .init(statuses: [.running]))
             Issue.record("Expected selector resolution to fail for multiple matches.")
         } catch let error as ReviewJobSelectionError {
             switch error {

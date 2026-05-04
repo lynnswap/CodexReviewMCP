@@ -15,10 +15,9 @@ extension CodexReviewStore: ReviewStoreProtocol {
     }
 
     package func readReview(
-        jobID: String,
-        sessionID: String
+        jobID: String
     ) throws -> ReviewReadResult {
-        let job = try authorizedJob(jobID: jobID, sessionID: sessionID)
+        let job = try job(jobID: jobID)
         return ReviewReadResult(
             jobID: job.id,
             core: job.core,
@@ -29,25 +28,57 @@ extension CodexReviewStore: ReviewStoreProtocol {
         )
     }
 
+    package func readReview(
+        jobID: String,
+        sessionID _: String
+    ) throws -> ReviewReadResult {
+        try readReview(jobID: jobID)
+    }
+
     package func listReviews(
-        sessionID: String,
         cwd: String? = nil,
         statuses: [ReviewJobState]? = nil,
         limit: Int? = nil
     ) -> ReviewListResult {
-        let filtered = filteredJobs(sessionID: sessionID, cwd: cwd, statuses: statuses)
+        let filtered = filteredJobs(cwd: cwd, statuses: statuses)
         let clampedLimit = min(max(limit ?? 20, 1), 100)
         return ReviewListResult(items: Array(filtered.prefix(clampedLimit)).map(makeListItem))
     }
 
+    package func listReviews(
+        sessionID _: String,
+        cwd: String? = nil,
+        statuses: [ReviewJobState]? = nil,
+        limit: Int? = nil
+    ) -> ReviewListResult {
+        listReviews(cwd: cwd, statuses: statuses, limit: limit)
+    }
+
     package func cancelReview(
         selectedJobID jobID: String,
-        sessionID: String,
         cancellation: ReviewCancellation = .system()
     ) async throws -> ReviewCancelOutcome {
         try await coordinator.cancelReviewByID(
             jobID: jobID,
-            sessionID: sessionID,
+            cancellation: cancellation,
+            store: self
+        )
+    }
+
+    package func cancelReview(
+        selectedJobID jobID: String,
+        sessionID _: String,
+        cancellation: ReviewCancellation = .system()
+    ) async throws -> ReviewCancelOutcome {
+        try await cancelReview(selectedJobID: jobID, cancellation: cancellation)
+    }
+
+    package func cancelReview(
+        selector: ReviewJobSelector,
+        cancellation: ReviewCancellation = .system()
+    ) async throws -> ReviewCancelOutcome {
+        try await coordinator.cancelReviewBySelector(
+            selector: selector,
             cancellation: cancellation,
             store: self
         )
@@ -55,15 +86,10 @@ extension CodexReviewStore: ReviewStoreProtocol {
 
     package func cancelReview(
         selector: ReviewJobSelector,
-        sessionID: String,
+        sessionID _: String,
         cancellation: ReviewCancellation = .system()
     ) async throws -> ReviewCancelOutcome {
-        try await coordinator.cancelReviewBySelector(
-            selector: selector,
-            sessionID: sessionID,
-            cancellation: cancellation,
-            store: self
-        )
+        try await cancelReview(selector: selector, cancellation: cancellation)
     }
 
     package func hasActiveJobs(for sessionID: String) -> Bool {
@@ -243,7 +269,7 @@ extension CodexReviewStore: ReviewStoreProtocol {
 
     package func requestCancellation(
         jobID: String,
-        sessionID: String,
+        sessionID _: String,
         cancellation: ReviewCancellation
     ) throws -> ReviewCancelResult {
         let requestCancellationDelay = Self.requestCancellationDelay
@@ -254,9 +280,6 @@ extension CodexReviewStore: ReviewStoreProtocol {
             throw ReviewError.jobNotFound("Job \(jobID) was not found.")
         }
         let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard job.sessionID == sessionID else {
-            throw ReviewError.accessDenied("Job \(jobID) belongs to another MCP session.")
-        }
         if job.isTerminal {
             return ReviewCancelResult(jobID: jobID, state: job.core.lifecycle.status, signalled: false)
         }
@@ -301,9 +324,9 @@ extension CodexReviewStore: ReviewStoreProtocol {
 
     package func resolveJob(
         jobID: String,
-        sessionID: String
+        sessionID _: String
     ) throws -> CodexReviewJob {
-        try authorizedJob(jobID: jobID, sessionID: sessionID)
+        try job(jobID: jobID)
     }
 
     package func pendingTerminationReason(
@@ -338,50 +361,22 @@ extension CodexReviewStore: ReviewStoreProtocol {
         coordinator.closeSessionState(sessionID)
     }
 
-    package func pruneClosedJobIfNeeded(jobID: String) {
-        guard let location = jobLocation(id: jobID)
-        else {
-            return
-        }
-        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard coordinator.isSessionClosed(job.sessionID),
-              job.isTerminal
-        else {
-            return
-        }
-        removeJob(id: jobID)
-    }
-
-    package func pruneClosedSessionJobs(
-        sessionID: String,
-        excludingJobIDs: Set<String> = []
-    ) {
-        guard coordinator.isSessionClosed(sessionID) else {
-            return
-        }
-
-        for workspace in workspaces.reversed() {
-            workspace.jobs.removeAll { job in
-                job.sessionID == sessionID
-                    && job.isTerminal
-                    && excludingJobIDs.contains(job.id) == false
-            }
-        }
-        workspaces.removeAll { $0.jobs.isEmpty }
-        writeDiagnosticsIfNeeded()
+    package func resolveJob(
+        sessionID _: String,
+        selector: ReviewJobSelector
+    ) throws -> CodexReviewJob {
+        try resolveJob(selector: selector)
     }
 
     package func resolveJob(
-        sessionID: String,
         selector: ReviewJobSelector
     ) throws -> CodexReviewJob {
         if let jobID = selector.jobID?.nilIfEmpty {
-            return try authorizedJob(jobID: jobID, sessionID: sessionID)
+            return try job(jobID: jobID)
         }
 
         let effectiveStatuses = selector.statuses ?? [.queued, .running]
         let candidates = filteredJobs(
-            sessionID: sessionID,
             cwd: selector.cwd,
             statuses: effectiveStatuses
         )
@@ -455,7 +450,6 @@ extension CodexReviewStore: ReviewStoreProtocol {
     }
 
     private func filteredJobs(
-        sessionID: String,
         cwd: String?,
         statuses: [ReviewJobState]?
     ) -> [CodexReviewJob] {
@@ -463,7 +457,7 @@ extension CodexReviewStore: ReviewStoreProtocol {
         let allowedStatuses = statuses.map(Set.init)
         var matches: [CodexReviewJob] = []
         for workspace in workspaces {
-            for job in workspace.jobs where job.sessionID == sessionID {
+            for job in workspace.jobs {
                 if let normalizedCWD, job.cwd != normalizedCWD {
                     continue
                 }
@@ -486,15 +480,11 @@ extension CodexReviewStore: ReviewStoreProtocol {
         return nil
     }
 
-    private func authorizedJob(jobID: String, sessionID: String) throws -> CodexReviewJob {
+    private func job(jobID: String) throws -> CodexReviewJob {
         guard let location = jobLocation(id: jobID) else {
             throw ReviewError.jobNotFound("Job \(jobID) was not found.")
         }
-        let job = workspaces[location.workspaceIndex].jobs[location.jobIndex]
-        guard job.sessionID == sessionID else {
-            throw ReviewError.accessDenied("Job \(jobID) belongs to another MCP session.")
-        }
-        return job
+        return workspaces[location.workspaceIndex].jobs[location.jobIndex]
     }
 
     private func makeListItem(_ job: CodexReviewJob) -> ReviewJobListItem {

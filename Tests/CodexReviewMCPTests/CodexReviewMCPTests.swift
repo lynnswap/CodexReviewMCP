@@ -10627,7 +10627,6 @@ final class PrimaryAuthenticationStoreBackend: ReviewMonitorTestingHarness {
 
     override func cancelReviewByID(
         jobID _: String,
-        sessionID _: String,
         cancellation _: ReviewCancellation,
         store _: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
@@ -10698,7 +10697,6 @@ final class AccountActionStoreBackend: ReviewMonitorTestingHarness {
 
     override func cancelReviewByID(
         jobID _: String,
-        sessionID _: String,
         cancellation _: ReviewCancellation,
         store _: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
@@ -10761,10 +10759,11 @@ final class CancellationFailureStoreBackend: ReviewMonitorTestingHarness {
 
     override func cancelReviewByID(
         jobID: String,
-        sessionID: String,
         cancellation: ReviewCancellation,
         store: CodexReviewStore
     ) async throws -> ReviewCancelOutcome {
+        let job = try store.resolveJob(selector: .init(jobID: jobID))
+        let sessionID = job.sessionID
         if failingSessionIDs.contains(sessionID) {
             throw error
         }
@@ -10773,7 +10772,6 @@ final class CancellationFailureStoreBackend: ReviewMonitorTestingHarness {
             sessionID: sessionID,
             cancellation: cancellation
         )
-        let job = try store.resolveJob(jobID: jobID, sessionID: sessionID)
         return .init(
             jobID: jobID,
             cancelled: true,
