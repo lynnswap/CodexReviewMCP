@@ -169,10 +169,64 @@ struct ReviewMCPContractFenceTests {
             "jobId",
             "model",
             "review",
+            "reviewResult",
             "status",
             "threadId",
             "turnId",
         ])
+    }
+
+    @Test func reviewStartStructuredContentIncludesParsedReviewResult() async throws {
+        let dash = "\u{2014}"
+        let reviewResult = ParsedReviewResult.parse(finalReviewText: """
+        The changes introduce one issue.
+
+        Review comment:
+
+        - [P2] Keep result data structured \(dash) /tmp/repo/Sources/App.swift:11-13
+          UI clients should not have to parse rendered review text.
+        """)
+        let handler = makeHandler(
+            startReview: { _ in
+                ReviewReadResult(
+                    jobID: "job_structured",
+                    threadID: "thr_structured",
+                    turnID: "turn_structured",
+                    model: "gpt-5.4",
+                    status: ReviewJobState.succeeded,
+                    review: "review text",
+                    reviewResult: reviewResult,
+                    lastAgentMessage: "",
+                    logs: [],
+                    rawLogText: ""
+                )
+            }
+        )
+
+        let result = await handler.handle(
+            params: CallTool.Parameters(
+                name: "review_start",
+                arguments: [
+                    "cwd": "/tmp/repo",
+                    "target": [
+                        "type": "uncommittedChanges",
+                    ],
+                ]
+            )
+        )
+
+        let object = try #require(result.structuredContent?.objectValue)
+        let resultObject = try #require(object["reviewResult"]?.objectValue)
+        #expect(resultObject["state"] == .string("hasFindings"))
+        #expect(resultObject["findingCount"] == .int(1))
+        let findingObject = try #require(resultObject["findings"]?.arrayValue?.first?.objectValue)
+        #expect(findingObject["title"] == .string("[P2] Keep result data structured"))
+        #expect(findingObject["body"] == .string("UI clients should not have to parse rendered review text."))
+        #expect(findingObject["priority"] == .int(2))
+        let locationObject = try #require(findingObject["location"]?.objectValue)
+        #expect(locationObject["path"] == .string("/tmp/repo/Sources/App.swift"))
+        #expect(locationObject["startLine"] == .int(11))
+        #expect(locationObject["endLine"] == .int(13))
     }
 
     @Test func reviewStartStillAcceptsLegacyStringTargets() async throws {
@@ -255,6 +309,7 @@ struct ReviewMCPContractFenceTests {
             "model",
             "rawLogText",
             "review",
+            "reviewResult",
             "status",
             "threadId",
             "turnId",
@@ -305,6 +360,7 @@ struct ReviewMCPContractFenceTests {
             "jobId",
             "lastAgentMessage",
             "model",
+            "reviewResult",
             "startedAt",
             "status",
             "summary",

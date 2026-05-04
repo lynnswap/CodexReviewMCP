@@ -449,6 +449,7 @@ package struct AppServerReviewRunner: Sendable {
                         lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                         errorMessage: timeoutMessage,
                         summary: timeoutMessage,
+                        reviewResult: finalSnapshot.reviewResult,
                         startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
@@ -468,6 +469,7 @@ package struct AppServerReviewRunner: Sendable {
                     lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                     errorMessage: reason,
                     summary: "Review cancelled.",
+                    reviewResult: finalSnapshot.reviewResult,
                     startedAt: startedAt,
                     endedAt: endedAt,
                     content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
@@ -626,6 +628,7 @@ package struct AppServerReviewRunner: Sendable {
                             lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                             errorMessage: timeoutMessage,
                             summary: timeoutMessage,
+                            reviewResult: finalSnapshot.reviewResult,
                             startedAt: startedAt,
                             endedAt: endedAt,
                             content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
@@ -644,6 +647,7 @@ package struct AppServerReviewRunner: Sendable {
                         lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                         errorMessage: reason,
                         summary: "Review cancelled.",
+                        reviewResult: finalSnapshot.reviewResult,
                         startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
@@ -698,6 +702,7 @@ package struct AppServerReviewRunner: Sendable {
                                 lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                                 errorMessage: timeoutMessage,
                                 summary: timeoutMessage,
+                                reviewResult: finalSnapshot.reviewResult,
                                 startedAt: startedAt,
                                 endedAt: endedAt,
                                 content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
@@ -716,6 +721,7 @@ package struct AppServerReviewRunner: Sendable {
                                 lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                                 errorMessage: cancellationReasonValue,
                                 summary: "Review cancelled.",
+                                reviewResult: finalSnapshot.reviewResult,
                                 startedAt: startedAt,
                                 endedAt: endedAt,
                                 content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? cancellationReasonValue
@@ -735,6 +741,7 @@ package struct AppServerReviewRunner: Sendable {
                                     lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                                     errorMessage: transportDisconnectReason,
                                     summary: "Review failed.",
+                                    reviewResult: finalSnapshot.reviewResult,
                                     startedAt: startedAt,
                                     endedAt: endedAt,
                                     content: finalSnapshot.lastAgentMessage ?? transportDisconnectReason
@@ -751,6 +758,7 @@ package struct AppServerReviewRunner: Sendable {
                                 lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                                 errorMessage: "Review completed without an `exitedReviewMode` item.",
                                 summary: "Review failed.",
+                                reviewResult: finalSnapshot.reviewResult,
                                 startedAt: startedAt,
                                 endedAt: endedAt,
                                 content: finalSnapshot.lastAgentMessage ?? "Review failed."
@@ -769,6 +777,7 @@ package struct AppServerReviewRunner: Sendable {
                             lastAgentMessage: review,
                             errorMessage: nil,
                             summary: summary,
+                            reviewResult: finalSnapshot.reviewResult,
                             startedAt: startedAt,
                             endedAt: endedAt,
                             content: review
@@ -787,6 +796,7 @@ package struct AppServerReviewRunner: Sendable {
                                 lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                                 errorMessage: timeoutMessage,
                                 summary: timeoutMessage,
+                                reviewResult: finalSnapshot.reviewResult,
                                 startedAt: startedAt,
                                 endedAt: endedAt,
                                 content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
@@ -805,6 +815,7 @@ package struct AppServerReviewRunner: Sendable {
                             lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                             errorMessage: reason,
                             summary: "Review cancelled.",
+                            reviewResult: finalSnapshot.reviewResult,
                             startedAt: startedAt,
                             endedAt: endedAt,
                             content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
@@ -823,6 +834,7 @@ package struct AppServerReviewRunner: Sendable {
                             lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                             errorMessage: errorMessage,
                             summary: "Review failed.",
+                            reviewResult: finalSnapshot.reviewResult,
                             startedAt: startedAt,
                             endedAt: endedAt,
                             content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? errorMessage
@@ -851,6 +863,7 @@ package struct AppServerReviewRunner: Sendable {
                         lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                         errorMessage: timeoutMessage,
                         summary: timeoutMessage,
+                        reviewResult: finalSnapshot.reviewResult,
                         startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
@@ -877,6 +890,7 @@ package struct AppServerReviewRunner: Sendable {
                         lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                         errorMessage: reason,
                         summary: "Review cancelled.",
+                        reviewResult: finalSnapshot.reviewResult,
                         startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
@@ -903,6 +917,7 @@ package struct AppServerReviewRunner: Sendable {
                         lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
                         errorMessage: transportDisconnectReason,
                         summary: "Review failed.",
+                        reviewResult: finalSnapshot.reviewResult,
                         startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? transportDisconnectReason
@@ -1248,6 +1263,7 @@ private actor AppServerReviewState {
         var pendingThreadUnavailableReason: String?
         var lastAgentMessage: String?
         var finalReview: String?
+        var reviewResult: ParsedReviewResult?
         var errorMessage: String?
         var stderrText: String
     }
@@ -1277,6 +1293,7 @@ private actor AppServerReviewState {
     private var turnID: String?
     private var turnStatus: AppServerTurnStatus?
     private var finalReview: String?
+    private var reviewResult: ParsedReviewResult?
     private var lastAgentMessage: String?
     private var errorMessage: String?
     private var pendingThreadUnavailableReason: String?
@@ -1511,6 +1528,7 @@ private actor AppServerReviewState {
 
     func noteFinalReview(_ review: String) {
         finalReview = review
+        reviewResult = ParsedReviewResult.parse(finalReviewText: review)
         lastAgentMessage = review
     }
 
@@ -1527,6 +1545,7 @@ private actor AppServerReviewState {
             pendingThreadUnavailableReason: pendingThreadUnavailableReason,
             lastAgentMessage: lastAgentMessage,
             finalReview: finalReview,
+            reviewResult: reviewResult,
             errorMessage: errorMessage,
             stderrText: stderrLines.joined(separator: "\n")
         )

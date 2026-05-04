@@ -26,6 +26,7 @@ package struct ReviewProcessOutcome: Sendable {
     package var lastAgentMessage: String
     package var errorMessage: String?
     package var summary: String
+    package var reviewResult: ParsedReviewResult?
     package var startedAt: Date
     package var endedAt: Date
     package var content: String
@@ -41,6 +42,7 @@ package struct ReviewProcessOutcome: Sendable {
         lastAgentMessage: String,
         errorMessage: String? = nil,
         summary: String,
+        reviewResult: ParsedReviewResult? = nil,
         startedAt: Date,
         endedAt: Date,
         content: String
@@ -55,6 +57,7 @@ package struct ReviewProcessOutcome: Sendable {
         self.lastAgentMessage = lastAgentMessage
         self.errorMessage = errorMessage
         self.summary = summary
+        self.reviewResult = reviewResult
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.content = content

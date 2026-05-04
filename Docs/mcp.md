@@ -37,6 +37,7 @@ Returns:
 - `model` effective resolved review model
 - `status`
 - `review`
+- `reviewResult` parsed finding state (`hasFindings`, `noFindings`, or `unknown`) with title/body/location fields when available
 - `cancellation` when cancellation metadata is available
 - `error`
 
@@ -71,6 +72,7 @@ Returns:
 - `model` effective resolved review model
 - `status`
 - `review`
+- `reviewResult` parsed finding state (`hasFindings`, `noFindings`, or `unknown`) with title/body/location fields when available
 - `logs`
 - `rawLogText`
 - `lastAgentMessage`
@@ -96,6 +98,7 @@ Returns:
   - `model` effective resolved review model
   - `status`
   - `summary`
+  - `reviewResult` parsed finding state (`hasFindings`, `noFindings`, or `unknown`) with title/body/location fields when available
   - `startedAt`
   - `endedAt`
   - `elapsedSeconds`

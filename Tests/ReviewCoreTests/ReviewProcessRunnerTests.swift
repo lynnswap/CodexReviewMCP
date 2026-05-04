@@ -74,6 +74,46 @@ struct AppServerReviewRunnerTests {
         #expect(result.model == "gpt-5.4-mini")
     }
 
+    @Test func appServerReviewRunnerParsesStructuredReviewResult() async throws {
+        let cwd = try makeTemporaryDirectory()
+        let dash = "\u{2014}"
+        let finalReview = """
+        The changes introduce one issue.
+
+        Review comment:
+
+        - [P2] Keep result metadata available \(dash) \(cwd.path)/Sources/App.swift:7-9
+          The final review text is currently the only place where finding metadata survives.
+        """
+        let runner = AppServerReviewRunner(
+            settingsBuilder: ReviewExecutionSettingsBuilder(
+                environment: try isolatedHomeEnvironment()
+            )
+        )
+        let session = MockAppServerSessionTransport(mode: .success(finalReview: finalReview))
+
+        let result = try await runner.run(
+            session: session,
+            request: .init(cwd: cwd.path, target: .uncommittedChanges),
+            defaultTimeoutSeconds: nil as Int?,
+            stateChangeStream: await StateChangeSignal().subscription(),
+            onStart: { _ in },
+            onEvent: { _ in },
+            requestedTerminationReason: { nil as ReviewTerminationReason? }
+        )
+
+        let reviewResult = try #require(result.reviewResult)
+        #expect(reviewResult.state == .hasFindings)
+        #expect(reviewResult.findingCount == 1)
+        let finding = try #require(reviewResult.findings.first)
+        #expect(finding.title == "[P2] Keep result metadata available")
+        #expect(finding.body == "The final review text is currently the only place where finding metadata survives.")
+        #expect(finding.priority == 2)
+        #expect(finding.location?.path == "\(cwd.path)/Sources/App.swift")
+        #expect(finding.location?.startLine == 7)
+        #expect(finding.location?.endLine == 9)
+    }
+
     @Test func appServerReviewRunnerReadsReviewConfigFromInjectedPaths() async throws {
         let cwd = try makeTemporaryDirectory()
         let environmentHome = try makeTemporaryDirectory()

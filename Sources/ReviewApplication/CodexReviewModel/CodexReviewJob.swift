@@ -456,6 +456,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public var endedAt: Date?
     public var summary: String
     public var hasFinalReview: Bool
+    public var reviewResult: ParsedReviewResult?
     public var lastAgentMessage: String?
     public private(set) var logEntries: [ReviewLogEntry]
     public private(set) var logText: String
@@ -516,6 +517,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         endedAt: Date?,
         summary: String,
         hasFinalReview: Bool,
+        reviewResult: ParsedReviewResult? = nil,
         lastAgentMessage: String?,
         logEntries: [ReviewLogEntry],
         errorMessage: String?,
@@ -537,6 +539,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         self.endedAt = endedAt
         self.summary = summary
         self.hasFinalReview = hasFinalReview
+        self.reviewResult = reviewResult
         self.lastAgentMessage = lastAgentMessage
         self.logState = initialState
         self.logEntries = initialState.entries

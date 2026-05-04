@@ -16,6 +16,7 @@ extension ReviewReadResult {
             "jobId": .string(jobID),
             "status": .string(status.rawValue),
             "review": .string(review),
+            "reviewResult": reviewResult.map { $0.structuredContent() } ?? .null,
         ]
         if let threadID {
             object["threadId"] = .string(threadID)
@@ -47,6 +48,7 @@ extension ReviewJobListItem {
             "targetSummary": .string(targetSummary),
             "status": .string(status.rawValue),
             "summary": .string(summary),
+            "reviewResult": reviewResult.map { $0.structuredContent() } ?? .null,
             "cancellable": .bool(cancellable),
         ]
         object["model"] = model.map(Value.string) ?? .null
@@ -127,6 +129,40 @@ extension ReviewCancellation {
         .object([
             "source": .string(source.rawValue),
             "message": .string(message),
+        ])
+    }
+}
+
+extension ParsedReviewResult {
+    package func structuredContent() -> Value {
+        .object([
+            "state": .string(state.rawValue),
+            "findingCount": findingCount.map(Value.int) ?? .null,
+            "findings": .array(findings.map { $0.structuredContent() }),
+            "source": .string(source.rawValue),
+            "parserVersion": .int(parserVersion),
+        ])
+    }
+}
+
+extension ParsedReviewFinding {
+    package func structuredContent() -> Value {
+        .object([
+            "title": .string(title),
+            "body": .string(body),
+            "priority": priority.map(Value.int) ?? .null,
+            "location": location.map { $0.structuredContent() } ?? .null,
+            "rawText": .string(rawText),
+        ])
+    }
+}
+
+extension ParsedReviewFindingLocation {
+    package func structuredContent() -> Value {
+        .object([
+            "path": .string(path),
+            "startLine": .int(startLine),
+            "endLine": .int(endLine),
         ])
     }
 }

@@ -30,6 +30,39 @@ struct ReviewJobStoreTests {
         #expect(await manager.prepareCount() == 1)
     }
 
+    @Test func codexReviewStoreStoresParsedReviewResult() async throws {
+        let dash = "\u{2014}"
+        let cwd = FileManager.default.temporaryDirectory.path
+        let finalReview = """
+        The changes introduce one issue.
+
+        Review comment:
+
+        - [P1] Preserve structured finding state \(dash) \(cwd)/Sources/Store.swift:20-20
+          The store currently returns only the rendered review text to MCP clients.
+        """
+        let manager = MockAppServerManager { _ in .success(finalReview: finalReview) }
+        let store = try makeTestStore(manager: manager)
+
+        await store.start()
+        defer { Task { await store.stop() } }
+
+        let result = try await store.startReview(
+            sessionID: "session-structured",
+            request: .init(
+                cwd: cwd,
+                target: .uncommittedChanges
+            )
+        )
+
+        let returnedResult = try #require(result.reviewResult)
+        let storedResult = try #require(store.workspaces.first?.jobs.first?.reviewResult)
+        #expect(returnedResult == storedResult)
+        #expect(storedResult.state == .hasFindings)
+        #expect(storedResult.findings.first?.title == "[P1] Preserve structured finding state")
+        #expect(storedResult.findings.first?.body == "The store currently returns only the rendered review text to MCP clients.")
+    }
+
     @Test func codexReviewStoreChecksOutFreshTransportForSequentialReviews() async throws {
         let manager = MockAppServerManager { _ in .success(finalReview: "Review ok") }
         let store = try makeTestStore(manager: manager)

@@ -26,6 +26,7 @@ extension CodexReviewStore: ReviewStoreProtocol {
             model: job.model,
             status: job.status.state,
             review: job.isTerminal ? job.reviewText : (job.reviewText.nilIfEmpty ?? job.lastAgentMessage ?? ""),
+            reviewResult: job.reviewResult,
             lastAgentMessage: job.lastAgentMessage ?? "",
             logs: job.logEntries,
             rawLogText: job.rawLogText,
@@ -183,6 +184,7 @@ extension CodexReviewStore: ReviewStoreProtocol {
                 job.lastAgentMessage = outcome.lastAgentMessage.nilIfEmpty ?? job.lastAgentMessage
             }
             job.errorMessage = reviewAuthDisplayMessage(from: outcome.errorMessage)
+            job.reviewResult = outcome.reviewResult ?? (outcome.hasFinalReview ? nil : ParsedReviewResult.notAvailable())
             if outcome.state != .cancelled {
                 job.cancellation = nil
             }
@@ -209,6 +211,7 @@ extension CodexReviewStore: ReviewStoreProtocol {
             job.summary = "Failed to start review."
             job.model = model ?? job.model
             job.errorMessage = reviewAuthDisplayMessage(from: message)
+            job.reviewResult = ParsedReviewResult.notAvailable()
             job.startedAt = startedAt
             job.endedAt = endedAt
             if message.isEmpty == false {
@@ -231,6 +234,7 @@ extension CodexReviewStore: ReviewStoreProtocol {
             job.summary = cancellation.message
             job.model = model ?? job.model
             job.hasFinalReview = false
+            job.reviewResult = ParsedReviewResult.notAvailable()
             job.errorMessage = cancellation.message.nilIfEmpty ?? job.errorMessage
             if job.startedAt == nil {
                 job.startedAt = startedAt
@@ -507,6 +511,7 @@ extension CodexReviewStore: ReviewStoreProtocol {
             model: job.model,
             status: job.status.state,
             summary: job.summary,
+            reviewResult: job.reviewResult,
             startedAt: job.startedAt,
             endedAt: job.endedAt,
             elapsedSeconds: elapsedSeconds(for: job),

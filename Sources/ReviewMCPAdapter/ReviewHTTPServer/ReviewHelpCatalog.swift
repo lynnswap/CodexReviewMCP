@@ -301,6 +301,7 @@ package enum ReviewHelpCatalog {
             - `model` (effective resolved review model)
             - `status`
             - `review`
+            - `reviewResult` parsed finding state and title/body/location fields when available
             - `cancellation` when cancellation metadata is available
             - `error`
 
@@ -334,7 +335,7 @@ package enum ReviewHelpCatalog {
 
             Use `review_list` first if you do not know the ID.
 
-            The response includes `model`, which is the effective resolved review model. Cancelled jobs include `cancellation.source` and `cancellation.message` when available.
+            The response includes `model`, which is the effective resolved review model, and `reviewResult`, which contains parsed finding state and title/body/location fields when available. Cancelled jobs include `cancellation.source` and `cancellation.message` when available.
             """
         case "review_list":
             return """
@@ -354,7 +355,7 @@ package enum ReviewHelpCatalog {
             - `statuses`
             - `limit`
 
-            `items[].model` is the effective resolved review model, not the raw thread model. `items[].cancellation` is present when cancellation metadata is available.
+            `items[].model` is the effective resolved review model, not the raw thread model. `items[].reviewResult` contains parsed finding state and title/body/location fields when available. `items[].cancellation` is present when cancellation metadata is available.
             """
         case "review_cancel":
             return """

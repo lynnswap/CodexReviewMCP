@@ -7,6 +7,7 @@ package struct ReviewReadResult: Sendable, Hashable {
     package var model: String?
     package var status: ReviewJobState
     package var review: String
+    package var reviewResult: ParsedReviewResult?
     package var lastAgentMessage: String
     package var logs: [ReviewLogEntry]
     package var rawLogText: String
@@ -20,6 +21,7 @@ package struct ReviewReadResult: Sendable, Hashable {
         model: String? = nil,
         status: ReviewJobState,
         review: String,
+        reviewResult: ParsedReviewResult? = nil,
         lastAgentMessage: String,
         logs: [ReviewLogEntry],
         rawLogText: String,
@@ -32,6 +34,7 @@ package struct ReviewReadResult: Sendable, Hashable {
         self.model = model
         self.status = status
         self.review = review
+        self.reviewResult = reviewResult
         self.lastAgentMessage = lastAgentMessage
         self.logs = logs
         self.rawLogText = rawLogText
@@ -48,6 +51,7 @@ package struct ReviewJobListItem: Sendable, Hashable {
     package var model: String?
     package var status: ReviewJobState
     package var summary: String
+    package var reviewResult: ParsedReviewResult?
     package var startedAt: Date?
     package var endedAt: Date?
     package var elapsedSeconds: Int?
@@ -63,6 +67,7 @@ package struct ReviewJobListItem: Sendable, Hashable {
         model: String?,
         status: ReviewJobState,
         summary: String,
+        reviewResult: ParsedReviewResult? = nil,
         startedAt: Date?,
         endedAt: Date?,
         elapsedSeconds: Int?,
@@ -77,6 +82,7 @@ package struct ReviewJobListItem: Sendable, Hashable {
         self.model = model
         self.status = status
         self.summary = summary
+        self.reviewResult = reviewResult
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.elapsedSeconds = elapsedSeconds
