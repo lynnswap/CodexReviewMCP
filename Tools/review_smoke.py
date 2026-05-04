@@ -37,7 +37,7 @@ def project_root() -> pathlib.Path:
 
 
 def default_server_bin() -> pathlib.Path:
-    return project_root() / ".build" / "debug" / "CodexReviewMCPServerExecutable"
+    return project_root() / ".build" / "debug" / "CodexReviewMCPServerCommand"
 
 
 def write_text(path: pathlib.Path, text: str) -> None:
@@ -176,7 +176,7 @@ def run_http_e2e(args: argparse.Namespace) -> int:
     server_bin = pathlib.Path(args.server_bin).resolve() if args.server_bin else default_server_bin()
     if not server_bin.exists():
         raise FileNotFoundError(
-            f"Server binary not found at {server_bin}. Run `swift build --target CodexReviewMCPServerExecutable` first or pass --server-bin."
+            f"Server binary not found at {server_bin}. Run `swift build --target CodexReviewMCPServerCommand` first or pass --server-bin."
         )
 
     host = "127.0.0.1"

@@ -1,8 +1,10 @@
 import Foundation
 import Testing
 import ReviewTestSupport
-@testable import ReviewInfra
-@_spi(Testing) @testable import ReviewApp
+@testable import ReviewAppServerAdapter
+@testable import ReviewPlatform
+@testable import ReviewMCPAdapter
+@_spi(Testing) @testable import ReviewApplication
 @testable import ReviewDomain
 
 @Suite(.serialized)

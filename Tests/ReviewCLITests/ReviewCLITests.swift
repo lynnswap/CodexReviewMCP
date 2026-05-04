@@ -1,6 +1,8 @@
 import Foundation
 import Testing
-@testable import ReviewInfra
+@testable import ReviewAppServerAdapter
+@testable import ReviewPlatform
+@testable import ReviewMCPAdapter
 
 @testable import ReviewCLI
 

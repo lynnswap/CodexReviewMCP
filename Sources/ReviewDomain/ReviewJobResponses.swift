@@ -1,5 +1,4 @@
 import Foundation
-import MCP
 
 package struct ReviewReadResult: Sendable, Hashable {
     package var jobID: String
@@ -40,40 +39,6 @@ package struct ReviewReadResult: Sendable, Hashable {
         self.error = error
     }
 
-    package func structuredContentForStart() -> Value {
-        structuredContent(includeDetails: false)
-    }
-
-    package func structuredContentForRead() -> Value {
-        structuredContent(includeDetails: true)
-    }
-
-    private func structuredContent(includeDetails: Bool) -> Value {
-        var object: [String: Value] = [
-            "jobId": .string(jobID),
-            "status": .string(status.rawValue),
-            "review": .string(review),
-        ]
-        if let threadID {
-            object["threadId"] = .string(threadID)
-        }
-        object["turnId"] = turnID.map(Value.string) ?? .null
-        object["model"] = model.map(Value.string) ?? .null
-        if let cancellation {
-            object["cancellation"] = cancellation.structuredContent()
-        }
-        if includeDetails {
-            object["logs"] = .array(logs.map { $0.structuredContent() })
-            object["rawLogText"] = .string(rawLogText)
-            if lastAgentMessage.isEmpty == false {
-                object["lastAgentMessage"] = .string(lastAgentMessage)
-            }
-        }
-        if let error {
-            object["error"] = .string(error)
-        }
-        return .object(object)
-    }
 }
 
 package struct ReviewJobListItem: Sendable, Hashable {
@@ -121,36 +86,6 @@ package struct ReviewJobListItem: Sendable, Hashable {
         self.cancellation = cancellation
     }
 
-    package func structuredContent() -> Value {
-        var object: [String: Value] = [
-            "jobId": .string(jobID),
-            "cwd": .string(cwd),
-            "targetSummary": .string(targetSummary),
-            "status": .string(status.rawValue),
-            "summary": .string(summary),
-            "cancellable": .bool(cancellable),
-        ]
-        object["model"] = model.map(Value.string) ?? .null
-        if let cancellation {
-            object["cancellation"] = cancellation.structuredContent()
-        }
-        if let startedAt {
-            object["startedAt"] = .string(startedAt.ISO8601Format())
-        }
-        if let endedAt {
-            object["endedAt"] = .string(endedAt.ISO8601Format())
-        }
-        if let elapsedSeconds {
-            object["elapsedSeconds"] = .int(elapsedSeconds)
-        }
-        if let threadID {
-            object["threadId"] = .string(threadID)
-        }
-        if lastAgentMessage.isEmpty == false {
-            object["lastAgentMessage"] = .string(lastAgentMessage)
-        }
-        return .object(object)
-    }
 }
 
 package struct ReviewListResult: Sendable, Hashable {
@@ -160,11 +95,6 @@ package struct ReviewListResult: Sendable, Hashable {
         self.items = items
     }
 
-    package func structuredContent() -> Value {
-        .object([
-            "items": .array(items.map { $0.structuredContent() })
-        ])
-    }
 }
 
 package struct ReviewJobSelector: Sendable, Hashable {
@@ -209,22 +139,6 @@ package struct ReviewCancelOutcome: Sendable, Hashable {
         self.cancellation = cancellation
     }
 
-    package func structuredContent() -> Value {
-        var object: [String: Value] = [
-            "jobId": .string(jobID),
-            "cancelled": .bool(cancelled),
-            "status": .string(status.rawValue),
-            "turnId": .null,
-        ]
-        if let threadID {
-            object["threadId"] = .string(threadID)
-        }
-        if let cancellation {
-            object["cancellation"] = cancellation.structuredContent()
-        }
-        return .object(object)
-    }
-
     package var turnID: String? {
         nil
     }
@@ -241,11 +155,4 @@ package struct ReviewCancelResult: Sendable {
         self.signalled = signalled
     }
 
-    package func structuredContent() -> Value {
-        .object([
-            "jobId": .string(jobID),
-            "status": .string(state.rawValue),
-            "signalled": .bool(signalled),
-        ])
-    }
 }

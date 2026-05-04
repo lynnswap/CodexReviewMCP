@@ -1,7 +1,9 @@
 import Foundation
 import Testing
-@testable import ReviewInfra
-@testable import ReviewApp
+@testable import ReviewAppServerAdapter
+@testable import ReviewPlatform
+@testable import ReviewMCPAdapter
+@testable import ReviewApplication
 @testable import ReviewDomain
 
 @Suite struct ReviewExecutionSettingsBuilderTests {

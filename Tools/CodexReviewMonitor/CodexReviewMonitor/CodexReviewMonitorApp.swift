@@ -6,8 +6,9 @@
 //
 
 import AppKit
-import CodexReviewMCP
-@_spi(PreviewSupport) import CodexReviewUI
+import ReviewApplication
+import ReviewServiceRuntime
+@_spi(PreviewSupport) import ReviewUI
 
 enum CodexReviewMonitorNativeAuthentication {
     static let callbackScheme = "lynnpd.codexreviewmonitor.auth"

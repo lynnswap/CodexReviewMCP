@@ -29,12 +29,22 @@ CodexReviewMCP exposes Codex review over MCP.
    - `resources/templates/list`
    - `resources/read` on `codex-review://help/overview`
 
+### Runtime home
+
+ReviewMCP uses `~/.codex_review` as its dedicated Codex home. The shared
+`codex app-server` launched by ReviewMCP also uses this home, so backend
+settings and runtime files are isolated from your normal Codex home.
+
+ReviewMCP creates the directory when needed. It stores backend config in
+`~/.codex_review/config.toml` and runtime metadata such as the current MCP
+endpoint under the same directory.
+
 ### Codex CLI timeout note
 
 `codex mcp add` does not currently expose MCP timeout flags. If you expect
 long-running reviews, add the timeout values manually in your client Codex
-config after registration. This client-side MCP entry is separate from
-ReviewMCP's dedicated backend home at `~/.codex_review/config.toml`:
+config after registration. This client-side MCP entry is separate from the
+ReviewMCP backend home described above:
 
 ```toml
 [mcp_servers.codex_review]
@@ -48,143 +58,8 @@ entry to include the timeout values.
 
 ## Architecture
 
-- MCP server
-  - Persistent HTTP/SSE MCP server
-  - Multi-session
-  - Session-scoped review jobs
-  - One long-lived `codex app-server` backend process
-  - One shared STDIO transport to the backend process
-  - Review jobs run concurrently across sessions and within the same session
-- Discovery
-  - Writes the resolved endpoint to `~/.codex_review/review_mcp_endpoint.json`
-  - Stores internal supervisor state in `~/.codex_review/review_mcp_runtime_state.json`
+For a concise architecture summary and diagrams, see [Docs/architecture.md](Docs/architecture.md).
 
-Pre-1.0 note:
+## MCP Details
 
-- Discovery schema, runtime-state layout, and other internal file formats may change without migration before the first release.
-
-## MCP Tools
-
-### `review_start`
-
-Runs a review through the shared long-lived `codex app-server` backend over STDIO and blocks until the final result is ready.
-
-Key inputs:
-
-- `cwd`
-- `target`
-
-`target` uses the app-server review target model:
-
-- `{"type":"uncommittedChanges"}`
-- `{"type":"baseBranch","branch":"main"}`
-- `{"type":"commit","sha":"abc1234","title":"Optional title"}`
-- `{"type":"custom","instructions":"Free-form review instructions"}`
-
-Returns:
-
-- `jobId`
-- `threadId` when available
-- `turnId`
-- `model` effective resolved review model
-- `status`
-- `review`
-- `cancellation` when cancellation metadata is available
-- `error`
-
-Notes:
-
-- `review_start` is the primary client flow. It waits for terminal completion, so MCP clients should configure a sufficiently large tool timeout.
-- ReviewMCP resolves the reported review model in this order:
-  1. `~/.codex_review/config.toml` `review_model`
-  2. the effective dedicated Codex config in `~/.codex_review/config.toml` `review_model`
-  3. backend-reported `thread/start.model`
-  4. the effective dedicated Codex config in `~/.codex_review/config.toml` `model` only as a pre-thread-start fallback when the backend does not report a model
-- Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
-
-If you are unsure how to build the `target` object, read:
-
-- `codex-review://help/tools/review_start`
-- `codex-review://help/targets/uncommittedChanges`
-- `codex-review://help/targets/baseBranch`
-- `codex-review://help/targets/commit`
-- `codex-review://help/targets/custom`
-
-### `review_read`
-
-Reads the current or final state of a review job owned by the current MCP session.
-This is optional for normal clients because `review_start` already returns the final summary.
-
-Returns:
-
-- `jobId`
-- `threadId` when available
-- `turnId`
-- `model` effective resolved review model
-- `status`
-- `review`
-- `logs`
-- `rawLogText`
-- `lastAgentMessage`
-- `cancellation` when cancellation metadata is available
-- `error`
-
-### `review_list`
-
-Lists review jobs owned by the current MCP session.
-
-Optional inputs:
-
-- `cwd`
-- `statuses`
-- `limit` default `20`, max `100`
-
-Returns:
-
-- `items`
-  - `jobId`
-  - `cwd`
-  - `targetSummary`
-  - `model` effective resolved review model
-  - `status`
-  - `summary`
-  - `startedAt`
-  - `endedAt`
-  - `elapsedSeconds`
-  - `threadId`
-  - `lastAgentMessage`
-  - `cancellable`
-  - `cancellation` when cancellation metadata is available
-
-### `review_cancel`
-
-Cancels a review job owned by the current MCP session.
-
-Inputs:
-
-- exact:
-  - `jobId`
-- selector:
-  - `cwd`
-  - `statuses`
-
-Notes:
-
-- `cwd` is a search key, not a unique identifier.
-- Without `jobId`, `review_cancel` searches only the current MCP session.
-- Responses include `cancellation.source` and `cancellation.message` when cancellation metadata is available. UI-triggered cancellations use `source: "userInterface"`.
-
-## Resources
-
-This server exposes onboarding/discovery resources over MCP. Clients can use `resources/list` and `resources/read` to inspect supported review flows without relying on this README.
-
-## Resource Templates
-
-This server also exposes MCP resource templates for tool-specific and target-specific help. Clients can discover them via `resources/templates/list`.
-
-## Development Notes
-
-- The package depends on `swift-sdk` via a pinned release version in [Package.swift](Package.swift).
-- ReviewMCP-only overrides live in `~/.codex_review/config.toml` and currently support root-level `review_model`, `model_reasoning_effort`, and `service_tier`.
-- ReviewMCP's dedicated Codex home is `~/.codex_review`. The shared `codex app-server` also uses this as its Codex home, so Codex-owned config keys such as `model_context_window` remain owned and interpreted by Codex core rather than ReviewMCP.
-- Review jobs are isolated per MCP session.
+For tool schemas, discovery resources, resource templates, session behavior, and runtime files, see [Docs/mcp.md](Docs/mcp.md).

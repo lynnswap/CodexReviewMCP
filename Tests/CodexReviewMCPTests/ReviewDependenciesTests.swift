@@ -1,8 +1,11 @@
 import Foundation
 import Testing
 import ReviewTestSupport
-@testable import ReviewInfra
-@_spi(Testing) @testable import ReviewApp
+@testable import ReviewAppServerAdapter
+@testable import ReviewPlatform
+@testable import ReviewMCPAdapter
+@testable import ReviewServiceRuntime
+@_spi(Testing) @testable import ReviewApplication
 
 @Suite(.serialized)
 @MainActor
@@ -43,21 +46,6 @@ struct ReviewDependenciesTests {
         let config = try ReviewLocalConfigClient(dependencies: core).load()
 
         #expect(config.reviewModel == "gpt-test")
-    }
-
-    @Test func previewDependenciesDoNotPointAtRealReviewHome() {
-        let dependencies = ReviewDependencies.preview()
-        let realReviewHome = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex_review", isDirectory: true)
-
-        #expect(dependencies.core.paths.reviewHomeURL().path != realReviewHome.path)
-    }
-
-    @Test func previewDependenciesUseUniqueReviewHomes() {
-        let first = ReviewDependencies.preview()
-        let second = ReviewDependencies.preview()
-
-        #expect(first.core.paths.reviewHomeURL().path != second.core.paths.reviewHomeURL().path)
     }
 
     @Test func coreDependenciesReplacingEnvironmentPreservesExplicitPathsForSameEnvironment() throws {

@@ -1,7 +1,10 @@
 import Foundation
 import Testing
+import ReviewPorts
 import ReviewTestSupport
-@testable import ReviewInfra
+@testable import ReviewAppServerAdapter
+@testable import ReviewPlatform
+@testable import ReviewMCPAdapter
 
 @testable import ReviewDomain
 

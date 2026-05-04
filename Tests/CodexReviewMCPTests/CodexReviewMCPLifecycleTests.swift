@@ -5,9 +5,10 @@ import Observation
 import Testing
 import ReviewTestSupport
 import ReviewDomain
-@testable import ReviewInfra
-@_spi(Testing) @testable import ReviewApp
-@testable import ReviewRuntime
+@testable import ReviewAppServerAdapter
+@testable import ReviewPlatform
+@testable import ReviewMCPAdapter
+@_spi(Testing) @testable import ReviewApplication
 
 @Suite(.serialized)
 @MainActor

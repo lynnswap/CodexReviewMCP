@@ -5,9 +5,11 @@ import Observation
 import Testing
 import ReviewTestSupport
 import ReviewDomain
-@testable import ReviewInfra
-@_spi(Testing) @testable import ReviewApp
-@testable import ReviewRuntime
+@testable import ReviewAppServerAdapter
+@testable import ReviewPlatform
+@testable import ReviewMCPAdapter
+@testable import ReviewServiceRuntime
+@_spi(Testing) @testable import ReviewApplication
 
 @MainActor
 private extension CodexReviewAuthModel {

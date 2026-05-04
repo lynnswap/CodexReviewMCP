@@ -3,7 +3,8 @@ import Dispatch
 import Foundation
 import Logging
 import ReviewDomain
-import ReviewInfra
+import ReviewPlatform
+import ReviewMCPAdapter
 
 struct ServerOptions {
     var host = "localhost"

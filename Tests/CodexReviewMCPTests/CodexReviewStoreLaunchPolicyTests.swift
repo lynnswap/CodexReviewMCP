@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import ReviewDomain
-@testable import ReviewApp
+@testable import ReviewApplication
 
 @Suite(.serialized)
 struct CodexReviewStoreLaunchPolicyTests {

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import MCP
-@testable import ReviewInfra
+@testable import ReviewMCPAdapter
 
 
 @Suite
