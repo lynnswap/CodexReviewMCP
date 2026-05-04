@@ -1,0 +1,148 @@
+# MCP
+
+CodexReviewMCP exposes Codex review over MCP through HTTP/SSE and STDIO transports.
+
+## Server Behavior
+
+- Persistent HTTP/SSE MCP server
+- Multi-session
+- Session-scoped review jobs
+- One long-lived `codex app-server` backend process
+- One shared STDIO transport to the backend process
+- Review jobs run concurrently across sessions and within the same session
+
+## Tools
+
+### `review_start`
+
+Runs a review through the shared long-lived `codex app-server` backend over STDIO and blocks until the final result is ready.
+
+Key inputs:
+
+- `cwd`
+- `target`
+
+`target` uses the app-server review target model:
+
+- `{"type":"uncommittedChanges"}`
+- `{"type":"baseBranch","branch":"main"}`
+- `{"type":"commit","sha":"abc1234","title":"Optional title"}`
+- `{"type":"custom","instructions":"Free-form review instructions"}`
+
+Returns:
+
+- `jobId`
+- `threadId` when available
+- `turnId`
+- `model` effective resolved review model
+- `status`
+- `review`
+- `cancellation` when cancellation metadata is available
+- `error`
+
+Notes:
+
+- `review_start` is the primary client flow. It waits for terminal completion, so MCP clients should configure a sufficiently large tool timeout.
+- ReviewMCP resolves the reported review model in this order:
+  1. `~/.codex_review/config.toml` `review_model`
+  2. the effective dedicated Codex config in `~/.codex_review/config.toml` `review_model`
+  3. backend-reported `thread/start.model`
+  4. the effective dedicated Codex config in `~/.codex_review/config.toml` `model` only as a pre-thread-start fallback when the backend does not report a model
+- Use `review_read` to fetch `lastAgentMessage`, ordered `logs`, and `rawLogText`.
+
+If you are unsure how to build the `target` object, read:
+
+- `codex-review://help/tools/review_start`
+- `codex-review://help/targets/uncommittedChanges`
+- `codex-review://help/targets/baseBranch`
+- `codex-review://help/targets/commit`
+- `codex-review://help/targets/custom`
+
+### `review_read`
+
+Reads the current or final state of a review job owned by the current MCP session.
+This is optional for normal clients because `review_start` already returns the final summary.
+
+Returns:
+
+- `jobId`
+- `threadId` when available
+- `turnId`
+- `model` effective resolved review model
+- `status`
+- `review`
+- `logs`
+- `rawLogText`
+- `lastAgentMessage`
+- `cancellation` when cancellation metadata is available
+- `error`
+
+### `review_list`
+
+Lists review jobs owned by the current MCP session.
+
+Optional inputs:
+
+- `cwd`
+- `statuses`
+- `limit` default `20`, max `100`
+
+Returns:
+
+- `items`
+  - `jobId`
+  - `cwd`
+  - `targetSummary`
+  - `model` effective resolved review model
+  - `status`
+  - `summary`
+  - `startedAt`
+  - `endedAt`
+  - `elapsedSeconds`
+  - `threadId`
+  - `lastAgentMessage`
+  - `cancellable`
+  - `cancellation` when cancellation metadata is available
+
+### `review_cancel`
+
+Cancels a review job owned by the current MCP session.
+
+Inputs:
+
+- exact:
+  - `jobId`
+- selector:
+  - `cwd`
+  - `statuses`
+
+Notes:
+
+- `cwd` is a search key, not a unique identifier.
+- Without `jobId`, `review_cancel` searches only the current MCP session.
+- Responses include `cancellation.source` and `cancellation.message` when cancellation metadata is available. UI-triggered cancellations use `source: "userInterface"`.
+
+## Discovery Resources
+
+This server exposes onboarding/discovery resources over MCP. Clients can use `resources/list` and `resources/read` to inspect supported review flows without relying on the README.
+
+Useful resources:
+
+- `codex-review://help/overview`
+- `codex-review://help/tools/review_start`
+- `codex-review://help/targets/uncommittedChanges`
+- `codex-review://help/targets/baseBranch`
+- `codex-review://help/targets/commit`
+- `codex-review://help/targets/custom`
+
+## Resource Templates
+
+This server also exposes MCP resource templates for tool-specific and target-specific help. Clients can discover them via `resources/templates/list`.
+
+## Runtime Files
+
+ReviewMCP uses `~/.codex_review` as its dedicated Codex home.
+
+- `config.toml` stores backend settings for this dedicated home
+- `review_mcp_endpoint.json` records the current HTTP/SSE endpoint
+- `review_mcp_runtime_state.json` records internal server/runtime ownership state
