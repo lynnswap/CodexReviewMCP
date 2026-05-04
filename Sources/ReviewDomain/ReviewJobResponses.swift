@@ -2,44 +2,26 @@ import Foundation
 
 package struct ReviewReadResult: Sendable, Hashable {
     package var jobID: String
-    package var threadID: String?
-    package var turnID: String?
-    package var model: String?
-    package var status: ReviewJobState
-    package var review: String
-    package var reviewResult: ParsedReviewResult?
-    package var lastAgentMessage: String
+    package var core: ReviewJobCore
+    package var elapsedSeconds: Int?
+    package var cancellable: Bool
     package var logs: [ReviewLogEntry]
     package var rawLogText: String
-    package var cancellation: ReviewCancellation?
-    package var error: String?
 
     package init(
         jobID: String,
-        threadID: String? = nil,
-        turnID: String? = nil,
-        model: String? = nil,
-        status: ReviewJobState,
-        review: String,
-        reviewResult: ParsedReviewResult? = nil,
-        lastAgentMessage: String,
+        core: ReviewJobCore,
+        elapsedSeconds: Int? = nil,
+        cancellable: Bool,
         logs: [ReviewLogEntry],
-        rawLogText: String,
-        cancellation: ReviewCancellation? = nil,
-        error: String? = nil
+        rawLogText: String
     ) {
         self.jobID = jobID
-        self.threadID = threadID
-        self.turnID = turnID
-        self.model = model
-        self.status = status
-        self.review = review
-        self.reviewResult = reviewResult
-        self.lastAgentMessage = lastAgentMessage
+        self.core = core
+        self.elapsedSeconds = elapsedSeconds
+        self.cancellable = cancellable
         self.logs = logs
         self.rawLogText = rawLogText
-        self.cancellation = cancellation
-        self.error = error
     }
 
 }
@@ -48,48 +30,24 @@ package struct ReviewJobListItem: Sendable, Hashable {
     package var jobID: String
     package var cwd: String
     package var targetSummary: String
-    package var model: String?
-    package var status: ReviewJobState
-    package var summary: String
-    package var reviewResult: ParsedReviewResult?
-    package var startedAt: Date?
-    package var endedAt: Date?
+    package var core: ReviewJobCore
     package var elapsedSeconds: Int?
-    package var threadID: String?
-    package var lastAgentMessage: String
     package var cancellable: Bool
-    package var cancellation: ReviewCancellation?
 
     package init(
         jobID: String,
         cwd: String,
         targetSummary: String,
-        model: String?,
-        status: ReviewJobState,
-        summary: String,
-        reviewResult: ParsedReviewResult? = nil,
-        startedAt: Date?,
-        endedAt: Date?,
+        core: ReviewJobCore,
         elapsedSeconds: Int?,
-        threadID: String?,
-        lastAgentMessage: String,
-        cancellable: Bool,
-        cancellation: ReviewCancellation? = nil
+        cancellable: Bool
     ) {
         self.jobID = jobID
         self.cwd = cwd
         self.targetSummary = targetSummary
-        self.model = model
-        self.status = status
-        self.summary = summary
-        self.reviewResult = reviewResult
-        self.startedAt = startedAt
-        self.endedAt = endedAt
+        self.core = core
         self.elapsedSeconds = elapsedSeconds
-        self.threadID = threadID
-        self.lastAgentMessage = lastAgentMessage
         self.cancellable = cancellable
-        self.cancellation = cancellation
     }
 
 }
@@ -126,27 +84,17 @@ package enum ReviewJobSelectionError: Error, Sendable {
 
 package struct ReviewCancelOutcome: Sendable, Hashable {
     package var jobID: String
-    package var threadID: String?
     package var cancelled: Bool
-    package var status: ReviewJobState
-    package var cancellation: ReviewCancellation?
+    package var core: ReviewJobCore
 
     package init(
         jobID: String,
-        threadID: String? = nil,
         cancelled: Bool,
-        status: ReviewJobState,
-        cancellation: ReviewCancellation? = nil
+        core: ReviewJobCore
     ) {
         self.jobID = jobID
-        self.threadID = threadID
         self.cancelled = cancelled
-        self.status = status
-        self.cancellation = cancellation
-    }
-
-    package var turnID: String? {
-        nil
+        self.core = core
     }
 }
 

@@ -3111,18 +3111,15 @@ struct CodexReviewMCPTests {
             store.completeReview(
                 jobID: jobID,
                 outcome: .init(
-                    state: .succeeded,
-                    exitCode: 0,
-                    reviewThreadID: nil,
-                    threadID: nil,
-                    turnID: nil,
-                    model: nil,
-                    hasFinalReview: false,
-                    lastAgentMessage: "",
-                    errorMessage: nil,
-                    summary: "Completed.",
-                    startedAt: Date(),
-                    endedAt: Date(),
+                    core: ReviewJobCore(
+                        lifecycle: .init(
+                            status: .succeeded,
+                            exitCode: 0,
+                            startedAt: Date(),
+                            endedAt: Date()
+                        ),
+                        output: .init(summary: "Completed.")
+                    ),
                     content: ""
                 )
             )
@@ -6775,18 +6772,15 @@ struct CodexReviewMCPTests {
             store.completeReview(
                 jobID: jobID,
                 outcome: .init(
-                    state: .succeeded,
-                    exitCode: 0,
-                    reviewThreadID: nil,
-                    threadID: nil,
-                    turnID: nil,
-                    model: nil,
-                    hasFinalReview: false,
-                    lastAgentMessage: "",
-                    errorMessage: nil,
-                    summary: "Completed.",
-                    startedAt: Date(),
-                    endedAt: Date(),
+                    core: ReviewJobCore(
+                        lifecycle: .init(
+                            status: .succeeded,
+                            exitCode: 0,
+                            startedAt: Date(),
+                            endedAt: Date()
+                        ),
+                        output: .init(summary: "Completed.")
+                    ),
                     content: ""
                 )
             )
@@ -6888,18 +6882,15 @@ struct CodexReviewMCPTests {
             store.completeReview(
                 jobID: jobID,
                 outcome: .init(
-                    state: .succeeded,
-                    exitCode: 0,
-                    reviewThreadID: nil,
-                    threadID: nil,
-                    turnID: nil,
-                    model: nil,
-                    hasFinalReview: false,
-                    lastAgentMessage: "",
-                    errorMessage: nil,
-                    summary: "Completed.",
-                    startedAt: Date(),
-                    endedAt: Date(),
+                    core: ReviewJobCore(
+                        lifecycle: .init(
+                            status: .succeeded,
+                            exitCode: 0,
+                            startedAt: Date(),
+                            endedAt: Date()
+                        ),
+                        output: .init(summary: "Completed.")
+                    ),
                     content: ""
                 )
             )
@@ -10785,10 +10776,15 @@ final class CancellationFailureStoreBackend: ReviewMonitorTestingHarness {
         let job = try store.resolveJob(jobID: jobID, sessionID: sessionID)
         return .init(
             jobID: jobID,
-            threadID: job.threadID,
             cancelled: true,
-            status: job.status.state,
-            cancellation: job.cancellation
+            core: ReviewJobCore(
+                run: job.core.run,
+                lifecycle: .init(
+                    status: job.core.lifecycle.status,
+                    cancellation: job.core.lifecycle.cancellation
+                ),
+                output: .init(summary: job.core.output.summary)
+            )
         )
     }
 }
@@ -12056,7 +12052,7 @@ func makeStoreTestJob(
     id: String = UUID().uuidString,
     cwd: String = "/tmp/repo",
     startedAt: Date = Date(),
-    status: CodexReviewJobStatus,
+    status: ReviewJobState,
     targetSummary: String,
     summary: String? = nil
 ) -> CodexReviewJob {

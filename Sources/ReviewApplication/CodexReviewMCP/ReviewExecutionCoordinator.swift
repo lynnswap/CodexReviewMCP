@@ -349,7 +349,7 @@ package actor ReviewExecutionCoordinator {
             reason: .cancelled(cancellation),
             notify: false
         )
-        let existingCancellation = await job.cancellation
+        let existingCancellation = await job.core.lifecycle.cancellation
         let effectiveCancellation = recordedReason?.cancellation
             ?? existingCancellation
             ?? cancellation
@@ -362,18 +362,24 @@ package actor ReviewExecutionCoordinator {
         if result.signalled {
             await interruptExecutionIfNeeded(jobID: job.id)
         }
-        let resolvedThreadID = await job.threadID
-        let status = await job.status.state
-        let resolvedCancellation = await job.cancellation ?? (result.signalled ? effectiveCancellation : nil)
+        let run = await job.core.run
+        let status = await job.core.lifecycle.status
+        let resolvedCancellation = await job.core.lifecycle.cancellation
+            ?? (result.signalled ? effectiveCancellation : nil)
         let cancelled = result.state == .cancelled
             || status == .cancelled
             || (result.signalled && status == .running)
         return ReviewCancelOutcome(
             jobID: job.id,
-            threadID: resolvedThreadID,
             cancelled: cancelled,
-            status: status,
-            cancellation: cancelled ? resolvedCancellation : nil
+            core: ReviewJobCore(
+                run: run,
+                lifecycle: .init(
+                    status: status,
+                    cancellation: cancelled ? resolvedCancellation : nil
+                ),
+                output: .init(summary: resolvedCancellation?.message ?? status.displayText)
+            )
         )
     }
 

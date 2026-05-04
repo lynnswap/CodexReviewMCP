@@ -14,27 +14,16 @@ extension ReviewReadResult {
     private func structuredContent(includeDetails: Bool) -> Value {
         var object: [String: Value] = [
             "jobId": .string(jobID),
-            "status": .string(status.rawValue),
-            "review": .string(review),
-            "reviewResult": reviewResult.map { $0.structuredContent() } ?? .null,
+            "run": core.run.structuredContent(),
+            "lifecycle": core.lifecycle.structuredContent(
+                elapsedSeconds: elapsedSeconds,
+                cancellable: cancellable
+            ),
+            "output": core.output.structuredContent(review: core.reviewText),
         ]
-        if let threadID {
-            object["threadId"] = .string(threadID)
-        }
-        object["turnId"] = turnID.map(Value.string) ?? .null
-        object["model"] = model.map(Value.string) ?? .null
-        if let cancellation {
-            object["cancellation"] = cancellation.structuredContent()
-        }
         if includeDetails {
             object["logs"] = .array(logs.map { $0.structuredContent() })
             object["rawLogText"] = .string(rawLogText)
-            if lastAgentMessage.isEmpty == false {
-                object["lastAgentMessage"] = .string(lastAgentMessage)
-            }
-        }
-        if let error {
-            object["error"] = .string(error)
         }
         return .object(object)
     }
@@ -42,34 +31,17 @@ extension ReviewReadResult {
 
 extension ReviewJobListItem {
     package func structuredContent() -> Value {
-        var object: [String: Value] = [
+        let object: [String: Value] = [
             "jobId": .string(jobID),
             "cwd": .string(cwd),
             "targetSummary": .string(targetSummary),
-            "status": .string(status.rawValue),
-            "summary": .string(summary),
-            "reviewResult": reviewResult.map { $0.structuredContent() } ?? .null,
-            "cancellable": .bool(cancellable),
+            "run": core.run.structuredContent(),
+            "lifecycle": core.lifecycle.structuredContent(
+                elapsedSeconds: elapsedSeconds,
+                cancellable: cancellable
+            ),
+            "output": core.output.structuredContent(review: core.reviewText),
         ]
-        object["model"] = model.map(Value.string) ?? .null
-        if let cancellation {
-            object["cancellation"] = cancellation.structuredContent()
-        }
-        if let startedAt {
-            object["startedAt"] = .string(startedAt.ISO8601Format())
-        }
-        if let endedAt {
-            object["endedAt"] = .string(endedAt.ISO8601Format())
-        }
-        if let elapsedSeconds {
-            object["elapsedSeconds"] = .int(elapsedSeconds)
-        }
-        if let threadID {
-            object["threadId"] = .string(threadID)
-        }
-        if lastAgentMessage.isEmpty == false {
-            object["lastAgentMessage"] = .string(lastAgentMessage)
-        }
         return .object(object)
     }
 }
@@ -84,19 +56,16 @@ extension ReviewListResult {
 
 extension ReviewCancelOutcome {
     package func structuredContent() -> Value {
-        var object: [String: Value] = [
+        .object([
             "jobId": .string(jobID),
             "cancelled": .bool(cancelled),
-            "status": .string(status.rawValue),
-            "turnId": .null,
-        ]
-        if let threadID {
-            object["threadId"] = .string(threadID)
-        }
-        if let cancellation {
-            object["cancellation"] = cancellation.structuredContent()
-        }
-        return .object(object)
+            "run": core.run.structuredContent(),
+            "lifecycle": core.lifecycle.structuredContent(
+                elapsedSeconds: nil,
+                cancellable: false
+            ),
+            "output": core.output.structuredContent(review: core.reviewText),
+        ])
     }
 }
 
@@ -121,6 +90,47 @@ extension ReviewLogEntry {
         ]
         object["groupId"] = groupID.map(Value.string) ?? .null
         return .object(object)
+    }
+}
+
+extension ReviewRunMetadata {
+    package func structuredContent() -> Value {
+        .object([
+            "reviewThreadId": reviewThreadID.map(Value.string) ?? .null,
+            "threadId": threadID.map(Value.string) ?? .null,
+            "turnId": turnID.map(Value.string) ?? .null,
+            "model": model.map(Value.string) ?? .null,
+        ])
+    }
+}
+
+extension ReviewLifecycleState {
+    package func structuredContent(
+        elapsedSeconds: Int?,
+        cancellable: Bool
+    ) -> Value {
+        .object([
+            "status": .string(status.rawValue),
+            "exitCode": exitCode.map(Value.int) ?? .null,
+            "startedAt": startedAt.map { .string($0.ISO8601Format()) } ?? .null,
+            "endedAt": endedAt.map { .string($0.ISO8601Format()) } ?? .null,
+            "elapsedSeconds": elapsedSeconds.map(Value.int) ?? .null,
+            "cancellable": .bool(cancellable),
+            "cancellation": cancellation.map { $0.structuredContent() } ?? .null,
+            "errorMessage": errorMessage.map(Value.string) ?? .null,
+        ])
+    }
+}
+
+extension ReviewOutputState {
+    package func structuredContent(review: String) -> Value {
+        .object([
+            "summary": .string(summary),
+            "review": .string(review),
+            "hasFinalReview": .bool(hasFinalReview),
+            "lastAgentMessage": lastAgentMessage.map(Value.string) ?? .null,
+            "reviewResult": reviewResult.map { $0.structuredContent() } ?? .null,
+        ])
     }
 }
 

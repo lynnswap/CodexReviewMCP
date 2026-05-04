@@ -11,7 +11,7 @@ extension CodexReviewJob {
         model: String? = "gpt-5",
         threadID: String? = nil,
         turnID: String? = nil,
-        status: CodexReviewJobStatus,
+        status: ReviewJobState,
         cancellationRequested: Bool = false,
         cancellation: ReviewCancellation? = nil,
         startedAt: Date? = nil,
@@ -28,23 +28,31 @@ extension CodexReviewJob {
             id: id,
             sessionID: sessionID,
             cwd: cwd,
-            reviewThreadID: threadID,
             targetSummary: targetSummary,
-            model: model,
-            threadID: threadID,
-            turnID: turnID,
-            status: status,
+            core: ReviewJobCore(
+                run: .init(
+                    reviewThreadID: threadID,
+                    threadID: threadID,
+                    turnID: turnID,
+                    model: model
+                ),
+                lifecycle: .init(
+                    status: status,
+                    exitCode: exitCode,
+                    startedAt: startedAt,
+                    endedAt: endedAt,
+                    cancellation: cancellation,
+                    errorMessage: errorMessage
+                ),
+                output: .init(
+                    summary: summary,
+                    hasFinalReview: hasFinalReview,
+                    lastAgentMessage: lastAgentMessage,
+                    reviewResult: reviewResult
+                )
+            ),
             cancellationRequested: cancellationRequested,
-            cancellation: cancellation,
-            startedAt: startedAt,
-            endedAt: endedAt,
-            summary: summary,
-            hasFinalReview: hasFinalReview,
-            reviewResult: reviewResult,
-            lastAgentMessage: lastAgentMessage,
-            logEntries: logEntries,
-            errorMessage: errorMessage,
-            exitCode: exitCode
+            logEntries: logEntries
         )
     }
 }

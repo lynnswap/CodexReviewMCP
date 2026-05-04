@@ -29,9 +29,9 @@ struct ReviewToolHandler {
             )
             let result = try await tool.startReview(arguments.makeRequest())
             return try CallTool.Result(
-                content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
+                content: [.text(text: result.core.reviewText.isEmpty ? result.core.lifecycle.status.rawValue : result.core.reviewText, annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContentForStart(),
-                isError: result.status == .failed
+                isError: result.core.lifecycle.status == .failed
             )
         } catch let error as DecodingError {
             let detail = reviewStartErrorDetail(from: error)
@@ -57,9 +57,9 @@ struct ReviewToolHandler {
             let arguments = try decodeArguments(params.arguments, as: ReviewReadArguments.self)
             let result = try await tool.readReview(jobID: arguments.jobID)
             return try CallTool.Result(
-                content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
+                content: [.text(text: result.core.reviewText.isEmpty ? result.core.lifecycle.status.rawValue : result.core.reviewText, annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContentForRead(),
-                isError: result.status == .failed
+                isError: result.core.lifecycle.status == .failed
             )
         } catch {
             return toolError(error.localizedDescription)
@@ -108,7 +108,7 @@ struct ReviewToolHandler {
                 )
             }
             let message = if result.cancelled {
-                result.cancellation?.message ?? "Review cancelled."
+                result.core.lifecycle.cancellation?.message ?? "Review cancelled."
             } else {
                 "Review was already finished."
             }

@@ -416,11 +416,11 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
     private func applyCancellationFailure(message: String, to job: CodexReviewJob) {
         if message == "Failed to cancel review." {
-            job.summary = message
+            job.core.output.summary = message
         } else {
-            job.summary = "Failed to cancel review: \(message)"
+            job.core.output.summary = "Failed to cancel review: \(message)"
         }
-        job.errorMessage = message
+        job.core.lifecycle.errorMessage = message
     }
 
     private func clearSelectionIfNeeded(for workspaces: [CodexReviewWorkspace]) {

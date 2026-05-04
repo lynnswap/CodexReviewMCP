@@ -960,13 +960,13 @@ struct ReviewUITests {
 
         await viewController.sidebarViewControllerForTesting.cancelJobForTesting(job)
 
-        #expect(job.status == .cancelled)
-        #expect(job.summary == "Cancelled by user from Review Monitor.")
-        #expect(job.errorMessage == "Cancelled by user from Review Monitor.")
-        #expect(job.cancellation?.source == .userInterface)
-        #expect(job.cancellation?.message == "Cancelled by user from Review Monitor.")
-        #expect(job.startedAt == startedAt)
-        #expect(job.endedAt != nil)
+        #expect(job.core.lifecycle.status == .cancelled)
+        #expect(job.core.output.summary == "Cancelled by user from Review Monitor.")
+        #expect(job.core.lifecycle.errorMessage == "Cancelled by user from Review Monitor.")
+        #expect(job.core.lifecycle.cancellation?.source == .userInterface)
+        #expect(job.core.lifecycle.cancellation?.message == "Cancelled by user from Review Monitor.")
+        #expect(job.core.lifecycle.startedAt == startedAt)
+        #expect(job.core.lifecycle.endedAt != nil)
     }
 
     @Test func cancellationFailureUpdatesJobErrorState() async {
@@ -987,10 +987,10 @@ struct ReviewUITests {
 
         await viewController.sidebarViewControllerForTesting.cancelJobForTesting(job)
 
-        #expect(job.status == .running)
-        #expect(job.summary == "Failed to cancel review: Cancellation failed.")
-        #expect(job.errorMessage == "Cancellation failed.")
-        #expect(job.endedAt == nil)
+        #expect(job.core.lifecycle.status == .running)
+        #expect(job.core.output.summary == "Failed to cancel review: Cancellation failed.")
+        #expect(job.core.lifecycle.errorMessage == "Cancellation failed.")
+        #expect(job.core.lifecycle.endedAt == nil)
     }
 
     @Test func sidebarContextMenuPresentationRestoresResponderStateAfterClosing() {
@@ -1368,7 +1368,7 @@ struct ReviewUITests {
         #expect(window.subtitle == recentJob.cwd)
 
         let stableRenderCount = transport.renderCountForTesting
-        activeJob.summary = "Old selection should not render."
+        activeJob.core.output.summary = "Old selection should not render."
         activeJob.replaceLogEntries([.init(kind: .agentMessage, text: "Old selection log")])
         await transport.flushMainQueueForTesting()
 
@@ -1953,7 +1953,7 @@ struct ReviewUITests {
         #expect(window.subtitle == "")
 
         let stableRenderCount = transport.renderCountForTesting
-        job.summary = "Deselected summary"
+        job.core.output.summary = "Deselected summary"
         job.replaceLogEntries([.init(kind: .agentMessage, text: "Deselected log")])
         await transport.flushMainQueueForTesting()
 
@@ -1986,8 +1986,8 @@ struct ReviewUITests {
         #expect(selectedSnapshot.summary == nil)
 
         let updateRenderCount = transport.renderCountForTesting
-        job.status = .succeeded
-        job.summary = "Review completed successfully."
+        job.core.lifecycle.status = .succeeded
+        job.core.output.summary = "Review completed successfully."
         job.replaceLogEntries([.init(kind: .agentMessage, text: "Updated log")])
 
         let updatedSnapshot = try await awaitTransportRender(transport, after: updateRenderCount)
@@ -2123,7 +2123,7 @@ struct ReviewUITests {
         let metadataRenderCount = transport.renderCountForTesting
         let appendCount = transport.logAppendCountForTesting
         let reloadCount = transport.logReloadCountForTesting
-        job.summary = "Updated summary."
+        job.core.output.summary = "Updated summary."
 
         await transport.flushMainQueueForTesting()
 
@@ -2743,7 +2743,7 @@ func makeJob(
     id: String = UUID().uuidString,
     cwd: String = "/tmp/repo",
     startedAt: Date = Date(),
-    status: CodexReviewJobStatus,
+    status: ReviewJobState,
     targetSummary: String,
     summary: String? = nil,
     logText: String = "",

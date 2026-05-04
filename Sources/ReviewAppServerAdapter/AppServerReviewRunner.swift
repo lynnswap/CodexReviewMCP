@@ -374,6 +374,45 @@ package struct AppServerReviewRunner: Sendable {
                 && (snapshot.turnStatus == nil || snapshot.turnStatus == .inProgress)
         }
 
+        func makeOutcome(
+            state: ReviewJobState,
+            exitCode: Int,
+            finalSnapshot: AppServerReviewState.Snapshot,
+            errorMessage: String?,
+            summary: String,
+            endedAt: Date,
+            content: String,
+            hasFinalReview: Bool? = nil,
+            lastAgentMessage: String? = nil
+        ) -> ReviewProcessOutcome {
+            let resolvedHasFinalReview = hasFinalReview
+                ?? (finalSnapshot.finalReview?.nilIfEmpty != nil)
+            return ReviewProcessOutcome(
+                core: ReviewJobCore(
+                    run: .init(
+                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
+                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
+                        turnID: finalSnapshot.turnID ?? turnID,
+                        model: effectiveModel
+                    ),
+                    lifecycle: .init(
+                        status: state,
+                        exitCode: exitCode,
+                        startedAt: startedAt,
+                        endedAt: endedAt,
+                        errorMessage: errorMessage
+                    ),
+                    output: .init(
+                        summary: summary,
+                        hasFinalReview: resolvedHasFinalReview,
+                        lastAgentMessage: lastAgentMessage ?? finalSnapshot.lastAgentMessage,
+                        reviewResult: finalSnapshot.reviewResult
+                    )
+                ),
+                content: content
+            )
+        }
+
         func updateTimers(
             snapshot: AppServerReviewState.Snapshot,
             trackedActivity: Bool
@@ -438,19 +477,12 @@ package struct AppServerReviewRunner: Sendable {
 
                 if let timeoutMessage {
                     await onEvent(.progress(.completed, "Review timed out."))
-                    return ReviewProcessOutcome(
+                    return makeOutcome(
                         state: .failed,
                         exitCode: 124,
-                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                        turnID: finalSnapshot.turnID ?? turnID,
-                        model: effectiveModel,
-                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        finalSnapshot: finalSnapshot,
                         errorMessage: timeoutMessage,
                         summary: timeoutMessage,
-                        reviewResult: finalSnapshot.reviewResult,
-                        startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
                     )
@@ -458,19 +490,12 @@ package struct AppServerReviewRunner: Sendable {
 
                 let reason = finalSnapshot.errorMessage ?? cancellationReasonValue
                 await onEvent(.progress(.completed, "Review cancelled."))
-                return ReviewProcessOutcome(
+                return makeOutcome(
                     state: .cancelled,
                     exitCode: 0,
-                    reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                    threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                    turnID: finalSnapshot.turnID ?? turnID,
-                    model: effectiveModel,
-                    hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                    lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                    finalSnapshot: finalSnapshot,
                     errorMessage: reason,
                     summary: "Review cancelled.",
-                    reviewResult: finalSnapshot.reviewResult,
-                    startedAt: startedAt,
                     endedAt: endedAt,
                     content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
                 )
@@ -617,38 +642,24 @@ package struct AppServerReviewRunner: Sendable {
                     let finalSnapshot = await state.snapshot()
                     if let timeoutMessage {
                         await onEvent(.progress(.completed, "Review timed out."))
-                        return ReviewProcessOutcome(
+                        return makeOutcome(
                             state: .failed,
                             exitCode: 124,
-                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                            turnID: finalSnapshot.turnID ?? turnID,
-                            model: effectiveModel,
-                            hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                            lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                            finalSnapshot: finalSnapshot,
                             errorMessage: timeoutMessage,
                             summary: timeoutMessage,
-                            reviewResult: finalSnapshot.reviewResult,
-                            startedAt: startedAt,
                             endedAt: endedAt,
                             content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
                         )
                     }
                     let reason = finalSnapshot.errorMessage ?? cancellationReasonValue
                     await onEvent(.progress(.completed, "Review cancelled."))
-                    return ReviewProcessOutcome(
+                    return makeOutcome(
                         state: .cancelled,
                         exitCode: 0,
-                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                        turnID: finalSnapshot.turnID ?? turnID,
-                        model: effectiveModel,
-                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        finalSnapshot: finalSnapshot,
                         errorMessage: reason,
                         summary: "Review cancelled.",
-                        reviewResult: finalSnapshot.reviewResult,
-                        startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
                     )
@@ -691,38 +702,24 @@ package struct AppServerReviewRunner: Sendable {
                     case .completed:
                         if let timeoutMessage {
                             await onEvent(.progress(.completed, "Review timed out."))
-                            return ReviewProcessOutcome(
+                            return makeOutcome(
                                 state: .failed,
                                 exitCode: 124,
-                                reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                                threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                                turnID: finalSnapshot.turnID ?? turnID,
-                                model: effectiveModel,
-                                hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                                lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                                finalSnapshot: finalSnapshot,
                                 errorMessage: timeoutMessage,
                                 summary: timeoutMessage,
-                                reviewResult: finalSnapshot.reviewResult,
-                                startedAt: startedAt,
                                 endedAt: endedAt,
                                 content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
                             )
                         }
                         if let cancellationReasonValue {
                             await onEvent(.progress(.completed, "Review cancelled."))
-                            return ReviewProcessOutcome(
+                            return makeOutcome(
                                 state: .cancelled,
                                 exitCode: 0,
-                                reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                                threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                                turnID: finalSnapshot.turnID ?? turnID,
-                                model: effectiveModel,
-                                hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                                lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                                finalSnapshot: finalSnapshot,
                                 errorMessage: cancellationReasonValue,
                                 summary: "Review cancelled.",
-                                reviewResult: finalSnapshot.reviewResult,
-                                startedAt: startedAt,
                                 endedAt: endedAt,
                                 content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? cancellationReasonValue
                             )
@@ -730,112 +727,76 @@ package struct AppServerReviewRunner: Sendable {
                         guard let review = finalSnapshot.finalReview?.nilIfEmpty else {
                             if let transportDisconnectReason = pendingTransportDisconnectReason {
                                 await onEvent(.progress(.completed, "Review failed."))
-                                return ReviewProcessOutcome(
+                                return makeOutcome(
                                     state: .failed,
                                     exitCode: 1,
-                                    reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                                    threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                                    turnID: finalSnapshot.turnID ?? turnID,
-                                    model: effectiveModel,
-                                    hasFinalReview: false,
-                                    lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                                    finalSnapshot: finalSnapshot,
                                     errorMessage: transportDisconnectReason,
                                     summary: "Review failed.",
-                                    reviewResult: finalSnapshot.reviewResult,
-                                    startedAt: startedAt,
                                     endedAt: endedAt,
-                                    content: finalSnapshot.lastAgentMessage ?? transportDisconnectReason
+                                    content: finalSnapshot.lastAgentMessage ?? transportDisconnectReason,
+                                    hasFinalReview: false,
+                                    lastAgentMessage: finalSnapshot.lastAgentMessage
                                 )
                             }
-                            return ReviewProcessOutcome(
+                            return makeOutcome(
                                 state: .failed,
                                 exitCode: 1,
-                                reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                                threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                                turnID: finalSnapshot.turnID ?? turnID,
-                                model: effectiveModel,
-                                hasFinalReview: false,
-                                lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                                finalSnapshot: finalSnapshot,
                                 errorMessage: "Review completed without an `exitedReviewMode` item.",
                                 summary: "Review failed.",
-                                reviewResult: finalSnapshot.reviewResult,
-                                startedAt: startedAt,
                                 endedAt: endedAt,
-                                content: finalSnapshot.lastAgentMessage ?? "Review failed."
+                                content: finalSnapshot.lastAgentMessage ?? "Review failed.",
+                                hasFinalReview: false,
+                                lastAgentMessage: finalSnapshot.lastAgentMessage
                             )
                         }
                         let summary = "Review completed successfully."
                         await onEvent(.progress(.completed, summary))
-                        return ReviewProcessOutcome(
+                        return makeOutcome(
                             state: .succeeded,
                             exitCode: 0,
-                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                            turnID: finalSnapshot.turnID ?? turnID,
-                            model: effectiveModel,
-                            hasFinalReview: true,
-                            lastAgentMessage: review,
+                            finalSnapshot: finalSnapshot,
                             errorMessage: nil,
                             summary: summary,
-                            reviewResult: finalSnapshot.reviewResult,
-                            startedAt: startedAt,
                             endedAt: endedAt,
-                            content: review
+                            content: review,
+                            hasFinalReview: true,
+                            lastAgentMessage: review
                         )
                     case .interrupted:
                         if let timeoutMessage {
                             await onEvent(.progress(.completed, "Review timed out."))
-                            return ReviewProcessOutcome(
+                            return makeOutcome(
                                 state: .failed,
                                 exitCode: 124,
-                                reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                                threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                                turnID: finalSnapshot.turnID ?? turnID,
-                                model: effectiveModel,
-                                hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                                lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                                finalSnapshot: finalSnapshot,
                                 errorMessage: timeoutMessage,
                                 summary: timeoutMessage,
-                                reviewResult: finalSnapshot.reviewResult,
-                                startedAt: startedAt,
                                 endedAt: endedAt,
                                 content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
                             )
                         }
                         let reason = cancellationReasonValue ?? finalSnapshot.errorMessage ?? "Review cancelled."
                         await onEvent(.progress(.completed, "Review cancelled."))
-                        return ReviewProcessOutcome(
+                        return makeOutcome(
                             state: .cancelled,
                             exitCode: 0,
-                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                            turnID: finalSnapshot.turnID ?? turnID,
-                            model: effectiveModel,
-                            hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                            lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                            finalSnapshot: finalSnapshot,
                             errorMessage: reason,
                             summary: "Review cancelled.",
-                            reviewResult: finalSnapshot.reviewResult,
-                            startedAt: startedAt,
                             endedAt: endedAt,
                             content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
                         )
                     case .failed:
                         let errorMessage = finalSnapshot.errorMessage ?? "Review failed."
                         await onEvent(.progress(.completed, "Review failed."))
-                        return ReviewProcessOutcome(
+                        return makeOutcome(
                             state: .failed,
                             exitCode: 1,
-                            reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                            threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                            turnID: finalSnapshot.turnID ?? turnID,
-                            model: effectiveModel,
-                            hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                            lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                            finalSnapshot: finalSnapshot,
                             errorMessage: errorMessage,
                             summary: "Review failed.",
-                            reviewResult: finalSnapshot.reviewResult,
-                            startedAt: startedAt,
                             endedAt: endedAt,
                             content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? errorMessage
                         )
@@ -852,19 +813,12 @@ package struct AppServerReviewRunner: Sendable {
                     await onUnrecoverableTransportFailure()
                     let finalSnapshot = await state.snapshot()
                     await onEvent(.progress(.completed, "Review timed out."))
-                    return ReviewProcessOutcome(
+                    return makeOutcome(
                         state: .failed,
                         exitCode: 124,
-                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                        turnID: finalSnapshot.turnID ?? turnID,
-                        model: effectiveModel,
-                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        finalSnapshot: finalSnapshot,
                         errorMessage: timeoutMessage,
                         summary: timeoutMessage,
-                        reviewResult: finalSnapshot.reviewResult,
-                        startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? timeoutMessage
                     )
@@ -879,19 +833,12 @@ package struct AppServerReviewRunner: Sendable {
                     let finalSnapshot = await state.snapshot()
                     let reason = finalSnapshot.errorMessage ?? cancellationReasonValue
                     await onEvent(.progress(.completed, "Review cancelled."))
-                    return ReviewProcessOutcome(
+                    return makeOutcome(
                         state: .cancelled,
                         exitCode: 0,
-                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                        turnID: finalSnapshot.turnID ?? turnID,
-                        model: effectiveModel,
-                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        finalSnapshot: finalSnapshot,
                         errorMessage: reason,
                         summary: "Review cancelled.",
-                        reviewResult: finalSnapshot.reviewResult,
-                        startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? reason
                     )
@@ -906,19 +853,12 @@ package struct AppServerReviewRunner: Sendable {
                     await onUnrecoverableTransportFailure()
                     let finalSnapshot = await state.snapshot()
                     await onEvent(.progress(.completed, "Review failed."))
-                    return ReviewProcessOutcome(
+                    return makeOutcome(
                         state: .failed,
                         exitCode: 1,
-                        reviewThreadID: finalSnapshot.reviewThreadID ?? reviewThreadID,
-                        threadID: finalSnapshot.threadID ?? threadResponse.thread.id,
-                        turnID: finalSnapshot.turnID ?? turnID,
-                        model: effectiveModel,
-                        hasFinalReview: finalSnapshot.finalReview?.nilIfEmpty != nil,
-                        lastAgentMessage: finalSnapshot.lastAgentMessage ?? "",
+                        finalSnapshot: finalSnapshot,
                         errorMessage: transportDisconnectReason,
                         summary: "Review failed.",
-                        reviewResult: finalSnapshot.reviewResult,
-                        startedAt: startedAt,
                         endedAt: endedAt,
                         content: finalSnapshot.finalReview ?? finalSnapshot.lastAgentMessage ?? transportDisconnectReason
                     )
@@ -957,18 +897,17 @@ package struct AppServerReviewRunner: Sendable {
         let startedAt = Date()
         await onEvent(.progress(.completed, "Review cancelled."))
         return ReviewProcessOutcome(
-            state: .cancelled,
-            exitCode: 130,
-            reviewThreadID: nil,
-            threadID: nil,
-            turnID: nil,
-            model: requestedModel,
-            hasFinalReview: false,
-            lastAgentMessage: "",
-            errorMessage: cancellationReason,
-            summary: "Review cancelled.",
-            startedAt: startedAt,
-            endedAt: startedAt,
+            core: ReviewJobCore(
+                run: .init(model: requestedModel),
+                lifecycle: .init(
+                    status: .cancelled,
+                    exitCode: 130,
+                    startedAt: startedAt,
+                    endedAt: startedAt,
+                    errorMessage: cancellationReason
+                ),
+                output: .init(summary: "Review cancelled.")
+            ),
             content: cancellationReason
         )
     }
@@ -980,18 +919,17 @@ package struct AppServerReviewRunner: Sendable {
         reason: String
     ) -> ReviewProcessOutcome {
         ReviewProcessOutcome(
-            state: .cancelled,
-            exitCode: 130,
-            reviewThreadID: nil,
-            threadID: nil,
-            turnID: nil,
-            model: model,
-            hasFinalReview: false,
-            lastAgentMessage: "",
-            errorMessage: reason,
-            summary: "Review cancelled.",
-            startedAt: startedAt,
-            endedAt: endedAt,
+            core: ReviewJobCore(
+                run: .init(model: model),
+                lifecycle: .init(
+                    status: .cancelled,
+                    exitCode: 130,
+                    startedAt: startedAt,
+                    endedAt: endedAt,
+                    errorMessage: reason
+                ),
+                output: .init(summary: "Review cancelled.")
+            ),
             content: reason
         )
     }

@@ -348,8 +348,8 @@ public final class CodexReviewStore {
             for job in workspace.jobs {
                 jobs.append(
                     .init(
-                        status: job.status.rawValue,
-                        summary: job.summary,
+                        status: job.core.lifecycle.status.rawValue,
+                        summary: job.core.output.summary,
                         logText: job.logText,
                         rawLogText: job.rawLogText
                     )

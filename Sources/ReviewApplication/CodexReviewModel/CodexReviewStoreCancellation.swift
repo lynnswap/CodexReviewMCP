@@ -35,12 +35,13 @@ extension CodexReviewStore {
         }
 
         job.cancellationRequested = false
-        job.cancellation = cancellation
-        job.status = .cancelled
-        job.summary = cancellation.message
-        job.hasFinalReview = false
-        job.errorMessage = cancellation.message.nilIfEmpty ?? job.errorMessage
-        job.endedAt = Date()
+        job.core.lifecycle.cancellation = cancellation
+        job.core.lifecycle.status = .cancelled
+        job.core.output.summary = cancellation.message
+        job.core.output.hasFinalReview = false
+        job.core.lifecycle.errorMessage = cancellation.message.nilIfEmpty
+            ?? job.core.lifecycle.errorMessage
+        job.core.lifecycle.endedAt = Date()
         noteJobMutation()
     }
 
@@ -62,13 +63,13 @@ extension CodexReviewStore {
 
         if let message = message.nilIfEmpty {
             if message == "Failed to cancel review." {
-                job.summary = message
+                job.core.output.summary = message
             } else {
-                job.summary = "Failed to cancel review: \(message)"
+                job.core.output.summary = "Failed to cancel review: \(message)"
             }
-            job.errorMessage = message
+            job.core.lifecycle.errorMessage = message
         } else {
-            job.summary = "Failed to cancel review."
+            job.core.output.summary = "Failed to cancel review."
         }
         writeDiagnosticsIfNeeded()
     }
@@ -114,16 +115,18 @@ extension CodexReviewStore {
         let resolvedError = failureMessage.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         for job in workspaces.flatMap(\.jobs) where job.isTerminal == false {
             job.cancellationRequested = false
-            job.cancellation = nil
-            job.status = .failed
+            job.core.lifecycle.cancellation = nil
+            job.core.lifecycle.status = .failed
             if let resolvedError {
-                job.summary = "Failed to cancel review: \(resolvedError)"
+                job.core.output.summary = "Failed to cancel review: \(resolvedError)"
             } else {
-                job.summary = "Failed to cancel review."
+                job.core.output.summary = "Failed to cancel review."
             }
-            job.hasFinalReview = false
-            job.errorMessage = resolvedError ?? reason.nilIfEmpty ?? job.errorMessage
-            job.endedAt = Date()
+            job.core.output.hasFinalReview = false
+            job.core.lifecycle.errorMessage = resolvedError
+                ?? reason.nilIfEmpty
+                ?? job.core.lifecycle.errorMessage
+            job.core.lifecycle.endedAt = Date()
         }
         noteJobMutation()
     }

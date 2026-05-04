@@ -25,8 +25,8 @@ struct ReviewJobStoreTests {
             )
         )
 
-        #expect(result.status == .succeeded)
-        #expect(result.review == "Review ok")
+        #expect(result.core.lifecycle.status == .succeeded)
+        #expect(result.core.reviewText == "Review ok")
         #expect(await manager.prepareCount() == 1)
     }
 
@@ -55,8 +55,8 @@ struct ReviewJobStoreTests {
             )
         )
 
-        let returnedResult = try #require(result.reviewResult)
-        let storedResult = try #require(store.workspaces.first?.jobs.first?.reviewResult)
+        let returnedResult = try #require(result.core.output.reviewResult)
+        let storedResult = try #require(store.workspaces.first?.jobs.first?.core.output.reviewResult)
         #expect(returnedResult == storedResult)
         #expect(storedResult.state == .hasFindings)
         #expect(storedResult.findings.first?.title == "[P1] Preserve structured finding state")
@@ -94,8 +94,8 @@ struct ReviewJobStoreTests {
         let secondTransport = await manager.waitForTransport(sessionID: "session-reuse", at: 1)
         let secondResult = try await secondReview.value
 
-        #expect(firstResult.status == .succeeded)
-        #expect(secondResult.status == .succeeded)
+        #expect(firstResult.core.lifecycle.status == .succeeded)
+        #expect(secondResult.core.lifecycle.status == .succeeded)
         #expect(await manager.transportCreationCount(for: "session-reuse") == 2)
         #expect(await firstTransport.isClosed())
         #expect(await secondTransport.isClosed())
@@ -143,8 +143,8 @@ struct ReviewJobStoreTests {
         let firstResult = try await firstReview.value
         let secondResult = try await secondReview.value
 
-        #expect(firstResult.status == .cancelled)
-        #expect(secondResult.status == .cancelled)
+        #expect(firstResult.core.lifecycle.status == .cancelled)
+        #expect(secondResult.core.lifecycle.status == .cancelled)
         #expect(await manager.transportCreationCount(for: "session-concurrent") == 2)
     }
 
@@ -174,7 +174,7 @@ struct ReviewJobStoreTests {
         let result = try await reviewTask.value
 
         #expect(outcome.cancelled)
-        #expect(result.status == .cancelled)
+        #expect(result.core.lifecycle.status == .cancelled)
         #expect(await transport.isClosed())
     }
 
@@ -207,17 +207,17 @@ struct ReviewJobStoreTests {
 
         #expect(outcome.state == .running)
         #expect(outcome.signalled)
-        #expect(job.status == .running)
+        #expect(job.core.lifecycle.status == .running)
         #expect(job.cancellationRequested)
-        #expect(job.cancellation?.source == .userInterface)
-        #expect(job.cancellation?.message == "Cancelled by user from Review Monitor.")
-        #expect(pendingResult.status == .running)
-        #expect(pendingResult.cancellation?.source == .userInterface)
-        #expect(pendingResult.review == "Cancellation requested.")
-        #expect(pendingResult.error == "Cancellation requested.")
-        #expect(pendingListItem.status == .running)
-        #expect(pendingListItem.summary == "Cancellation requested.")
-        #expect(pendingListItem.cancellation?.source == .userInterface)
+        #expect(job.core.lifecycle.cancellation?.source == .userInterface)
+        #expect(job.core.lifecycle.cancellation?.message == "Cancelled by user from Review Monitor.")
+        #expect(pendingResult.core.lifecycle.status == .running)
+        #expect(pendingResult.core.lifecycle.cancellation?.source == .userInterface)
+        #expect(pendingResult.core.reviewText == "Cancellation requested.")
+        #expect(pendingResult.core.lifecycle.errorMessage == "Cancellation requested.")
+        #expect(pendingListItem.core.lifecycle.status == .running)
+        #expect(pendingListItem.core.output.summary == "Cancellation requested.")
+        #expect(pendingListItem.core.lifecycle.cancellation?.source == .userInterface)
     }
 
     @Test func repeatedCancellationKeepsOriginalCancellationMetadata() async throws {
@@ -252,12 +252,12 @@ struct ReviewJobStoreTests {
         await store.closeSession("session-repeat-cancel", reason: "MCP session closed.")
         let result = try await reviewTask.value
 
-        #expect(firstOutcome.cancellation?.source == .userInterface)
-        #expect(secondOutcome.cancellation?.source == .userInterface)
-        #expect(result.status == .cancelled)
-        #expect(result.cancellation?.source == .userInterface)
-        #expect(result.error == "Cancelled by user from Review Monitor.")
-        #expect(result.review == "Cancelled by user from Review Monitor.")
+        #expect(firstOutcome.core.lifecycle.cancellation?.source == .userInterface)
+        #expect(secondOutcome.core.lifecycle.cancellation?.source == .userInterface)
+        #expect(result.core.lifecycle.status == .cancelled)
+        #expect(result.core.lifecycle.cancellation?.source == .userInterface)
+        #expect(result.core.lifecycle.errorMessage == "Cancelled by user from Review Monitor.")
+        #expect(result.core.reviewText == "Cancelled by user from Review Monitor.")
     }
 
     @Test func cancellingAlreadyCancelledJobWithoutMetadataDoesNotInventCancellation() async throws {
@@ -289,10 +289,10 @@ struct ReviewJobStoreTests {
         )
 
         #expect(outcome.cancelled)
-        #expect(outcome.cancellation == nil)
-        #expect(result.status == .cancelled)
-        #expect(result.cancellation == nil)
-        #expect(job.cancellation == nil)
+        #expect(outcome.core.lifecycle.cancellation == nil)
+        #expect(result.core.lifecycle.status == .cancelled)
+        #expect(result.core.lifecycle.cancellation == nil)
+        #expect(job.core.lifecycle.cancellation == nil)
     }
 
     @Test func codexReviewStoreCloseSessionCancelsActiveReviews() async throws {
@@ -317,8 +317,8 @@ struct ReviewJobStoreTests {
         await store.closeSession("session-close", reason: "session closed")
         let result = try await reviewTask.value
 
-        #expect(result.status == .cancelled)
-        #expect(result.error == "session closed")
+        #expect(result.core.lifecycle.status == .cancelled)
+        #expect(result.core.lifecycle.errorMessage == "session closed")
     }
 
     @Test func codexReviewStoreFailsToStartWhenReviewStartFails() async throws {
@@ -336,8 +336,8 @@ struct ReviewJobStoreTests {
             )
         )
 
-        #expect(result.status == .failed)
-        #expect(result.error?.contains("Failed to start review") == true)
+        #expect(result.core.lifecycle.status == .failed)
+        #expect(result.core.lifecycle.errorMessage?.contains("Failed to start review") == true)
     }
 
     @Test func codexReviewStoreClosesTransportAfterBootstrapFailure() async throws {
@@ -355,7 +355,7 @@ struct ReviewJobStoreTests {
             )
         )
 
-        #expect(result.status == .failed)
+        #expect(result.core.lifecycle.status == .failed)
         let transport = try #require(await manager.transport(for: "session-bootstrap-fail"))
         #expect(await transport.isClosed())
     }

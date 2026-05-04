@@ -6,7 +6,7 @@ import ReviewDomain
 @MainActor
 public enum ReviewMonitorPreviewContent {
     private struct PreviewJobDefinition {
-        let status: CodexReviewJobStatus
+        let status: ReviewJobState
         let targetSummary: String
         let summary: String
         let lastAgentMessage: String
@@ -57,7 +57,7 @@ public enum ReviewMonitorPreviewContent {
 
             let runningJobs = store.workspaces
                 .flatMap(\.jobs)
-                .filter { $0.status == .running }
+                .filter { $0.core.lifecycle.status == .running }
 
             guard runningJobs.isEmpty == false else {
                 return
@@ -232,7 +232,7 @@ public enum ReviewMonitorPreviewContent {
         id: String,
         cwd: String,
         model: String,
-        status: CodexReviewJobStatus,
+        status: ReviewJobState,
         targetSummary: String,
         startedAt: Date?,
         endedAt: Date?,
