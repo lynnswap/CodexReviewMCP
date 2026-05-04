@@ -3,6 +3,7 @@ import MCP
 @testable import ReviewMCPAdapter
 
 import ReviewDomain
+import ReviewPorts
 import Testing
 
 @Suite
@@ -468,14 +469,56 @@ private func makeHandler(
         throw ReviewError.invalidArguments("unexpected")
     }
 ) -> ReviewToolHandler {
-    ReviewToolHandler(
-        sessionID: "session_1",
+    ReviewToolHandler(tool: StubReviewTool(
         startReview: startReview,
         readReview: readReview,
         listReviews: listReviews,
         cancelReviewByID: cancelReviewByID,
         cancelReviewBySelector: cancelReviewBySelector
-    )
+    ))
+}
+
+@MainActor
+private struct StubReviewTool: ReviewToolProtocol {
+    var startReview: @MainActor @Sendable (ReviewStartRequest) async throws -> ReviewReadResult
+    var readReview: @MainActor @Sendable (String) async throws -> ReviewReadResult
+    var listReviews: @MainActor @Sendable (String?, [ReviewJobState]?, Int?) async -> ReviewListResult
+    var cancelReviewByID: @MainActor @Sendable (String, ReviewCancellation) async throws -> ReviewCancelOutcome
+    var cancelReviewBySelector: @MainActor @Sendable (String?, [ReviewJobState]?, ReviewCancellation) async throws -> ReviewCancelOutcome
+
+    func startReview(_ request: ReviewStartRequest) async throws -> ReviewReadResult {
+        try await startReview(request)
+    }
+
+    func readReview(jobID: String) async throws -> ReviewReadResult {
+        try await readReview(jobID)
+    }
+
+    func listReviews(
+        cwd: String?,
+        statuses: [ReviewJobState]?,
+        limit: Int?
+    ) async -> ReviewListResult {
+        await listReviews(cwd, statuses, limit)
+    }
+
+    func cancelReview(
+        jobID: String,
+        cancellation: ReviewCancellation
+    ) async throws -> ReviewCancelOutcome {
+        try await cancelReviewByID(jobID, cancellation)
+    }
+
+    func cancelReview(
+        selector: ReviewJobSelector,
+        cancellation: ReviewCancellation
+    ) async throws -> ReviewCancelOutcome {
+        try await cancelReviewBySelector(
+            selector.cwd,
+            selector.statuses,
+            cancellation
+        )
+    }
 }
 
 private func expectCancellation(

@@ -1,14 +1,10 @@
 import Foundation
 import MCP
 import ReviewDomain
+import ReviewPorts
 
 struct ReviewToolHandler {
-    let sessionID: String
-    let startReview: @MainActor @Sendable (ReviewStartRequest) async throws -> ReviewReadResult
-    let readReview: @MainActor @Sendable (String) async throws -> ReviewReadResult
-    let listReviews: @MainActor @Sendable (String?, [ReviewJobState]?, Int?) async -> ReviewListResult
-    let cancelReviewByID: @MainActor @Sendable (String, ReviewCancellation) async throws -> ReviewCancelOutcome
-    let cancelReviewBySelector: @MainActor @Sendable (String?, [ReviewJobState]?, ReviewCancellation) async throws -> ReviewCancelOutcome
+    let tool: any ReviewToolProtocol
 
     func handle(params: CallTool.Parameters) async -> CallTool.Result {
         switch params.name {
@@ -31,7 +27,7 @@ struct ReviewToolHandler {
                 normalizeReviewStartArguments(params.arguments),
                 as: ReviewStartArguments.self
             )
-            let result = try await startReview(arguments.makeRequest())
+            let result = try await tool.startReview(arguments.makeRequest())
             return try CallTool.Result(
                 content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContentForStart(),
@@ -59,7 +55,7 @@ struct ReviewToolHandler {
     private func handleReviewRead(params: CallTool.Parameters) async -> CallTool.Result {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewReadArguments.self)
-            let result = try await readReview(arguments.jobID)
+            let result = try await tool.readReview(jobID: arguments.jobID)
             return try CallTool.Result(
                 content: [.text(text: result.review.isEmpty ? result.status.rawValue : result.review, annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContentForRead(),
@@ -73,7 +69,11 @@ struct ReviewToolHandler {
     private func handleReviewList(params: CallTool.Parameters) async -> CallTool.Result {
         do {
             let arguments = try decodeArguments(params.arguments, as: ReviewListArguments.self)
-            let result = await listReviews(arguments.cwd, arguments.statuses, arguments.limit)
+            let result = await tool.listReviews(
+                cwd: arguments.cwd,
+                statuses: arguments.statuses,
+                limit: arguments.limit
+            )
             return try CallTool.Result(
                 content: [.text(text: "Listed \(result.items.count) review job(s).", annotations: nil, _meta: nil)],
                 structuredContent: result.structuredContent(),
@@ -93,12 +93,18 @@ struct ReviewToolHandler {
                 guard let jobID = rawJobID.nilIfEmpty else {
                     return toolError("`jobId` cannot be empty.")
                 }
-                result = try await cancelReviewByID(jobID, cancellation)
+                result = try await tool.cancelReview(
+                    jobID: jobID,
+                    cancellation: cancellation
+                )
             } else {
-                result = try await cancelReviewBySelector(
-                    arguments.cwd,
-                    arguments.statuses,
-                    cancellation
+                result = try await tool.cancelReview(
+                    selector: .init(
+                        jobID: nil,
+                        cwd: arguments.cwd,
+                        statuses: arguments.statuses
+                    ),
+                    cancellation: cancellation
                 )
             }
             let message = if result.cancelled {

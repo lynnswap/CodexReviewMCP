@@ -2,7 +2,7 @@ import Foundation
 import ReviewPorts
 import ReviewDomain
 
-extension CodexReviewStore {
+extension CodexReviewStore: ReviewStoreProtocol {
     package func startReview(
         sessionID: String,
         request: ReviewStartRequest

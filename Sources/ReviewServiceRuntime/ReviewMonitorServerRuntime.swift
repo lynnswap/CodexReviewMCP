@@ -653,65 +653,7 @@ package final class ReviewMonitorServerRuntime: ReviewMonitorServerCoordinating,
     private func makeServer(store: CodexReviewStore) -> ReviewMCPHTTPServer {
         ReviewMCPHTTPServer(
             configuration: configuration,
-            startReview: { [weak store] sessionID, request in
-                guard let store else {
-                    throw ReviewError.io("Review store is unavailable.")
-                }
-                return try await store.startReview(sessionID: sessionID, request: request)
-            },
-            readReview: { [weak store] sessionID, jobID in
-                guard let store else {
-                    throw ReviewError.io("Review store is unavailable.")
-                }
-                return try store.readReview(jobID: jobID, sessionID: sessionID)
-            },
-            listReviews: { [weak store] sessionID, cwd, statuses, limit in
-                guard let store else {
-                    return ReviewListResult(items: [])
-                }
-                return store.listReviews(
-                    sessionID: sessionID,
-                    cwd: cwd,
-                    statuses: statuses,
-                    limit: limit
-                )
-            },
-            cancelReviewByID: { [weak store] sessionID, jobID, cancellation in
-                guard let store else {
-                    throw ReviewError.io("Review store is unavailable.")
-                }
-                return try await store.cancelReview(
-                    selectedJobID: jobID,
-                    sessionID: sessionID,
-                    cancellation: cancellation
-                )
-            },
-            cancelReviewBySelector: { [weak store] sessionID, cwd, statuses, cancellation in
-                guard let store else {
-                    throw ReviewError.io("Review store is unavailable.")
-                }
-                return try await store.cancelReview(
-                    selector: .init(
-                        jobID: nil,
-                        cwd: cwd,
-                        statuses: statuses
-                    ),
-                    sessionID: sessionID,
-                    cancellation: cancellation
-                )
-            },
-            closeSession: { [weak store] sessionID in
-                guard let store else {
-                    return
-                }
-                await store.closeSession(sessionID, reason: "MCP session closed.")
-            },
-            hasActiveJobs: { [weak store] sessionID in
-                guard let store else {
-                    return false
-                }
-                return store.hasActiveJobs(for: sessionID)
-            }
+            store: store
         )
     }
 

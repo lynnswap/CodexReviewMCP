@@ -93,6 +93,7 @@ let package = Package(
             name: "ReviewMCPAdapter",
             dependencies: [
                 "ReviewDomain",
+                "ReviewPorts",
                 "ReviewPlatform",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
@@ -210,7 +211,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReviewHTTPServerTests",
-            dependencies: ["ReviewApplication", "ReviewDomain", "ReviewMCPAdapter"],
+            dependencies: ["ReviewApplication", "ReviewDomain", "ReviewPorts", "ReviewMCPAdapter"],
             path: "Tests/ReviewHTTPServerTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

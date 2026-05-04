@@ -3,6 +3,7 @@ import Logging
 import MCP
 import ReviewDomain
 import ReviewPlatform
+import ReviewPorts
 
 package struct ReviewServerConfiguration: Sendable {
     package var host: String
@@ -37,14 +38,6 @@ package struct ReviewServerConfiguration: Sendable {
 }
 
 package final class ReviewMCPHTTPServer: @unchecked Sendable {
-    package typealias StartReviewHandler = @MainActor @Sendable (_ sessionID: String, _ request: ReviewStartRequest) async throws -> ReviewReadResult
-    package typealias ReadReviewHandler = @MainActor @Sendable (_ sessionID: String, _ jobID: String) async throws -> ReviewReadResult
-    package typealias ListReviewsHandler = @MainActor @Sendable (_ sessionID: String, _ cwd: String?, _ statuses: [ReviewJobState]?, _ limit: Int?) async -> ReviewListResult
-    package typealias CancelByIDHandler = @MainActor @Sendable (_ sessionID: String, _ jobID: String, _ cancellation: ReviewCancellation) async throws -> ReviewCancelOutcome
-    package typealias CancelBySelectorHandler = @MainActor @Sendable (_ sessionID: String, _ cwd: String?, _ statuses: [ReviewJobState]?, _ cancellation: ReviewCancellation) async throws -> ReviewCancelOutcome
-    package typealias CloseSessionHandler = @MainActor @Sendable (_ sessionID: String) async -> Void
-    package typealias HasActiveJobsHandler = @MainActor @Sendable (_ sessionID: String) async -> Bool
-
     package let configuration: ReviewServerConfiguration
     private let logger = Logger(label: "codex-review-mcp.http")
     private let app: ReviewHTTPApplication
@@ -56,13 +49,7 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
 
     package init(
         configuration: ReviewServerConfiguration = .init(),
-        startReview: @escaping StartReviewHandler,
-        readReview: @escaping ReadReviewHandler,
-        listReviews: @escaping ListReviewsHandler,
-        cancelReviewByID: @escaping CancelByIDHandler,
-        cancelReviewBySelector: @escaping CancelBySelectorHandler,
-        closeSession: @escaping CloseSessionHandler,
-        hasActiveJobs: @escaping HasActiveJobsHandler
+        store: any ReviewStoreProtocol
     ) {
         self.configuration = configuration
         self.app = ReviewHTTPApplication(
@@ -74,32 +61,25 @@ package final class ReviewMCPHTTPServer: @unchecked Sendable {
                 dateNow: configuration.coreDependencies.dateNow,
                 uuid: configuration.coreDependencies.uuid
             ),
-            serverFactory: { sessionID, transport in
+            serverFactory: { [weak store] sessionID, _ in
                 await Self.makeServer(
-                    sessionID: sessionID,
-                    transport: transport,
-                    startReview: { request in
-                        try await startReview(sessionID, request)
-                    },
-                    readReview: { jobID in
-                        try await readReview(sessionID, jobID)
-                    },
-                    listReviews: { cwd, statuses, limit in
-                        await listReviews(sessionID, cwd, statuses, limit)
-                    },
-                    cancelReviewByID: { jobID, cancellation in
-                        try await cancelReviewByID(sessionID, jobID, cancellation)
-                    },
-                    cancelReviewBySelector: { cwd, statuses, cancellation in
-                        try await cancelReviewBySelector(sessionID, cwd, statuses, cancellation)
-                    }
+                    tool: ReviewSessionToolAdapter(
+                        sessionID: sessionID,
+                        store: store
+                    )
                 )
             },
-            onSessionClosed: { sessionID in
-                await closeSession(sessionID)
+            onSessionClosed: { [weak store] sessionID in
+                guard let store else {
+                    return
+                }
+                await store.closeSession(sessionID, reason: "MCP session closed.")
             },
-            isSessionBusy: { sessionID in
-                await hasActiveJobs(sessionID)
+            isSessionBusy: { [weak store] sessionID in
+                guard let store else {
+                    return false
+                }
+                return await store.hasActiveJobs(for: sessionID)
             }
         )
     }
@@ -190,17 +170,83 @@ private func normalizeEndpointPath(_ endpoint: String) -> String {
     endpoint.hasPrefix("/") ? endpoint : "/\(endpoint)"
 }
 
+@MainActor
+private final class ReviewSessionToolAdapter: ReviewToolProtocol, @unchecked Sendable {
+    private let sessionID: String
+    private weak var store: (any ReviewStoreProtocol)?
+
+    init(
+        sessionID: String,
+        store: (any ReviewStoreProtocol)?
+    ) {
+        self.sessionID = sessionID
+        self.store = store
+    }
+
+    func startReview(_ request: ReviewStartRequest) async throws -> ReviewReadResult {
+        try await requireStore().startReview(
+            sessionID: sessionID,
+            request: request
+        )
+    }
+
+    func readReview(jobID: String) async throws -> ReviewReadResult {
+        try await requireStore().readReview(
+            jobID: jobID,
+            sessionID: sessionID
+        )
+    }
+
+    func listReviews(
+        cwd: String?,
+        statuses: [ReviewJobState]?,
+        limit: Int?
+    ) async -> ReviewListResult {
+        guard let store else {
+            return .init(items: [])
+        }
+        return await store.listReviews(
+            sessionID: sessionID,
+            cwd: cwd,
+            statuses: statuses,
+            limit: limit
+        )
+    }
+
+    func cancelReview(
+        jobID: String,
+        cancellation: ReviewCancellation
+    ) async throws -> ReviewCancelOutcome {
+        try await requireStore().cancelReview(
+            selectedJobID: jobID,
+            sessionID: sessionID,
+            cancellation: cancellation
+        )
+    }
+
+    func cancelReview(
+        selector: ReviewJobSelector,
+        cancellation: ReviewCancellation
+    ) async throws -> ReviewCancelOutcome {
+        try await requireStore().cancelReview(
+            selector: selector,
+            sessionID: sessionID,
+            cancellation: cancellation
+        )
+    }
+
+    private func requireStore() throws -> any ReviewStoreProtocol {
+        guard let store else {
+            throw ReviewError.io("Review store is unavailable.")
+        }
+        return store
+    }
+}
+
 private extension ReviewMCPHTTPServer {
     static func makeServer(
-        sessionID: String,
-        transport: StatefulHTTPServerTransport,
-        startReview: @escaping @MainActor @Sendable (ReviewStartRequest) async throws -> ReviewReadResult,
-        readReview: @escaping @MainActor @Sendable (String) async throws -> ReviewReadResult,
-        listReviews: @escaping @MainActor @Sendable (String?, [ReviewJobState]?, Int?) async -> ReviewListResult,
-        cancelReviewByID: @escaping @MainActor @Sendable (String, ReviewCancellation) async throws -> ReviewCancelOutcome,
-        cancelReviewBySelector: @escaping @MainActor @Sendable (String?, [ReviewJobState]?, ReviewCancellation) async throws -> ReviewCancelOutcome
+        tool: any ReviewToolProtocol
     ) async -> Server {
-        let _ = transport
         let server = Server(
             name: codexReviewMCPName,
             version: codexReviewMCPVersion,
@@ -229,12 +275,7 @@ private extension ReviewMCPHTTPServer {
 
         await server.withMethodHandler(CallTool.self) { (params: CallTool.Parameters) in
             await ReviewToolHandler(
-                sessionID: sessionID,
-                startReview: startReview,
-                readReview: readReview,
-                listReviews: listReviews,
-                cancelReviewByID: cancelReviewByID,
-                cancelReviewBySelector: cancelReviewBySelector
+                tool: tool
             ).handle(params: params)
         }
 
