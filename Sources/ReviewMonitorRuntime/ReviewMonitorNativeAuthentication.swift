@@ -35,9 +35,11 @@ extension CodexReviewStore {
         let environment = ProcessInfo.processInfo.environment
         let arguments = CommandLine.arguments
         return CodexReviewStore(dependencies: .live(
-            environment: environment,
-            arguments: arguments,
-            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration
+            runtimeDependencies: .live(
+                environment: environment,
+                arguments: arguments,
+                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration
+            )
         ))
     }
 
@@ -56,11 +58,13 @@ extension CodexReviewStore {
         )
 
         return CodexReviewStore(dependencies: .live(
-            configuration: configuration,
-            diagnosticsURL: diagnosticsURL,
-            appServerManager: appServerManager,
-            loginAuthSessionFactory: loginAuthSessionFactoryOverride ?? loginAuthSessionFactory,
-            deferStartupAuthRefreshUntilPrepared: true
+            runtimeDependencies: .live(
+                configuration: configuration,
+                diagnosticsURL: diagnosticsURL,
+                appServerManager: appServerManager,
+                loginAuthSessionFactory: loginAuthSessionFactoryOverride ?? loginAuthSessionFactory,
+                deferStartupAuthRefreshUntilPrepared: true
+            )
         ))
     }
 

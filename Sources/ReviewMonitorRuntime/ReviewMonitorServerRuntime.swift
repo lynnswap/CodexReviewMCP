@@ -273,32 +273,17 @@ package final class ReviewMonitorServerRuntime: ReviewMonitorServerCoordinating,
         server != nil || waitTask != nil || startupTask != nil
     }
 
-    init(
-        configuration: ReviewServerConfiguration,
-        appServerManager: (any AppServerManaging)? = nil,
-        sharedAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
-        loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
-        rateLimitObservationClock: any ReviewClock = ContinuousClock(),
-        rateLimitStaleRefreshInterval: Duration = .seconds(60),
-        inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
-        deferStartupAuthRefreshUntilPrepared: Bool = false
-    ) {
+    init(dependencies: ReviewMonitorRuntimeDependencies) {
+        let configuration = dependencies.configuration
         self.configuration = configuration
-        self.appServerManager = appServerManager ?? AppServerSupervisor(
-            configuration: .init(
-                codexCommand: configuration.codexCommand,
-                environment: configuration.environment,
-                clock: configuration.coreDependencies.clock,
-                coreDependencies: configuration.coreDependencies
-            )
-        )
+        self.appServerManager = dependencies.appServerManager
         self.accountRegistryStore = ReviewAccountRegistryStore(coreDependencies: configuration.coreDependencies)
-        self.sharedAuthSessionFactory = sharedAuthSessionFactory
-        self.loginAuthSessionFactory = loginAuthSessionFactory
-        self.rateLimitObservationClock = rateLimitObservationClock
-        self.rateLimitStaleRefreshInterval = rateLimitStaleRefreshInterval
-        self.inactiveRateLimitRefreshInterval = inactiveRateLimitRefreshInterval
-        self.deferStartupAuthRefreshUntilPrepared = deferStartupAuthRefreshUntilPrepared
+        self.sharedAuthSessionFactory = dependencies.sharedAuthSessionFactory
+        self.loginAuthSessionFactory = dependencies.loginAuthSessionFactory
+        self.rateLimitObservationClock = dependencies.rateLimitObservationClock
+        self.rateLimitStaleRefreshInterval = dependencies.rateLimitStaleRefreshInterval
+        self.inactiveRateLimitRefreshInterval = dependencies.inactiveRateLimitRefreshInterval
+        self.deferStartupAuthRefreshUntilPrepared = dependencies.deferStartupAuthRefreshUntilPrepared
         self.shouldAutoStartEmbeddedServer = configuration.shouldAutoStartEmbeddedServer
         var seededAccounts = loadRegisteredReviewAccounts(dependencies: configuration.coreDependencies)
         let sharedInitialAccount = loadSharedReviewAccount(dependencies: configuration.coreDependencies)

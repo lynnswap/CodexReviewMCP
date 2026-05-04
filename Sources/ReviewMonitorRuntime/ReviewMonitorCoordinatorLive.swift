@@ -13,24 +13,11 @@ package struct ReviewMonitorCoordinatorComponents {
 @MainActor
 extension ReviewMonitorCoordinator {
     static func live(
-        configuration: ReviewServerConfiguration,
-        appServerManager: (any AppServerManaging)? = nil,
-        sharedAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
-        loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
-        rateLimitObservationClock: any ReviewClock = ContinuousClock(),
-        rateLimitStaleRefreshInterval: Duration = .seconds(60),
-        inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
-        deferStartupAuthRefreshUntilPrepared: Bool = false
+        runtimeDependencies: ReviewMonitorRuntimeDependencies
     ) -> ReviewMonitorCoordinatorComponents {
+        let configuration = runtimeDependencies.configuration
         let serverRuntime = ReviewMonitorServerRuntime(
-            configuration: configuration,
-            appServerManager: appServerManager,
-            sharedAuthSessionFactory: sharedAuthSessionFactory,
-            loginAuthSessionFactory: loginAuthSessionFactory,
-            rateLimitObservationClock: rateLimitObservationClock,
-            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
-            inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
-            deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
+            dependencies: runtimeDependencies
         )
         let settingsService = ReviewMonitorSettingsService(
             initialSnapshot: serverRuntime.initialSettingsSnapshot,
@@ -64,12 +51,13 @@ extension ReviewMonitorCoordinator {
             configuration: configuration,
             accountRegistryStore: serverRuntime.accountRegistryStore,
             appServerManager: serverRuntime.appServerManager,
-            sharedAuthSessionFactory: sharedAuthSessionFactory ?? serverRuntime.liveSharedAuthSessionFactory,
-            loginAuthSessionFactory: loginAuthSessionFactory ?? serverRuntime.liveCLIAuthSessionFactory,
+            sharedAuthSessionFactory: runtimeDependencies.sharedAuthSessionFactory ?? serverRuntime.liveSharedAuthSessionFactory,
+            loginAuthSessionFactory: runtimeDependencies.loginAuthSessionFactory ?? serverRuntime.liveCLIAuthSessionFactory,
+            probeAppServerManagerFactory: runtimeDependencies.probeAppServerManagerFactory,
             runtimeBridge: .live(serverRuntime),
-            rateLimitObservationClock: rateLimitObservationClock,
-            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
-            inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval
+            rateLimitObservationClock: runtimeDependencies.rateLimitObservationClock,
+            rateLimitStaleRefreshInterval: runtimeDependencies.rateLimitStaleRefreshInterval,
+            inactiveRateLimitRefreshInterval: runtimeDependencies.inactiveRateLimitRefreshInterval
         )
         serverRuntime.authOrchestrator = authOrchestrator
         serverRuntime.executionCoordinator = executionCoordinator

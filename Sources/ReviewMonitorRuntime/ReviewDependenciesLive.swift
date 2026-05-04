@@ -1,7 +1,6 @@
 import Foundation
 import ReviewApplication
 import ReviewAppServerIntegration
-import ReviewDomain
 import ReviewInfrastructure
 import ReviewMCPAdapter
 
@@ -12,41 +11,11 @@ package extension ReviewDependencies {
         arguments: [String] = CommandLine.arguments,
         nativeAuthenticationConfiguration: ReviewMonitorNativeAuthenticationConfiguration? = nil
     ) -> Self {
-        let configuration = CodexReviewStore.makeConfiguration(
+        live(runtimeDependencies: .live(
             environment: environment,
-            arguments: arguments
-        )
-        let diagnosticsURL = CodexReviewStore.makeDiagnosticsURL(
-            environment: environment,
-            arguments: arguments
-        )
-        let appServerManager = AppServerSupervisor(
-            configuration: .init(
-                codexCommand: configuration.codexCommand,
-                environment: configuration.environment,
-                clock: configuration.coreDependencies.clock,
-                coreDependencies: configuration.coreDependencies
-            )
-        )
-        if let nativeAuthenticationConfiguration {
-            let loginAuthSessionFactory = CodexReviewStore.makeReviewMonitorLoginAuthSessionFactory(
-                configuration: configuration,
-                nativeAuthenticationConfiguration: nativeAuthenticationConfiguration,
-                webAuthenticationSessionFactory: ReviewMonitorWebAuthenticationSession.startSystem
-            )
-            return live(
-                configuration: configuration,
-                diagnosticsURL: diagnosticsURL,
-                appServerManager: appServerManager,
-                loginAuthSessionFactory: loginAuthSessionFactory,
-                deferStartupAuthRefreshUntilPrepared: true
-            )
-        }
-        return live(
-            configuration: configuration,
-            diagnosticsURL: diagnosticsURL,
-            appServerManager: appServerManager
-        )
+            arguments: arguments,
+            nativeAuthenticationConfiguration: nativeAuthenticationConfiguration
+        ))
     }
 
     static func live(
@@ -55,21 +24,33 @@ package extension ReviewDependencies {
         appServerManager: (any AppServerManaging)? = nil,
         sharedAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
         loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
+        probeAppServerManagerFactory: ReviewMonitorRuntimeDependencies.ProbeAppServerManagerFactory? = nil,
         rateLimitObservationClock: (any ReviewClock)? = nil,
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
         inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) -> Self {
-        let components = ReviewMonitorCoordinator.live(
+        live(runtimeDependencies: .live(
             configuration: configuration,
+            diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
             sharedAuthSessionFactory: sharedAuthSessionFactory,
             loginAuthSessionFactory: loginAuthSessionFactory,
-            rateLimitObservationClock: rateLimitObservationClock ?? configuration.coreDependencies.clock,
+            probeAppServerManagerFactory: probeAppServerManagerFactory,
+            rateLimitObservationClock: rateLimitObservationClock,
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
             inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
+        ))
+    }
+
+    static func live(
+        runtimeDependencies: ReviewMonitorRuntimeDependencies
+    ) -> Self {
+        let components = ReviewMonitorCoordinator.live(
+            runtimeDependencies: runtimeDependencies
         )
+        let configuration = runtimeDependencies.configuration
         return .init(
             core: .init(
                 dateNow: configuration.coreDependencies.dateNow,
@@ -77,7 +58,7 @@ package extension ReviewDependencies {
             ),
             coordinator: components.coordinator,
             settingsService: components.settingsService,
-            diagnosticsURL: diagnosticsURL
+            diagnosticsURL: runtimeDependencies.diagnosticsURL
         )
     }
 
@@ -87,21 +68,23 @@ package extension ReviewDependencies {
         appServerManager: any AppServerManaging,
         sharedAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
         loginAuthSessionFactory: @escaping @Sendable ([String: String]) async throws -> any ReviewAuthSession,
+        probeAppServerManagerFactory: ReviewMonitorRuntimeDependencies.ProbeAppServerManagerFactory? = nil,
         rateLimitObservationClock: (any ReviewClock)? = nil,
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
         inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) -> Self {
-        live(
+        live(runtimeDependencies: .testing(
             configuration: configuration,
             diagnosticsURL: diagnosticsURL,
             appServerManager: appServerManager,
             sharedAuthSessionFactory: sharedAuthSessionFactory,
             loginAuthSessionFactory: loginAuthSessionFactory,
+            probeAppServerManagerFactory: probeAppServerManagerFactory,
             rateLimitObservationClock: rateLimitObservationClock,
             rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
             inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
             deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
-        )
+        ))
     }
 }

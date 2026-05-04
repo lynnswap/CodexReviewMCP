@@ -6,17 +6,8 @@ import ReviewMCPAdapter
 
 extension CodexReviewStore {
     public convenience init() {
-        let environment = ProcessInfo.processInfo.environment
-        let arguments = CommandLine.arguments
         self.init(dependencies: .live(
-            configuration: Self.makeConfiguration(
-                environment: environment,
-                arguments: arguments
-            ),
-            diagnosticsURL: Self.makeDiagnosticsURL(
-                environment: environment,
-                arguments: arguments
-            )
+            runtimeDependencies: .live()
         ))
     }
 
@@ -67,21 +58,25 @@ extension CodexReviewStore {
         appServerManager: (any AppServerManaging)? = nil,
         sharedAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
         loginAuthSessionFactory: (@Sendable ([String: String]) async throws -> any ReviewAuthSession)? = nil,
+        probeAppServerManagerFactory: ReviewMonitorRuntimeDependencies.ProbeAppServerManagerFactory? = nil,
         rateLimitObservationClock: any ReviewClock = ContinuousClock(),
         rateLimitStaleRefreshInterval: Duration = .seconds(60),
         inactiveRateLimitRefreshInterval: Duration = .seconds(15 * 60),
         deferStartupAuthRefreshUntilPrepared: Bool = false
     ) {
         self.init(dependencies: .live(
-            configuration: configuration,
-            diagnosticsURL: diagnosticsURL,
-            appServerManager: appServerManager,
-            sharedAuthSessionFactory: sharedAuthSessionFactory,
-            loginAuthSessionFactory: loginAuthSessionFactory,
-            rateLimitObservationClock: rateLimitObservationClock,
-            rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
-            inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
-            deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
+            runtimeDependencies: .live(
+                configuration: configuration,
+                diagnosticsURL: diagnosticsURL,
+                appServerManager: appServerManager,
+                sharedAuthSessionFactory: sharedAuthSessionFactory,
+                loginAuthSessionFactory: loginAuthSessionFactory,
+                probeAppServerManagerFactory: probeAppServerManagerFactory,
+                rateLimitObservationClock: rateLimitObservationClock,
+                rateLimitStaleRefreshInterval: rateLimitStaleRefreshInterval,
+                inactiveRateLimitRefreshInterval: inactiveRateLimitRefreshInterval,
+                deferStartupAuthRefreshUntilPrepared: deferStartupAuthRefreshUntilPrepared
+            )
         ))
     }
 
