@@ -10,42 +10,14 @@ final class ReviewMonitorTransportViewController: NSViewController {
         case workspace(String)
     }
 
-    private struct WorkspaceFindingEntry {
-        var jobTargetSummary: String
-        var title: String
-        var body: String
-        var locationText: String?
-
-        var displayText: String {
-            [
-                title,
-                body,
-                locationText,
-                jobTargetSummary,
-            ]
-            .compactMap { value in
-                let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return trimmed.isEmpty ? nil : trimmed
-            }
-            .joined(separator: "\n")
-        }
-    }
-
     private let uiState: ReviewMonitorUIState
     private let logScrollView = ReviewMonitorLogScrollView()
-    private let findingsScrollView = NSScrollView()
-    private let findingsStackView = NSStackView()
+    private let workspaceFindingsView = ReviewMonitorWorkspaceFindingsView()
     private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
         title: "Select a workspace or review",
         description: "Choose a workspace or review from the list.",
         titleAccessibilityIdentifier: "review-monitor.detail-empty.title",
         descriptionAccessibilityIdentifier: "review-monitor.detail-empty.description"
-    )
-    private let noFindingsStateView = ReviewMonitorViewFactory.makeEmptyStateView(
-        title: "No findings",
-        description: "No structured review findings are available for this workspace.",
-        titleAccessibilityIdentifier: "review-monitor.workspace-findings-empty.title",
-        descriptionAccessibilityIdentifier: "review-monitor.workspace-findings-empty.description"
     )
     private var displayedContentConstraints: [NSLayoutConstraint] = []
     private let uiStateObservationScope = ObservationScope()
@@ -55,7 +27,6 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private var boundJob: CodexReviewJob?
     private var boundWorkspace: CodexReviewWorkspace?
     private var displayedSelection: DisplayedSelection?
-    private var renderedWorkspaceFindingsText = ""
     private var logScrollTargetsByJobID: [String: ReviewMonitorLogScrollView.ScrollRestorationTarget] = [:]
 #if DEBUG
     private var renderCountForTestingStorage = 0
@@ -85,14 +56,11 @@ final class ReviewMonitorTransportViewController: NSViewController {
 
     private func configureHierarchy() {
         let safeArea = view.safeAreaLayoutGuide
-        configureFindingsView()
         emptyStateView.translatesAutoresizingMaskIntoConstraints = false
-        noFindingsStateView.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(logScrollView)
-        view.addSubview(findingsScrollView)
+        view.addSubview(workspaceFindingsView)
         view.addSubview(emptyStateView)
-        view.addSubview(noFindingsStateView)
 
         displayedContentConstraints = [
             logScrollView.topAnchor.constraint(equalTo: safeArea.topAnchor),
@@ -104,41 +72,17 @@ final class ReviewMonitorTransportViewController: NSViewController {
         NSLayoutConstraint.activate(
             displayedContentConstraints
             + [
-                findingsScrollView.topAnchor.constraint(equalTo: safeArea.topAnchor),
-                findingsScrollView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
-                findingsScrollView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
-                findingsScrollView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
+                workspaceFindingsView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+                workspaceFindingsView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
+                workspaceFindingsView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
+                workspaceFindingsView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
 
                 emptyStateView.centerXAnchor.constraint(equalTo: safeArea.centerXAnchor),
                 emptyStateView.centerYAnchor.constraint(equalTo: safeArea.centerYAnchor),
                 emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: safeArea.leadingAnchor, constant: 24),
                 emptyStateView.trailingAnchor.constraint(lessThanOrEqualTo: safeArea.trailingAnchor, constant: -24),
-
-                noFindingsStateView.centerXAnchor.constraint(equalTo: safeArea.centerXAnchor),
-                noFindingsStateView.centerYAnchor.constraint(equalTo: safeArea.centerYAnchor),
-                noFindingsStateView.leadingAnchor.constraint(greaterThanOrEqualTo: safeArea.leadingAnchor, constant: 24),
-                noFindingsStateView.trailingAnchor.constraint(lessThanOrEqualTo: safeArea.trailingAnchor, constant: -24),
             ]
         )
-    }
-
-    private func configureFindingsView() {
-        findingsScrollView.translatesAutoresizingMaskIntoConstraints = false
-        findingsScrollView.drawsBackground = false
-        findingsScrollView.borderType = .noBorder
-        findingsScrollView.hasVerticalScroller = true
-        findingsScrollView.autohidesScrollers = true
-
-        findingsStackView.translatesAutoresizingMaskIntoConstraints = false
-        findingsStackView.orientation = .vertical
-        findingsStackView.alignment = .width
-        findingsStackView.spacing = 12
-        findingsStackView.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        findingsScrollView.documentView = findingsStackView
-
-        NSLayoutConstraint.activate([
-            findingsStackView.widthAnchor.constraint(equalTo: findingsScrollView.contentView.widthAnchor)
-        ])
     }
 
     private func bindObservation() {
@@ -159,9 +103,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
             clearDisplayedWorkspace()
             displayJob(selectedJob)
             emptyStateView.isHidden = true
-            noFindingsStateView.isHidden = true
             logScrollView.isHidden = false
-            findingsScrollView.isHidden = true
+            workspaceFindingsView.isHidden = true
             displayedSelection = .job(selectedJob.id)
 
         case .workspace(let selectedWorkspace):
@@ -169,15 +112,15 @@ final class ReviewMonitorTransportViewController: NSViewController {
             displayWorkspace(selectedWorkspace)
             emptyStateView.isHidden = true
             logScrollView.isHidden = true
+            workspaceFindingsView.isHidden = false
             displayedSelection = .workspace(selectedWorkspace.cwd)
 
         case nil:
             clearDisplayedJob()
             clearDisplayedWorkspace()
             emptyStateView.isHidden = false
-            noFindingsStateView.isHidden = true
             logScrollView.isHidden = true
-            findingsScrollView.isHidden = true
+            workspaceFindingsView.isHidden = true
             displayedSelection = nil
         }
 
@@ -235,15 +178,10 @@ final class ReviewMonitorTransportViewController: NSViewController {
         selectedWorkspaceObservationScope.cancelAll()
         selectedWorkspaceJobsObservationScope.cancelAll()
         boundWorkspace = nil
-        if renderedWorkspaceFindingsText.isEmpty == false {
-            renderedWorkspaceFindingsText = ""
-            removeFindingRows()
+        if workspaceFindingsView.clear() {
             noteRenderForTesting()
-        } else {
-            removeFindingRows()
         }
-        findingsScrollView.isHidden = true
-        noFindingsStateView.isHidden = true
+        workspaceFindingsView.isHidden = true
     }
 
     private func bindWorkspaceObservation(_ workspace: CodexReviewWorkspace) {
@@ -284,42 +222,20 @@ final class ReviewMonitorTransportViewController: NSViewController {
     @discardableResult
     private func renderWorkspaceFindings(_ workspace: CodexReviewWorkspace) -> Bool {
         let entries = workspaceFindingEntries(for: workspace)
-        let nextText = entries.map(\.displayText).joined(separator: "\n\n")
-        guard renderedWorkspaceFindingsText != nextText else {
-            updateWorkspaceFindingsVisibility(hasFindings: entries.isEmpty == false)
-            return false
-        }
-
-        renderedWorkspaceFindingsText = nextText
-        removeFindingRows()
-        for entry in entries {
-            findingsStackView.addArrangedSubview(makeFindingRowView(entry))
-        }
-        updateWorkspaceFindingsVisibility(hasFindings: entries.isEmpty == false)
-        return true
+        return workspaceFindingsView.render(entries: entries)
     }
 
-    private func updateWorkspaceFindingsVisibility(hasFindings: Bool) {
-        findingsScrollView.isHidden = hasFindings == false
-        noFindingsStateView.isHidden = hasFindings
-    }
-
-    private func removeFindingRows() {
-        for view in findingsStackView.arrangedSubviews {
-            findingsStackView.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-    }
-
-    private func workspaceFindingEntries(for workspace: CodexReviewWorkspace) -> [WorkspaceFindingEntry] {
-        workspace.jobs.flatMap { job -> [WorkspaceFindingEntry] in
+    private func workspaceFindingEntries(
+        for workspace: CodexReviewWorkspace
+    ) -> [ReviewMonitorWorkspaceFindingsView.Entry] {
+        workspace.jobs.flatMap { job -> [ReviewMonitorWorkspaceFindingsView.Entry] in
             guard let result = job.core.output.reviewResult,
                   result.state == .hasFindings
             else {
                 return []
             }
             return result.findings.map { finding in
-                WorkspaceFindingEntry(
+                ReviewMonitorWorkspaceFindingsView.Entry(
                     jobTargetSummary: job.targetSummary,
                     title: finding.title,
                     body: finding.body,
@@ -345,48 +261,6 @@ final class ReviewMonitorTransportViewController: NSViewController {
             path = location.path
         }
         return "\(path):\(location.startLine)-\(location.endLine)"
-    }
-
-    private func makeFindingRowView(_ entry: WorkspaceFindingEntry) -> NSView {
-        let titleLabel = NSTextField(wrappingLabelWithString: entry.title)
-        titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-        titleLabel.maximumNumberOfLines = 0
-
-        let bodyLabel = NSTextField(wrappingLabelWithString: entry.body)
-        bodyLabel.font = .preferredFont(forTextStyle: .body)
-        bodyLabel.maximumNumberOfLines = 0
-
-        let metadata = [
-            entry.locationText,
-            entry.jobTargetSummary,
-        ]
-        .compactMap { value -> String? in
-            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return trimmed.isEmpty ? nil : trimmed
-        }
-        .joined(separator: " | ")
-        let metadataLabel = NSTextField(labelWithString: metadata)
-        metadataLabel.font = .preferredFont(forTextStyle: .caption1)
-        metadataLabel.textColor = .secondaryLabelColor
-        metadataLabel.lineBreakMode = .byTruncatingMiddle
-
-        let stackView = NSStackView(views: [titleLabel, bodyLabel, metadataLabel])
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        stackView.orientation = .vertical
-        stackView.alignment = .width
-        stackView.spacing = 4
-        stackView.setAccessibilityIdentifier("review-monitor.workspace-finding-row")
-
-        let container = NSView()
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(stackView)
-        NSLayoutConstraint.activate([
-            stackView.topAnchor.constraint(equalTo: container.topAnchor),
-            stackView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            stackView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            stackView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
-        return container
     }
 
     private func renderSelectedJob(
@@ -481,7 +355,7 @@ extension ReviewMonitorTransportViewController {
     }
 
     var displayedWorkspaceFindingsForTesting: String {
-        renderedWorkspaceFindingsText
+        workspaceFindingsView.displayedTextForTesting
     }
 
     var displayedSummaryForTesting: String? {
@@ -493,11 +367,11 @@ extension ReviewMonitorTransportViewController {
     }
 
     var isShowingNoFindingsStateForTesting: Bool {
-        noFindingsStateView.isHidden == false
+        workspaceFindingsView.isShowingNoFindingsStateForTesting
     }
 
     var isShowingWorkspaceFindingsListForTesting: Bool {
-        findingsScrollView.isHidden == false
+        workspaceFindingsView.isShowingFindingsListForTesting
     }
 
     var renderCountForTesting: Int {
@@ -583,13 +457,12 @@ extension ReviewMonitorTransportViewController {
 
     var workspaceFindingRowWidthsForTesting: [CGFloat] {
         view.layoutSubtreeIfNeeded()
-        findingsStackView.layoutSubtreeIfNeeded()
-        return findingsStackView.arrangedSubviews.map(\.frame.width)
+        return workspaceFindingsView.rowWidthsForTesting
     }
 
     var workspaceFindingsContentWidthForTesting: CGFloat {
         view.layoutSubtreeIfNeeded()
-        return findingsScrollView.contentView.bounds.width
+        return workspaceFindingsView.contentWidthForTesting
     }
 
     func waitForRenderCountForTesting(_ targetCount: Int) async {
