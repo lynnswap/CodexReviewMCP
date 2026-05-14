@@ -136,6 +136,11 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             }
             .store(in: toolbarObservationScope)
 
+            uiState.observe(\.selection) { [weak self] _ in
+                self?.updateWindowTitleAndSubtitle()
+            }
+            .store(in: toolbarObservationScope)
+
             uiState.observe([\.selectedJobEntry?.targetSummary, \.selectedJobEntry?.cwd]) { [weak self] in
                 self?.updateWindowTitleAndSubtitle()
             }
@@ -168,8 +173,19 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         guard let attachedWindow else {
             return
         }
-        let title = uiState.selectedJobEntry?.targetSummary ?? ""
-        let subtitle = uiState.selectedJobEntry?.cwd ?? ""
+        let title: String
+        let subtitle: String
+        switch uiState.selection {
+        case .workspace(let workspace):
+            title = workspace.displayTitle
+            subtitle = workspace.cwd
+        case .job(let job):
+            title = job.targetSummary
+            subtitle = job.cwd
+        case nil:
+            title = ""
+            subtitle = ""
+        }
         attachedWindow.title = title
         attachedWindow.subtitle = subtitle
         attachedWindow.titleVisibility = (title.isEmpty && subtitle.isEmpty) ? .hidden : .visible
