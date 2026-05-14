@@ -918,7 +918,7 @@ struct ReviewUITests {
         #expect(sidebar.sidebarLastRowRectForTesting.maxY <= sidebar.sidebarVisibleRectForTesting.maxY + 0.5)
     }
 
-    @Test func togglingSelectedWorkspaceDisclosureKeepsDetailAndReexpandsWorkspace() async throws {
+    @Test func nativeWorkspaceDisclosureKeepsModelAndOutlineExpansionInSync() async throws {
         let job = makeJob(
             id: "job-selected",
             cwd: "/tmp/workspace-alpha",
@@ -948,17 +948,20 @@ struct ReviewUITests {
 
         let initialRenderCount = transport.renderCountForTesting
         sidebar.selectJobForTesting(job)
-        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
 
-        let stableRenderCount = transport.renderCountForTesting
-        sidebar.toggleWorkspaceDisclosureForTesting(storedWorkspace)
-        try await waitForWorkspaceExpanded(sidebar, workspace: storedWorkspace, true)
-        await transport.flushMainQueueForTesting()
+        sidebar.collapseWorkspaceInOutlineForTesting(storedWorkspace)
+        try await waitForCondition {
+            sidebar.workspaceIsExpandedForTesting(storedWorkspace) == false
+                && sidebar.workspaceOutlineIsExpandedForTesting(storedWorkspace) == false
+        }
 
-        #expect(sidebar.workspaceIsExpandedForTesting(storedWorkspace))
-        #expect(sidebar.selectedJobForTesting?.id == job.id)
-        #expect(transport.renderCountForTesting == stableRenderCount)
-        #expect(transport.renderSnapshotForTesting == selectedSnapshot)
+        sidebar.expandWorkspaceInOutlineForTesting(storedWorkspace)
+        try await waitForCondition {
+            sidebar.workspaceIsExpandedForTesting(storedWorkspace)
+                && sidebar.workspaceOutlineIsExpandedForTesting(storedWorkspace)
+                && sidebar.selectedOutlineJobIDForTesting == job.id
+        }
     }
 
     @Test func collapsedWorkspaceStaysCollapsedAcrossStoreReload() throws {

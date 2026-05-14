@@ -192,7 +192,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     private func rebindWorkspaceObservations(workspaces: [CodexReviewWorkspace]) {
         workspaceObservationScope.update {
             for workspace in workspaces {
-                workspace.observe([\.jobs, \.isExpanded]) { [weak self, weak workspace] in
+                workspace.observe(\.jobs) { [weak self, weak workspace] _ in
                     guard let self else {
                         return
                     }
@@ -203,13 +203,23 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
                     self.reloadWorkspace(workspace, allWorkspaces: store.workspaces)
                 }
                 .store(in: workspaceObservationScope)
+
+                workspace.observe(\.isExpanded) { [weak self, weak workspace] _ in
+                    guard let self,
+                          let workspace,
+                          self.store.workspaces.contains(where: { $0 === workspace })
+                    else {
+                        return
+                    }
+                    self.applyWorkspaceExpansionState(for: [workspace])
+                }
+                .store(in: workspaceObservationScope)
             }
         }
     }
 
     private func reloadOutline(workspaces: [CodexReviewWorkspace]) {
         clearSelectionIfNeeded(for: workspaces)
-        reconcileSelectedJobWorkspaceExpansion(in: workspaces)
 
         isReconcilingSelection = true
         outlineView.reloadData()
@@ -218,30 +228,15 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         isReconcilingSelection = false
     }
 
-    private func reexpandSelectedJobWorkspaceIfNeeded(_ workspace: CodexReviewWorkspace) {
-        guard workspace.isExpanded == false,
-              let selectedJob = uiState.selectedJobEntry,
-              selectedJob.cwd == workspace.cwd
-        else {
-            return
-        }
-        workspace.isExpanded = true
-    }
-
-    private func reconcileSelectedJobWorkspaceExpansion(in workspaces: [CodexReviewWorkspace]) {
-        for workspace in workspaces {
-            reexpandSelectedJobWorkspaceIfNeeded(workspace)
-        }
-    }
-
     private func applyWorkspaceExpansionState(for workspaces: [CodexReviewWorkspace]) {
         for workspace in workspaces {
             guard row(for: workspace) != nil else {
                 continue
             }
-            if workspace.isExpanded {
+            let outlineIsExpanded = outlineView.isItemExpanded(workspace)
+            if workspace.isExpanded && outlineIsExpanded == false {
                 outlineView.expandItem(workspace)
-            } else {
+            } else if workspace.isExpanded == false && outlineIsExpanded {
                 outlineView.collapseItem(workspace)
             }
         }
@@ -258,7 +253,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             return
         }
 
-        reexpandSelectedJobWorkspaceIfNeeded(workspace)
         isReconcilingSelection = true
         outlineView.reloadItem(workspace, reloadChildren: true)
         applyWorkspaceExpansionState(for: [workspace])
@@ -382,19 +376,30 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     private func toggleWorkspaceExpansion(_ workspace: CodexReviewWorkspace) {
-        let nextExpansion = workspace.isExpanded == false
-        guard nextExpansion || selectedJobBelongs(to: workspace) == false else {
-            workspace.isExpanded = true
-            return
-        }
-        workspace.isExpanded = nextExpansion
+        workspace.isExpanded.toggle()
     }
 
-    private func selectedJobBelongs(to workspace: CodexReviewWorkspace) -> Bool {
-        guard let selectedJob = uiState.selectedJobEntry else {
-            return false
+    private func restoreSelectedJobRowAfterExpansion(of workspace: CodexReviewWorkspace) {
+        guard let selectedJob = uiState.selectedJobEntry,
+              selectedJob.cwd == workspace.cwd
+        else {
+            return
         }
-        return selectedJob.cwd == workspace.cwd
+        let selectedJobID = selectedJob.id
+        DispatchQueue.main.async { [weak self, weak workspace] in
+            guard let self,
+                  let workspace,
+                  workspace.isExpanded,
+                  self.uiState.selectedJobEntry?.id == selectedJobID,
+                  let row = self.row(forJobID: selectedJobID),
+                  self.outlineView.selectedRow != row
+            else {
+                return
+            }
+            self.isReconcilingSelection = true
+            self.outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            self.isReconcilingSelection = false
+        }
     }
 
     private func makeContextMenu(at point: NSPoint) -> NSMenu? {
@@ -956,14 +961,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         if workspace.isExpanded == false {
             workspace.isExpanded = true
         }
-
-        guard let selectedJob = uiState.selectedJobEntry,
-              selectedJob.cwd == workspace.cwd,
-              let row = row(forJobID: selectedJob.id)
-        else {
-            return
-        }
-        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        restoreSelectedJobRowAfterExpansion(of: workspace)
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
@@ -1203,11 +1201,36 @@ extension ReviewMonitorSidebarViewController {
         workspace.isExpanded
     }
 
+    func workspaceOutlineIsExpandedForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
+        outlineView.isItemExpanded(workspace)
+    }
+
+    var selectedOutlineJobIDForTesting: String? {
+        guard outlineView.selectedRow != -1 else {
+            return nil
+        }
+        return job(atRow: outlineView.selectedRow)?.id
+    }
+
     func toggleWorkspaceDisclosureForTesting(_ workspace: CodexReviewWorkspace) {
         guard row(for: workspace) != nil else {
             preconditionFailure("Workspace row is not visible.")
         }
         toggleWorkspaceExpansion(workspace)
+    }
+
+    func collapseWorkspaceInOutlineForTesting(_ workspace: CodexReviewWorkspace) {
+        guard row(for: workspace) != nil else {
+            preconditionFailure("Workspace row is not visible.")
+        }
+        outlineView.collapseItem(workspace)
+    }
+
+    func expandWorkspaceInOutlineForTesting(_ workspace: CodexReviewWorkspace) {
+        guard row(for: workspace) != nil else {
+            preconditionFailure("Workspace row is not visible.")
+        }
+        outlineView.expandItem(workspace)
     }
 
     func workspaceRowIsFloatingForTesting(_ workspace: CodexReviewWorkspace) -> Bool {
