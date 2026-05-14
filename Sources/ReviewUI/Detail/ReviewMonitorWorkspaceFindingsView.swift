@@ -210,3 +210,45 @@ extension ReviewMonitorWorkspaceFindingsView {
     }
 }
 #endif
+
+#if DEBUG
+#Preview("Workspace Findings") {
+    let view = ReviewMonitorWorkspaceFindingsView(
+        frame: NSRect(x: 0, y: 0, width: 640, height: 420)
+    )
+    view.render(entries: makeWorkspaceFindingsPreviewEntries())
+    return view
+}
+
+#Preview("No Findings") {
+    let view = ReviewMonitorWorkspaceFindingsView(
+        frame: NSRect(x: 0, y: 0, width: 640, height: 420)
+    )
+    view.render(entries: [])
+    return view
+}
+
+@MainActor
+private func makeWorkspaceFindingsPreviewEntries() -> [ReviewMonitorWorkspaceFindingsView.Entry] {
+    [
+        .init(
+            jobTargetSummary: "Branch: feature/workspace-alpha-sidebar",
+            title: "[P1] Preserve the selected workspace across reload",
+            body: "The sidebar reload currently drops the workspace selection before the detail view can refresh. Resolve the selected workspace by cwd before clearing selection.",
+            locationText: "Sources/ReviewUI/Sidebar/Jobs/ReviewMonitorSidebarViewController.swift:184-203"
+        ),
+        .init(
+            jobTargetSummary: "Uncommitted changes",
+            title: "[P2] Keep workspace findings scoped to structured results",
+            body: "The detail pane should keep using ParsedReviewResult.findings only. Re-parsing log text here would reintroduce mismatches with the MCP result contract.",
+            locationText: "Sources/ReviewUI/Detail/ReviewMonitorTransportViewController.swift:223-246"
+        ),
+        .init(
+            jobTargetSummary: "Commit: abc1234",
+            title: "[P3] Avoid clipping long paths in metadata",
+            body: "Long file paths need middle truncation so row titles and descriptions remain readable in narrow detail panes.",
+            locationText: "Sources/ReviewUI/Detail/ReviewMonitorWorkspaceFindingsView.swift:154-161"
+        ),
+    ]
+}
+#endif
