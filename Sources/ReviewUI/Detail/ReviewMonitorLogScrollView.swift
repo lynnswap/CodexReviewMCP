@@ -99,24 +99,13 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         borderType = .noBorder
         hasVerticalScroller = true
         autohidesScrollers = true
+        automaticallyAdjustsContentInsets = true
 
-        documentContainerView.translatesAutoresizingMaskIntoConstraints = false
         documentContainerView.measuredTextHeight = { [weak self] in
             self?.measuredTextHeight() ?? 0
         }
         documentContainerView.addSubview(textView)
         documentView = documentContainerView
-        NSLayoutConstraint.activate([
-            documentContainerView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            documentContainerView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            documentContainerView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            documentContainerView.widthAnchor.constraint(equalTo: contentView.widthAnchor),
-            documentContainerView.heightAnchor.constraint(greaterThanOrEqualTo: contentView.heightAnchor),
-            textView.topAnchor.constraint(equalTo: documentContainerView.topAnchor),
-            textView.leadingAnchor.constraint(equalTo: documentContainerView.leadingAnchor),
-            textView.trailingAnchor.constraint(equalTo: documentContainerView.trailingAnchor),
-            textView.bottomAnchor.constraint(equalTo: documentContainerView.bottomAnchor),
-        ])
         textView.textContainerInset = NSSize(width: 4, height: 6)
         textView.isEditable = false
         textView.isSelectable = true
@@ -150,7 +139,6 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     override func tile() {
         let shouldPreserveBottom = displayedText.isEmpty == false && isPinnedToBottom()
         super.tile()
-        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
         if shouldPreserveBottom {
             scrollToBottom(countAsAutoFollow: false)
@@ -159,7 +147,6 @@ final class ReviewMonitorLogScrollView: NSScrollView {
 
     override func layout() {
         super.layout()
-        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
     }
 
@@ -189,7 +176,6 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         let shouldAutoFollow = isPinnedToBottom()
         appendToTextStorage(suffix)
         displayedText += suffix
-        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
         layoutSubtreeIfNeeded()
 #if DEBUG
@@ -209,7 +195,6 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     ) -> Bool {
         if displayedText == text {
             let previousOrigin = contentView.bounds.origin
-            syncTextContainerWidthToTextView()
             invalidateDocumentLayout()
             restoreScrollPosition(restorationTarget, countAsAutoFollow: countBottomRestoreAsAutoFollow)
             return contentView.bounds.origin != previousOrigin
@@ -217,7 +202,6 @@ final class ReviewMonitorLogScrollView: NSScrollView {
 
         replaceAllText(with: text)
         displayedText = text
-        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
         layoutSubtreeIfNeeded()
 #if DEBUG
@@ -256,12 +240,13 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     }
 
     private func invalidateDocumentLayout() {
+        syncDocumentFrameToTextLayout()
         documentContainerView.invalidateIntrinsicContentSize()
     }
 
     @discardableResult
     private func syncTextContainerWidthToTextView() -> Bool {
-        let targetWidth = max(0, textView.bounds.width - textView.textContainerInset.width * 2)
+        let targetWidth = max(0, effectiveScrollContentSize.width - textView.textContainerInset.width * 2)
         let targetSize = NSSize(width: targetWidth, height: CGFloat.greatestFiniteMagnitude)
         guard abs(textContainer.containerSize.width - targetSize.width) > 0.5 ||
               textContainer.containerSize.height != targetSize.height
@@ -280,10 +265,42 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     }
 
     private func measuredTextHeight() -> CGFloat {
-        syncTextContainerWidthToTextView()
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
         return ceil(usedRect.height + textView.textContainerInset.height * 2)
+    }
+
+    private var effectiveScrollContentSize: NSSize {
+        let scrollContentSize = contentSize
+        let contentInsets = contentView.contentInsets
+        return NSSize(
+            width: max(0, scrollContentSize.width - max(0, contentInsets.left) - max(0, contentInsets.right)),
+            height: max(0, scrollContentSize.height - max(0, contentInsets.bottom))
+        )
+    }
+
+    private func syncDocumentFrameToTextLayout() {
+        let contentSize = effectiveScrollContentSize
+        syncTextContainerWidthToTextView()
+        let targetFrame = NSRect(
+            x: 0,
+            y: 0,
+            width: contentSize.width,
+            height: measuredTextHeight()
+        )
+        if rectsAreNearlyEqual(documentContainerView.frame, targetFrame) == false {
+            documentContainerView.frame = targetFrame
+        }
+        if rectsAreNearlyEqual(textView.frame, documentContainerView.bounds) == false {
+            textView.frame = documentContainerView.bounds
+        }
+    }
+
+    private func rectsAreNearlyEqual(_ lhs: NSRect, _ rhs: NSRect) -> Bool {
+        abs(lhs.minX - rhs.minX) <= 0.5 &&
+            abs(lhs.minY - rhs.minY) <= 0.5 &&
+            abs(lhs.width - rhs.width) <= 0.5 &&
+            abs(lhs.height - rhs.height) <= 0.5
     }
 
     private func scrollToBottom(countAsAutoFollow: Bool) {
@@ -296,13 +313,14 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     }
 
     private func restoreScrollOrigin(_ origin: NSPoint) {
-        guard let documentView else {
+        guard documentView != nil else {
             return
         }
-        let maxY = max(0, documentView.frame.height - contentView.bounds.height)
+        let minY = minimumVerticalScrollOffset()
+        let maxY = maximumVerticalScrollOffset()
         let clampedOrigin = NSPoint(
             x: 0,
-            y: min(max(0, origin.y), maxY)
+            y: min(max(minY, origin.y), maxY)
         )
         contentView.scroll(to: clampedOrigin)
         reflectScrolledClipView(contentView)
@@ -315,7 +333,7 @@ final class ReviewMonitorLogScrollView: NSScrollView {
     ) {
         switch restorationTarget {
         case .top:
-            restoreScrollOrigin(.zero)
+            restoreScrollOrigin(NSPoint(x: 0, y: minimumVerticalScrollOffset()))
         case .offset(let y):
             restoreScrollOrigin(NSPoint(x: 0, y: y))
         case .bottom:
@@ -329,7 +347,8 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         }
 
         let maxOffset = maximumVerticalScrollOffset()
-        guard maxOffset > 0 else {
+        let minOffset = minimumVerticalScrollOffset()
+        guard maxOffset > minOffset else {
             return .top
         }
 
@@ -338,19 +357,26 @@ final class ReviewMonitorLogScrollView: NSScrollView {
             return .bottom
         }
 
-        return offset > 0 ? .offset(offset) : .top
+        return offset > minOffset + 0.5 ? .offset(offset) : .top
     }
 
     private func maximumVerticalScrollOffset() -> CGFloat {
         guard let documentView else {
             return 0
         }
-        return max(0, documentView.frame.height - contentView.bounds.height)
+        let minY = minimumVerticalScrollOffset()
+        let bottomInset = max(0, contentView.contentInsets.bottom)
+        let maxY = documentView.frame.height - contentView.bounds.height + bottomInset
+        return max(minY, maxY)
+    }
+
+    private func minimumVerticalScrollOffset() -> CGFloat {
+        -max(0, contentView.contentInsets.top)
     }
 
     private func hideOverlayScrollerAfterProgrammaticScrollIfNeeded() {
         guard scrollerStyle == .overlay,
-              maximumVerticalScrollOffset() > 0.5,
+              maximumVerticalScrollOffset() > minimumVerticalScrollOffset() + 0.5,
               let scrollerImpPair = scrollerImpPairForOverlayControl(),
               overlayScrollersShown(on: scrollerImpPair) == true,
               requestOverlayScrollersHide(on: scrollerImpPair)
@@ -433,7 +459,8 @@ final class ReviewMonitorLogScrollView: NSScrollView {
 
     private func isPinnedToBottom() -> Bool {
         let maxOffset = maximumVerticalScrollOffset()
-        guard maxOffset > 0 else {
+        let minOffset = minimumVerticalScrollOffset()
+        guard maxOffset > minOffset else {
             return true
         }
         return maxOffset - contentView.bounds.origin.y < 24
@@ -493,7 +520,7 @@ extension ReviewMonitorLogScrollView {
     }
 
     func scrollToTopForTesting() {
-        restoreScrollOrigin(.zero)
+        restoreScrollOrigin(NSPoint(x: 0, y: minimumVerticalScrollOffset()))
     }
 
     func scrollToOffsetForTesting(_ y: CGFloat) {
@@ -504,12 +531,28 @@ extension ReviewMonitorLogScrollView {
         contentView.bounds.origin.y
     }
 
+    var minimumVerticalScrollOffsetForTesting: CGFloat {
+        minimumVerticalScrollOffset()
+    }
+
+    var maximumVerticalScrollOffsetForTesting: CGFloat {
+        maximumVerticalScrollOffset()
+    }
+
     var textViewFrameForTesting: NSRect {
         textView.frame
     }
 
     var documentViewFrameForTesting: NSRect {
         documentContainerView.frame
+    }
+
+    var contentInsetsForTesting: NSEdgeInsets {
+        contentView.contentInsets
+    }
+
+    var automaticallyAdjustsContentInsetsForTesting: Bool {
+        automaticallyAdjustsContentInsets
     }
 
     var textContainerSizeForTesting: NSSize {

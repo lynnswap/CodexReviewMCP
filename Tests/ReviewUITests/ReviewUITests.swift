@@ -1810,6 +1810,70 @@ struct ReviewUITests {
         #expect(textContainerWidth <= contentWidth + 0.5)
     }
 
+    @Test func workspaceFindingsViewExtendsBehindTitlebarWithoutOverlappingSidebar() async throws {
+        let workspaceCWD = "/tmp/workspace-alpha"
+        let job = makeJob(
+            id: "job-finding-layout",
+            cwd: workspaceCWD,
+            status: .succeeded,
+            targetSummary: "Branch: finding-layout",
+            reviewResult: .init(
+                state: .hasFindings,
+                findingCount: 1,
+                findings: [
+                    .init(
+                        title: "[P2] Keep workspace finding rows visible under unified titlebar",
+                        body: "Structured finding body",
+                        priority: 2,
+                        location: nil,
+                        rawText: ""
+                    )
+                ],
+                source: .parsedFinalReviewText
+            )
+        )
+        let workspace = CodexReviewWorkspace(cwd: workspaceCWD)
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(serverState: .running, workspaces: [workspace], jobs: [job])
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 900, height: 600)
+        )
+        let viewController = harness.viewController
+        defer { harness.window.close() }
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectWorkspaceForTesting(workspace)
+
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        harness.window.layoutIfNeeded()
+        transport.view.layoutSubtreeIfNeeded()
+
+        let findingsFrame = transport.workspaceFindingsFrameForTesting
+        let findingsScrollFrame = transport.workspaceFindingsScrollFrameForTesting
+        let viewBounds = transport.viewBoundsForTesting
+        let safeAreaFrame = transport.safeAreaFrameForTesting
+        let contentInsets = transport.workspaceFindingsContentInsetsForTesting
+
+        #expect(abs(findingsFrame.minX - safeAreaFrame.minX) < 0.5)
+        #expect(abs(findingsFrame.maxX - safeAreaFrame.maxX) < 0.5)
+        #expect(abs(findingsFrame.minY - safeAreaFrame.minY) < 0.5)
+        #expect(abs(findingsFrame.maxY - viewBounds.maxY) < 0.5)
+        #expect(abs(findingsScrollFrame.minX) < 0.5)
+        #expect(abs(findingsScrollFrame.width - findingsFrame.width) < 0.5)
+        #expect(abs(findingsScrollFrame.minY) < 0.5)
+        #expect(abs(findingsScrollFrame.height - findingsFrame.height) < 0.5)
+        #expect(safeAreaFrame.maxY < viewBounds.maxY)
+        #expect(transport.workspaceFindingsAutomaticallyAdjustsContentInsetsForTesting)
+        #expect(contentInsets.top > 0)
+        #expect(abs(transport.workspaceFindingsVerticalScrollOffsetForTesting + contentInsets.top) < 0.5)
+        #expect(abs(
+            transport.workspaceFindingsMaximumVerticalScrollOffsetForTesting
+                - transport.workspaceFindingsMinimumVerticalScrollOffsetForTesting
+        ) < 0.5)
+    }
+
     @Test func selectingWorkspaceWithoutStructuredFindingsShowsNoFindingsState() async throws {
         let job = makeJob(
             id: "job-no-findings",
@@ -2243,7 +2307,10 @@ struct ReviewUITests {
         viewController.sidebarViewControllerForTesting.selectJobForTesting(shortJob)
         _ = try await awaitTransportRender(transport, after: thirdRenderCount)
 
-        #expect(transport.logVerticalScrollOffsetForTesting == 0)
+        #expect(abs(
+            transport.logVerticalScrollOffsetForTesting
+                - transport.logMinimumVerticalScrollOffsetForTesting
+        ) < 0.5)
         #expect(transport.isLogPinnedToBottomForTesting == false)
     }
 

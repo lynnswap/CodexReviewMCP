@@ -72,7 +72,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
         view.addSubview(emptyStateView)
 
         displayedContentConstraints = [
-            logScrollView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+            logScrollView.topAnchor.constraint(equalTo: view.topAnchor),
             logScrollView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
             logScrollView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
             logScrollView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
@@ -81,7 +81,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
         NSLayoutConstraint.activate(
             displayedContentConstraints
             + [
-                workspaceFindingsView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+                workspaceFindingsView.topAnchor.constraint(equalTo: view.topAnchor),
                 workspaceFindingsView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
                 workspaceFindingsView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
                 workspaceFindingsView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
@@ -483,12 +483,16 @@ extension ReviewMonitorTransportViewController {
         view.frame
     }
 
+    var viewBoundsForTesting: NSRect {
+        view.bounds
+    }
+
     var safeAreaFrameForTesting: NSRect {
         view.safeAreaRect
     }
 
     var displayedViewFrameForTesting: NSRect {
-        view.safeAreaRect
+        logScrollView.frame
     }
 
     var activeDisplayedViewConstraintCountForTesting: Int {
@@ -525,9 +529,41 @@ extension ReviewMonitorTransportViewController {
         return workspaceFindingsView.contentWidthForTesting
     }
 
+    var workspaceFindingsFrameForTesting: NSRect {
+        workspaceFindingsView.frame
+    }
+
     var workspaceFindingsTextContainerWidthForTesting: CGFloat {
         view.layoutSubtreeIfNeeded()
         return workspaceFindingsView.textContainerWidthForTesting
+    }
+
+    var workspaceFindingsScrollFrameForTesting: NSRect {
+        workspaceFindingsView.scrollFrameForTesting
+    }
+
+    var workspaceFindingsDocumentFrameForTesting: NSRect {
+        workspaceFindingsView.documentFrameForTesting
+    }
+
+    var workspaceFindingsContentInsetsForTesting: NSEdgeInsets {
+        workspaceFindingsView.contentInsetsForTesting
+    }
+
+    var workspaceFindingsVerticalScrollOffsetForTesting: CGFloat {
+        workspaceFindingsView.verticalScrollOffsetForTesting
+    }
+
+    var workspaceFindingsMinimumVerticalScrollOffsetForTesting: CGFloat {
+        workspaceFindingsView.minimumVerticalScrollOffsetForTesting
+    }
+
+    var workspaceFindingsMaximumVerticalScrollOffsetForTesting: CGFloat {
+        workspaceFindingsView.maximumVerticalScrollOffsetForTesting
+    }
+
+    var workspaceFindingsAutomaticallyAdjustsContentInsetsForTesting: Bool {
+        workspaceFindingsView.automaticallyAdjustsContentInsetsForTesting
     }
 
     var workspaceFindingsTextIsSelectableForTesting: Bool {
@@ -603,12 +639,28 @@ extension ReviewMonitorTransportViewController {
         logScrollView.verticalScrollOffsetForTesting
     }
 
+    var logMinimumVerticalScrollOffsetForTesting: CGFloat {
+        logScrollView.minimumVerticalScrollOffsetForTesting
+    }
+
+    var logMaximumVerticalScrollOffsetForTesting: CGFloat {
+        logScrollView.maximumVerticalScrollOffsetForTesting
+    }
+
     var logTextViewFrameForTesting: NSRect {
         logScrollView.textViewFrameForTesting
     }
 
     var logDocumentViewFrameForTesting: NSRect {
         logScrollView.documentViewFrameForTesting
+    }
+
+    var logContentInsetsForTesting: NSEdgeInsets {
+        logScrollView.contentInsetsForTesting
+    }
+
+    var logAutomaticallyAdjustsContentInsetsForTesting: Bool {
+        logScrollView.automaticallyAdjustsContentInsetsForTesting
     }
 
     var logTextContainerSizeForTesting: NSSize {

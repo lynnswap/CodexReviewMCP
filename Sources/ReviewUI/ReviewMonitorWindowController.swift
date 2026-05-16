@@ -3,13 +3,13 @@ import ReviewApplication
 
 @MainActor
 func configureReviewMonitorWindowBase(_ window: NSWindow) {
-    window.isOpaque = false
-    window.backgroundColor = .clear
+    window.isOpaque = true
+    window.backgroundColor = .windowBackgroundColor
     window.isMovableByWindowBackground = false
     window.styleMask.insert(.fullSizeContentView)
     window.toolbarStyle = .unified
     window.titleVisibility = .hidden
-    window.titlebarAppearsTransparent = true
+    window.titlebarAppearsTransparent = false
     window.titlebarSeparatorStyle = .automatic
 }
 

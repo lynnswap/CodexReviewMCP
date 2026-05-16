@@ -274,7 +274,6 @@ final class ReviewMonitorWorkspaceFindingsView: NSView {
 
     override func layout() {
         super.layout()
-        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
     }
 
@@ -286,8 +285,10 @@ final class ReviewMonitorWorkspaceFindingsView: NSView {
         scrollView.borderType = .noBorder
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.automaticallyAdjustsContentInsets = true
 
         textView.textContainerInset = NSSize(width: 28, height: 24)
+        textView.translatesAutoresizingMaskIntoConstraints = false
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = true
@@ -309,7 +310,6 @@ final class ReviewMonitorWorkspaceFindingsView: NSView {
         textView.setAccessibilityIdentifier("review-monitor.workspace-findings-text")
         textView.setAccessibilityLabel("Workspace findings")
 
-        documentContainerView.translatesAutoresizingMaskIntoConstraints = false
         documentContainerView.measuredTextHeight = { [weak self] in
             self?.measuredTextHeight() ?? 0
         }
@@ -326,17 +326,6 @@ final class ReviewMonitorWorkspaceFindingsView: NSView {
             scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
-
-            documentContainerView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
-            documentContainerView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
-            documentContainerView.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
-            documentContainerView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
-            documentContainerView.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.heightAnchor),
-
-            textView.topAnchor.constraint(equalTo: documentContainerView.topAnchor),
-            textView.leadingAnchor.constraint(equalTo: documentContainerView.leadingAnchor),
-            textView.trailingAnchor.constraint(equalTo: documentContainerView.trailingAnchor),
-            textView.bottomAnchor.constraint(equalTo: documentContainerView.bottomAnchor),
 
             noFindingsStateView.centerXAnchor.constraint(equalTo: centerXAnchor),
             noFindingsStateView.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -357,9 +346,9 @@ final class ReviewMonitorWorkspaceFindingsView: NSView {
         textView.threadCharacterRanges = renderedText.threadRanges
         textView.threadBackgroundColor = threadBackgroundColor
         textView.needsDisplay = true
-        syncTextContainerWidthToTextView()
         invalidateDocumentLayout()
         layoutSubtreeIfNeeded()
+        scrollToTopRespectingContentInsets()
     }
 
     private func updateVisibility(hasFindings: Bool) {
@@ -368,12 +357,13 @@ final class ReviewMonitorWorkspaceFindingsView: NSView {
     }
 
     private func invalidateDocumentLayout() {
+        syncDocumentFrameToTextLayout()
         documentContainerView.invalidateIntrinsicContentSize()
     }
 
     @discardableResult
     private func syncTextContainerWidthToTextView() -> Bool {
-        let targetWidth = max(0, textView.bounds.width - textView.textContainerInset.width * 2)
+        let targetWidth = max(0, effectiveScrollContentSize.width - textView.textContainerInset.width * 2)
         let targetSize = NSSize(width: targetWidth, height: CGFloat.greatestFiniteMagnitude)
         guard abs(textContainer.containerSize.width - targetSize.width) > 0.5 ||
               textContainer.containerSize.height != targetSize.height
@@ -392,10 +382,62 @@ final class ReviewMonitorWorkspaceFindingsView: NSView {
     }
 
     private func measuredTextHeight() -> CGFloat {
-        syncTextContainerWidthToTextView()
         layoutManager.ensureLayout(for: textContainer)
         let usedRect = layoutManager.usedRect(for: textContainer)
         return ceil(usedRect.height + textView.textContainerInset.height * 2)
+    }
+
+    private var effectiveScrollContentSize: NSSize {
+        let contentSize = scrollView.contentSize
+        let contentInsets = scrollView.contentView.contentInsets
+        return NSSize(
+            width: max(0, contentSize.width - max(0, contentInsets.left) - max(0, contentInsets.right)),
+            height: max(0, contentSize.height - max(0, contentInsets.bottom))
+        )
+    }
+
+    private func syncDocumentFrameToTextLayout() {
+        let contentSize = effectiveScrollContentSize
+        syncTextContainerWidthToTextView()
+        let targetFrame = NSRect(
+            x: 0,
+            y: 0,
+            width: contentSize.width,
+            height: measuredTextHeight()
+        )
+        if rectsAreNearlyEqual(documentContainerView.frame, targetFrame) == false {
+            documentContainerView.frame = targetFrame
+        }
+        if rectsAreNearlyEqual(textView.frame, documentContainerView.bounds) == false {
+            textView.frame = documentContainerView.bounds
+        }
+    }
+
+    private func rectsAreNearlyEqual(_ lhs: NSRect, _ rhs: NSRect) -> Bool {
+        abs(lhs.minX - rhs.minX) <= 0.5 &&
+            abs(lhs.minY - rhs.minY) <= 0.5 &&
+            abs(lhs.width - rhs.width) <= 0.5 &&
+            abs(lhs.height - rhs.height) <= 0.5
+    }
+
+    private func scrollToTopRespectingContentInsets() {
+        let topOrigin = NSPoint(
+            x: 0,
+            y: -max(0, scrollView.contentView.contentInsets.top)
+        )
+        scrollView.contentView.scroll(to: topOrigin)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func minimumVerticalScrollOffset() -> CGFloat {
+        -max(0, scrollView.contentView.contentInsets.top)
+    }
+
+    private func maximumVerticalScrollOffset() -> CGFloat {
+        let minY = minimumVerticalScrollOffset()
+        let bottomInset = max(0, scrollView.contentView.contentInsets.bottom)
+        let maxY = documentContainerView.frame.height - scrollView.contentView.bounds.height + bottomInset
+        return max(minY, maxY)
     }
 
     private func makeRenderedText(entries: [Entry]) -> RenderedText {
@@ -700,6 +742,34 @@ extension ReviewMonitorWorkspaceFindingsView {
     var contentWidthForTesting: CGFloat {
         layoutSubtreeIfNeeded()
         return scrollView.contentView.bounds.width
+    }
+
+    var scrollFrameForTesting: NSRect {
+        scrollView.frame
+    }
+
+    var contentInsetsForTesting: NSEdgeInsets {
+        scrollView.contentView.contentInsets
+    }
+
+    var verticalScrollOffsetForTesting: CGFloat {
+        scrollView.contentView.bounds.origin.y
+    }
+
+    var minimumVerticalScrollOffsetForTesting: CGFloat {
+        minimumVerticalScrollOffset()
+    }
+
+    var maximumVerticalScrollOffsetForTesting: CGFloat {
+        maximumVerticalScrollOffset()
+    }
+
+    var documentFrameForTesting: NSRect {
+        documentContainerView.frame
+    }
+
+    var automaticallyAdjustsContentInsetsForTesting: Bool {
+        scrollView.automaticallyAdjustsContentInsets
     }
 
     var textContainerWidthForTesting: CGFloat {

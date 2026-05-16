@@ -117,7 +117,7 @@ struct ReviewUIShellTests {
         }
     }
 
-    @Test func contentPanePinsDisplayedContentToSafeArea() {
+    @Test func contentPaneExtendsDisplayedContentBehindTitlebarWithoutOverlappingSidebar() {
         let store = CodexReviewStore.makePreviewStore()
         let harness = makeWindowHarness(
             store: store,
@@ -130,13 +130,15 @@ struct ReviewUIShellTests {
         window.layoutIfNeeded()
         contentPane.view.layoutSubtreeIfNeeded()
 
+        let viewBounds = contentPane.viewBoundsForTesting
         let safeAreaFrame = contentPane.safeAreaFrameForTesting
         let displayedViewFrame = contentPane.displayedViewFrameForTesting
 
         #expect(abs(displayedViewFrame.minX - safeAreaFrame.minX) < 0.5)
         #expect(abs(displayedViewFrame.maxX - safeAreaFrame.maxX) < 0.5)
         #expect(abs(displayedViewFrame.minY - safeAreaFrame.minY) < 0.5)
-        #expect(abs(displayedViewFrame.maxY - safeAreaFrame.maxY) < 0.5)
+        #expect(abs(displayedViewFrame.maxY - viewBounds.maxY) < 0.5)
+        #expect(safeAreaFrame.maxY < viewBounds.maxY)
         #expect(contentPane.activeDisplayedViewConstraintCountForTesting == 4)
     }
 
@@ -210,6 +212,9 @@ struct ReviewUIShellTests {
         )
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .hidden)
+        #expect(window.isOpaque)
+        #expect(window.backgroundColor == .windowBackgroundColor)
+        #expect(window.titlebarAppearsTransparent == false)
         #expect(window.isMovableByWindowBackground == false)
         #expect(viewController.sidebarAllowsFullHeightLayoutForTesting)
         #expect(viewController.contentAutomaticallyAdjustsSafeAreaInsetsForTesting)
@@ -374,7 +379,9 @@ struct ReviewUIShellTests {
         #expect(window.styleMask.contains(.fullSizeContentView))
         #expect(window.titleVisibility == .visible)
         #expect(window.title.isEmpty == false)
-        #expect(window.titlebarAppearsTransparent)
+        #expect(window.isOpaque)
+        #expect(window.backgroundColor == .windowBackgroundColor)
+        #expect(window.titlebarAppearsTransparent == false)
         #expect(window.titlebarSeparatorStyle == .automatic)
         #expect(window.isMovableByWindowBackground == false)
     }
@@ -692,7 +699,7 @@ struct ReviewUIShellTests {
         #expect(harness.rootViewController.isSplitViewEmbeddedForTesting)
     }
 
-    @Test func detailLogViewFillsSafeAreaWithoutTopInsetFromRemovedHeader() async throws {
+    @Test func detailLogViewExtendsBehindTitlebarWithoutOverlappingSidebar() async throws {
         let job = makeJob(
             id: "job-safe-area",
             status: .running,
@@ -716,12 +723,22 @@ struct ReviewUIShellTests {
         transport.view.layoutSubtreeIfNeeded()
 
         let logFrame = transport.logFrameForTesting
+        let viewBounds = transport.viewBoundsForTesting
         let safeAreaFrame = transport.safeAreaFrameForTesting
+        let contentInsets = transport.logContentInsetsForTesting
 
         #expect(abs(logFrame.minX - safeAreaFrame.minX) < 0.5)
         #expect(abs(logFrame.maxX - safeAreaFrame.maxX) < 0.5)
         #expect(abs(logFrame.minY - safeAreaFrame.minY) < 0.5)
-        #expect(abs(logFrame.maxY - safeAreaFrame.maxY) < 0.5)
+        #expect(abs(logFrame.maxY - viewBounds.maxY) < 0.5)
+        #expect(safeAreaFrame.maxY < viewBounds.maxY)
+        #expect(transport.logAutomaticallyAdjustsContentInsetsForTesting)
+        #expect(contentInsets.top > 0)
+        #expect(abs(transport.logVerticalScrollOffsetForTesting + contentInsets.top) < 0.5)
+        #expect(abs(
+            transport.logMaximumVerticalScrollOffsetForTesting
+                - transport.logMinimumVerticalScrollOffsetForTesting
+        ) < 0.5)
     }
 
     @Test func shortDetailLogKeepsTextViewWithinDocumentBounds() async throws {
