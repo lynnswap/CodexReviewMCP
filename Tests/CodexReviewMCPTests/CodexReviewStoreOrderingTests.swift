@@ -47,6 +47,57 @@ struct CodexReviewStoreOrderingTests {
         #expect(store.orderedJobs(in: alphaWorkspace).map(\.id) == ["job-alpha-2", "job-alpha-1"])
     }
 
+    @Test func reorderingNormalizesExhaustedSortOrderGaps() {
+        let store = CodexReviewStore(configuration: .init())
+        let alphaFirstJob = makeJob(
+            id: "job-alpha-1",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Alpha 1"
+        )
+        let alphaSecondJob = makeJob(
+            id: "job-alpha-2",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Alpha 2"
+        )
+        let alphaThirdJob = makeJob(
+            id: "job-alpha-3",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Alpha 3"
+        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: "/tmp/workspace-alpha")
+        let betaWorkspace = CodexReviewWorkspace(cwd: "/tmp/workspace-beta")
+        let gammaWorkspace = CodexReviewWorkspace(cwd: "/tmp/workspace-gamma")
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [alphaWorkspace, betaWorkspace, gammaWorkspace],
+            jobs: [alphaFirstJob, alphaSecondJob, alphaThirdJob]
+        )
+        alphaWorkspace.sortOrder = 0
+        betaWorkspace.sortOrder = 1
+        gammaWorkspace.sortOrder = 1.nextUp
+        alphaFirstJob.sortOrder = 0
+        alphaSecondJob.sortOrder = 1
+        alphaThirdJob.sortOrder = 1.nextUp
+
+        store.reorderWorkspace(cwd: alphaWorkspace.cwd, toIndex: 1)
+        store.reorderJob(id: alphaFirstJob.id, inWorkspace: alphaWorkspace.cwd, toIndex: 1)
+
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
+            "/tmp/workspace-beta",
+            "/tmp/workspace-alpha",
+            "/tmp/workspace-gamma",
+        ])
+        #expect(alphaWorkspace.sortOrder > betaWorkspace.sortOrder)
+        #expect(alphaWorkspace.sortOrder < gammaWorkspace.sortOrder)
+        #expect(store.orderedJobs(in: alphaWorkspace).map(\.id) == [
+            "job-alpha-2",
+            "job-alpha-1",
+            "job-alpha-3",
+        ])
+        #expect(alphaFirstJob.sortOrder > alphaSecondJob.sortOrder)
+        #expect(alphaFirstJob.sortOrder < alphaThirdJob.sortOrder)
+    }
+
     @Test func enqueueingIntoExistingWorkspaceInsertsNewJobAtHead() throws {
         let store = CodexReviewStore(configuration: .init())
         let alphaJob = makeJob(

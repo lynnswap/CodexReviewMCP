@@ -12,12 +12,22 @@ extension CodexReviewStore {
             return
         }
 
-        guard let sortOrder = reorderedSortOrder(
+        var sortOrder = reorderedSortOrder(
             moving: workspace,
             toIndex: destinationIndex,
             in: ordered,
             sortOrder: \.sortOrder
-        ) else {
+        )
+        if sortOrder == nil {
+            normalizeWorkspaceSortOrders()
+            sortOrder = reorderedSortOrder(
+                moving: workspace,
+                toIndex: destinationIndex,
+                in: orderedWorkspaces,
+                sortOrder: \.sortOrder
+            )
+        }
+        guard let sortOrder else {
             return
         }
         workspace.sortOrder = sortOrder
@@ -45,12 +55,22 @@ extension CodexReviewStore {
             return
         }
 
-        guard let sortOrder = reorderedSortOrder(
+        var sortOrder = reorderedSortOrder(
             moving: job,
             toIndex: destinationIndex,
             in: ordered,
             sortOrder: \.sortOrder
-        ) else {
+        )
+        if sortOrder == nil {
+            normalizeJobSortOrders(inWorkspace: cwd)
+            sortOrder = reorderedSortOrder(
+                moving: job,
+                toIndex: destinationIndex,
+                in: orderedJobs(inWorkspace: cwd),
+                sortOrder: \.sortOrder
+            )
+        }
+        guard let sortOrder else {
             return
         }
         job.sortOrder = sortOrder

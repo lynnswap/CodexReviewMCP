@@ -55,6 +55,12 @@ extension CodexReviewStore {
         }
     }
 
+    package func normalizeWorkspaceSortOrders() {
+        for (index, workspace) in orderedWorkspaces.enumerated() {
+            workspace.sortOrder = Double(index)
+        }
+    }
+
     package func normalizeAllJobSortOrders() {
         for workspace in workspaces {
             normalizeJobSortOrders(inWorkspace: workspace.cwd)
@@ -84,11 +90,26 @@ package func reorderedSortOrder<Item: AnyObject>(
 
     switch (previousSortOrder, nextSortOrder) {
     case (.some(let previous), .some(let next)):
-        return (previous + next) / 2
+        guard previous < next else {
+            return nil
+        }
+        let midpoint = previous + (next - previous) / 2
+        guard midpoint > previous && midpoint < next else {
+            return nil
+        }
+        return midpoint
     case (.some(let previous), .none):
-        return previous + 1
+        let next = previous + 1
+        guard next > previous else {
+            return nil
+        }
+        return next
     case (.none, .some(let next)):
-        return next - 1
+        let previous = next - 1
+        guard previous < next else {
+            return nil
+        }
+        return previous
     case (.none, .none):
         return 0
     }
