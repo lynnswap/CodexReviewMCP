@@ -120,9 +120,9 @@ extension ReviewJobState {
     @Previewable @State var store = ReviewMonitorPreviewContent.makeStore()
     NavigationSplitView {
         List {
-            ForEach(store.workspaces, id: \.cwd) { workspace in
+            ForEach(store.orderedWorkspaces, id: \.cwd) { workspace in
                 Section(workspace.displayTitle) {
-                    ForEach(workspace.jobs) { job in
+                    ForEach(store.orderedJobs(in: workspace)) { job in
                         NavigationLink{
                             
                         }label:{

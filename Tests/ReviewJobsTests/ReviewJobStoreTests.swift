@@ -49,7 +49,7 @@ struct ReviewJobStoreTests {
 
         let listed = store.listReviews(statuses: [.succeeded])
         let reread = try store.readReview(jobID: result.jobID)
-        #expect(store.workspaces.flatMap(\.jobs).map(\.id) == [result.jobID])
+        #expect(store.orderedJobs.map(\.id) == [result.jobID])
         #expect(listed.items.map(\.jobID) == [result.jobID])
         #expect(reread.core.lifecycle.status == .succeeded)
         #expect(reread.core.reviewText == "Review ok")
@@ -81,7 +81,7 @@ struct ReviewJobStoreTests {
         )
 
         let returnedResult = try #require(result.core.output.reviewResult)
-        let storedResult = try #require(store.workspaces.first?.jobs.first?.core.output.reviewResult)
+        let storedResult = try #require(store.orderedJobs.first?.core.output.reviewResult)
         #expect(returnedResult == storedResult)
         #expect(storedResult.state == .hasFindings)
         #expect(storedResult.findings.first?.title == "[P1] Preserve structured finding state")
@@ -222,7 +222,7 @@ struct ReviewJobStoreTests {
 
         let transport = await manager.waitForTransport(sessionID: "session-owner")
         await transport.waitForRequest("review/start")
-        let jobID = try #require(store.workspaces.first?.jobs.first?.id)
+        let jobID = try #require(store.orderedJobs.first?.id)
         let outcome = try await store.cancelReview(
             selectedJobID: jobID,
             sessionID: "session-other",
@@ -245,12 +245,8 @@ struct ReviewJobStoreTests {
             status: .running,
             summary: "Running."
         )
-        store.workspaces = [
-            CodexReviewWorkspace(
-                cwd: "/tmp/repo",
-                jobs: [job]
-            )
-        ]
+        store.workspaces = [CodexReviewWorkspace(cwd: "/tmp/repo")]
+        store.jobs = [job]
 
         let outcome = try store.requestCancellation(
             jobID: job.id,
@@ -329,12 +325,8 @@ struct ReviewJobStoreTests {
             summary: "Cancelled.",
             errorMessage: "Cancelled."
         )
-        store.workspaces = [
-            CodexReviewWorkspace(
-                cwd: "/tmp/repo",
-                jobs: [job]
-            )
-        ]
+        store.workspaces = [CodexReviewWorkspace(cwd: "/tmp/repo")]
+        store.jobs = [job]
 
         let outcome = try await store.cancelReview(
             selectedJobID: job.id,
@@ -377,7 +369,7 @@ struct ReviewJobStoreTests {
 
         #expect(result.core.lifecycle.status == .cancelled)
         #expect(result.core.lifecycle.errorMessage == "session closed")
-        #expect(store.workspaces.flatMap(\.jobs).map(\.id) == [result.jobID])
+        #expect(store.orderedJobs.map(\.id) == [result.jobID])
         #expect(store.listReviews(statuses: [.cancelled]).items.map(\.jobID) == [result.jobID])
     }
 
@@ -395,12 +387,12 @@ struct ReviewJobStoreTests {
         )
 
         await store.stop()
-        #expect(store.workspaces.flatMap(\.jobs).map(\.id) == [result.jobID])
+        #expect(store.orderedJobs.map(\.id) == [result.jobID])
 
         await store.start()
         defer { Task { await store.stop() } }
 
-        #expect(store.workspaces.flatMap(\.jobs).map(\.id) == [result.jobID])
+        #expect(store.orderedJobs.map(\.id) == [result.jobID])
         #expect(store.listReviews(statuses: [.succeeded]).items.map(\.jobID) == [result.jobID])
     }
 

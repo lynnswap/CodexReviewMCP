@@ -21,6 +21,7 @@ extension CodexReviewStore {
         persistedAccounts: [CodexAccount]? = nil,
         serverURL: URL? = nil,
         workspaces: [CodexReviewWorkspace],
+        jobs: [CodexReviewJob] = [],
         settingsSnapshot: CodexReviewSettingsSnapshot? = nil
     ) {
         precondition(
@@ -49,16 +50,27 @@ extension CodexReviewStore {
         var resolvedWorkspaces: [CodexReviewWorkspace] = []
         resolvedWorkspaces.reserveCapacity(workspaces.count)
 
-        for workspace in workspaces {
+        for (workspaceIndex, workspace) in workspaces.enumerated() {
             if let existingWorkspace = existingByCWD.removeValue(forKey: workspace.cwd) {
-                existingWorkspace.jobs = workspace.jobs
+                existingWorkspace.sortOrder = Double(workspaceIndex)
                 resolvedWorkspaces.append(existingWorkspace)
             } else {
+                workspace.sortOrder = Double(workspaceIndex)
                 resolvedWorkspaces.append(workspace)
             }
         }
 
-        self.workspaces = resolvedWorkspaces
+        self.workspaces = Set(resolvedWorkspaces)
+        var nextSortOrderByCWD: [String: Int] = [:]
+        let resolvedJobs = jobs.filter { job in
+            resolvedWorkspaces.contains(where: { $0.cwd == job.cwd })
+        }
+        for job in resolvedJobs {
+            let nextSortOrder = nextSortOrderByCWD[job.cwd] ?? 0
+            job.sortOrder = Double(nextSortOrder)
+            nextSortOrderByCWD[job.cwd] = nextSortOrder + 1
+        }
+        self.jobs = Set(resolvedJobs)
         if let settingsSnapshot {
             settings.loadForTesting(snapshot: settingsSnapshot)
         }

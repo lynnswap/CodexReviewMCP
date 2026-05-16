@@ -7,7 +7,7 @@ import ReviewDomain
 @Suite(.serialized)
 @MainActor
 struct CodexReviewStoreOrderingTests {
-    @Test func reorderingWorkspacesAndJobsUpdatesDisplayedArrayOrder() {
+    @Test func reorderingWorkspacesAndJobsUpdatesSortOrder() {
         let store = CodexReviewStore(configuration: .init())
         let alphaFirstJob = makeJob(
             id: "job-alpha-1",
@@ -24,27 +24,78 @@ struct CodexReviewStoreOrderingTests {
             cwd: "/tmp/workspace-beta",
             targetSummary: "Beta 1"
         )
-        let alphaWorkspace = CodexReviewWorkspace(
-            cwd: "/tmp/workspace-alpha",
-            jobs: [alphaFirstJob, alphaSecondJob]
-        )
-        let betaWorkspace = CodexReviewWorkspace(
-            cwd: "/tmp/workspace-beta",
-            jobs: [betaJob]
-        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: "/tmp/workspace-alpha")
+        let betaWorkspace = CodexReviewWorkspace(cwd: "/tmp/workspace-beta")
         store.loadForTesting(
             serverState: .running,
-            workspaces: [alphaWorkspace, betaWorkspace]
+            workspaces: [alphaWorkspace, betaWorkspace],
+            jobs: [alphaFirstJob, alphaSecondJob, betaJob]
         )
 
         store.reorderWorkspace(cwd: betaWorkspace.cwd, toIndex: 0)
         store.reorderJob(id: alphaSecondJob.id, inWorkspace: alphaWorkspace.cwd, toIndex: 0)
 
-        #expect(store.workspaces.map(\.cwd) == [
+        #expect(Set(store.workspaces.map(\.cwd)) == Set([
+            "/tmp/workspace-alpha",
+            "/tmp/workspace-beta",
+        ]))
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
             "/tmp/workspace-beta",
             "/tmp/workspace-alpha",
         ])
-        #expect(alphaWorkspace.jobs.map(\.id) == ["job-alpha-2", "job-alpha-1"])
+        #expect(Set(store.jobs(inWorkspace: alphaWorkspace.cwd).map(\.id)) == Set(["job-alpha-1", "job-alpha-2"]))
+        #expect(store.orderedJobs(in: alphaWorkspace).map(\.id) == ["job-alpha-2", "job-alpha-1"])
+    }
+
+    @Test func reorderingNormalizesExhaustedSortOrderGaps() {
+        let store = CodexReviewStore(configuration: .init())
+        let alphaFirstJob = makeJob(
+            id: "job-alpha-1",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Alpha 1"
+        )
+        let alphaSecondJob = makeJob(
+            id: "job-alpha-2",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Alpha 2"
+        )
+        let alphaThirdJob = makeJob(
+            id: "job-alpha-3",
+            cwd: "/tmp/workspace-alpha",
+            targetSummary: "Alpha 3"
+        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: "/tmp/workspace-alpha")
+        let betaWorkspace = CodexReviewWorkspace(cwd: "/tmp/workspace-beta")
+        let gammaWorkspace = CodexReviewWorkspace(cwd: "/tmp/workspace-gamma")
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [alphaWorkspace, betaWorkspace, gammaWorkspace],
+            jobs: [alphaFirstJob, alphaSecondJob, alphaThirdJob]
+        )
+        alphaWorkspace.sortOrder = 0
+        betaWorkspace.sortOrder = 1
+        gammaWorkspace.sortOrder = 1.nextUp
+        alphaFirstJob.sortOrder = 0
+        alphaSecondJob.sortOrder = 1
+        alphaThirdJob.sortOrder = 1.nextUp
+
+        store.reorderWorkspace(cwd: alphaWorkspace.cwd, toIndex: 1)
+        store.reorderJob(id: alphaFirstJob.id, inWorkspace: alphaWorkspace.cwd, toIndex: 1)
+
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
+            "/tmp/workspace-beta",
+            "/tmp/workspace-alpha",
+            "/tmp/workspace-gamma",
+        ])
+        #expect(alphaWorkspace.sortOrder > betaWorkspace.sortOrder)
+        #expect(alphaWorkspace.sortOrder < gammaWorkspace.sortOrder)
+        #expect(store.orderedJobs(in: alphaWorkspace).map(\.id) == [
+            "job-alpha-2",
+            "job-alpha-1",
+            "job-alpha-3",
+        ])
+        #expect(alphaFirstJob.sortOrder > alphaSecondJob.sortOrder)
+        #expect(alphaFirstJob.sortOrder < alphaThirdJob.sortOrder)
     }
 
     @Test func enqueueingIntoExistingWorkspaceInsertsNewJobAtHead() throws {
@@ -59,17 +110,12 @@ struct CodexReviewStoreOrderingTests {
             cwd: "/tmp/workspace-beta",
             targetSummary: "Beta 1"
         )
-        let alphaWorkspace = CodexReviewWorkspace(
-            cwd: alphaJob.cwd,
-            jobs: [alphaJob]
-        )
-        let betaWorkspace = CodexReviewWorkspace(
-            cwd: betaJob.cwd,
-            jobs: [betaJob]
-        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: alphaJob.cwd)
+        let betaWorkspace = CodexReviewWorkspace(cwd: betaJob.cwd)
         store.loadForTesting(
             serverState: .running,
-            workspaces: [alphaWorkspace, betaWorkspace]
+            workspaces: [alphaWorkspace, betaWorkspace],
+            jobs: [alphaJob, betaJob]
         )
 
         let newJobID = try store.enqueueReview(
@@ -80,8 +126,9 @@ struct CodexReviewStoreOrderingTests {
             )
         )
 
-        #expect(alphaWorkspace.jobs.map(\.id) == [newJobID, "job-alpha-1"])
-        #expect(store.workspaces.map(\.cwd) == [
+        #expect(Set(store.jobs(inWorkspace: alphaWorkspace.cwd).map(\.id)) == Set(["job-alpha-1", newJobID]))
+        #expect(store.orderedJobs(in: alphaWorkspace).map(\.id) == [newJobID, "job-alpha-1"])
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
             "/tmp/workspace-alpha",
             "/tmp/workspace-beta",
         ])
@@ -99,17 +146,12 @@ struct CodexReviewStoreOrderingTests {
             cwd: "/tmp/workspace-beta",
             targetSummary: "Beta 1"
         )
-        let alphaWorkspace = CodexReviewWorkspace(
-            cwd: alphaJob.cwd,
-            jobs: [alphaJob]
-        )
-        let betaWorkspace = CodexReviewWorkspace(
-            cwd: betaJob.cwd,
-            jobs: [betaJob]
-        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: alphaJob.cwd)
+        let betaWorkspace = CodexReviewWorkspace(cwd: betaJob.cwd)
         store.loadForTesting(
             serverState: .running,
-            workspaces: [alphaWorkspace, betaWorkspace]
+            workspaces: [alphaWorkspace, betaWorkspace],
+            jobs: [alphaJob, betaJob]
         )
 
         let queuedJobID = try store.enqueueReview(
@@ -119,7 +161,7 @@ struct CodexReviewStoreOrderingTests {
                 target: .uncommittedChanges
             )
         )
-        #expect(store.workspaces.map(\.cwd) == [
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
             "/tmp/workspace-gamma",
             "/tmp/workspace-alpha",
             "/tmp/workspace-beta",
@@ -127,13 +169,13 @@ struct CodexReviewStoreOrderingTests {
 
         store.discardQueuedOrRunningJob(jobID: queuedJobID)
 
-        #expect(store.workspaces.map(\.cwd) == [
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
             "/tmp/workspace-alpha",
             "/tmp/workspace-beta",
         ])
     }
 
-    @Test func listReviewsPreservesWorkspaceAndJobArrayOrderAcrossSessions() {
+    @Test func listReviewsPreservesWorkspaceAndJobSortOrderAcrossSessions() {
         let store = CodexReviewStore(configuration: .init())
         let alphaFirstJob = makeJob(
             id: "job-a",
@@ -156,17 +198,12 @@ struct CodexReviewStoreOrderingTests {
             sessionID: "session-3",
             startedAt: nil
         )
-        let alphaWorkspace = CodexReviewWorkspace(
-            cwd: alphaFirstJob.cwd,
-            jobs: [alphaFirstJob, alphaSecondJob]
-        )
-        let betaWorkspace = CodexReviewWorkspace(
-            cwd: betaJob.cwd,
-            jobs: [betaJob]
-        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: alphaFirstJob.cwd)
+        let betaWorkspace = CodexReviewWorkspace(cwd: betaJob.cwd)
         store.loadForTesting(
             serverState: .running,
-            workspaces: [alphaWorkspace, betaWorkspace]
+            workspaces: [alphaWorkspace, betaWorkspace],
+            jobs: [alphaFirstJob, alphaSecondJob, betaJob]
         )
 
         let listed = store.listReviews()
@@ -194,17 +231,12 @@ struct CodexReviewStoreOrderingTests {
             targetSummary: "Beta",
             startedAt: nil
         )
-        let alphaWorkspace = CodexReviewWorkspace(
-            cwd: firstJob.cwd,
-            jobs: [firstJob]
-        )
-        let betaWorkspace = CodexReviewWorkspace(
-            cwd: secondJob.cwd,
-            jobs: [secondJob]
-        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: firstJob.cwd)
+        let betaWorkspace = CodexReviewWorkspace(cwd: secondJob.cwd)
         store.loadForTesting(
             serverState: .running,
-            workspaces: [alphaWorkspace, betaWorkspace]
+            workspaces: [alphaWorkspace, betaWorkspace],
+            jobs: [firstJob, secondJob]
         )
 
         do {

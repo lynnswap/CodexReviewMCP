@@ -444,6 +444,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
     public nonisolated let id: String
     public let sessionID: String
     public let cwd: String
+    public package(set) var sortOrder: Double
     public var targetSummary: String
     public var core: ReviewJobCore
     public var cancellationRequested: Bool
@@ -474,6 +475,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         id: String,
         sessionID: String,
         cwd: String,
+        sortOrder: Double = 0,
         targetSummary: String,
         core: ReviewJobCore,
         cancellationRequested: Bool = false,
@@ -483,6 +485,7 @@ public final class CodexReviewJob: Identifiable, Hashable {
         self.id = id
         self.sessionID = sessionID
         self.cwd = cwd
+        self.sortOrder = sortOrder
         self.targetSummary = targetSummary
         self.core = core
         self.cancellationRequested = cancellationRequested

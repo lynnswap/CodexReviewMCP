@@ -55,8 +55,7 @@ public enum ReviewMonitorPreviewContent {
                 return
             }
 
-            let runningJobs = store.workspaces
-                .flatMap(\.jobs)
+            let runningJobs = store.orderedJobs
                 .filter { $0.core.lifecycle.status == .running }
 
             guard runningJobs.isEmpty == false else {
@@ -88,12 +87,14 @@ public enum ReviewMonitorPreviewContent {
             seed: .init(initialSettingsSnapshot: makePreviewSettingsSnapshot())
         )
         let accounts = makePreviewAccounts()
+        let previewContent = makeSidebarContent()
         store.loadForTesting(
             serverState: .running,
             account: accounts.first,
             persistedAccounts: accounts,
             serverURL: URL(string: "http://localhost:9417/mcp"),
-            workspaces: makeWorkspaces()
+            workspaces: previewContent.workspaces,
+            jobs: previewContent.jobs
         )
         store.previewSupportRetainer = PreviewLogStreamer(
             store: store,
@@ -195,7 +196,7 @@ public enum ReviewMonitorPreviewContent {
         ]
     }
 
-    private static func makeWorkspaces() -> [CodexReviewWorkspace] {
+    private static func makeSidebarContent() -> (workspaces: [CodexReviewWorkspace], jobs: [CodexReviewJob]) {
         let now = Date()
         let workspacePaths = [
             "/path/to/workspace-alpha",
@@ -203,9 +204,12 @@ public enum ReviewMonitorPreviewContent {
             "/path/to/workspace-gamma",
         ]
 
-        return workspacePaths.enumerated().map { workspaceIndex, cwd in
+        var workspaces: [CodexReviewWorkspace] = []
+        var jobs: [CodexReviewJob] = []
+        for (workspaceIndex, cwd) in workspacePaths.enumerated() {
             let workspaceName = URL(fileURLWithPath: cwd).lastPathComponent
-            let jobs = makeJobDefinitions(for: workspaceName).enumerated().map { jobIndex, definition in
+            workspaces.append(CodexReviewWorkspace(cwd: cwd))
+            jobs += makeJobDefinitions(for: workspaceName).enumerated().map { jobIndex, definition in
                 makeJob(
                     id: "preview-\(workspaceIndex)-\(jobIndex)",
                     cwd: cwd,
@@ -220,12 +224,8 @@ public enum ReviewMonitorPreviewContent {
                     logText: makePreviewLogText(for: definition)
                 )
             }
-
-            return CodexReviewWorkspace(
-                cwd: cwd,
-                jobs: jobs
-            )
         }
+        return (workspaces, jobs)
     }
 
     private static func makeJob(

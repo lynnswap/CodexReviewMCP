@@ -19,10 +19,7 @@ extension CodexReviewStore {
         sessionID _: String,
         cancellation: ReviewCancellation = .system()
     ) throws {
-        guard let job = workspaces
-            .lazy
-            .flatMap(\.jobs)
-            .first(where: { $0.id == jobID })
+        guard let job = job(id: jobID)
         else {
             throw ReviewError.jobNotFound("Job \(jobID) was not found.")
         }
@@ -46,10 +43,7 @@ extension CodexReviewStore {
         sessionID _: String,
         message: String
     ) throws {
-        guard let job = workspaces
-            .lazy
-            .flatMap(\.jobs)
-            .first(where: { $0.id == jobID })
+        guard let job = job(id: jobID)
         else {
             throw ReviewError.jobNotFound("Job \(jobID) was not found.")
         }
@@ -73,11 +67,9 @@ extension CodexReviewStore {
         let cancellation = ReviewCancellation.system(
             message: reason.nilIfEmpty ?? "Cancellation requested."
         )
-        let jobs = workspaces
-            .flatMap(\.jobs)
-            .filter { $0.isTerminal == false }
+        let cancellableJobs = orderedJobs.filter { $0.isTerminal == false }
         var firstError: (any Error)?
-        for job in jobs {
+        for job in cancellableJobs {
             do {
                 try await cancelReview(
                     jobID: job.id,
@@ -106,7 +98,7 @@ extension CodexReviewStore {
         failureMessage: String
     ) {
         let resolvedError = failureMessage.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
-        for job in workspaces.flatMap(\.jobs) where job.isTerminal == false {
+        for job in orderedJobs where job.isTerminal == false {
             job.cancellationRequested = false
             job.core.lifecycle.cancellation = nil
             job.core.lifecycle.status = .failed

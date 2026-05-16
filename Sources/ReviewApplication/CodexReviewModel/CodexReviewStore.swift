@@ -9,7 +9,8 @@ public final class CodexReviewStore {
     public let auth: CodexReviewAuthModel
     package let settings: SettingsStore
     public package(set) var serverURL: URL?
-    public package(set) var workspaces: [CodexReviewWorkspace] = []
+    public package(set) var workspaces: Set<CodexReviewWorkspace> = []
+    public package(set) var jobs: Set<CodexReviewJob> = []
     package var shouldAutoStartEmbeddedServer: Bool {
         coordinator.shouldAutoStartEmbeddedServer
     }
@@ -342,18 +343,13 @@ public final class CodexReviewStore {
         guard let diagnosticsURL else {
             return
         }
-        var jobs: [CodexReviewStoreDiagnosticsSnapshot.Job] = []
-        for workspace in workspaces {
-            for job in workspace.jobs {
-                jobs.append(
-                    .init(
-                        status: job.core.lifecycle.status.rawValue,
-                        summary: job.core.output.summary,
-                        logText: job.logText,
-                        rawLogText: job.rawLogText
-                    )
-                )
-            }
+        let jobs = orderedJobs.map { job in
+            CodexReviewStoreDiagnosticsSnapshot.Job(
+                status: job.core.lifecycle.status.rawValue,
+                summary: job.core.output.summary,
+                logText: job.logText,
+                rawLogText: job.rawLogText
+            )
         }
         let snapshot = CodexReviewStoreDiagnosticsSnapshot(
             serverState: serverState.displayText,
@@ -382,6 +378,7 @@ public final class CodexReviewStore {
 
     private func resetReviews() {
         workspaces = []
+        jobs = []
     }
 
     private func isAlreadyUsingPersistedActiveAccount(
@@ -425,22 +422,16 @@ public final class CodexReviewStore {
     }
 
     public var hasRunningJobs: Bool {
-        workspaces.contains { workspace in
-            workspace.jobs.contains(where: { $0.isTerminal == false })
-        }
+        jobs.contains(where: { $0.isTerminal == false })
     }
 
     public var runningJobCount: Int {
-        workspaces.reduce(into: 0) { count, workspace in
-            count += workspace.jobs.filter { $0.isTerminal == false }.count
-        }
+        jobs.filter { $0.isTerminal == false }.count
     }
 
     package func activeJobIDs(for sessionID: String) -> [String] {
-        workspaces.flatMap { workspace in
-            workspace.jobs
-                .filter { $0.sessionID == sessionID && $0.isTerminal == false }
-                .map(\.id)
-        }
+        orderedJobs
+            .filter { $0.sessionID == sessionID && $0.isTerminal == false }
+            .map(\.id)
     }
 }

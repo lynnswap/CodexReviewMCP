@@ -304,8 +304,7 @@ struct CodexReviewMCPLifecycleTests {
             await sessionBTransport.waitForRequest("review/start")
 
             let sessionAJobID = try #require(
-                store.workspaces
-                    .flatMap(\.jobs)
+                store.orderedJobs
                     .first { $0.sessionID == "session-a" }?
                     .id
             )
@@ -409,10 +408,8 @@ struct CodexReviewMCPLifecycleTests {
             let transport = await manager.sessionTransport()
             await transport.waitForRequest("config/read")
             try await waitForMainActorCondition {
-                store.workspaces.contains { workspace in
-                    workspace.jobs.contains { job in
-                        job.sessionID == "session-bootstrap" && job.core.lifecycle.status == .running
-                    }
+                store.orderedJobs.contains { job in
+                    job.sessionID == "session-bootstrap" && job.core.lifecycle.status == .running
                 }
             }
 
@@ -460,12 +457,8 @@ struct CodexReviewMCPLifecycleTests {
             status: .running,
             summary: "Running"
         )
-        store.workspaces = [
-            CodexReviewWorkspace(
-                cwd: "/tmp/repo",
-                jobs: [failedJob, cancelledJob]
-            )
-        ]
+        store.workspaces = [CodexReviewWorkspace(cwd: "/tmp/repo")]
+        store.jobs = [failedJob, cancelledJob]
 
         await #expect(throws: Error.self) {
             try await store.cancelAllRunningJobs(reason: "Account change requested.")
@@ -486,12 +479,8 @@ struct CodexReviewMCPLifecycleTests {
             status: .running,
             summary: "Running"
         )
-        store.workspaces = [
-            CodexReviewWorkspace(
-                cwd: "/tmp/repo",
-                jobs: [job]
-            )
-        ]
+        store.workspaces = [CodexReviewWorkspace(cwd: "/tmp/repo")]
+        store.jobs = [job]
 
         try await store.cancelAllRunningJobs(reason: "")
 
@@ -520,12 +509,8 @@ struct CodexReviewMCPLifecycleTests {
             status: .running,
             summary: "Running"
         )
-        store.workspaces = [
-            CodexReviewWorkspace(
-                cwd: "/tmp/repo",
-                jobs: [requestedJob, failedJob]
-            )
-        ]
+        store.workspaces = [CodexReviewWorkspace(cwd: "/tmp/repo")]
+        store.jobs = [requestedJob, failedJob]
 
         store.terminateAllRunningJobsLocally(
             reason: "Account change requested.",
