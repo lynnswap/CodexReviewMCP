@@ -220,9 +220,16 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             }
             let displayedJobs = displayedJobs(in: workspace)
             let targetJobs = store.orderedJobs(in: workspace)
-            let outlineAlreadyMatches = displayedJobs.count == targetJobs.count
-                && zip(displayedJobs, targetJobs).allSatisfy { $0 === $1 }
-            guard outlineAlreadyMatches == false else {
+            guard hasSameIdentityOrder(displayedJobs, targetJobs) == false else {
+                continue
+            }
+            if hasSameIdentityMembership(displayedJobs, targetJobs) {
+                applyMembershipChange(
+                    currentItems: displayedJobs,
+                    targetItems: targetJobs,
+                    parent: workspace
+                )
+                reconcileSelectionAfterOutlineMutation()
                 continue
             }
             reloadWorkspace(workspace, allWorkspaces: workspaces)
@@ -540,11 +547,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         targetItems: [Item],
         parent: Any?
     ) -> [Item] {
-        let hasSameMembership = currentItems.count == targetItems.count
-            && currentItems.allSatisfy { currentItem in
-                targetItems.contains { $0 === currentItem }
-            }
-        guard hasSameMembership == false else {
+        guard hasSameIdentityOrder(currentItems, targetItems) == false else {
             return []
         }
 
@@ -575,23 +578,60 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             }
 
             for targetIndex in targetItems.indices {
-                if visibleItems.contains(where: { $0 === targetItems[targetIndex] }) {
+                let targetItem = targetItems[targetIndex]
+                if visibleItems.contains(where: { $0 === targetItem }) {
                     continue
                 }
+                let insertionIndex = min(targetIndex, visibleItems.count)
 
                 outlineView.insertItems(
-                    at: IndexSet(integer: targetIndex),
+                    at: IndexSet(integer: insertionIndex),
                     inParent: parent,
                     withAnimation: []
                 )
 #if DEBUG
                 incrementalMembershipChangeCountForTesting += 1
 #endif
-                visibleItems.insert(targetItems[targetIndex], at: targetIndex)
-                insertedItems.append(targetItems[targetIndex])
+                visibleItems.insert(targetItem, at: insertionIndex)
+                insertedItems.append(targetItem)
+            }
+
+            for targetIndex in targetItems.indices {
+                guard targetIndex < visibleItems.count else {
+                    continue
+                }
+                let targetItem = targetItems[targetIndex]
+                if visibleItems[targetIndex] === targetItem {
+                    continue
+                }
+                guard let sourceIndex = visibleItems.firstIndex(where: { $0 === targetItem }) else {
+                    continue
+                }
+                outlineView.moveItem(
+                    at: sourceIndex,
+                    inParent: parent,
+                    to: targetIndex,
+                    inParent: parent
+                )
+#if DEBUG
+                incrementalMoveCountForTesting += 1
+#endif
+                let movedItem = visibleItems.remove(at: sourceIndex)
+                visibleItems.insert(movedItem, at: targetIndex)
             }
         }
         return insertedItems
+    }
+
+    private func hasSameIdentityOrder<Item: AnyObject>(_ lhs: [Item], _ rhs: [Item]) -> Bool {
+        lhs.count == rhs.count && zip(lhs, rhs).allSatisfy { $0 === $1 }
+    }
+
+    private func hasSameIdentityMembership<Item: AnyObject>(_ lhs: [Item], _ rhs: [Item]) -> Bool {
+        lhs.count == rhs.count
+            && lhs.allSatisfy { lhsItem in
+                rhs.contains { $0 === lhsItem }
+            }
     }
 
     private func moveWorkspaceInOutline(cwd: String, toIndex destinationIndex: Int) {
