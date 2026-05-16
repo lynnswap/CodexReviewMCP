@@ -54,6 +54,13 @@ final class ReviewMonitorTransportViewController: NSViewController {
         updatePresentation(selection: uiState.selection)
     }
 
+    override func performTextFinderAction(_ sender: Any?) {
+        guard performDisplayedTextFinderAction(sender) else {
+            super.performTextFinderAction(sender)
+            return
+        }
+    }
+
     private func configureHierarchy() {
         let safeArea = view.safeAreaLayoutGuide
         emptyStateView.translatesAutoresizingMaskIntoConstraints = false
@@ -337,6 +344,29 @@ final class ReviewMonitorTransportViewController: NSViewController {
         return logScrollTargetsByJobID[job.id] ?? .bottom
     }
 
+    @discardableResult
+    func performDisplayedTextFinderAction(_ sender: Any?) -> Bool {
+        switch displayedSelection {
+        case .job:
+            return logScrollView.performDisplayedTextFinderAction(sender)
+        case .workspace:
+            return workspaceFindingsView.performDisplayedTextFinderAction(sender)
+        case nil:
+            return false
+        }
+    }
+
+    func validateDisplayedTextFinderAction(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        switch displayedSelection {
+        case .job:
+            return logScrollView.validateDisplayedTextFinderAction(item)
+        case .workspace:
+            return workspaceFindingsView.validateDisplayedTextFinderAction(item)
+        case nil:
+            return false
+        }
+    }
+
     private func noteRenderForTesting() {
 #if DEBUG
         renderCountForTestingStorage += 1
@@ -423,6 +453,18 @@ extension ReviewMonitorTransportViewController {
         logScrollView.isSelectableForTesting
     }
 
+    var logUsesFindBarForTesting: Bool {
+        logScrollView.usesFindBarForTesting
+    }
+
+    var logIsIncrementalSearchingEnabledForTesting: Bool {
+        logScrollView.isIncrementalSearchingEnabledForTesting
+    }
+
+    var logFindBarVisibleForTesting: Bool {
+        logScrollView.isFindBarVisibleForTesting
+    }
+
     var logWritingToolsDisabledForTesting: Bool {
         logScrollView.writingToolsDisabledForTesting
     }
@@ -492,6 +534,18 @@ extension ReviewMonitorTransportViewController {
 
     var workspaceFindingsTextIsEditableForTesting: Bool {
         workspaceFindingsView.isTextEditableForTesting
+    }
+
+    var workspaceFindingsUsesFindBarForTesting: Bool {
+        workspaceFindingsView.usesFindBarForTesting
+    }
+
+    var workspaceFindingsIsIncrementalSearchingEnabledForTesting: Bool {
+        workspaceFindingsView.isIncrementalSearchingEnabledForTesting
+    }
+
+    var workspaceFindingsFindBarVisibleForTesting: Bool {
+        workspaceFindingsView.isFindBarVisibleForTesting
     }
 
     var workspaceFindingsPriorityPrefixCountForTesting: Int {

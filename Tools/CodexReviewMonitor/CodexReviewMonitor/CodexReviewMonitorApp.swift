@@ -368,6 +368,33 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(deleteItem)
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(.separator())
+        let findMenuItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+        let findMenu = NSMenu(title: "Find")
+        findMenu.addItem(
+            textFinderMenuItem(
+                title: "Find...",
+                action: .showFindInterface,
+                keyEquivalent: "f"
+            )
+        )
+        findMenu.addItem(
+            textFinderMenuItem(
+                title: "Find Next",
+                action: .nextMatch,
+                keyEquivalent: "g"
+            )
+        )
+        findMenu.addItem(
+            textFinderMenuItem(
+                title: "Find Previous",
+                action: .previousMatch,
+                keyEquivalent: "g",
+                modifierMask: [.command, .shift]
+            )
+        )
+        findMenuItem.submenu = findMenu
+        editMenu.addItem(findMenuItem)
         editMenuItem.submenu = editMenu
         mainMenu.addItem(editMenuItem)
 
@@ -383,5 +410,21 @@ final class CodexReviewMonitorAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
         NSApp.servicesMenu = servicesMenu
         NSApp.windowsMenu = windowMenu
+    }
+
+    private func textFinderMenuItem(
+        title: String,
+        action: NSTextFinder.Action,
+        keyEquivalent: String,
+        modifierMask: NSEvent.ModifierFlags = [.command]
+    ) -> NSMenuItem {
+        let item = NSMenuItem(
+            title: title,
+            action: #selector(NSResponder.performTextFinderAction(_:)),
+            keyEquivalent: keyEquivalent
+        )
+        item.tag = action.rawValue
+        item.keyEquivalentModifierMask = modifierMask
+        return item
     }
 }
