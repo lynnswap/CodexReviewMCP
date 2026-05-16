@@ -234,9 +234,12 @@ final class ReviewMonitorTransportViewController: NSViewController {
             else {
                 return []
             }
+            let threadID = workspaceFindingThreadID(for: job)
             return result.findings.map { finding in
                 ReviewMonitorWorkspaceFindingsView.Entry(
-                    jobTargetSummary: job.targetSummary,
+                    threadID: threadID,
+                    targetSummary: job.targetSummary,
+                    priority: finding.priority,
                     title: finding.title,
                     body: finding.body,
                     locationText: locationText(for: finding.location, in: workspace)
@@ -261,6 +264,24 @@ final class ReviewMonitorTransportViewController: NSViewController {
             path = location.path
         }
         return "\(path):\(location.startLine)-\(location.endLine)"
+    }
+
+    private func workspaceFindingThreadID(for job: CodexReviewJob) -> String {
+        if let reviewThreadID = nonEmptyID(job.core.run.reviewThreadID) {
+            return reviewThreadID
+        }
+        if let threadID = nonEmptyID(job.core.run.threadID) {
+            return threadID
+        }
+        return job.id
+    }
+
+    private func nonEmptyID(_ id: String?) -> String? {
+        guard let id else {
+            return nil
+        }
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func renderSelectedJob(
@@ -455,14 +476,42 @@ extension ReviewMonitorTransportViewController {
         )
     }
 
-    var workspaceFindingRowWidthsForTesting: [CGFloat] {
-        view.layoutSubtreeIfNeeded()
-        return workspaceFindingsView.rowWidthsForTesting
-    }
-
     var workspaceFindingsContentWidthForTesting: CGFloat {
         view.layoutSubtreeIfNeeded()
         return workspaceFindingsView.contentWidthForTesting
+    }
+
+    var workspaceFindingsTextContainerWidthForTesting: CGFloat {
+        view.layoutSubtreeIfNeeded()
+        return workspaceFindingsView.textContainerWidthForTesting
+    }
+
+    var workspaceFindingsTextIsSelectableForTesting: Bool {
+        workspaceFindingsView.isTextSelectableForTesting
+    }
+
+    var workspaceFindingsTextIsEditableForTesting: Bool {
+        workspaceFindingsView.isTextEditableForTesting
+    }
+
+    var workspaceFindingsPriorityPrefixCountForTesting: Int {
+        workspaceFindingsView.priorityPrefixCountForTesting
+    }
+
+    var workspaceFindingsTextAttachmentCountForTesting: Int {
+        workspaceFindingsView.textAttachmentCountForTesting
+    }
+
+    var workspaceFindingsThreadBackgroundRangeCountForTesting: Int {
+        workspaceFindingsView.threadBackgroundRangeCountForTesting
+    }
+
+    var workspaceFindingsAccessibilityValueForTesting: String? {
+        workspaceFindingsView.accessibilityValueForTesting
+    }
+
+    var workspaceFindingsRenderedStorageStringForTesting: String {
+        workspaceFindingsView.renderedStorageStringForTesting
     }
 
     func waitForRenderCountForTesting(_ targetCount: Int) async {

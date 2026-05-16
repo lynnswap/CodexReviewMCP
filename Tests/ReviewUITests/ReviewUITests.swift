@@ -1451,8 +1451,15 @@ struct ReviewUITests {
             targetSummary: "Commit: abc123",
             reviewResult: .init(
                 state: .hasFindings,
-                findingCount: 1,
+                findingCount: 2,
                 findings: [
+                    .init(
+                        title: "[P0] Stop stale undo commands",
+                        body: "Queued undo work must be cancelled before clearing history.",
+                        priority: 0,
+                        location: nil,
+                        rawText: ""
+                    ),
                     .init(
                         title: "[P1] Preserve selection identity",
                         body: "The sidebar should resolve the selected workspace by cwd after reload.",
@@ -1507,18 +1514,47 @@ struct ReviewUITests {
         _ = try await awaitTransportRender(transport, after: initialRenderCount)
         #expect(viewController.sidebarViewControllerForTesting.selectedWorkspaceForTesting?.cwd == workspaceCWD)
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
+        #expect(transport.workspaceFindingsTextIsSelectableForTesting)
+        #expect(transport.workspaceFindingsTextIsEditableForTesting == false)
+        #expect(transport.workspaceFindingsPriorityPrefixCountForTesting == 3)
+        #expect(transport.workspaceFindingsTextAttachmentCountForTesting == 0)
+        #expect(transport.workspaceFindingsThreadBackgroundRangeCountForTesting == 2)
+        #expect(transport.workspaceFindingsRenderedStorageStringForTesting.contains("\n\n") == false)
+        #expect(
+            transport.workspaceFindingsAccessibilityValueForTesting == """
+            Commit: abc123
+
+            [P0] Stop stale undo commands
+            Queued undo work must be cancelled before clearing history.
+
+            [P1] Preserve selection identity
+            The sidebar should resolve the selected workspace by cwd after reload.
+            Sources/Sidebar.swift:10-12
+
+            Branch: workspace-detail
+
+            [P2] Render workspace findings
+            The detail pane should aggregate structured findings without parsing logs.
+            /outside/Other.swift:5-5
+            """
+        )
         #expect(
             transport.workspaceFindingSnapshotForTesting == .init(
                 text: """
+                Commit: abc123
+
+                [P0] Stop stale undo commands
+                Queued undo work must be cancelled before clearing history.
+
                 [P1] Preserve selection identity
                 The sidebar should resolve the selected workspace by cwd after reload.
                 Sources/Sidebar.swift:10-12
-                Commit: abc123
+
+                Branch: workspace-detail
 
                 [P2] Render workspace findings
                 The detail pane should aggregate structured findings without parsing logs.
                 /outside/Other.swift:5-5
-                Branch: workspace-detail
                 """,
                 isShowingNoFindingsState: false,
                 isShowingFindingsList: true
@@ -1528,7 +1564,7 @@ struct ReviewUITests {
         #expect(window.subtitle == workspace.cwd)
     }
 
-    @Test func workspaceFindingsRowsWrapWithinDetailWidth() async throws {
+    @Test func workspaceFindingsTextWrapsWithinDetailWidth() async throws {
         let workspaceCWD = "/tmp/workspace-alpha"
         let longBody = Array(repeating: "structured finding text should wrap inside the detail pane", count: 12)
             .joined(separator: " ")
@@ -1572,9 +1608,9 @@ struct ReviewUITests {
 
         _ = try await awaitTransportRender(transport, after: initialRenderCount)
         let contentWidth = transport.workspaceFindingsContentWidthForTesting
-        let rowWidths = transport.workspaceFindingRowWidthsForTesting
-        #expect(rowWidths.isEmpty == false)
-        #expect(rowWidths.allSatisfy { $0 <= contentWidth + 0.5 })
+        let textContainerWidth = transport.workspaceFindingsTextContainerWidthForTesting
+        #expect(textContainerWidth > 0)
+        #expect(textContainerWidth <= contentWidth + 0.5)
     }
 
     @Test func selectingWorkspaceWithoutStructuredFindingsShowsNoFindingsState() async throws {
