@@ -299,6 +299,51 @@ struct CodexReviewMonitorTests {
         #expect(windowController?.windowForTesting.makeKeyAndOrderFrontCallCount == 1)
     }
 
+    @Test func appDelegateInstallsTextFinderMenuItems() {
+        let previousMainMenu = NSApp.mainMenu
+        let previousServicesMenu = NSApp.servicesMenu
+        let previousWindowsMenu = NSApp.windowsMenu
+        defer {
+            NSApp.mainMenu = previousMainMenu
+            NSApp.servicesMenu = previousServicesMenu
+            NSApp.windowsMenu = previousWindowsMenu
+        }
+        let recorder = WindowControllerFactoryRecorder()
+        let delegate = CodexReviewMonitorAppDelegate(
+            launchModeProvider: { .xctest },
+            windowControllerFactory: { _, _ in
+                recorder.makeWindowController()
+            }
+        )
+
+        delegate.applicationDidFinishLaunching(Notification(name: .init("test-launch")))
+
+        guard let editMenu = NSApp.mainMenu?.items.compactMap(\.submenu).first(where: { $0.title == "Edit" }),
+              let findMenu = editMenu.item(withTitle: "Find")?.submenu
+        else {
+            Issue.record("Expected the app delegate to install Edit > Find.")
+            return
+        }
+        expectTextFinderMenuItem(
+            findMenu.item(withTitle: "Find..."),
+            action: .showFindInterface,
+            keyEquivalent: "f",
+            modifierMask: [.command]
+        )
+        expectTextFinderMenuItem(
+            findMenu.item(withTitle: "Find Next"),
+            action: .nextMatch,
+            keyEquivalent: "g",
+            modifierMask: [.command]
+        )
+        expectTextFinderMenuItem(
+            findMenu.item(withTitle: "Find Previous"),
+            action: .previousMatch,
+            keyEquivalent: "g",
+            modifierMask: [.command, .shift]
+        )
+    }
+
     @Test func appDelegateCreatesWindowControllerOnXCTestLaunch() {
         let recorder = WindowControllerFactoryRecorder()
         let delegate = CodexReviewMonitorAppDelegate(
@@ -333,6 +378,23 @@ struct CodexReviewMonitorTests {
         #expect(handled == false)
     }
 
+}
+
+@MainActor
+private func expectTextFinderMenuItem(
+    _ item: NSMenuItem?,
+    action: NSTextFinder.Action,
+    keyEquivalent: String,
+    modifierMask: NSEvent.ModifierFlags
+) {
+    guard let item else {
+        Issue.record("Expected text finder menu item.")
+        return
+    }
+    #expect(item.action == #selector(NSResponder.performTextFinderAction(_:)))
+    #expect(item.tag == action.rawValue)
+    #expect(item.keyEquivalent == keyEquivalent)
+    #expect(item.keyEquivalentModifierMask == modifierMask)
 }
 
 @MainActor

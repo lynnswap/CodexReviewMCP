@@ -101,6 +101,20 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             }
     }
 
+    override func performTextFinderAction(_ sender: Any?) {
+        guard transportViewController?.performDisplayedTextFinderAction(sender) == true else {
+            super.performTextFinderAction(sender)
+            return
+        }
+    }
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        guard item.action == #selector(NSResponder.performTextFinderAction(_:)) else {
+            return super.validateUserInterfaceItem(item)
+        }
+        return transportViewController?.validateDisplayedTextFinderAction(item) ?? false
+    }
+
     func attach(to window: NSWindow) {
         loadViewIfNeeded()
         let isNewWindow = attachedWindow !== window

@@ -1425,6 +1425,14 @@ struct ReviewUITests {
         )
         #expect(window.title == recentJob.targetSummary)
         #expect(window.subtitle == recentJob.cwd)
+        #expect(transport.logUsesFindBarForTesting)
+        #expect(transport.logIsIncrementalSearchingEnabledForTesting)
+        #expect(transport.logFindBarVisibleForTesting == false)
+
+        let findItem = textFinderMenuItemForTesting(.showFindInterface)
+        #expect(viewController.validateUserInterfaceItem(findItem))
+        viewController.performTextFinderAction(findItem)
+        #expect(transport.logFindBarVisibleForTesting)
 
         recentJob.targetSummary = "Commit: def456"
         try await waitForCondition {
@@ -1516,6 +1524,9 @@ struct ReviewUITests {
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
         #expect(transport.workspaceFindingsTextIsSelectableForTesting)
         #expect(transport.workspaceFindingsTextIsEditableForTesting == false)
+        #expect(transport.workspaceFindingsUsesFindBarForTesting)
+        #expect(transport.workspaceFindingsIsIncrementalSearchingEnabledForTesting)
+        #expect(transport.workspaceFindingsFindBarVisibleForTesting == false)
         #expect(transport.workspaceFindingsPriorityPrefixCountForTesting == 3)
         #expect(transport.workspaceFindingsTextAttachmentCountForTesting == 0)
         #expect(transport.workspaceFindingsThreadBackgroundRangeCountForTesting == 2)
@@ -1562,6 +1573,11 @@ struct ReviewUITests {
         )
         #expect(window.title == workspace.displayTitle)
         #expect(window.subtitle == workspace.cwd)
+
+        let findItem = textFinderMenuItemForTesting(.showFindInterface)
+        #expect(viewController.validateUserInterfaceItem(findItem))
+        viewController.performTextFinderAction(findItem)
+        #expect(transport.workspaceFindingsFindBarVisibleForTesting)
     }
 
     @Test func workspaceFindingsTextWrapsWithinDetailWidth() async throws {
@@ -2805,6 +2821,16 @@ struct ReviewUITests {
         #expect(snapshot.log == "Authentication required. Sign in to ReviewMCP and retry.")
     }
 
+}
+
+func textFinderMenuItemForTesting(_ action: NSTextFinder.Action) -> NSMenuItem {
+    let item = NSMenuItem(
+        title: "",
+        action: #selector(NSResponder.performTextFinderAction(_:)),
+        keyEquivalent: ""
+    )
+    item.tag = action.rawValue
+    return item
 }
 
 @MainActor

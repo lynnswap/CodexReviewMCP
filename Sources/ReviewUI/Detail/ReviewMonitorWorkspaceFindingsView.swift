@@ -293,6 +293,7 @@ final class ReviewMonitorWorkspaceFindingsView: NSView {
         textView.isRichText = true
         textView.importsGraphics = false
         textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
         textView.enabledTextCheckingTypes = 0
         textView.isAutomaticDataDetectionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -658,6 +659,19 @@ final class ReviewMonitorWorkspaceFindingsView: NSView {
         style.paragraphSpacing = paragraphSpacingAfter
         return style
     }
+
+    @discardableResult
+    func performDisplayedTextFinderAction(_ sender: Any?) -> Bool {
+        guard scrollView.isHidden == false else {
+            return false
+        }
+        textView.performTextFinderAction(sender)
+        return true
+    }
+
+    func validateDisplayedTextFinderAction(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        scrollView.isHidden == false && textView.validateUserInterfaceItem(item)
+    }
 }
 
 #if DEBUG
@@ -700,6 +714,18 @@ extension ReviewMonitorWorkspaceFindingsView {
 
     var isTextEditableForTesting: Bool {
         textView.isEditable
+    }
+
+    var usesFindBarForTesting: Bool {
+        textView.usesFindBar
+    }
+
+    var isIncrementalSearchingEnabledForTesting: Bool {
+        textView.isIncrementalSearchingEnabled
+    }
+
+    var isFindBarVisibleForTesting: Bool {
+        scrollView.isFindBarVisible
     }
 
     var priorityPrefixCountForTesting: Int {

@@ -140,7 +140,7 @@ struct ReviewUIShellTests {
         #expect(contentPane.activeDisplayedViewConstraintCountForTesting == 4)
     }
 
-    @Test func sidebarScrollViewStaysAboveBottomAccessorySafeArea() {
+    @Test func sidebarScrollViewExtendsBehindBottomAccessory() {
         let store = ReviewMonitorPreviewContent.makeStore(
             streamInterval: .seconds(60)
         )
@@ -159,7 +159,8 @@ struct ReviewUIShellTests {
         let scrollViewFrame = sidebar.scrollViewFrameForTesting
 
         #expect(safeAreaFrame.minY > sidebar.view.bounds.minY)
-        #expect(abs(scrollViewFrame.minY - safeAreaFrame.minY) < 0.5)
+        #expect(abs(scrollViewFrame.minY - sidebar.view.bounds.minY) < 0.5)
+        #expect(scrollViewFrame.minY < safeAreaFrame.minY)
         #expect(abs(scrollViewFrame.maxY - sidebar.view.bounds.maxY) < 0.5)
     }
 

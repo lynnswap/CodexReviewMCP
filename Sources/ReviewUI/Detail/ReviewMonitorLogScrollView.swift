@@ -122,7 +122,8 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         textView.isSelectable = true
         textView.isRichText = false
         textView.importsGraphics = false
-        textView.usesFindBar = false
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
         textView.enabledTextCheckingTypes = 0
         textView.isAutomaticDataDetectionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -437,6 +438,19 @@ final class ReviewMonitorLogScrollView: NSScrollView {
         }
         return maxOffset - contentView.bounds.origin.y < 24
     }
+
+    @discardableResult
+    func performDisplayedTextFinderAction(_ sender: Any?) -> Bool {
+        guard isHidden == false else {
+            return false
+        }
+        textView.performTextFinderAction(sender)
+        return true
+    }
+
+    func validateDisplayedTextFinderAction(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        textView.validateUserInterfaceItem(item)
+    }
 }
 
 #if DEBUG
@@ -456,6 +470,18 @@ extension ReviewMonitorLogScrollView {
 
     var isSelectableForTesting: Bool {
         textView.isSelectable
+    }
+
+    var usesFindBarForTesting: Bool {
+        textView.usesFindBar
+    }
+
+    var isIncrementalSearchingEnabledForTesting: Bool {
+        textView.isIncrementalSearchingEnabled
+    }
+
+    var isFindBarVisibleForTesting: Bool {
+        isFindBarVisible
     }
 
     var writingToolsDisabledForTesting: Bool {
