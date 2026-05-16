@@ -84,10 +84,8 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             }
         }
 
-        sidebarViewController.loadViewIfNeeded()
-        transportViewController.loadViewIfNeeded()
-        addSplitViewItem(sidebarItem)
-        addSplitViewItem(contentItem)
+        insertSplitViewItem(sidebarItem, at: 0)
+        insertSplitViewItem(contentItem, at: 1)
         windowCancellable = view.publisher(for: \.window, options: [.initial, .new])
             .sink { [weak self] window in
                 MainActor.assumeIsolated {
@@ -105,16 +103,19 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
 
     func attach(to window: NSWindow) {
         loadViewIfNeeded()
-        guard attachedWindow !== window else {
-            return
-        }
-
+        let isNewWindow = attachedWindow !== window
         attachedWindow = window
+
+        configureReviewMonitorWindowBase(window)
         // macOS 26 applies NSSplitView autosave reliably only after the split view is in a window.
-        splitView.identifier = NSUserInterfaceItemIdentifier(Self.autosaveName)
-        splitView.autosaveName = Self.autosaveName
+        if isNewWindow {
+            splitView.identifier = NSUserInterfaceItemIdentifier(Self.autosaveName)
+            splitView.autosaveName = Self.autosaveName
+        }
         installToolbarIfNeeded(on: window)
-        bindToolbarState()
+        if isNewWindow {
+            bindToolbarState()
+        }
         window.layoutIfNeeded()
         setShowingAddAccount(isShowingAddAccountButton)
         updateWindowTitleAndSubtitle()
@@ -159,12 +160,6 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
         }
 
         if window.toolbar !== toolbar {
-            window.isMovableByWindowBackground = false
-            window.styleMask.insert(.fullSizeContentView)
-            window.toolbarStyle = .unified
-            window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = true
-            window.titlebarSeparatorStyle = .automatic
             window.toolbar = toolbar
         }
     }

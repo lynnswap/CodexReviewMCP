@@ -10,6 +10,17 @@ import ReviewDomain
 @Suite(.serialized)
 @MainActor
 struct ReviewUIShellTests {
+    @Test func rootViewControllerLoadsContentDuringViewLifecycle() {
+        let rootViewController = makeReviewMonitorPreviewContentViewControllerForPreview()
+
+        #expect(rootViewController.isViewLoaded == false)
+
+        rootViewController.loadViewIfNeeded()
+
+        #expect(rootViewController.isViewLoaded)
+        #expect(rootViewController.isSplitViewEmbeddedForTesting)
+    }
+
     @Test func bindingStoreAppliesInitialState() {
         let store = CodexReviewStore.makePreviewStore()
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
@@ -127,6 +138,29 @@ struct ReviewUIShellTests {
         #expect(abs(displayedViewFrame.minY - safeAreaFrame.minY) < 0.5)
         #expect(abs(displayedViewFrame.maxY - safeAreaFrame.maxY) < 0.5)
         #expect(contentPane.activeDisplayedViewConstraintCountForTesting == 4)
+    }
+
+    @Test func sidebarScrollViewStaysAboveBottomAccessorySafeArea() {
+        let store = ReviewMonitorPreviewContent.makeStore(
+            streamInterval: .seconds(60)
+        )
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 760, height: 420)
+        )
+        let window = harness.window
+        defer { window.close() }
+
+        let sidebar = harness.viewController.sidebarViewControllerForTesting
+        window.layoutIfNeeded()
+        sidebar.view.layoutSubtreeIfNeeded()
+
+        let safeAreaFrame = sidebar.safeAreaFrameForTesting
+        let scrollViewFrame = sidebar.scrollViewFrameForTesting
+
+        #expect(safeAreaFrame.minY > sidebar.view.bounds.minY)
+        #expect(abs(scrollViewFrame.minY - safeAreaFrame.minY) < 0.5)
+        #expect(abs(scrollViewFrame.maxY - sidebar.view.bounds.maxY) < 0.5)
     }
 
     @Test func splitViewSwitchesSidebarWhenServerAvailabilityChanges() async throws {
@@ -337,7 +371,8 @@ struct ReviewUIShellTests {
 
         #expect(window.toolbar != nil)
         #expect(window.styleMask.contains(.fullSizeContentView))
-        #expect(window.titleVisibility == .hidden)
+        #expect(window.titleVisibility == .visible)
+        #expect(window.title.isEmpty == false)
         #expect(window.titlebarAppearsTransparent)
         #expect(window.titlebarSeparatorStyle == .automatic)
         #expect(window.isMovableByWindowBackground == false)

@@ -94,6 +94,8 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     private func configureHierarchy() {
+        let safeArea = view.safeAreaLayoutGuide
+
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -114,7 +116,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             scrollView.topAnchor.constraint(equalTo: view.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
 
             emptyStateView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
@@ -124,12 +126,12 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             accountsViewController.view.topAnchor.constraint(equalTo: view.topAnchor),
             accountsViewController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             accountsViewController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            accountsViewController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            accountsViewController.view.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
 
             unavailableView.topAnchor.constraint(equalTo: view.topAnchor),
             unavailableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             unavailableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            unavailableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            unavailableView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
         ])
     }
 
@@ -1251,6 +1253,14 @@ extension ReviewMonitorSidebarViewController {
 
     var sidebarVisibleHeightForTesting: CGFloat {
         scrollView.documentVisibleRect.height
+    }
+
+    var safeAreaFrameForTesting: NSRect {
+        view.safeAreaRect
+    }
+
+    var scrollViewFrameForTesting: NSRect {
+        scrollView.frame
     }
 
     var sidebarDocumentHeightForTesting: CGFloat {

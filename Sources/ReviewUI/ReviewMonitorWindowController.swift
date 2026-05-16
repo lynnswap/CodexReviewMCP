@@ -2,11 +2,15 @@ import AppKit
 import ReviewApplication
 
 @MainActor
-private func configureReviewMonitorWindowBase(_ window: NSWindow) {
+func configureReviewMonitorWindowBase(_ window: NSWindow) {
     window.isOpaque = false
     window.backgroundColor = .clear
+    window.isMovableByWindowBackground = false
     window.styleMask.insert(.fullSizeContentView)
     window.toolbarStyle = .unified
+    window.titleVisibility = .hidden
+    window.titlebarAppearsTransparent = true
+    window.titlebarSeparatorStyle = .automatic
 }
 
 @Observable
@@ -20,16 +24,20 @@ public final class ReviewMonitorWindowController: NSWindowController {
             store: store,
             uiState: uiState
         )
-        let window = NSWindow(contentViewController: rootViewController)
-        window.setContentSize(NSSize(width: 900, height: 600))
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: NSSize(width: 900, height: 600)),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        configureReviewMonitorWindowBase(window)
+        window.contentViewController = rootViewController
 
         self.rootViewController = rootViewController
         super.init(window: window)
 
         window.isReleasedWhenClosed = false
-        configureReviewMonitorWindowBase(window)
         window.setFrameAutosaveName(Self.frameAutosaveName)
-        rootViewController.applyInitialWindowPresentationIfPossible()
     }
 
     @available(*, unavailable)
