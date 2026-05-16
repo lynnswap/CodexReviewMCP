@@ -1,14 +1,15 @@
 import AppKit
+import Combine
 import ObservationBridge
 import ReviewApplication
 import ReviewDomain
-import SwiftUI
 
 @MainActor
 final class ReviewMonitorRootViewController: NSViewController {
     private let uiState: ReviewMonitorUIState
     private let store: CodexReviewStore
     private let observationScope = ObservationScope()
+    private var windowCancellable: AnyCancellable?
 
     private lazy var splitViewController = ReviewMonitorSplitViewController(
         store: store,
@@ -24,10 +25,6 @@ final class ReviewMonitorRootViewController: NSViewController {
         self.store = store
         self.uiState = uiState
         super.init(nibName: nil, bundle: nil)
-
-        loadViewIfNeeded()
-        setContentViewController(uiState.contentKind, animated: false)
-        bindWindowState()
     }
 
     @available(*, unavailable)
@@ -41,6 +38,13 @@ final class ReviewMonitorRootViewController: NSViewController {
         backgroundView.blendingMode = .behindWindow
         backgroundView.state = .active
         view = backgroundView
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setContentViewController(uiState.contentKind, animated: false)
+        bindWindowState()
+        bindWindowAttachment()
     }
 
     private func bindWindowState() {
@@ -57,6 +61,22 @@ final class ReviewMonitorRootViewController: NSViewController {
             return
         }
 
+        applyWindowPresentation(to: window)
+    }
+
+    private func bindWindowAttachment() {
+        windowCancellable = view.publisher(for: \.window, options: [.initial, .new])
+            .sink { [weak self] window in
+                MainActor.assumeIsolated {
+                    guard let self, let window else {
+                        return
+                    }
+                    self.applyWindowPresentation(to: window)
+                }
+            }
+    }
+
+    private func applyWindowPresentation(to window: NSWindow) {
         switch uiState.presentedContentKind ?? uiState.contentKind {
         case .contentView:
             splitViewController.attach(to: window)
@@ -72,7 +92,6 @@ final class ReviewMonitorRootViewController: NSViewController {
         if uiState.presentedContentKind == kind {
             return
         }
-        loadViewIfNeeded()
 
         let incomingContentViewController: NSViewController
         let outgoingContentViewController: NSViewController?
@@ -217,7 +236,7 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
     authPhase: CodexReviewAuthModel.Phase = .signedOut,
     account: CodexAccount? = nil,
     serverState: CodexReviewServerState = .running
-) -> NSViewController {
+) -> ReviewMonitorRootViewController {
     let store: CodexReviewStore
     switch serverState {
     case .running:
@@ -233,38 +252,14 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
     store.auth.applyPersistedAccountStates(previewAccounts.map(savedAccountPayload(from:)))
     store.auth.selectPersistedAccount(resolvedAccount?.id)
     let uiState = ReviewMonitorUIState(auth: store.auth)
+    if case .running = serverState,
+       let previewJob = store.workspaces
+           .flatMap(\.jobs)
+           .first(where: { $0.core.lifecycle.status == .running })
+           ?? store.workspaces.flatMap(\.jobs).first
+    {
+        uiState.selection = .job(previewJob)
+    }
     return ReviewMonitorRootViewController(store: store, uiState: uiState)
-}
-#endif
-
-#if DEBUG
-@MainActor
-private struct ReviewMonitorPreviewView: NSViewControllerRepresentable {
-    var authPhase: CodexReviewAuthModel.Phase = .signedOut
-    var account: CodexAccount?
-    var serverState: CodexReviewServerState = .running
-
-    func makeNSViewController(context: Context) -> NSViewController {
-        makeReviewMonitorPreviewContentViewControllerForPreview(
-            authPhase: authPhase,
-            account: account,
-            serverState: serverState
-        )
-    }
-
-    func updateNSViewController(_ nsViewController: NSViewController, context: Context) {
-    }
-}
-
-#Preview("Normal") {
-    ReviewMonitorPreviewView()
-        .ignoresSafeArea()
-}
-
-#Preview("Server Failed") {
-    ReviewMonitorPreviewView(
-        serverState: .failed("The embedded server stopped responding.")
-    )
-    .ignoresSafeArea()
 }
 #endif

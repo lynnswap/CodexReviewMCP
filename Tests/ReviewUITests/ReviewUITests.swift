@@ -736,12 +736,68 @@ struct ReviewUITests {
 
         let sidebar = viewController.sidebarViewControllerForTesting
         #expect(sidebar.allWorkspaceRowsExpandedForTesting)
-        #expect(sidebar.workspaceIsSelectableForTesting(workspace) == false)
-        #expect(sidebar.floatsGroupRowsEnabledForTesting)
+        #expect(sidebar.workspaceIsSelectableForTesting(workspace))
+        #expect(sidebar.floatsGroupRowsEnabledForTesting == false)
         #expect(sidebar.jobRowUsesReviewMonitorJobRowViewForTesting(job))
     }
 
-    @Test func scrollingSidebarMakesWorkspaceHeaderFloat() throws {
+    @Test func jobRowsAlignWithWorkspaceRowsWithoutChildIndent() throws {
+        let job = makeJob(
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let workspace = CodexReviewWorkspace(
+            cwd: job.cwd,
+            jobs: [job]
+        )
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [workspace]
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 360, height: 260))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        let workspaceCellMinX = try #require(sidebar.workspaceCellMinXForTesting(workspace))
+        let jobCellMinX = try #require(sidebar.jobCellMinXForTesting(job))
+        #expect(abs(workspaceCellMinX - jobCellMinX) < 0.5)
+    }
+
+    @Test func workspaceContentStartsAfterNativeDisclosureGutter() throws {
+        let job = makeJob(
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let workspace = CodexReviewWorkspace(
+            cwd: job.cwd,
+            jobs: [job]
+        )
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [workspace]
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
+        let window = NSWindow(contentViewController: viewController)
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 360, height: 260))
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutSubtreeIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        let workspaceCellMinX = try #require(sidebar.workspaceCellMinXForTesting(workspace))
+        let disclosureMaxX = try #require(sidebar.workspaceDisclosureMaxXForTesting(workspace))
+        #expect(workspaceCellMinX >= disclosureMaxX - 0.5)
+    }
+
+    @Test func scrollingSidebarDoesNotFloatWorkspaceRows() throws {
         let primaryJobs = (0..<8).map { index in
             makeJob(
                 id: "job-\(index)",
@@ -772,7 +828,7 @@ struct ReviewUITests {
         let sidebar = viewController.sidebarViewControllerForTesting
         sidebar.scrollSidebarToOffsetForTesting(80)
 
-        #expect(sidebar.workspaceRowIsFloatingForTesting(workspace))
+        #expect(sidebar.workspaceRowIsFloatingForTesting(workspace) == false)
     }
 
     @Test func sidebarDoesNotAddBlankScrollWhenRowsFitVisibleArea() {
@@ -862,7 +918,7 @@ struct ReviewUITests {
         #expect(sidebar.sidebarLastRowRectForTesting.maxY <= sidebar.sidebarVisibleRectForTesting.maxY + 0.5)
     }
 
-    @Test func togglingSelectedWorkspaceDisclosureKeepsDetailAndReexpandsWorkspace() async throws {
+    @Test func nativeWorkspaceDisclosureKeepsModelAndOutlineExpansionInSync() async throws {
         let job = makeJob(
             id: "job-selected",
             cwd: "/tmp/workspace-alpha",
@@ -892,17 +948,20 @@ struct ReviewUITests {
 
         let initialRenderCount = transport.renderCountForTesting
         sidebar.selectJobForTesting(job)
-        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
 
-        let stableRenderCount = transport.renderCountForTesting
-        sidebar.toggleWorkspaceDisclosureForTesting(storedWorkspace)
-        try await waitForWorkspaceExpanded(sidebar, workspace: storedWorkspace, true)
-        await transport.flushMainQueueForTesting()
+        sidebar.collapseWorkspaceInOutlineForTesting(storedWorkspace)
+        try await waitForCondition {
+            sidebar.workspaceIsExpandedForTesting(storedWorkspace) == false
+                && sidebar.workspaceOutlineIsExpandedForTesting(storedWorkspace) == false
+        }
 
-        #expect(sidebar.workspaceIsExpandedForTesting(storedWorkspace))
-        #expect(sidebar.selectedJobForTesting?.id == job.id)
-        #expect(transport.renderCountForTesting == stableRenderCount)
-        #expect(transport.renderSnapshotForTesting == selectedSnapshot)
+        sidebar.expandWorkspaceInOutlineForTesting(storedWorkspace)
+        try await waitForCondition {
+            sidebar.workspaceIsExpandedForTesting(storedWorkspace)
+                && sidebar.workspaceOutlineIsExpandedForTesting(storedWorkspace)
+                && sidebar.selectedOutlineJobIDForTesting == job.id
+        }
     }
 
     @Test func collapsedWorkspaceStaysCollapsedAcrossStoreReload() throws {
@@ -1367,6 +1426,13 @@ struct ReviewUITests {
         #expect(window.title == recentJob.targetSummary)
         #expect(window.subtitle == recentJob.cwd)
 
+        recentJob.targetSummary = "Commit: def456"
+        try await waitForCondition {
+            window.title == "Commit: def456"
+        }
+        #expect(window.title == "Commit: def456")
+        #expect(window.subtitle == recentJob.cwd)
+
         let stableRenderCount = transport.renderCountForTesting
         activeJob.core.output.summary = "Old selection should not render."
         activeJob.replaceLogEntries([.init(kind: .agentMessage, text: "Old selection log")])
@@ -1374,6 +1440,262 @@ struct ReviewUITests {
 
         #expect(transport.renderCountForTesting == stableRenderCount)
         #expect(transport.renderSnapshotForTesting == selectedSnapshot)
+    }
+
+    @Test func selectingWorkspaceShowsStructuredFindings() async throws {
+        let workspaceCWD = "/tmp/workspace-alpha"
+        let firstJob = makeJob(
+            id: "job-first-findings",
+            cwd: workspaceCWD,
+            status: .succeeded,
+            targetSummary: "Commit: abc123",
+            reviewResult: .init(
+                state: .hasFindings,
+                findingCount: 2,
+                findings: [
+                    .init(
+                        title: "[P0] Stop stale undo commands",
+                        body: "Queued undo work must be cancelled before clearing history.",
+                        priority: 0,
+                        location: nil,
+                        rawText: ""
+                    ),
+                    .init(
+                        title: "[P1] Preserve selection identity",
+                        body: "The sidebar should resolve the selected workspace by cwd after reload.",
+                        priority: 1,
+                        location: .init(
+                            path: "\(workspaceCWD)/Sources/Sidebar.swift",
+                            startLine: 10,
+                            endLine: 12
+                        ),
+                        rawText: ""
+                    )
+                ],
+                source: .parsedFinalReviewText
+            )
+        )
+        let secondJob = makeJob(
+            id: "job-second-findings",
+            cwd: workspaceCWD,
+            status: .succeeded,
+            targetSummary: "Branch: workspace-detail",
+            reviewResult: .init(
+                state: .hasFindings,
+                findingCount: 1,
+                findings: [
+                    .init(
+                        title: "[P2] Render workspace findings",
+                        body: "The detail pane should aggregate structured findings without parsing logs.",
+                        priority: 2,
+                        location: .init(
+                            path: "/outside/Other.swift",
+                            startLine: 5,
+                            endLine: 5
+                        ),
+                        rawText: ""
+                    )
+                ],
+                source: .parsedFinalReviewText
+            )
+        )
+        let workspace = CodexReviewWorkspace(cwd: workspaceCWD, jobs: [firstJob, secondJob])
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(serverState: .running, workspaces: [workspace])
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectWorkspaceForTesting(workspace)
+
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(viewController.sidebarViewControllerForTesting.selectedWorkspaceForTesting?.cwd == workspaceCWD)
+        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
+        #expect(transport.workspaceFindingsTextIsSelectableForTesting)
+        #expect(transport.workspaceFindingsTextIsEditableForTesting == false)
+        #expect(transport.workspaceFindingsPriorityPrefixCountForTesting == 3)
+        #expect(transport.workspaceFindingsTextAttachmentCountForTesting == 0)
+        #expect(transport.workspaceFindingsThreadBackgroundRangeCountForTesting == 2)
+        #expect(transport.workspaceFindingsRenderedStorageStringForTesting.contains("\n\n") == false)
+        #expect(
+            transport.workspaceFindingsAccessibilityValueForTesting == """
+            Commit: abc123
+
+            [P0] Stop stale undo commands
+            Queued undo work must be cancelled before clearing history.
+
+            [P1] Preserve selection identity
+            The sidebar should resolve the selected workspace by cwd after reload.
+            Sources/Sidebar.swift:10-12
+
+            Branch: workspace-detail
+
+            [P2] Render workspace findings
+            The detail pane should aggregate structured findings without parsing logs.
+            /outside/Other.swift:5-5
+            """
+        )
+        #expect(
+            transport.workspaceFindingSnapshotForTesting == .init(
+                text: """
+                Commit: abc123
+
+                [P0] Stop stale undo commands
+                Queued undo work must be cancelled before clearing history.
+
+                [P1] Preserve selection identity
+                The sidebar should resolve the selected workspace by cwd after reload.
+                Sources/Sidebar.swift:10-12
+
+                Branch: workspace-detail
+
+                [P2] Render workspace findings
+                The detail pane should aggregate structured findings without parsing logs.
+                /outside/Other.swift:5-5
+                """,
+                isShowingNoFindingsState: false,
+                isShowingFindingsList: true
+            )
+        )
+        #expect(window.title == workspace.displayTitle)
+        #expect(window.subtitle == workspace.cwd)
+    }
+
+    @Test func workspaceFindingsTextWrapsWithinDetailWidth() async throws {
+        let workspaceCWD = "/tmp/workspace-alpha"
+        let longBody = Array(repeating: "structured finding text should wrap inside the detail pane", count: 12)
+            .joined(separator: " ")
+        let job = makeJob(
+            id: "job-long-finding",
+            cwd: workspaceCWD,
+            status: .succeeded,
+            targetSummary: "Branch: long-finding",
+            reviewResult: .init(
+                state: .hasFindings,
+                findingCount: 1,
+                findings: [
+                    .init(
+                        title: "[P2] Keep workspace finding rows constrained to the visible detail width",
+                        body: longBody,
+                        priority: 2,
+                        location: .init(
+                            path: "\(workspaceCWD)/Sources/VeryLongFinding.swift",
+                            startLine: 42,
+                            endLine: 47
+                        ),
+                        rawText: ""
+                    )
+                ],
+                source: .parsedFinalReviewText
+            )
+        )
+        let workspace = CodexReviewWorkspace(cwd: workspaceCWD, jobs: [job])
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(serverState: .running, workspaces: [workspace])
+        let harness = makeWindowHarness(
+            store: store,
+            contentSize: NSSize(width: 560, height: 360)
+        )
+        let viewController = harness.viewController
+        defer { harness.window.close() }
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectWorkspaceForTesting(workspace)
+
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        let contentWidth = transport.workspaceFindingsContentWidthForTesting
+        let textContainerWidth = transport.workspaceFindingsTextContainerWidthForTesting
+        #expect(textContainerWidth > 0)
+        #expect(textContainerWidth <= contentWidth + 0.5)
+    }
+
+    @Test func selectingWorkspaceWithoutStructuredFindingsShowsNoFindingsState() async throws {
+        let job = makeJob(
+            id: "job-no-findings",
+            cwd: "/tmp/workspace-alpha",
+            status: .succeeded,
+            targetSummary: "Commit: clean",
+            reviewResult: .init(
+                state: .noFindings,
+                findingCount: 0,
+                findings: [],
+                source: .parsedFinalReviewText
+            )
+        )
+        let workspace = CodexReviewWorkspace(cwd: job.cwd, jobs: [job])
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(serverState: .running, workspaces: [workspace])
+        let harness = makeWindowHarness(store: store)
+        let viewController = harness.viewController
+        let window = harness.window
+        defer { window.close() }
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        viewController.sidebarViewControllerForTesting.selectWorkspaceForTesting(workspace)
+
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+        #expect(
+            transport.workspaceFindingSnapshotForTesting == .init(
+                text: "",
+                isShowingNoFindingsState: true,
+                isShowingFindingsList: false
+            )
+        )
+        #expect(window.title == workspace.displayTitle)
+        #expect(window.subtitle == workspace.cwd)
+    }
+
+    @Test func workspaceSelectionReloadsByCWDAndClearsWhenWorkspaceDisappears() async throws {
+        let job = makeJob(
+            id: "job-workspace-selection",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let workspace = CodexReviewWorkspace(cwd: job.cwd, jobs: [job])
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(serverState: .running, workspaces: [workspace])
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
+        viewController.loadViewIfNeeded()
+        let sidebar = viewController.sidebarViewControllerForTesting
+        let transport = viewController.transportViewControllerForTesting
+
+        let initialRenderCount = transport.renderCountForTesting
+        sidebar.selectWorkspaceForTesting(workspace)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
+
+        let replacement = CodexReviewWorkspace(
+            cwd: workspace.cwd,
+            jobs: [
+                makeJob(
+                    id: "job-workspace-selection-replacement",
+                    cwd: workspace.cwd,
+                    status: .succeeded,
+                    targetSummary: "Commit: replacement"
+                )
+            ]
+        )
+        store.loadForTesting(serverState: .running, workspaces: [replacement])
+        await transport.flushMainQueueForTesting()
+
+        #expect(sidebar.selectedWorkspaceForTesting?.cwd == replacement.cwd)
+        #expect(sidebar.selectedWorkspaceForTesting?.jobs.first?.id == "job-workspace-selection-replacement")
+
+        store.loadForTesting(serverState: .running, workspaces: [])
+        try await waitForCondition {
+            sidebar.selectedWorkspaceForTesting == nil &&
+            sidebar.selectedJobForTesting == nil &&
+            transport.isShowingEmptyStateForTesting
+        }
+
+        #expect(sidebar.selectedWorkspaceForTesting == nil)
+        #expect(sidebar.selectedJobForTesting == nil)
+        #expect(transport.isShowingEmptyStateForTesting)
     }
 
     @Test func detailPaneHidesCommandOutputButKeepsCommandEntries() async throws {
@@ -1808,7 +2130,7 @@ struct ReviewUITests {
         #expect(transport.renderSnapshotForTesting == selectedSnapshot)
     }
 
-    @Test func clickingWorkspaceHeaderKeepsSelectionAndDetailPane() async throws {
+    @Test func clickingWorkspaceHeaderSelectsWorkspaceAndShowsFindingsPane() async throws {
         let job = makeJob(
             id: "job-selected",
             cwd: "/tmp/workspace-alpha",
@@ -1837,15 +2159,21 @@ struct ReviewUITests {
         let initialRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.selectJobForTesting(job)
 
-        let selectedSnapshot = try await awaitTransportRender(transport, after: initialRenderCount)
+        _ = try await awaitTransportRender(transport, after: initialRenderCount)
 
-        let stableRenderCount = transport.renderCountForTesting
+        let workspaceRenderCount = transport.renderCountForTesting
         viewController.sidebarViewControllerForTesting.clickWorkspaceHeaderForTesting(workspace)
-        await transport.flushMainQueueForTesting()
 
-        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting?.id == job.id)
-        #expect(transport.renderCountForTesting == stableRenderCount)
-        #expect(transport.renderSnapshotForTesting == selectedSnapshot)
+        _ = try await awaitTransportRender(transport, after: workspaceRenderCount)
+        #expect(viewController.sidebarViewControllerForTesting.selectedWorkspaceForTesting?.cwd == workspace.cwd)
+        #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
+        #expect(
+            transport.workspaceFindingSnapshotForTesting == .init(
+                text: "",
+                isShowingNoFindingsState: true,
+                isShowingFindingsList: false
+            )
+        )
     }
 
     @Test func newJobsArrivingWhileUnselectedDoNotAutoSelect() {
@@ -2746,6 +3074,7 @@ func makeJob(
     status: ReviewJobState,
     targetSummary: String,
     summary: String? = nil,
+    reviewResult: ParsedReviewResult? = nil,
     logText: String = "",
     rawLogText: String = ""
 ) -> CodexReviewJob {
@@ -2759,6 +3088,7 @@ func makeJob(
         startedAt: startedAt,
         endedAt: status.isTerminal ? startedAt.addingTimeInterval(1) : nil,
         summary: summary ?? status.displayText,
+        reviewResult: reviewResult,
         lastAgentMessage: "",
         logEntries:
             (logText.isEmpty ? [] : [.init(kind: .agentMessage, text: logText.trimmingCharacters(in: .newlines))])

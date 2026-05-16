@@ -5,18 +5,28 @@ import ReviewDomain
 
 @MainActor
 final class ReviewMonitorTransportViewController: NSViewController {
+    private enum DisplayedSelection: Equatable {
+        case job(String)
+        case workspace(String)
+    }
+
     private let uiState: ReviewMonitorUIState
     private let logScrollView = ReviewMonitorLogScrollView()
+    private let workspaceFindingsView = ReviewMonitorWorkspaceFindingsView()
     private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
-        title: "Select a job",
-        description: "Choose a review from the list.",
+        title: "Select a workspace or review",
+        description: "Choose a workspace or review from the list.",
         titleAccessibilityIdentifier: "review-monitor.detail-empty.title",
         descriptionAccessibilityIdentifier: "review-monitor.detail-empty.description"
     )
     private var displayedContentConstraints: [NSLayoutConstraint] = []
     private let uiStateObservationScope = ObservationScope()
     private let selectedJobObservationScope = ObservationScope()
+    private let selectedWorkspaceObservationScope = ObservationScope()
+    private let selectedWorkspaceJobsObservationScope = ObservationScope()
     private var boundJob: CodexReviewJob?
+    private var boundWorkspace: CodexReviewWorkspace?
+    private var displayedSelection: DisplayedSelection?
     private var logScrollTargetsByJobID: [String: ReviewMonitorLogScrollView.ScrollRestorationTarget] = [:]
 #if DEBUG
     private var renderCountForTestingStorage = 0
@@ -41,7 +51,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
         super.viewDidLoad()
         configureHierarchy()
         bindObservation()
-        updatePresentation(selectedJob: uiState.selectedJobEntry)
+        updatePresentation(selection: uiState.selection)
     }
 
     private func configureHierarchy() {
@@ -49,6 +59,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
         emptyStateView.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(logScrollView)
+        view.addSubview(workspaceFindingsView)
         view.addSubview(emptyStateView)
 
         displayedContentConstraints = [
@@ -61,6 +72,11 @@ final class ReviewMonitorTransportViewController: NSViewController {
         NSLayoutConstraint.activate(
             displayedContentConstraints
             + [
+                workspaceFindingsView.topAnchor.constraint(equalTo: safeArea.topAnchor),
+                workspaceFindingsView.leadingAnchor.constraint(equalTo: safeArea.leadingAnchor),
+                workspaceFindingsView.trailingAnchor.constraint(equalTo: safeArea.trailingAnchor),
+                workspaceFindingsView.bottomAnchor.constraint(equalTo: safeArea.bottomAnchor),
+
                 emptyStateView.centerXAnchor.constraint(equalTo: safeArea.centerXAnchor),
                 emptyStateView.centerYAnchor.constraint(equalTo: safeArea.centerYAnchor),
                 emptyStateView.leadingAnchor.constraint(greaterThanOrEqualTo: safeArea.leadingAnchor, constant: 24),
@@ -71,31 +87,44 @@ final class ReviewMonitorTransportViewController: NSViewController {
 
     private func bindObservation() {
         uiStateObservationScope.cancelAll()
-        uiState.observe(\.selectedJobEntry) { [weak self] selectedJob in
+        uiState.observe(\.selection) { [weak self] selection in
             guard let self else {
                 return
             }
-            self.updatePresentation(selectedJob: selectedJob)
+            self.updatePresentation(selection: selection)
         }
         .store(in: uiStateObservationScope)
     }
 
-    private func updatePresentation(selectedJob: CodexReviewJob?) {
-        let previousJobID = boundJob?.id
-        let wasShowingEmptyState = emptyStateView.isHidden == false
-        if let selectedJob {
+    private func updatePresentation(selection: ReviewMonitorSelection?) {
+        let previousSelection = displayedSelection
+        switch selection {
+        case .job(let selectedJob):
+            clearDisplayedWorkspace()
             displayJob(selectedJob)
             emptyStateView.isHidden = true
             logScrollView.isHidden = false
-        } else {
+            workspaceFindingsView.isHidden = true
+            displayedSelection = .job(selectedJob.id)
+
+        case .workspace(let selectedWorkspace):
             clearDisplayedJob()
+            displayWorkspace(selectedWorkspace)
+            emptyStateView.isHidden = true
+            logScrollView.isHidden = true
+            workspaceFindingsView.isHidden = false
+            displayedSelection = .workspace(selectedWorkspace.cwd)
+
+        case nil:
+            clearDisplayedJob()
+            clearDisplayedWorkspace()
             emptyStateView.isHidden = false
             logScrollView.isHidden = true
+            workspaceFindingsView.isHidden = true
+            displayedSelection = nil
         }
 
-        let nextJobID = selectedJob?.id
-        let isShowingEmptyState = selectedJob == nil
-        if previousJobID != nextJobID || wasShowingEmptyState != isShowingEmptyState {
+        if previousSelection != displayedSelection {
             noteRenderForTesting()
         }
     }
@@ -130,6 +159,129 @@ final class ReviewMonitorTransportViewController: NSViewController {
         if logScrollView.clear() {
             noteRenderForTesting()
         }
+    }
+
+    private func displayWorkspace(_ workspace: CodexReviewWorkspace) {
+        if boundWorkspace !== workspace {
+            selectedWorkspaceObservationScope.cancelAll()
+            selectedWorkspaceJobsObservationScope.cancelAll()
+            boundWorkspace = workspace
+            bindWorkspaceObservation(workspace)
+            bindWorkspaceJobObservations(workspace)
+        }
+        if renderWorkspaceFindings(workspace) {
+            noteRenderForTesting()
+        }
+    }
+
+    private func clearDisplayedWorkspace() {
+        selectedWorkspaceObservationScope.cancelAll()
+        selectedWorkspaceJobsObservationScope.cancelAll()
+        boundWorkspace = nil
+        if workspaceFindingsView.clear() {
+            noteRenderForTesting()
+        }
+        workspaceFindingsView.isHidden = true
+    }
+
+    private func bindWorkspaceObservation(_ workspace: CodexReviewWorkspace) {
+        workspace.observe(\.jobs) { [weak self, weak workspace] _ in
+            guard let self,
+                  let workspace,
+                  self.boundWorkspace === workspace
+            else {
+                return
+            }
+            self.bindWorkspaceJobObservations(workspace)
+            if self.renderWorkspaceFindings(workspace) {
+                self.noteRenderForTesting()
+            }
+        }
+        .store(in: selectedWorkspaceObservationScope)
+    }
+
+    private func bindWorkspaceJobObservations(_ workspace: CodexReviewWorkspace) {
+        selectedWorkspaceJobsObservationScope.update {
+            for job in workspace.jobs {
+                job.observe([\.core, \.targetSummary]) { [weak self, weak workspace] in
+                    guard let self,
+                          let workspace,
+                          self.boundWorkspace === workspace
+                    else {
+                        return
+                    }
+                    if self.renderWorkspaceFindings(workspace) {
+                        self.noteRenderForTesting()
+                    }
+                }
+                .store(in: selectedWorkspaceJobsObservationScope)
+            }
+        }
+    }
+
+    @discardableResult
+    private func renderWorkspaceFindings(_ workspace: CodexReviewWorkspace) -> Bool {
+        let entries = workspaceFindingEntries(for: workspace)
+        return workspaceFindingsView.render(entries: entries)
+    }
+
+    private func workspaceFindingEntries(
+        for workspace: CodexReviewWorkspace
+    ) -> [ReviewMonitorWorkspaceFindingsView.Entry] {
+        workspace.jobs.flatMap { job -> [ReviewMonitorWorkspaceFindingsView.Entry] in
+            guard let result = job.core.output.reviewResult,
+                  result.state == .hasFindings
+            else {
+                return []
+            }
+            let threadID = workspaceFindingThreadID(for: job)
+            return result.findings.map { finding in
+                ReviewMonitorWorkspaceFindingsView.Entry(
+                    threadID: threadID,
+                    targetSummary: job.targetSummary,
+                    priority: finding.priority,
+                    title: finding.title,
+                    body: finding.body,
+                    locationText: locationText(for: finding.location, in: workspace)
+                )
+            }
+        }
+    }
+
+    private func locationText(
+        for location: ParsedReviewFindingLocation?,
+        in workspace: CodexReviewWorkspace
+    ) -> String? {
+        guard let location else {
+            return nil
+        }
+
+        let workspacePrefix = workspace.cwd.hasSuffix("/") ? workspace.cwd : workspace.cwd + "/"
+        let path: String
+        if location.path.hasPrefix(workspacePrefix) {
+            path = String(location.path.dropFirst(workspacePrefix.count))
+        } else {
+            path = location.path
+        }
+        return "\(path):\(location.startLine)-\(location.endLine)"
+    }
+
+    private func workspaceFindingThreadID(for job: CodexReviewJob) -> String {
+        if let reviewThreadID = nonEmptyID(job.core.run.reviewThreadID) {
+            return reviewThreadID
+        }
+        if let threadID = nonEmptyID(job.core.run.threadID) {
+            return threadID
+        }
+        return job.id
+    }
+
+    private func nonEmptyID(_ id: String?) -> String? {
+        guard let id else {
+            return nil
+        }
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func renderSelectedJob(
@@ -209,6 +361,12 @@ extension ReviewMonitorTransportViewController {
         let isShowingEmptyState: Bool
     }
 
+    struct WorkspaceFindingSnapshotForTesting: Equatable {
+        let text: String
+        let isShowingNoFindingsState: Bool
+        let isShowingFindingsList: Bool
+    }
+
     var displayedTitleForTesting: String? {
         nil
     }
@@ -217,12 +375,24 @@ extension ReviewMonitorTransportViewController {
         logScrollView.displayedTextForTesting
     }
 
+    var displayedWorkspaceFindingsForTesting: String {
+        workspaceFindingsView.displayedTextForTesting
+    }
+
     var displayedSummaryForTesting: String? {
         nil
     }
 
     var isShowingEmptyStateForTesting: Bool {
         emptyStateView.isHidden == false
+    }
+
+    var isShowingNoFindingsStateForTesting: Bool {
+        workspaceFindingsView.isShowingNoFindingsStateForTesting
+    }
+
+    var isShowingWorkspaceFindingsListForTesting: Bool {
+        workspaceFindingsView.isShowingFindingsListForTesting
     }
 
     var renderCountForTesting: Int {
@@ -296,6 +466,52 @@ extension ReviewMonitorTransportViewController {
             log: displayedLogForTesting,
             isShowingEmptyState: false
         )
+    }
+
+    var workspaceFindingSnapshotForTesting: WorkspaceFindingSnapshotForTesting {
+        .init(
+            text: displayedWorkspaceFindingsForTesting,
+            isShowingNoFindingsState: isShowingNoFindingsStateForTesting,
+            isShowingFindingsList: isShowingWorkspaceFindingsListForTesting
+        )
+    }
+
+    var workspaceFindingsContentWidthForTesting: CGFloat {
+        view.layoutSubtreeIfNeeded()
+        return workspaceFindingsView.contentWidthForTesting
+    }
+
+    var workspaceFindingsTextContainerWidthForTesting: CGFloat {
+        view.layoutSubtreeIfNeeded()
+        return workspaceFindingsView.textContainerWidthForTesting
+    }
+
+    var workspaceFindingsTextIsSelectableForTesting: Bool {
+        workspaceFindingsView.isTextSelectableForTesting
+    }
+
+    var workspaceFindingsTextIsEditableForTesting: Bool {
+        workspaceFindingsView.isTextEditableForTesting
+    }
+
+    var workspaceFindingsPriorityPrefixCountForTesting: Int {
+        workspaceFindingsView.priorityPrefixCountForTesting
+    }
+
+    var workspaceFindingsTextAttachmentCountForTesting: Int {
+        workspaceFindingsView.textAttachmentCountForTesting
+    }
+
+    var workspaceFindingsThreadBackgroundRangeCountForTesting: Int {
+        workspaceFindingsView.threadBackgroundRangeCountForTesting
+    }
+
+    var workspaceFindingsAccessibilityValueForTesting: String? {
+        workspaceFindingsView.accessibilityValueForTesting
+    }
+
+    var workspaceFindingsRenderedStorageStringForTesting: String {
+        workspaceFindingsView.renderedStorageStringForTesting
     }
 
     func waitForRenderCountForTesting(_ targetCount: Int) async {
