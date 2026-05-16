@@ -54,7 +54,7 @@ struct ReviewUITests {
         #expect(viewController.contentAccessoryCountForTesting == 0)
     }
 
-    @Test func workspaceDropReordersDisplayedSectionsImmediately() {
+    @Test func workspaceDropReordersDisplayedSectionsImmediately() async {
         let workspaceAlphaJob = makeJob(
             id: "job-workspace-alpha",
             cwd: "/tmp/workspace-alpha",
@@ -80,12 +80,19 @@ struct ReviewUITests {
             Issue.record("workspace-alpha was not loaded.")
             return
         }
+        let fullReloadCountBeforeDrop = sidebar.sidebarFullReloadCountForTesting
+        let workspaceReloadCountBeforeDrop = sidebar.sidebarWorkspaceReloadCountForTesting
+        let incrementalMoveCountBeforeDrop = sidebar.sidebarIncrementalMoveCountForTesting
         #expect(sidebar.performWorkspaceDropForTesting(workspaceAlpha, toIndex: store.workspaces.count))
+        await Task.yield()
 
         #expect(sidebar.displayedSectionTitlesForTesting == [
             "workspace-beta",
             "workspace-alpha",
         ])
+        #expect(sidebar.sidebarFullReloadCountForTesting == fullReloadCountBeforeDrop)
+        #expect(sidebar.sidebarWorkspaceReloadCountForTesting == workspaceReloadCountBeforeDrop)
+        #expect(sidebar.sidebarIncrementalMoveCountForTesting == incrementalMoveCountBeforeDrop + 1)
     }
 
     @Test func workspaceDropOnWorkspaceRowReordersDisplayedSections() {
@@ -122,6 +129,60 @@ struct ReviewUITests {
             "workspace-beta",
             "workspace-alpha",
         ])
+    }
+
+    @Test func workspaceMembershipChangeUsesRootInsertWithoutFullReload() async throws {
+        let alphaJob = makeJob(
+            id: "job-workspace-alpha-membership",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let betaJob = makeJob(
+            id: "job-workspace-beta-membership",
+            cwd: "/tmp/workspace-beta",
+            status: .succeeded,
+            targetSummary: "Commit: abc123"
+        )
+        let alphaWorkspace = CodexReviewWorkspace(
+            cwd: alphaJob.cwd,
+            jobs: [alphaJob]
+        )
+        let betaWorkspace = CodexReviewWorkspace(
+            cwd: betaJob.cwd,
+            jobs: [betaJob]
+        )
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [alphaWorkspace]
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        let fullReloadCountBeforeMembershipChange = sidebar.sidebarFullReloadCountForTesting
+        let incrementalMoveCountBeforeMembershipChange = sidebar.sidebarIncrementalMoveCountForTesting
+        let incrementalMembershipChangeCountBeforeMembershipChange = sidebar.sidebarIncrementalMembershipChangeCountForTesting
+
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [alphaWorkspace, betaWorkspace]
+        )
+        try await waitForCondition {
+            sidebar.displayedSectionTitlesForTesting == [
+                "workspace-alpha",
+                "workspace-beta",
+            ]
+        }
+
+        #expect(sidebar.displayedSectionTitlesForTesting == [
+            "workspace-alpha",
+            "workspace-beta",
+        ])
+        #expect(sidebar.sidebarFullReloadCountForTesting == fullReloadCountBeforeMembershipChange)
+        #expect(sidebar.sidebarIncrementalMoveCountForTesting == incrementalMoveCountBeforeMembershipChange)
+        #expect(sidebar.sidebarIncrementalMembershipChangeCountForTesting == incrementalMembershipChangeCountBeforeMembershipChange + 1)
     }
 
     @Test func workspaceInsertionIndexFollowsCurrentHoverPosition() {
@@ -242,7 +303,7 @@ struct ReviewUITests {
         #expect(sidebar.jobDropIsRejectedForTesting(firstJob))
     }
 
-    @Test func jobDropReordersWithinWorkspaceAndPreservesSelection() {
+    @Test func jobDropReordersWithinWorkspaceAndPreservesSelection() async {
         let firstJob = makeJob(
             id: "job-1",
             cwd: "/tmp/workspace-alpha",
@@ -269,9 +330,60 @@ struct ReviewUITests {
 
         let sidebar = viewController.sidebarViewControllerForTesting
         sidebar.selectJobForTesting(firstJob)
+        let fullReloadCountBeforeDrop = sidebar.sidebarFullReloadCountForTesting
+        let workspaceReloadCountBeforeDrop = sidebar.sidebarWorkspaceReloadCountForTesting
+        let incrementalMoveCountBeforeDrop = sidebar.sidebarIncrementalMoveCountForTesting
         #expect(sidebar.performJobDropForTesting(firstJob, proposedWorkspace: workspace, childIndex: workspace.jobs.count))
+        await Task.yield()
         #expect(sidebar.displayedJobIDsForTesting(in: workspace) == ["job-2", "job-1"])
         #expect(sidebar.selectedJobForTesting?.id == "job-1")
+        #expect(sidebar.sidebarFullReloadCountForTesting == fullReloadCountBeforeDrop)
+        #expect(sidebar.sidebarWorkspaceReloadCountForTesting == workspaceReloadCountBeforeDrop)
+        #expect(sidebar.sidebarIncrementalMoveCountForTesting == incrementalMoveCountBeforeDrop + 1)
+    }
+
+    @Test func workspaceJobsChangeReloadsWorkspaceOnly() async throws {
+        let firstJob = makeJob(
+            id: "job-membership-1",
+            cwd: "/tmp/workspace-alpha",
+            status: .running,
+            targetSummary: "Uncommitted changes"
+        )
+        let secondJob = makeJob(
+            id: "job-membership-2",
+            cwd: "/tmp/workspace-alpha",
+            status: .queued,
+            targetSummary: "Queued review"
+        )
+        let workspace = CodexReviewWorkspace(
+            cwd: "/tmp/workspace-alpha",
+            jobs: [firstJob]
+        )
+        let store = CodexReviewStore.makePreviewStore()
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [workspace]
+        )
+        let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
+        viewController.loadViewIfNeeded()
+
+        let sidebar = viewController.sidebarViewControllerForTesting
+        let fullReloadCountBeforeChange = sidebar.sidebarFullReloadCountForTesting
+        let workspaceReloadCountBeforeChange = sidebar.sidebarWorkspaceReloadCountForTesting
+        let incrementalMoveCountBeforeChange = sidebar.sidebarIncrementalMoveCountForTesting
+
+        workspace.replaceJobs([firstJob, secondJob])
+        try await waitForCondition {
+            sidebar.displayedJobIDsForTesting(in: workspace) == [
+                "job-membership-1",
+                "job-membership-2",
+            ]
+        }
+
+        #expect(sidebar.displayedJobIDsForTesting(in: workspace) == ["job-membership-1", "job-membership-2"])
+        #expect(sidebar.sidebarFullReloadCountForTesting == fullReloadCountBeforeChange)
+        #expect(sidebar.sidebarWorkspaceReloadCountForTesting == workspaceReloadCountBeforeChange + 1)
+        #expect(sidebar.sidebarIncrementalMoveCountForTesting == incrementalMoveCountBeforeChange)
     }
 
     @Test func addAccountToolbarItemShowsProgressPresentation() async throws {

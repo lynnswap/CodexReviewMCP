@@ -343,8 +343,8 @@ public final class CodexReviewStore {
             return
         }
         var jobs: [CodexReviewStoreDiagnosticsSnapshot.Job] = []
-        for workspace in workspaces {
-            for job in workspace.jobs {
+        for workspace in orderedWorkspaces {
+            for job in workspace.orderedJobs {
                 jobs.append(
                     .init(
                         status: job.core.lifecycle.status.rawValue,
@@ -437,8 +437,8 @@ public final class CodexReviewStore {
     }
 
     package func activeJobIDs(for sessionID: String) -> [String] {
-        workspaces.flatMap { workspace in
-            workspace.jobs
+        orderedWorkspaces.flatMap { workspace in
+            workspace.orderedJobs
                 .filter { $0.sessionID == sessionID && $0.isTerminal == false }
                 .map(\.id)
         }

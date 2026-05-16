@@ -1,18 +1,26 @@
 extension CodexReviewStore {
     package func reorderWorkspace(cwd: String, toIndex: Int) {
-        var reorderedWorkspaces = workspaces
-        guard let sourceIndex = reorderedWorkspaces.firstIndex(where: { $0.cwd == cwd }) else {
+        let ordered = orderedWorkspaces
+        guard let workspace = ordered.first(where: { $0.cwd == cwd }),
+              let sourceIndex = ordered.firstIndex(where: { $0 === workspace })
+        else {
             return
         }
 
-        let destinationIndex = max(0, min(toIndex, reorderedWorkspaces.count - 1))
+        let destinationIndex = max(0, min(toIndex, ordered.count - 1))
         guard sourceIndex != destinationIndex else {
             return
         }
 
-        let workspace = reorderedWorkspaces.remove(at: sourceIndex)
-        reorderedWorkspaces.insert(workspace, at: destinationIndex)
-        workspaces = reorderedWorkspaces
+        guard let sortOrder = reorderedSortOrder(
+            moving: workspace,
+            toIndex: destinationIndex,
+            in: ordered,
+            sortOrder: \.sortOrder
+        ) else {
+            return
+        }
+        workspace.sortOrder = sortOrder
         writeDiagnosticsIfNeeded()
     }
 
@@ -26,19 +34,27 @@ extension CodexReviewStore {
             return
         }
 
-        var reorderedJobs = workspace.jobs
-        guard let sourceIndex = reorderedJobs.firstIndex(where: { $0.id == id }) else {
+        let ordered = workspace.orderedJobs
+        guard let job = ordered.first(where: { $0.id == id }),
+              let sourceIndex = ordered.firstIndex(where: { $0 === job })
+        else {
             return
         }
 
-        let destinationIndex = max(0, min(toIndex, reorderedJobs.count - 1))
+        let destinationIndex = max(0, min(toIndex, ordered.count - 1))
         guard sourceIndex != destinationIndex else {
             return
         }
 
-        let job = reorderedJobs.remove(at: sourceIndex)
-        reorderedJobs.insert(job, at: destinationIndex)
-        workspace.jobs = reorderedJobs
+        guard let sortOrder = reorderedSortOrder(
+            moving: job,
+            toIndex: destinationIndex,
+            in: ordered,
+            sortOrder: \.sortOrder
+        ) else {
+            return
+        }
+        job.sortOrder = sortOrder
         writeDiagnosticsIfNeeded()
     }
 }

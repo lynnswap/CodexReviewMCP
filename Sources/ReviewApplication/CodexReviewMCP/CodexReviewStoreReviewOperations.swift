@@ -411,15 +411,15 @@ extension CodexReviewStore: ReviewStoreProtocol {
             logEntries: []
         )
 
-        if let workspaceIndex = workspaces.firstIndex(where: { $0.cwd == queued.request.cwd }) {
-            let workspace = workspaces[workspaceIndex]
-            workspace.jobs = [job] + workspace.jobs
+        if let workspace = workspaces.first(where: { $0.cwd == queued.request.cwd }) {
+            workspace.insertJobAtFront(job)
         } else {
             let workspace = CodexReviewWorkspace(
                 cwd: queued.request.cwd,
                 jobs: [job]
             )
-            workspaces = [workspace] + workspaces
+            workspace.sortOrder = (orderedWorkspaces.first?.sortOrder ?? 0) - 1
+            workspaces.append(workspace)
         }
         noteJobMutation()
     }
@@ -456,8 +456,8 @@ extension CodexReviewStore: ReviewStoreProtocol {
         let normalizedCWD = cwd?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         let allowedStatuses = statuses.map(Set.init)
         var matches: [CodexReviewJob] = []
-        for workspace in workspaces {
-            for job in workspace.jobs {
+        for workspace in orderedWorkspaces {
+            for job in workspace.orderedJobs {
                 if let normalizedCWD, job.cwd != normalizedCWD {
                     continue
                 }

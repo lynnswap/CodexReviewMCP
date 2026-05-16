@@ -209,8 +209,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
 
     private func bindWorkspaceJobObservations(_ workspace: CodexReviewWorkspace) {
         selectedWorkspaceJobsObservationScope.update {
-            for job in workspace.jobs {
-                job.observe([\.core, \.targetSummary]) { [weak self, weak workspace] in
+            for job in workspace.orderedJobs {
+                job.observe([\.core, \.targetSummary, \.sortOrder]) { [weak self, weak workspace] in
                     guard let self,
                           let workspace,
                           self.boundWorkspace === workspace
@@ -235,7 +235,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private func workspaceFindingEntries(
         for workspace: CodexReviewWorkspace
     ) -> [ReviewMonitorWorkspaceFindingsView.Entry] {
-        workspace.jobs.flatMap { job -> [ReviewMonitorWorkspaceFindingsView.Entry] in
+        workspace.orderedJobs.flatMap { job -> [ReviewMonitorWorkspaceFindingsView.Entry] in
             guard let result = job.core.output.reviewResult,
                   result.state == .hasFindings
             else {

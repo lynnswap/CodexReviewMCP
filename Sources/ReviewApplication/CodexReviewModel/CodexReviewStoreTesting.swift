@@ -49,11 +49,14 @@ extension CodexReviewStore {
         var resolvedWorkspaces: [CodexReviewWorkspace] = []
         resolvedWorkspaces.reserveCapacity(workspaces.count)
 
-        for workspace in workspaces {
+        for (workspaceIndex, workspace) in workspaces.enumerated() {
             if let existingWorkspace = existingByCWD.removeValue(forKey: workspace.cwd) {
-                existingWorkspace.jobs = workspace.jobs
+                existingWorkspace.sortOrder = Double(workspaceIndex)
+                existingWorkspace.replaceJobs(workspace.jobs)
                 resolvedWorkspaces.append(existingWorkspace)
             } else {
+                workspace.sortOrder = Double(workspaceIndex)
+                workspace.normalizeJobSortOrders()
                 resolvedWorkspaces.append(workspace)
             }
         }

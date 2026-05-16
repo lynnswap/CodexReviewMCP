@@ -55,8 +55,8 @@ public enum ReviewMonitorPreviewContent {
                 return
             }
 
-            let runningJobs = store.workspaces
-                .flatMap(\.jobs)
+            let runningJobs = store.orderedWorkspaces
+                .flatMap(\.orderedJobs)
                 .filter { $0.core.lifecycle.status == .running }
 
             guard runningJobs.isEmpty == false else {

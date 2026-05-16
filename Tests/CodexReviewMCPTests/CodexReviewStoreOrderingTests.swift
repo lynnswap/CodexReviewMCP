@@ -7,7 +7,7 @@ import ReviewDomain
 @Suite(.serialized)
 @MainActor
 struct CodexReviewStoreOrderingTests {
-    @Test func reorderingWorkspacesAndJobsUpdatesDisplayedArrayOrder() {
+    @Test func reorderingWorkspacesAndJobsUpdatesSortOrder() {
         let store = CodexReviewStore(configuration: .init())
         let alphaFirstJob = makeJob(
             id: "job-alpha-1",
@@ -41,10 +41,15 @@ struct CodexReviewStoreOrderingTests {
         store.reorderJob(id: alphaSecondJob.id, inWorkspace: alphaWorkspace.cwd, toIndex: 0)
 
         #expect(store.workspaces.map(\.cwd) == [
+            "/tmp/workspace-alpha",
+            "/tmp/workspace-beta",
+        ])
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
             "/tmp/workspace-beta",
             "/tmp/workspace-alpha",
         ])
-        #expect(alphaWorkspace.jobs.map(\.id) == ["job-alpha-2", "job-alpha-1"])
+        #expect(alphaWorkspace.jobs.map(\.id) == ["job-alpha-1", "job-alpha-2"])
+        #expect(alphaWorkspace.orderedJobs.map(\.id) == ["job-alpha-2", "job-alpha-1"])
     }
 
     @Test func enqueueingIntoExistingWorkspaceInsertsNewJobAtHead() throws {
@@ -80,8 +85,9 @@ struct CodexReviewStoreOrderingTests {
             )
         )
 
-        #expect(alphaWorkspace.jobs.map(\.id) == [newJobID, "job-alpha-1"])
-        #expect(store.workspaces.map(\.cwd) == [
+        #expect(alphaWorkspace.jobs.map(\.id) == ["job-alpha-1", newJobID])
+        #expect(alphaWorkspace.orderedJobs.map(\.id) == [newJobID, "job-alpha-1"])
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
             "/tmp/workspace-alpha",
             "/tmp/workspace-beta",
         ])
@@ -119,7 +125,7 @@ struct CodexReviewStoreOrderingTests {
                 target: .uncommittedChanges
             )
         )
-        #expect(store.workspaces.map(\.cwd) == [
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
             "/tmp/workspace-gamma",
             "/tmp/workspace-alpha",
             "/tmp/workspace-beta",
@@ -127,7 +133,7 @@ struct CodexReviewStoreOrderingTests {
 
         store.discardQueuedOrRunningJob(jobID: queuedJobID)
 
-        #expect(store.workspaces.map(\.cwd) == [
+        #expect(store.orderedWorkspaces.map(\.cwd) == [
             "/tmp/workspace-alpha",
             "/tmp/workspace-beta",
         ])
