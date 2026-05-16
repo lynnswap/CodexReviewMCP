@@ -60,7 +60,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     private let unavailableView: NSHostingView<MCPServerUnavailableView>
 
     @ObservationIgnored private let storeObservationScope = ObservationScope()
-    @ObservationIgnored private let workspaceObservationScope = ObservationScope()
     private var isReconcilingSelection = false
 #if DEBUG
     private var fullReloadCountForTesting = 0
@@ -177,7 +176,6 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     private func bindObservation() {
-        rebindWorkspaceObservations(workspaces: store.workspaces)
         storeObservationScope.update {
             observe(\.sidebarPresentation) { [weak self] presentation in
                 self?.applySidebarPresentation(presentation)
@@ -189,35 +187,16 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
                     return
                 }
                 self.applyWorkspaceMembershipChange(store.orderedWorkspaces)
-                self.rebindWorkspaceObservations(workspaces: store.workspaces)
             }
             .store(in: storeObservationScope)
-        }
-    }
 
-    private func rebindWorkspaceObservations(workspaces: [CodexReviewWorkspace]) {
-        workspaceObservationScope.update {
-            for workspace in workspaces {
-                workspace.observe(\.jobs, id: "workspace-jobs-\(workspace.cwd)") { [weak self, weak workspace] _ in
-                    guard let self else {
-                        return
-                    }
-                    guard let workspace else {
-                        self.applyWorkspaceMembershipChange(store.orderedWorkspaces)
-                        return
-                    }
-                    let displayedJobs = self.displayedJobs(in: workspace)
-                    let targetJobs = workspace.orderedJobs
-                    let outlineAlreadyMatches = displayedJobs.count == targetJobs.count
-                        && zip(displayedJobs, targetJobs).allSatisfy { $0 === $1 }
-                    guard outlineAlreadyMatches == false else {
-                        return
-                    }
-                    self.reloadWorkspace(workspace, allWorkspaces: store.orderedWorkspaces)
-                    self.rebindWorkspaceObservations(workspaces: store.workspaces)
+            store.observe([\.jobs]) { [weak self] in
+                guard let self else {
+                    return
                 }
-                .store(in: workspaceObservationScope)
+                self.applyJobMembershipChange(store.orderedWorkspaces)
             }
+            .store(in: storeObservationScope)
         }
     }
 
@@ -231,6 +210,23 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         )
         applyStoredExpansionState(for: insertedWorkspaces)
         reconcileSelectionAfterOutlineMutation()
+    }
+
+    private func applyJobMembershipChange(_ workspaces: [CodexReviewWorkspace]) {
+        clearSelectionIfNeeded(for: workspaces)
+        for workspace in displayedWorkspaces() {
+            guard workspaces.contains(where: { $0 === workspace }) else {
+                continue
+            }
+            let displayedJobs = displayedJobs(in: workspace)
+            let targetJobs = store.orderedJobs(in: workspace)
+            let outlineAlreadyMatches = displayedJobs.count == targetJobs.count
+                && zip(displayedJobs, targetJobs).allSatisfy { $0 === $1 }
+            guard outlineAlreadyMatches == false else {
+                continue
+            }
+            reloadWorkspace(workspace, allWorkspaces: workspaces)
+        }
     }
 
     private func reloadOutline(workspaces: [CodexReviewWorkspace]) {
@@ -298,7 +294,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         if case .failed = store.serverState {
             return .unavailable
         }
-        return totalJobCount(in: store.workspaces) > 0 ? .jobList : .empty
+        return totalJobCount() > 0 ? .jobList : .empty
     }
 
     private func applySidebarPresentation(_ presentation: PresentationForTesting) {
@@ -534,8 +530,8 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         }
     }
 
-    private func totalJobCount(in workspaces: [CodexReviewWorkspace]) -> Int {
-        workspaces.reduce(into: 0) { $0 += $1.jobs.count }
+    private func totalJobCount() -> Int {
+        store.totalJobCount()
     }
 
     @discardableResult
@@ -688,7 +684,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     private func workspace(cwd: String) -> CodexReviewWorkspace? {
-        workspaces().first(where: { $0.cwd == cwd })
+        store.workspace(cwd: cwd)
     }
 
     private func row(forJobID jobID: String) -> Int? {
@@ -731,12 +727,12 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     private func job(withID id: String, in workspaces: [CodexReviewWorkspace]) -> CodexReviewJob? {
-        for workspace in workspaces {
-            if let job = workspace.orderedJobs.first(where: { $0.id == id }) {
-                return job
-            }
+        guard let job = store.job(id: id),
+              workspaces.contains(where: { $0.cwd == job.cwd })
+        else {
+            return nil
         }
-        return nil
+        return job
     }
 
     private func workspaceIndex(cwd: String) -> Int? {
@@ -744,9 +740,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
     }
 
     private func workspace(containing job: CodexReviewJob) -> CodexReviewWorkspace? {
-        workspaces().first(where: { workspace in
-            workspace.jobs.contains(where: { $0.id == job.id })
-        })
+        store.workspace(containing: job)
     }
 
     private func dragPayload(for item: Any) -> SidebarDragPayload? {
@@ -922,7 +916,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
 
         var sectionRect = outlineView.rect(ofRow: workspaceRow)
         guard workspace.isExpanded,
-              let lastJob = workspace.orderedJobs.last,
+              let lastJob = store.orderedJobs(in: workspace).last,
               let lastJobRow = row(forJobID: lastJob.id)
         else {
             return sectionRect
@@ -947,7 +941,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
             return nil
         }
 
-        let orderedJobs = destination.workspace.orderedJobs
+        let orderedJobs = store.orderedJobs(in: destination.workspace)
         guard let sourceIndex = orderedJobs.firstIndex(where: { $0.id == id }) else {
             return nil
         }
@@ -980,7 +974,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         guard let job = job(from: proposedItem),
               index == NSOutlineViewDropOnItemIndex,
               let workspace = workspace(containing: job),
-              let jobIndex = workspace.orderedJobs.firstIndex(where: { $0.id == job.id })
+              let jobIndex = store.orderedJobs(in: workspace).firstIndex(where: { $0.id == job.id })
         else {
             return nil
         }
@@ -1013,7 +1007,7 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         guard let workspace = workspace(from: item) else {
             return 0
         }
-        return workspace.orderedJobs.count
+        return store.orderedJobs(in: workspace).count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
@@ -1023,14 +1017,14 @@ final class ReviewMonitorSidebarViewController: NSViewController, NSOutlineViewD
         guard let workspace = workspace(from: item) else {
             fatalError("Unsupported sidebar item.")
         }
-        return workspace.orderedJobs[index]
+        return store.orderedJobs(in: workspace)[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         guard let workspace = workspace(from: item) else {
             return false
         }
-        return workspace.jobs.isEmpty == false
+        return store.jobCount(in: workspace) > 0
     }
 
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {

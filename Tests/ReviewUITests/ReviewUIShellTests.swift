@@ -700,7 +700,7 @@ struct ReviewUIShellTests {
             logText: "Safe area log\n"
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let harness = makeWindowHarness(
             store: store,
             contentSize: NSSize(width: 900, height: 600)
@@ -732,7 +732,7 @@ struct ReviewUIShellTests {
             logText: "Short log\n"
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let harness = makeWindowHarness(
             store: store,
             contentSize: NSSize(width: 900, height: 600)
@@ -764,7 +764,7 @@ struct ReviewUIShellTests {
             logText: Array(repeating: "Long line that should reflow across the widened detail pane.\n", count: 40).joined()
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let harness = makeWindowHarness(
             store: store,
             contentSize: NSSize(width: 520, height: 420)
@@ -813,7 +813,7 @@ struct ReviewUIShellTests {
             logText: Array(repeating: "Long line that should reflow when the detail pane narrows.\n", count: 40).joined()
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let harness = makeWindowHarness(
             store: store,
             contentSize: NSSize(width: 960, height: 600)
@@ -858,7 +858,7 @@ struct ReviewUIShellTests {
             logText: Array(repeating: "Long line that should reflow as the window resizes.\n", count: 40).joined()
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let harness = makeWindowHarness(
             store: store,
             contentSize: NSSize(width: 960, height: 600)
@@ -912,7 +912,7 @@ struct ReviewUIShellTests {
             logText: Array(repeating: "Long line that should reflow after the toolbar sidebar toggle path.\n", count: 40).joined()
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let harness = makeWindowHarness(
             store: store,
             contentSize: NSSize(width: 520, height: 420)
@@ -998,9 +998,7 @@ struct ReviewUIShellTests {
             streamInterval: Duration.milliseconds(10)
         )
         let runningJob = try #require(
-            store.workspaces
-                .flatMap { $0.jobs }
-                .first(where: { $0.core.lifecycle.status == .running })
+            store.orderedJobs.first(where: { $0.core.lifecycle.status == .running })
         )
         let initialRevision = runningJob.reviewMonitorRevision
         let initialLog = runningJob.reviewMonitorLogText

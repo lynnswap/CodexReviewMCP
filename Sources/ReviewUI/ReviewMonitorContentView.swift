@@ -253,10 +253,9 @@ func makeReviewMonitorPreviewContentViewControllerForPreview(
     store.auth.selectPersistedAccount(resolvedAccount?.id)
     let uiState = ReviewMonitorUIState(auth: store.auth)
     if case .running = serverState,
-       let previewJob = store.orderedWorkspaces
-           .flatMap(\.orderedJobs)
+       let previewJob = store.orderedJobs
            .first(where: { $0.core.lifecycle.status == .running })
-           ?? store.orderedWorkspaces.flatMap(\.orderedJobs).first
+           ?? store.orderedJobs.first
     {
         uiState.selection = .job(previewJob)
     }

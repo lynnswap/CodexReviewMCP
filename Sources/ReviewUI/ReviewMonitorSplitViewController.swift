@@ -50,7 +50,10 @@ final class ReviewMonitorSplitViewController: NSSplitViewController, NSToolbarDe
             store: store,
             uiState: uiState
         )
-        let transportViewController = ReviewMonitorTransportViewController(uiState: uiState)
+        let transportViewController = ReviewMonitorTransportViewController(
+            store: store,
+            uiState: uiState
+        )
         let statusAccessoryViewController = ReviewMonitorServerStatusAccessoryViewController(
             store: store,
             uiState: uiState

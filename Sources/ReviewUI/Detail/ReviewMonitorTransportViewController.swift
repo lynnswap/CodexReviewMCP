@@ -11,6 +11,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
     }
 
     private let uiState: ReviewMonitorUIState
+    private let store: CodexReviewStore
     private let logScrollView = ReviewMonitorLogScrollView()
     private let workspaceFindingsView = ReviewMonitorWorkspaceFindingsView()
     private let emptyStateView = ReviewMonitorViewFactory.makeEmptyStateView(
@@ -33,7 +34,8 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private var renderWaitersForTesting: [Int: [CheckedContinuation<Void, Never>]] = [:]
 #endif
 
-    init(uiState: ReviewMonitorUIState) {
+    init(store: CodexReviewStore, uiState: ReviewMonitorUIState) {
+        self.store = store
         self.uiState = uiState
         super.init(nibName: nil, bundle: nil)
     }
@@ -192,7 +194,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
     }
 
     private func bindWorkspaceObservation(_ workspace: CodexReviewWorkspace) {
-        workspace.observe(\.jobs) { [weak self, weak workspace] _ in
+        store.observe([\.jobs]) { [weak self, weak workspace] in
             guard let self,
                   let workspace,
                   self.boundWorkspace === workspace
@@ -209,7 +211,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
 
     private func bindWorkspaceJobObservations(_ workspace: CodexReviewWorkspace) {
         selectedWorkspaceJobsObservationScope.update {
-            for job in workspace.orderedJobs {
+            for job in store.orderedJobs(in: workspace) {
                 job.observe([\.core, \.targetSummary, \.sortOrder]) { [weak self, weak workspace] in
                     guard let self,
                           let workspace,
@@ -235,7 +237,7 @@ final class ReviewMonitorTransportViewController: NSViewController {
     private func workspaceFindingEntries(
         for workspace: CodexReviewWorkspace
     ) -> [ReviewMonitorWorkspaceFindingsView.Entry] {
-        workspace.orderedJobs.flatMap { job -> [ReviewMonitorWorkspaceFindingsView.Entry] in
+        store.orderedJobs(in: workspace).flatMap { job -> [ReviewMonitorWorkspaceFindingsView.Entry] in
             guard let result = job.core.output.reviewResult,
                   result.state == .hasFindings
             else {

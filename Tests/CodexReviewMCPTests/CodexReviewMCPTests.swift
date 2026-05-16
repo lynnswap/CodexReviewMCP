@@ -4721,7 +4721,8 @@ struct CodexReviewMCPTests {
             authPhase: .signedOut,
             account: currentSession,
             persistedAccounts: [activeSavedAccount, currentSavedAccount],
-            workspaces: makeStoreTestWorkspaces(from: [runningJob])
+            workspaces: makeStoreTestWorkspaces(from: [runningJob]),
+            jobs: [runningJob]
         )
         store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
@@ -4764,7 +4765,8 @@ struct CodexReviewMCPTests {
             authPhase: .failed(message: "Authentication required."),
             account: currentAccount,
             persistedAccounts: [currentAccount],
-            workspaces: makeStoreTestWorkspaces(from: [runningJob])
+            workspaces: makeStoreTestWorkspaces(from: [runningJob]),
+            jobs: [runningJob]
         )
         store.auth.persistedActiveAccountKey = currentAccount.accountKey
 
@@ -4792,7 +4794,8 @@ struct CodexReviewMCPTests {
             authPhase: .failed(message: "Authentication required."),
             account: currentSavedAccount,
             persistedAccounts: [activeSavedAccount, currentSavedAccount],
-            workspaces: makeStoreTestWorkspaces(from: [runningJob])
+            workspaces: makeStoreTestWorkspaces(from: [runningJob]),
+            jobs: [runningJob]
         )
         store.auth.persistedActiveAccountKey = activeSavedAccount.accountKey
 
@@ -12072,21 +12075,15 @@ func makeStoreTestJob(
 
 @MainActor
 func makeStoreTestWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspace] {
-    var buckets: [String: [CodexReviewJob]] = [:]
+    var seenCWDs: Set<String> = []
     var order: [String] = []
     for job in jobs {
-        if buckets[job.cwd] == nil {
+        if seenCWDs.contains(job.cwd) == false {
             order.insert(job.cwd, at: 0)
-            buckets[job.cwd] = []
+            seenCWDs.insert(job.cwd)
         }
-        buckets[job.cwd, default: []].insert(job, at: 0)
     }
-    return order.map { cwd in
-        CodexReviewWorkspace(
-            cwd: cwd,
-            jobs: buckets[cwd] ?? []
-        )
-    }
+    return order.map { CodexReviewWorkspace(cwd: $0) }
 }
 
 @MainActor

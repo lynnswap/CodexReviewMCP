@@ -122,7 +122,7 @@ extension ReviewJobState {
         List {
             ForEach(store.orderedWorkspaces, id: \.cwd) { workspace in
                 Section(workspace.displayTitle) {
-                    ForEach(workspace.orderedJobs) { job in
+                    ForEach(store.orderedJobs(in: workspace)) { job in
                         NavigationLink{
                             
                         }label:{

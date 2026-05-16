@@ -29,12 +29,11 @@ extension CodexReviewStore {
         inWorkspace cwd: String,
         toIndex: Int
     ) {
-        guard let workspace = workspaces.first(where: { $0.cwd == cwd })
-        else {
+        guard workspace(cwd: cwd) != nil else {
             return
         }
 
-        let ordered = workspace.orderedJobs
+        let ordered = orderedJobs(inWorkspace: cwd)
         guard let job = ordered.first(where: { $0.id == id }),
               let sourceIndex = ordered.firstIndex(where: { $0 === job })
         else {

@@ -1,0 +1,95 @@
+extension CodexReviewStore {
+    package var orderedWorkspaces: [CodexReviewWorkspace] {
+        workspaces.sorted {
+            if $0.sortOrder == $1.sortOrder {
+                return $0.cwd < $1.cwd
+            }
+            return $0.sortOrder < $1.sortOrder
+        }
+    }
+
+    package var orderedJobs: [CodexReviewJob] {
+        orderedWorkspaces.flatMap { orderedJobs(in: $0) }
+    }
+
+    package func workspace(cwd: String) -> CodexReviewWorkspace? {
+        workspaces.first(where: { $0.cwd == cwd })
+    }
+
+    package func workspace(containing job: CodexReviewJob) -> CodexReviewWorkspace? {
+        workspace(cwd: job.cwd)
+    }
+
+    package func job(id: String) -> CodexReviewJob? {
+        jobs.first(where: { $0.id == id })
+    }
+
+    package func jobs(inWorkspace cwd: String) -> [CodexReviewJob] {
+        jobs.filter { $0.cwd == cwd }
+    }
+
+    package func orderedJobs(in workspace: CodexReviewWorkspace) -> [CodexReviewJob] {
+        orderedJobs(inWorkspace: workspace.cwd)
+    }
+
+    package func orderedJobs(inWorkspace cwd: String) -> [CodexReviewJob] {
+        jobs(inWorkspace: cwd).sorted {
+            if $0.sortOrder == $1.sortOrder {
+                return $0.id < $1.id
+            }
+            return $0.sortOrder < $1.sortOrder
+        }
+    }
+
+    package func jobCount(in workspace: CodexReviewWorkspace) -> Int {
+        jobs(inWorkspace: workspace.cwd).count
+    }
+
+    package func totalJobCount() -> Int {
+        jobs.count
+    }
+
+    package func normalizeJobSortOrders(inWorkspace cwd: String) {
+        for (index, job) in orderedJobs(inWorkspace: cwd).enumerated() {
+            job.sortOrder = Double(index)
+        }
+    }
+
+    package func normalizeAllJobSortOrders() {
+        for workspace in workspaces {
+            normalizeJobSortOrders(inWorkspace: workspace.cwd)
+        }
+    }
+}
+
+package func reorderedSortOrder<Item: AnyObject>(
+    moving item: Item,
+    toIndex destinationIndex: Int,
+    in orderedItems: [Item],
+    sortOrder: (Item) -> Double
+) -> Double? {
+    guard let sourceIndex = orderedItems.firstIndex(where: { $0 === item }) else {
+        return nil
+    }
+
+    var remainingItems = orderedItems
+    remainingItems.remove(at: sourceIndex)
+    let insertionIndex = max(0, min(destinationIndex, remainingItems.count))
+    let previousSortOrder = insertionIndex > 0
+        ? sortOrder(remainingItems[insertionIndex - 1])
+        : nil
+    let nextSortOrder = insertionIndex < remainingItems.count
+        ? sortOrder(remainingItems[insertionIndex])
+        : nil
+
+    switch (previousSortOrder, nextSortOrder) {
+    case (.some(let previous), .some(let next)):
+        return (previous + next) / 2
+    case (.some(let previous), .none):
+        return previous + 1
+    case (.none, .some(let next)):
+        return next - 1
+    case (.none, .none):
+        return 0
+    }
+}

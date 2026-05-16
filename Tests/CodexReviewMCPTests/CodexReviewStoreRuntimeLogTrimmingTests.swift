@@ -23,8 +23,9 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
-            ]
+                CodexReviewWorkspace(cwd: "/tmp/repo"),
+            ],
+            jobs: [job]
         )
 
         let halfLimit = reviewLogLimitBytes / 2
@@ -47,8 +48,9 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
-            ]
+                CodexReviewWorkspace(cwd: "/tmp/repo"),
+            ],
+            jobs: [job]
         )
 
         store.handle(
@@ -77,8 +79,9 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
-            ]
+                CodexReviewWorkspace(cwd: "/tmp/repo"),
+            ],
+            jobs: [job]
         )
 
         store.handle(
@@ -109,8 +112,9 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
-            ]
+                CodexReviewWorkspace(cwd: "/tmp/repo"),
+            ],
+            jobs: [job]
         )
 
         store.handle(
@@ -139,8 +143,9 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
-            ]
+                CodexReviewWorkspace(cwd: "/tmp/repo"),
+            ],
+            jobs: [job]
         )
 
         let halfLimit = reviewLogLimitBytes / 2
@@ -172,8 +177,9 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
-            ]
+                CodexReviewWorkspace(cwd: "/tmp/repo"),
+            ],
+            jobs: [job]
         )
 
         store.handle(jobID: job.id, event: .logEntry(.init(kind: .error, text: oversizedError)))
@@ -216,8 +222,9 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
-            ]
+                CodexReviewWorkspace(cwd: "/tmp/repo"),
+            ],
+            jobs: [job]
         )
 
         store.handle(
@@ -245,8 +252,9 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
-            ]
+                CodexReviewWorkspace(cwd: "/tmp/repo"),
+            ],
+            jobs: [job]
         )
 
         store.handle(
@@ -274,8 +282,9 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
         store.loadForTesting(
             serverState: .running,
             workspaces: [
-                CodexReviewWorkspace(cwd: "/tmp/repo", jobs: [job]),
-            ]
+                CodexReviewWorkspace(cwd: "/tmp/repo"),
+            ],
+            jobs: [job]
         )
 
         let text = String(repeating: "m", count: reviewLogLimitBytes + 32)
@@ -296,7 +305,5 @@ struct CodexReviewStoreRuntimeLogTrimmingTests {
 
 @MainActor
 private func findJob(id: String, in store: CodexReviewStore) -> CodexReviewJob? {
-    store.workspaces
-        .flatMap(\.jobs)
-        .first { $0.id == id }
+    store.job(id: id)
 }

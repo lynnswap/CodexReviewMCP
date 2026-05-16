@@ -38,7 +38,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+            content: makeSidebarContent(from: [workspaceBetaJob, workspaceAlphaJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -70,7 +70,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+            content: makeSidebarContent(from: [workspaceBetaJob, workspaceAlphaJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -111,7 +111,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+            content: makeSidebarContent(from: [workspaceBetaJob, workspaceAlphaJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -144,18 +144,13 @@ struct ReviewUITests {
             status: .succeeded,
             targetSummary: "Commit: abc123"
         )
-        let alphaWorkspace = CodexReviewWorkspace(
-            cwd: alphaJob.cwd,
-            jobs: [alphaJob]
-        )
-        let betaWorkspace = CodexReviewWorkspace(
-            cwd: betaJob.cwd,
-            jobs: [betaJob]
-        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: alphaJob.cwd)
+        let betaWorkspace = CodexReviewWorkspace(cwd: betaJob.cwd)
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [alphaWorkspace]
+            workspaces: [alphaWorkspace],
+            jobs: [alphaJob]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -167,7 +162,8 @@ struct ReviewUITests {
 
         store.loadForTesting(
             serverState: .running,
-            workspaces: [alphaWorkspace, betaWorkspace]
+            workspaces: [alphaWorkspace, betaWorkspace],
+            jobs: [alphaJob, betaJob]
         )
         try await waitForCondition {
             sidebar.displayedSectionTitlesForTesting == [
@@ -201,7 +197,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+            content: makeSidebarContent(from: [workspaceBetaJob, workspaceAlphaJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -231,7 +227,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+            content: makeSidebarContent(from: [workspaceBetaJob, workspaceAlphaJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -257,7 +253,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [workspaceBetaJob, workspaceAlphaJob])
+            content: makeSidebarContent(from: [workspaceBetaJob, workspaceAlphaJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -265,7 +261,7 @@ struct ReviewUITests {
         let sidebar = viewController.sidebarViewControllerForTesting
         guard let workspaceBeta = store.workspaces.first(where: { $0.cwd == "/tmp/workspace-beta" }),
               let workspaceAlpha = store.workspaces.first(where: { $0.cwd == "/tmp/workspace-alpha" }),
-              let alphaJob = workspaceAlpha.jobs.first
+              let alphaJob = store.orderedJobs(in: workspaceAlpha).first
         else {
             Issue.record("workspace/job state was not loaded.")
             return
@@ -287,14 +283,12 @@ struct ReviewUITests {
             status: .queued,
             targetSummary: "Queued review"
         )
-        let workspace = CodexReviewWorkspace(
-            cwd: "/tmp/workspace-alpha",
-            jobs: [firstJob, secondJob]
-        )
+        let workspace = CodexReviewWorkspace(cwd: "/tmp/workspace-alpha")
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [workspace]
+            workspaces: [workspace],
+            jobs: [firstJob, secondJob]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -316,14 +310,12 @@ struct ReviewUITests {
             status: .succeeded,
             targetSummary: "Commit: abc123"
         )
-        let workspace = CodexReviewWorkspace(
-            cwd: "/tmp/workspace-alpha",
-            jobs: [firstJob, secondJob]
-        )
+        let workspace = CodexReviewWorkspace(cwd: "/tmp/workspace-alpha")
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [workspace]
+            workspaces: [workspace],
+            jobs: [firstJob, secondJob]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -333,7 +325,7 @@ struct ReviewUITests {
         let fullReloadCountBeforeDrop = sidebar.sidebarFullReloadCountForTesting
         let workspaceReloadCountBeforeDrop = sidebar.sidebarWorkspaceReloadCountForTesting
         let incrementalMoveCountBeforeDrop = sidebar.sidebarIncrementalMoveCountForTesting
-        #expect(sidebar.performJobDropForTesting(firstJob, proposedWorkspace: workspace, childIndex: workspace.jobs.count))
+        #expect(sidebar.performJobDropForTesting(firstJob, proposedWorkspace: workspace, childIndex: store.jobCount(in: workspace)))
         await Task.yield()
         #expect(sidebar.displayedJobIDsForTesting(in: workspace) == ["job-2", "job-1"])
         #expect(sidebar.selectedJobForTesting?.id == "job-1")
@@ -355,14 +347,12 @@ struct ReviewUITests {
             status: .queued,
             targetSummary: "Queued review"
         )
-        let workspace = CodexReviewWorkspace(
-            cwd: "/tmp/workspace-alpha",
-            jobs: [firstJob]
-        )
+        let workspace = CodexReviewWorkspace(cwd: "/tmp/workspace-alpha")
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [workspace]
+            workspaces: [workspace],
+            jobs: [firstJob]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -372,7 +362,11 @@ struct ReviewUITests {
         let workspaceReloadCountBeforeChange = sidebar.sidebarWorkspaceReloadCountForTesting
         let incrementalMoveCountBeforeChange = sidebar.sidebarIncrementalMoveCountForTesting
 
-        workspace.replaceJobs([firstJob, secondJob])
+        store.loadForTesting(
+            serverState: .running,
+            workspaces: [workspace],
+            jobs: [firstJob, secondJob]
+        )
         try await waitForCondition {
             sidebar.displayedJobIDsForTesting(in: workspace) == [
                 "job-membership-1",
@@ -770,20 +764,15 @@ struct ReviewUITests {
             status: .running,
             targetSummary: "Uncommitted changes"
         )
-        let alphaWorkspace = CodexReviewWorkspace(
-            cwd: alphaJob.cwd,
-            jobs: [alphaJob]
-        )
-        let betaWorkspace = CodexReviewWorkspace(
-            cwd: betaJob.cwd,
-            jobs: [betaJob]
-        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: alphaJob.cwd)
+        let betaWorkspace = CodexReviewWorkspace(cwd: betaJob.cwd)
         betaWorkspace.isExpanded = false
 
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [alphaWorkspace, betaWorkspace]
+            workspaces: [alphaWorkspace, betaWorkspace],
+            jobs: [alphaJob, betaJob]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -806,26 +795,21 @@ struct ReviewUITests {
             status: .running,
             targetSummary: "Base branch: main"
         )
-        let alphaWorkspace = CodexReviewWorkspace(
-            cwd: alphaJob.cwd,
-            jobs: [alphaJob]
-        )
-        let betaWorkspace = CodexReviewWorkspace(
-            cwd: betaJob.cwd,
-            jobs: [betaJob]
-        )
+        let alphaWorkspace = CodexReviewWorkspace(cwd: alphaJob.cwd)
+        let betaWorkspace = CodexReviewWorkspace(cwd: betaJob.cwd)
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [alphaWorkspace, betaWorkspace]
+            workspaces: [alphaWorkspace, betaWorkspace],
+            jobs: [alphaJob, betaJob]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
 
         let sidebar = viewController.sidebarViewControllerForTesting
         #expect(sidebar.performJobDropForTesting(alphaJob, proposedWorkspace: betaWorkspace, childIndex: 0) == false)
-        #expect(alphaWorkspace.jobs.map(\.id) == ["job-alpha"])
-        #expect(betaWorkspace.jobs.map(\.id) == ["job-beta"])
+        #expect(store.orderedJobs(in: alphaWorkspace).map(\.id) == ["job-alpha"])
+        #expect(store.orderedJobs(in: betaWorkspace).map(\.id) == ["job-beta"])
     }
 
     @Test func sidebarWorkspaceRowsStayExpandedAndUseExpectedCellViews() {
@@ -834,14 +818,12 @@ struct ReviewUITests {
             status: .running,
             targetSummary: "Uncommitted changes"
         )
-        let workspace = CodexReviewWorkspace(
-            cwd: job.cwd,
-            jobs: [job]
-        )
+        let workspace = CodexReviewWorkspace(cwd: job.cwd)
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [workspace]
+            workspaces: [workspace],
+            jobs: [job]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -859,14 +841,12 @@ struct ReviewUITests {
             status: .running,
             targetSummary: "Uncommitted changes"
         )
-        let workspace = CodexReviewWorkspace(
-            cwd: job.cwd,
-            jobs: [job]
-        )
+        let workspace = CodexReviewWorkspace(cwd: job.cwd)
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [workspace]
+            workspaces: [workspace],
+            jobs: [job]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -887,14 +867,12 @@ struct ReviewUITests {
             status: .running,
             targetSummary: "Uncommitted changes"
         )
-        let workspace = CodexReviewWorkspace(
-            cwd: job.cwd,
-            jobs: [job]
-        )
+        let workspace = CodexReviewWorkspace(cwd: job.cwd)
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [workspace]
+            workspaces: [workspace],
+            jobs: [job]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -927,7 +905,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [secondaryJob] + primaryJobs)
+            content: makeSidebarContent(from: [secondaryJob] + primaryJobs)
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -955,7 +933,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: jobs)
+            content: makeSidebarContent(from: jobs)
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -983,7 +961,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: jobs)
+            content: makeSidebarContent(from: jobs)
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -1013,7 +991,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: jobs)
+            content: makeSidebarContent(from: jobs)
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -1039,14 +1017,12 @@ struct ReviewUITests {
             summary: "Review is still running.",
             logText: "Selected log\n"
         )
-        let workspace = CodexReviewWorkspace(
-            cwd: job.cwd,
-            jobs: [job]
-        )
+        let workspace = CodexReviewWorkspace(cwd: job.cwd)
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [workspace]
+            workspaces: [workspace],
+            jobs: [job]
         )
         let storedWorkspace = try #require(store.workspaces.first)
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
@@ -1086,7 +1062,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let workspace = try #require(store.workspaces.first(where: { $0.cwd == job.cwd }))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
@@ -1104,7 +1080,7 @@ struct ReviewUITests {
         )
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [replacement])
+            content: makeSidebarContent(from: [replacement])
         )
 
         let reloadedWorkspace = try #require(store.workspaces.first(where: { $0.cwd == job.cwd }))
@@ -1124,7 +1100,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -1151,7 +1127,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makeTestingStore(harness: FailingCancellationBackend())
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -1175,7 +1151,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -1494,7 +1470,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+            content: makeSidebarContent(from: [activeJob, recentJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -1515,7 +1491,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+            content: makeSidebarContent(from: [activeJob, recentJob])
         )
         let harness = makeWindowHarness(store: store)
         let viewController = harness.viewController
@@ -1619,9 +1595,9 @@ struct ReviewUITests {
                 source: .parsedFinalReviewText
             )
         )
-        let workspace = CodexReviewWorkspace(cwd: workspaceCWD, jobs: [firstJob, secondJob])
+        let workspace = CodexReviewWorkspace(cwd: workspaceCWD)
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: [workspace])
+        store.loadForTesting(serverState: .running, workspaces: [workspace], jobs: [firstJob, secondJob])
         let harness = makeWindowHarness(store: store)
         let viewController = harness.viewController
         let window = harness.window
@@ -1720,9 +1696,9 @@ struct ReviewUITests {
                 source: .parsedFinalReviewText
             )
         )
-        let workspace = CodexReviewWorkspace(cwd: workspaceCWD, jobs: [job])
+        let workspace = CodexReviewWorkspace(cwd: workspaceCWD)
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: [workspace])
+        store.loadForTesting(serverState: .running, workspaces: [workspace], jobs: [job])
         let harness = makeWindowHarness(
             store: store,
             contentSize: NSSize(width: 560, height: 360)
@@ -1754,9 +1730,9 @@ struct ReviewUITests {
                 source: .parsedFinalReviewText
             )
         )
-        let workspace = CodexReviewWorkspace(cwd: job.cwd, jobs: [job])
+        let workspace = CodexReviewWorkspace(cwd: job.cwd)
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: [workspace])
+        store.loadForTesting(serverState: .running, workspaces: [workspace], jobs: [job])
         let harness = makeWindowHarness(store: store)
         let viewController = harness.viewController
         let window = harness.window
@@ -1785,9 +1761,9 @@ struct ReviewUITests {
             status: .running,
             targetSummary: "Uncommitted changes"
         )
-        let workspace = CodexReviewWorkspace(cwd: job.cwd, jobs: [job])
+        let workspace = CodexReviewWorkspace(cwd: job.cwd)
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: [workspace])
+        store.loadForTesting(serverState: .running, workspaces: [workspace], jobs: [job])
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let sidebar = viewController.sidebarViewControllerForTesting
@@ -1797,22 +1773,18 @@ struct ReviewUITests {
         sidebar.selectWorkspaceForTesting(workspace)
         _ = try await awaitTransportRender(transport, after: initialRenderCount)
 
-        let replacement = CodexReviewWorkspace(
+        let replacement = CodexReviewWorkspace(cwd: workspace.cwd)
+        let replacementJob = makeJob(
+            id: "job-workspace-selection-replacement",
             cwd: workspace.cwd,
-            jobs: [
-                makeJob(
-                    id: "job-workspace-selection-replacement",
-                    cwd: workspace.cwd,
-                    status: .succeeded,
-                    targetSummary: "Commit: replacement"
-                )
-            ]
+            status: .succeeded,
+            targetSummary: "Commit: replacement"
         )
-        store.loadForTesting(serverState: .running, workspaces: [replacement])
+        store.loadForTesting(serverState: .running, workspaces: [replacement], jobs: [replacementJob])
         await transport.flushMainQueueForTesting()
 
         #expect(sidebar.selectedWorkspaceForTesting?.cwd == replacement.cwd)
-        #expect(sidebar.selectedWorkspaceForTesting?.jobs.first?.id == "job-workspace-selection-replacement")
+        #expect(store.orderedJobs(in: replacement).first?.id == "job-workspace-selection-replacement")
 
         store.loadForTesting(serverState: .running, workspaces: [])
         try await waitForCondition {
@@ -1848,7 +1820,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let harness = makeWindowHarness(store: store)
         let viewController = harness.viewController
@@ -1889,7 +1861,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+            content: makeSidebarContent(from: [activeJob, recentJob])
         )
         let harness = makeWindowHarness(store: store)
         let viewController = harness.viewController
@@ -1932,7 +1904,7 @@ struct ReviewUITests {
             logText: longLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -1968,7 +1940,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+            content: makeSidebarContent(from: [activeJob, recentJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -2021,7 +1993,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+            content: makeSidebarContent(from: [activeJob, recentJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -2064,7 +2036,7 @@ struct ReviewUITests {
             logText: longLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2090,7 +2062,7 @@ struct ReviewUITests {
         )
 
         let refreshRenderCount = transport.renderCountForTesting
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [replacement]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [replacement]))
         await transport.flushMainQueueForTesting()
 
         #expect(transport.renderCountForTesting == refreshRenderCount)
@@ -2114,7 +2086,7 @@ struct ReviewUITests {
             logText: sharedLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [firstJob, secondJob]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [firstJob, secondJob]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2155,7 +2127,7 @@ struct ReviewUITests {
             logText: longLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [shortJob, recentJob]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [shortJob, recentJob]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2198,7 +2170,7 @@ struct ReviewUITests {
             logText: "Recent log\n"
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [activeJob, recentJob]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [activeJob, recentJob]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2234,7 +2206,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -2267,14 +2239,12 @@ struct ReviewUITests {
             summary: "Review is still running.",
             logText: "Selected log\n"
         )
-        let workspace = CodexReviewWorkspace(
-            cwd: job.cwd,
-            jobs: [job]
-        )
+        let workspace = CodexReviewWorkspace(cwd: job.cwd)
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: [workspace]
+            workspaces: [workspace],
+            jobs: [job]
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
@@ -2316,7 +2286,7 @@ struct ReviewUITests {
 
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [activeJob])
+            content: makeSidebarContent(from: [activeJob])
         )
 
         #expect(viewController.sidebarViewControllerForTesting.selectedJobForTesting == nil)
@@ -2342,7 +2312,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [activeJob, recentJob])
+            content: makeSidebarContent(from: [activeJob, recentJob])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -2359,7 +2329,7 @@ struct ReviewUITests {
         let removalRenderCount = contentPane.renderCountForTesting
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [recentJob])
+            content: makeSidebarContent(from: [recentJob])
         )
 
         let emptySnapshot = try await awaitContentPaneRender(contentPane, after: removalRenderCount)
@@ -2380,7 +2350,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let harness = makeWindowHarness(store: store)
         let viewController = harness.viewController
@@ -2428,7 +2398,7 @@ struct ReviewUITests {
         let store = CodexReviewStore.makePreviewStore()
         store.loadForTesting(
             serverState: .running,
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -2467,7 +2437,7 @@ struct ReviewUITests {
             ]
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
@@ -2502,7 +2472,7 @@ struct ReviewUITests {
             ]
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
@@ -2538,7 +2508,7 @@ struct ReviewUITests {
             ]
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
@@ -2567,7 +2537,7 @@ struct ReviewUITests {
             logText: "Initial log\n"
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
@@ -2599,7 +2569,7 @@ struct ReviewUITests {
             logText: longLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2647,7 +2617,7 @@ struct ReviewUITests {
             logText: longLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2683,7 +2653,7 @@ struct ReviewUITests {
             logText: longLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2717,7 +2687,7 @@ struct ReviewUITests {
             logText: "short log"
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2758,7 +2728,7 @@ struct ReviewUITests {
             logText: longLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [firstJob, secondJob]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [firstJob, secondJob]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2797,7 +2767,7 @@ struct ReviewUITests {
             logText: longLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2832,7 +2802,7 @@ struct ReviewUITests {
             logText: longLog
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         let window = NSWindow(contentViewController: viewController)
         defer { window.close() }
@@ -2866,7 +2836,7 @@ struct ReviewUITests {
             logText: "Initial log\n"
         )
         let store = CodexReviewStore.makePreviewStore()
-        store.loadForTesting(serverState: .running, workspaces: makeWorkspaces(from: [job]))
+        store.loadForTesting(serverState: .running, content: makeSidebarContent(from: [job]))
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
         let transport = viewController.transportViewControllerForTesting
@@ -2893,7 +2863,7 @@ struct ReviewUITests {
         store.loadForTesting(
             serverState: .running,
             authState: .signedOut,
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -2919,7 +2889,7 @@ struct ReviewUITests {
         store.loadForTesting(
             serverState: .running,
             authState: .signedIn(accountID: "review@example.com"),
-            workspaces: makeWorkspaces(from: [job])
+            content: makeSidebarContent(from: [job])
         )
         let viewController = ReviewMonitorSplitViewController(store: store, uiState: ReviewMonitorUIState(auth: store.auth))
         viewController.loadViewIfNeeded()
@@ -3239,21 +3209,20 @@ func makeJob(
 
 @MainActor
 func makeWorkspaces(from jobs: [CodexReviewJob]) -> [CodexReviewWorkspace] {
-    var buckets: [String: [CodexReviewJob]] = [:]
+    var seenCWDs: Set<String> = []
     var order: [String] = []
     for job in jobs {
-        if buckets[job.cwd] == nil {
+        if seenCWDs.contains(job.cwd) == false {
             order.insert(job.cwd, at: 0)
-            buckets[job.cwd] = []
+            seenCWDs.insert(job.cwd)
         }
-        buckets[job.cwd, default: []].insert(job, at: 0)
     }
-    return order.map { cwd in
-        CodexReviewWorkspace(
-            cwd: cwd,
-            jobs: buckets[cwd] ?? []
-        )
-    }
+    return order.map { CodexReviewWorkspace(cwd: $0) }
+}
+
+@MainActor
+func makeSidebarContent(from jobs: [CodexReviewJob]) -> (workspaces: [CodexReviewWorkspace], jobs: [CodexReviewJob]) {
+    (makeWorkspaces(from: jobs), Array(jobs.reversed()))
 }
 
 struct TestFailure: Error {
@@ -3366,6 +3335,7 @@ extension CodexReviewStore {
         authState: TestAuthState = .signedOut,
         serverURL: URL? = nil,
         workspaces: [CodexReviewWorkspace],
+        jobs: [CodexReviewJob] = [],
         settingsSnapshot: CodexReviewSettingsSnapshot? = nil
     ) {
         loadForTesting(
@@ -3387,6 +3357,24 @@ extension CodexReviewStore {
             } ?? [],
             serverURL: serverURL,
             workspaces: workspaces,
+            jobs: jobs,
+            settingsSnapshot: settingsSnapshot
+        )
+    }
+
+    func loadForTesting(
+        serverState: CodexReviewServerState,
+        authState: TestAuthState = .signedOut,
+        serverURL: URL? = nil,
+        content: (workspaces: [CodexReviewWorkspace], jobs: [CodexReviewJob]),
+        settingsSnapshot: CodexReviewSettingsSnapshot? = nil
+    ) {
+        loadForTesting(
+            serverState: serverState,
+            authState: authState,
+            serverURL: serverURL,
+            workspaces: content.workspaces,
+            jobs: content.jobs,
             settingsSnapshot: settingsSnapshot
         )
     }
